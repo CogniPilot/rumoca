@@ -4542,6 +4542,7 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-solve",
  "rumoca-ir-solve",
+ "tracing",
 ]
 
 [[package]]
@@ -4837,6 +4838,7 @@ dependencies = [
  "rumoca-phase-structural",
  "rustc-hash 2.1.3",
  "serde",
+ "tracing",
 ]
 
 [[package]]
@@ -4944,6 +4946,7 @@ dependencies = [
  "diffsol",
  "indexmap 2.14.0",
  "rumoca-eval-solve",
+ "rumoca-exec-cranelift",
  "rumoca-ir-solve",
  "rumoca-solver",
  "thiserror 2.0.18",

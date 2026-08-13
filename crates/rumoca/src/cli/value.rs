@@ -186,6 +186,7 @@ pub fn simulate_to_value(args: &SimCommandArgs, source: &str) -> Result<Value> {
         dt: opts.dt,
         rtol: opts.rtol,
         atol: opts.atol,
+        execution_policy: opts.execution_policy,
     };
     // Match the Python `simulate` binding's metrics so `cli sim` output is
     // consistent (timing populated, not left at the zero default).

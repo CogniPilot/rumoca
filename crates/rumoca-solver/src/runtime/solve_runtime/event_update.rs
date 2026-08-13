@@ -28,6 +28,10 @@ pub enum EventUpdateRowFilter {
 }
 
 impl EventUpdateRowFilter {
+    /// Number of distinct filters, so an invocation ledger can hold one slot
+    /// per filter without a map.
+    pub const LEDGER_SLOTS: usize = 5;
+
     pub(super) fn accepts(self, mode: EventPreMode, clock_owned: bool) -> bool {
         match self {
             Self::All => true,
@@ -35,6 +39,18 @@ impl EventUpdateRowFilter {
             Self::UnownedOnly => !clock_owned,
             Self::PostInitialClockTick => clock_owned || mode == EventPreMode::FollowCurrent,
             Self::Hold => false,
+        }
+    }
+
+    /// This filter's slot in an invocation ledger.
+    #[must_use]
+    pub const fn ledger_index(self) -> usize {
+        match self {
+            Self::All => 0,
+            Self::FollowCurrentOnly => 1,
+            Self::UnownedOnly => 2,
+            Self::PostInitialClockTick => 3,
+            Self::Hold => 4,
         }
     }
 }
@@ -55,6 +71,24 @@ pub(super) struct DiscretePreSnapshot<'a> {
     pub(super) row_filter: EventUpdateRowFilter,
     pub(super) root_relation_overrides: &'a [(usize, f64)],
     pub(super) event_iteration: usize,
+}
+
+impl DiscretePreSnapshot<'_> {
+    /// Whether this snapshot admits an owner with pre mode `mode` and once-only
+    /// `scheduled` ownership.
+    ///
+    /// A once-only scheduled owner runs on the first event-iteration pass and
+    /// no later one. Every admission site reads this single rule — the scalar,
+    /// guarded, structured, and transaction evaluators *and* the coupled
+    /// inventory — so the inventory cannot name a residual whose own evaluator
+    /// then declines to produce it, which is how a later pass turned a
+    /// scheduled row into a coupled-recovery error.
+    pub(super) fn admits(&self, mode: EventPreMode, scheduled: bool) -> bool {
+        if scheduled && self.event_iteration != 0 {
+            return false;
+        }
+        self.row_filter.accepts(mode, scheduled)
+    }
 }
 
 pub(super) struct DiscreteRowsSettleInput<'a> {

@@ -354,14 +354,17 @@ impl TableCompiler {
             let layout = ProgramLayout::new(program, input_count, output_count)?;
             let tape = create_tape(&mut builder, pointer_type, layout.tape_cells)?;
             let invocation_layout = InvocationCacheLayout::new(table, program, directional)?;
-            if std::env::var_os("RUMOCA_PROFILE_IR").is_some() && invocation_layout.has_entries() {
+            if tracing::enabled!(target: "rumoca_exec_cranelift::profile::ir", tracing::Level::DEBUG)
+                && invocation_layout.has_entries()
+            {
                 let mut entries = invocation_layout
                     .entries
                     .iter()
                     .map(|(callee, entry)| format!("{}:{}", callee.index(), entry.output_cells))
                     .collect::<Vec<_>>();
                 entries.sort();
-                eprintln!(
+                tracing::debug!(
+                    target: "rumoca_exec_cranelift::profile::ir",
                     "rumoca-ir-profile kind=native-invocation-cache owner={} entries=[{}]",
                     owner.index(),
                     entries.join(","),

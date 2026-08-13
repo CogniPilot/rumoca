@@ -171,6 +171,7 @@ mod tests {
             dt: Some(0.1),
             rtol: 1e-4,
             atol: 1e-6,
+            execution_policy: rumoca_solver::SimExecutionPolicy::Auto,
         };
         let metrics = SimulationRunMetrics::default();
         let document =

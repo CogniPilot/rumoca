@@ -962,17 +962,14 @@ impl PreparedScalarProgramBlock {
             selected_output,
             request.target_y_index,
         ) else {
-            if std::env::var_os("RUMOCA_PROFILE_PROJECTION").is_some()
-                && request.target_y_index >= 400
-            {
-                eprintln!(
-                    "rumoca-projection-shapes program={} output={} target={} shapes={:?}",
-                    request.row_idx,
-                    selected_output,
-                    request.target_y_index,
-                    self.row_assignment_shapes[request.row_idx],
-                );
-            }
+            tracing::debug!(
+                target: "rumoca_eval_solve::profile::projection",
+                "rumoca-projection-shapes program={} output={} target={} shapes={:?}",
+                request.row_idx,
+                selected_output,
+                request.target_y_index,
+                self.row_assignment_shapes[request.row_idx],
+            );
             // No assignment shape means the row is an ordinary residual. It is
             // only reusable for a target update when it does not read that same
             // target slot; otherwise the parent receives None and tries another row.

@@ -377,7 +377,7 @@ pub(in crate::lower) fn lower_model_event_transactions<'dae>(
         let solve_clock = clocks.clock(clock)?;
         let (site, assertions) = registry
             .add_event_transaction_owner(view, &definitions, &coordinate_types, provenance)
-            .map_err(|error| LowerError::contract(error.to_string(), provenance))?;
+            .map_err(LowerError::from)?;
         let assertions = assertions
             .into_iter()
             .map(|registered| {
@@ -420,7 +420,7 @@ fn transaction_inputs<'dae>(
             Ok((
                 model_coordinate_source(view, layout, *key, provenance)?,
                 lower_primitive_type(view, *value_type, arithmetic_profile())
-                    .map_err(|error| LowerError::contract(error.to_string(), provenance))?,
+                    .map_err(LowerError::from)?,
             ))
         })
         .collect()
@@ -453,7 +453,7 @@ fn transaction_targets<'dae>(
                 variable,
                 variable_scalar_slot(layout, target.variable(), 0, provenance)?,
                 lower_primitive_type(view, *value_type, arithmetic_profile())
-                    .map_err(|error| LowerError::contract(error.to_string(), provenance))?,
+                    .map_err(LowerError::from)?,
             ))
         })
         .collect()

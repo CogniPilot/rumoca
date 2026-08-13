@@ -27,13 +27,10 @@ impl SolveRuntime {
     ) -> Result<bool, RuntimeSolveError> {
         let owner = self.guarded_assignment_owner(program_index)?;
         let clock_owned = owner.clock_owner().is_some();
-        if clock_owned && snapshot.event_iteration != 0 {
-            return Ok(false);
-        }
-        Ok(snapshot
-            .row_filter
-            .accepts(crate::EventPreMode::from(owner.pre_mode()), clock_owned)
-            && self.guarded_assignment_active_at(program_index, t)?)
+        Ok(
+            snapshot.admits(crate::EventPreMode::from(owner.pre_mode()), clock_owned)
+                && self.guarded_assignment_active_at(program_index, t)?,
+        )
     }
 
     pub(super) fn eval_guarded_assignment_outputs(
@@ -103,7 +100,7 @@ impl SolveRuntime {
                 .insert(program_index);
             return;
         };
-        if std::env::var_os("RUMOCA_PROFILE_NATIVE").is_some() {
+        if tracing::enabled!(target: "rumoca_solver::profile::native", tracing::Level::DEBUG) {
             let owner = &self.model.problem.discrete.guarded_assignments[program_index];
             let targets = owner
                 .target_ranges()
@@ -111,8 +108,9 @@ impl SolveRuntime {
                 .map(|range| format!("{:?}+{}", range.base(), range.count()))
                 .collect::<Vec<_>>()
                 .join(",");
-            eprintln!(
-                "[native-profile] guarded-assignment program={program_index} direct_ops={} outputs={} targets=[{targets}]",
+            tracing::debug!(
+                target: "rumoca_solver::profile::native",
+                "native-profile guarded-assignment program={program_index} direct_ops={} outputs={} targets=[{targets}]",
                 prepared.program().len(),
                 prepared.output_count(),
             );

@@ -560,6 +560,7 @@ impl ModelicaLanguageServer {
             dt: settings.dt,
             rtol: opts.rtol,
             atol: opts.atol,
+            execution_policy: opts.execution_policy,
         }
     }
 

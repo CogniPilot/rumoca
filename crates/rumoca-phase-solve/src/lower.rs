@@ -60,8 +60,9 @@ pub(crate) fn lower_solve_problem(
         event_transactions,
     )?;
     let pure_calls = lowered.pure_calls.borrow_mut().finish();
-    if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
-        eprintln!(
+    if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG) {
+        tracing::debug!(
+            target: "rumoca_phase_solve::profile::ir",
             "rumoca-ir-profile kind=pure-call-table owners={}",
             pure_calls.owners().len()
         );
@@ -85,7 +86,7 @@ pub(crate) fn lower_solve_problem(
             },
         )?;
     solve::validate_problem_pure_call_sites(&problem, &pure_calls)?;
-    if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
+    if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG) {
         profile::pure_call_sites(&problem);
     }
     Ok((problem, pure_calls))
@@ -633,7 +634,7 @@ fn lower_continuous_aggregate_call_group<'borrow, 'dae>(
         .expect("checked aggregate call resolves")
         .provenance()
         .span();
-    if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
+    if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG) {
         let function = match context
             .view
             .expression(first.call)
@@ -648,7 +649,8 @@ fn lower_continuous_aggregate_call_group<'borrow, 'dae>(
                 .to_string(),
             _ => unreachable!("candidate construction proved an aggregate call"),
         };
-        eprintln!(
+        tracing::debug!(
+            target: "rumoca_phase_solve::profile::ir",
             "rumoca-continuous-call-group function={function} members={} outputs={}",
             group.len(),
             group
@@ -1079,8 +1081,11 @@ fn lower_algebraic_scalar_outputs<'dae>(
         .with_derivative_definitions(context.derivatives);
     let aggregate = scalars.len() == scalar_count(context.view, expression)
         && scalars.iter().copied().eq(0..scalars.len());
-    if std::env::var_os("RUMOCA_PROFILE_IR").is_some() && scalars.len() > 1 {
-        eprintln!(
+    if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG)
+        && scalars.len() > 1
+    {
+        tracing::debug!(
+            target: "rumoca_phase_solve::profile::ir",
             "rumoca-continuous-aggregate rows={rows:?} scalars={scalars:?} count={} aggregate={aggregate} kind={:?}",
             scalar_count(context.view, expression),
             context

@@ -19,9 +19,9 @@ pub use rumoca_phase_solve::{
 };
 pub use rumoca_solver::{
     BackendState, DiffsolMethod, LoopStats, RuntimeProgressSnapshot, RuntimeStopSchedule,
-    RuntimeTraceContext, SimBackend, SimOptions, SimPacingMode, SimResult, SimSolverMode,
-    SimVariableMeta, SimulationBackend, SimulationRequestSummary, SimulationRunMetrics,
-    SolverDeadlineGuard, StepUntilOutcome, TimeoutBudget, TimeoutExceeded,
+    RuntimeTraceContext, SimBackend, SimExecutionPolicy, SimOptions, SimPacingMode, SimResult,
+    SimSolverMode, SimVariableMeta, SimulationBackend, SimulationRequestSummary,
+    SimulationRunMetrics, SolverDeadlineGuard, StepUntilOutcome, TimeoutBudget, TimeoutExceeded,
     build_simulation_metrics_value, build_simulation_payload, is_solver_timeout_panic,
     panic_on_expired_solver_deadline, run_timeout_result, run_timeout_step,
     run_timeout_step_result, run_with_runtime_schedule, runtime_progress_snapshot,
@@ -40,26 +40,8 @@ mod simulation_session_api;
 
 #[cfg(feature = "solver-diffsol")]
 mod diffsol;
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    any(feature = "solver-rk45", feature = "solver-diffsol")
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "solver-rk45"))]
 mod native_execution;
-/// Wasm builds carry no compiled native backend at all; the one shared
-/// admission gate uniformly withholds so every caller composes through the
-/// same name on every target.
-#[cfg(all(
-    target_arch = "wasm32",
-    any(feature = "solver-rk45", feature = "solver-diffsol")
-))]
-mod native_execution {
-    pub(crate) fn admitted_native_execution_backend(
-        _opts: &rumoca_solver::SimOptions,
-        _model: &rumoca_ir_solve::SolveModel,
-    ) -> Option<rumoca_solver::fmi_me::MeExecutionBackend> {
-        None
-    }
-}
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
 mod solve_lowering;
@@ -209,8 +191,7 @@ fn simulate_solve_model_diffsol(
     model: &rumoca_ir_solve::SolveModel,
     opts: &SimOptions,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    let execution_backend = native_execution::admitted_native_execution_backend(opts, model);
-    rumoca_solver_diffsol::simulate_with_execution_backend(model, opts, execution_backend)
+    rumoca_solver_diffsol::simulate(model, opts)
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 

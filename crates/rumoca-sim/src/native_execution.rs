@@ -18,7 +18,7 @@ impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
         y: &[f64],
         p: &[f64],
         t: f64,
-        external_tables: &[rumoca_core::ExternalTableData],
+        external_tables: &[rumoca_ir_solve::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), String> {
         self.0
@@ -34,7 +34,7 @@ impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftJacobianExpress
         p: &[f64],
         t: f64,
         seed: &[f64],
-        external_tables: &[rumoca_core::ExternalTableData],
+        external_tables: &[rumoca_ir_solve::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), String> {
         self.0
@@ -49,7 +49,7 @@ impl rumoca_solver::CompiledSolveAssignmentSchedule for CraneliftAssignmentSched
         y: &mut [f64],
         p: &[f64],
         t: f64,
-        external_tables: &[rumoca_core::ExternalTableData],
+        external_tables: &[rumoca_ir_solve::ExternalTableData],
     ) -> Result<(), String> {
         self.0
             .call_with_external_tables(y, p, t, external_tables)
@@ -145,43 +145,16 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
     }
 }
 
-/// The single sim-side admission gate for compiled native execution
-/// (SPEC_0038 §Internal Solver Boundary, SPEC_0041 §4).
-///
-/// Every concrete solver path — the rk-like host and the BDF host alike —
-/// composes its opaque `MeExecutionBackend` handle through this one helper, so
-/// the admission rules cannot drift between paths:
-/// - `SimExecutionPolicy::Interpreter` withholds the handle, which is what
-///   makes the interpreter side of the backend differential oracle selectable
-///   from the request itself rather than from an ambient process setting;
-/// - a zero-state (pure-discrete) model withholds it too, BEFORE any backend
-///   is built: neither host's zero-state session instantiates an integrator
-///   component, so constructing a backend would pay compilation cost for
-///   compiled code that is discarded unused.
-pub(crate) fn admitted_native_execution_backend(
-    opts: &rumoca_solver::SimOptions,
-    model: &rumoca_ir_solve::SolveModel,
-) -> Option<rumoca_solver::fmi_me::MeExecutionBackend> {
-    if !opts.execution_policy.allows_native() {
-        return None;
-    }
-    if model.state_scalar_count() == 0 {
-        return None;
-    }
-    Some(rumoca_solver::fmi_me::MeExecutionBackend::new(backend(
-        &model.pure_calls,
-    )))
-}
-
 pub(crate) fn backend(
     table: &rumoca_ir_solve::SolvePureCallTable,
 ) -> Rc<dyn rumoca_solver::SolveExecutionBackend> {
     let pure_calls = match rumoca_exec_cranelift::compile_pure_call_table(table) {
         Ok(compiled) => Some(compiled),
         Err(error) => {
-            if std::env::var_os("RUMOCA_PROFILE_COMPILED").is_some() {
-                eprintln!("rumoca-compiled-profile label=typed-pure-call-table error={error}");
-            }
+            tracing::debug!(
+                target: "rumoca_sim::profile::compiled",
+                "rumoca-compiled-profile label=typed-pure-call-table error={error}"
+            );
             None
         }
     };

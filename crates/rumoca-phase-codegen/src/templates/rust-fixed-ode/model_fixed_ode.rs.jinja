@@ -71,6 +71,18 @@
     let __r{{ op.dst }}: f64 = {{ compare(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Select" %}
     let __r{{ op.dst }}: f64 = if __r{{ op.cond }} != 0.0 { __r{{ op.if_true }} } else { __r{{ op.if_false }} };
+{%- elif op.kind == "TensorLoad" %}
+{%- if op.lanes != 1 %}{{ fail("unsupported-feature:scalar.op.TensorLoad.lanes") }}{% endif %}
+{%- for element in range(op.count) %}
+    let __r{{ op.dst + element }}: f64 = {% if op.input == "Y" %}y[{{ op.input_start + element }}]{% elif op.input == "P" %}p[{{ op.input_start + element }}]{% else %}{{ fail("unsupported-feature:scalar.op.TensorLoad.input") }}{% endif %};
+{%- endfor %}
+{%- elif op.kind == "MatrixMultiply" %}
+{%- if op.lanes != 1 %}{{ fail("unsupported-feature:scalar.op.MatrixMultiply.lanes") }}{% endif %}
+{%- for row in range(op.rows) %}
+{%- for column in range(op.columns) %}
+    let __r{{ op.dst + row * op.columns + column }}: f64 = {% for term in range(op.inner) %}{{ " + " if not loop.first else "" }}__r{{ op.lhs_start + row * op.inner + term }} * __r{{ op.rhs_start + term * op.columns + column }}{% else %}0.0{% endfor %};
+{%- endfor %}
+{%- endfor %}
 {%- elif op.kind == "StoreOutput" %}
     out[{{ op.output_index }}] = __r{{ op.src }};
 {%- elif op.kind == "StoreOutputRange" %}

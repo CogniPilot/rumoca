@@ -50,10 +50,12 @@ mod relation_memory;
 mod sensitivity;
 mod support;
 use discrete_rows::PreparedStructuredDiscreteRows;
-pub use discrete_rows::SeededConditionMemory;
 #[cfg(test)]
 pub(crate) use discrete_rows::{
     ConditionMemorySeedInput, seed_condition_memory_for_initialization_core,
+};
+pub use discrete_rows::{
+    DiscreteOwnerId, DiscreteSettleObservation, EventOwnerExecutionLedger, SeededConditionMemory,
 };
 use event_update::{DiscretePreSnapshot, DiscreteRowsSettleInput};
 pub use event_update::{EventUpdateRowFilter, ProjectedEventUpdateInput};
@@ -86,7 +88,7 @@ pub trait CompiledSolveExpression {
         y: &[f64],
         p: &[f64],
         t: f64,
-        external_tables: &[rumoca_core::ExternalTableData],
+        external_tables: &[rumoca_ir_solve::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), String>;
 }
@@ -99,7 +101,7 @@ pub trait CompiledSolveJacobianExpression {
         p: &[f64],
         t: f64,
         seed: &[f64],
-        external_tables: &[rumoca_core::ExternalTableData],
+        external_tables: &[rumoca_ir_solve::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), String>;
 }
@@ -114,7 +116,7 @@ pub trait CompiledSolveAssignmentSchedule {
         y: &mut [f64],
         p: &[f64],
         t: f64,
-        external_tables: &[rumoca_core::ExternalTableData],
+        external_tables: &[rumoca_ir_solve::ExternalTableData],
     ) -> Result<(), String>;
 }
 
@@ -269,6 +271,8 @@ pub struct SolveRuntime {
     guarded_assignment_programs: Vec<PreparedGuardedAssignmentProgram>,
     event_transaction_programs: Vec<PreparedEventTransactionProgram>,
     event_transaction_coverage: PreparedEventTransactionCoverage,
+    discrete_settle_observation: RefCell<DiscreteSettleObservation>,
+    owner_execution_ledger: RefCell<EventOwnerExecutionLedger>,
     runtime_assignment_rhs: PreparedScalarProgramBlock,
     post_commit_assignment_rhs: PreparedScalarProgramBlock,
     update_values_scratch: RefCell<Vec<f64>>,
@@ -322,24 +326,6 @@ pub(crate) struct SolveRuntimeSnapshot {
 impl SolveRuntime {
     pub fn new(model: &solve::SolveModel) -> Result<Self, EvalSolveError> {
         Self::new_with_execution_backend(model, None)
-    }
-
-    /// Construct a runtime honoring a host-provided opaque ME execution
-    /// backend handle.
-    ///
-    /// The [`crate::fmi_me::MeExecutionBackend`] handle is unwrapped here,
-    /// inside the crate that owns the [`SolveExecutionBackend`] contract, so
-    /// an integrator host can wire compiled execution through without ever
-    /// naming a Solve runtime object on its own surface (SPEC_0038 §Internal
-    /// Solver Boundary).
-    pub fn new_with_me_execution_backend(
-        model: &solve::SolveModel,
-        execution_backend: Option<crate::fmi_me::MeExecutionBackend>,
-    ) -> Result<Self, EvalSolveError> {
-        Self::new_with_execution_backend(
-            model,
-            execution_backend.map(crate::fmi_me::MeExecutionBackend::into_runtime_backend),
-        )
     }
 
     #[cfg(test)]
@@ -428,7 +414,8 @@ impl SolveRuntime {
             .iter()
             .map(|program| vec![0.0; program.output_scalar_count()])
             .collect();
-        let event_transaction_coverage = PreparedEventTransactionCoverage::new(model);
+        let transaction_count = event_transaction_programs.len();
+        let event_transaction_coverage = PreparedEventTransactionCoverage::new(model)?;
         let compiled_event_transactions = event_transaction_programs
             .iter()
             .map(|prepared| {
@@ -601,6 +588,11 @@ impl SolveRuntime {
             guarded_assignment_programs,
             event_transaction_programs,
             event_transaction_coverage,
+            discrete_settle_observation: RefCell::new(DiscreteSettleObservation::default()),
+            owner_execution_ledger: RefCell::new(EventOwnerExecutionLedger::sized_for(
+                transaction_count,
+                model.problem.events.actions.len(),
+            )),
             runtime_assignment_rhs: PreparedScalarProgramBlock::new(
                 model.problem.discrete.runtime_assignment_rhs.clone(),
             )?,
@@ -1055,10 +1047,11 @@ impl SolveRuntime {
                 self.model.external_tables.as_slice(),
                 &mut scratch,
             );
-            if let Err(error) = &called
-                && std::env::var_os("RUMOCA_PROFILE_NATIVE").is_some()
-            {
-                eprintln!("[native-profile] program={program} call failed: {error}");
+            if let Err(error) = &called {
+                tracing::debug!(
+                    target: "rumoca_solver::profile::native",
+                    "native-profile program={program} call failed: {error}"
+                );
             }
             let valid = called.is_ok()
                 && scratch[compiled.output_count..]
@@ -1167,7 +1160,10 @@ impl SolveRuntime {
             failed.borrow_mut().insert(row);
             return;
         };
-        if std::env::var_os("RUMOCA_PROFILE_RESIDUAL_KERNELS").is_some() {
+        if tracing::enabled!(
+            target: "rumoca_solver::profile::residual_kernels",
+            tracing::Level::DEBUG
+        ) {
             let owner = if std::ptr::eq(prepared, &self.discrete_rhs) {
                 "discrete_rhs"
             } else if std::ptr::eq(prepared, &self.root_condition_rows) {
@@ -1183,7 +1179,8 @@ impl SolveRuntime {
             } else {
                 "other"
             };
-            eprintln!(
+            tracing::debug!(
+                target: "rumoca_solver::profile::residual_kernels",
                 "rumoca-native-specialization owner={owner} row={row} source={} start={} end={} direct_ops={} outputs={output_count} guards={}",
                 span.source.0,
                 span.start.0,
@@ -1899,9 +1896,6 @@ impl SolveRuntime {
 }
 
 fn trace_native_execution_failure(program: usize, reason: &str) {
-    if std::env::var_os("RUMOCA_PROFILE_NATIVE").is_some() {
-        eprintln!("[native-profile] program={program}: {reason}");
-    }
     tracing::debug!(
         target: "rumoca_solver::native_execution",
         program,

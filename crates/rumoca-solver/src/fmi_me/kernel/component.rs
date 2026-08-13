@@ -286,9 +286,9 @@ impl SolveMeKernel {
 
     /// Instantiate with a host-supplied compiled-code execution backend.
     ///
-    /// The backend arrives as the opaque [`crate::fmi_me::MeExecutionBackend`]
-    /// handle so an integrator host never names a runtime object (SPEC_0038
-    /// §Internal Solver Boundary); it is unwrapped here, inside the contract.
+    /// The backend arrives as the opaque [`MeExecutionBackend`] handle so an
+    /// integrator host never names a runtime object (SPEC_0038 §Internal
+    /// Solver Boundary); it is unwrapped here, inside the contract.
     pub fn instantiate_with_execution_backend(
         source: MeModelSource<'_>,
         config: &MeInstanceConfig,

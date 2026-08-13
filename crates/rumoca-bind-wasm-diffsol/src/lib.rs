@@ -72,6 +72,7 @@ pub fn simulate_solve_model_diffsol(input_json: &str) -> Result<String, JsValue>
         dt: opts.dt,
         rtol: opts.rtol,
         atol: opts.atol,
+        execution_policy: opts.execution_policy,
     };
     let output = serde_json::json!({
         "payload": build_simulation_payload(&sim, &request, &metrics),

@@ -16,7 +16,6 @@ use crate::errors::CodegenError;
 struct ProgramMetadata {
     output_targets: Vec<Option<Box<[usize]>>>,
     output_count: usize,
-    temporary_count: usize,
 }
 
 #[derive(Debug)]
@@ -114,7 +113,13 @@ impl Object for PlanProgramValue {
                 .program_span(self.index)
                 .map(Value::from_serialize),
             "output_count" => Some(Value::from(metadata.output_count)),
-            "temporary_count" => Some(Value::from(metadata.temporary_count)),
+            // The block issues each program's exact register-file capacity at
+            // construction; a target consumes that certificate instead of
+            // re-deriving a window from operation widths.
+            "temporary_count" => self
+                .block
+                .program_register_count(self.index)
+                .map(Value::from),
             _ => None,
         }
     }
@@ -221,9 +226,7 @@ fn build_program_metadata(
             CodegenError::template("scalar program plan operation metadata exceeds host limits")
         })?;
     let mut output_count = 0usize;
-    let mut temporary_count = 0usize;
     for op in program {
-        temporary_count = temporary_count.max(temporary_count_after(op)?);
         output_targets.push(take_output_target(
             op,
             output_indices,
@@ -234,25 +237,7 @@ fn build_program_metadata(
     Ok(ProgramMetadata {
         output_targets,
         output_count,
-        temporary_count,
     })
-}
-
-fn temporary_count_after(op: &solve::LinearOp) -> Result<usize, CodegenError> {
-    let Some(dst) = op.dst_register() else {
-        return Ok(0);
-    };
-    let width = match op {
-        solve::LinearOp::FunctionFold { program, .. }
-        | solve::LinearOp::GuardedFunctionFold { program, .. } => program.carried_count,
-        _ => 1,
-    };
-    usize::try_from(dst)
-        .ok()
-        .and_then(|dst| dst.checked_add(width))
-        .ok_or_else(|| {
-            CodegenError::template("scalar program plan temporary index exceeds host range")
-        })
 }
 
 fn take_output_target(

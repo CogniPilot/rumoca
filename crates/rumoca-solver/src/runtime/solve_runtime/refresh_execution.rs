@@ -638,7 +638,10 @@ impl SolveRuntime {
                         .insert(sequence, None);
                     return Ok(false);
                 };
-                if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
+                if tracing::enabled!(
+                    target: "rumoca_solver::profile::ir",
+                    tracing::Level::DEBUG
+                ) {
                     let programs = schedule
                         .program_ids()
                         .iter()
@@ -653,7 +656,8 @@ impl SolveRuntime {
                         .clone()
                         .map(|program| program.target_indices().len())
                         .sum::<usize>();
-                    eprintln!(
+                    tracing::debug!(
+                        target: "rumoca_solver::profile::ir",
                         "rumoca-assignment-schedule rows={} targets={} names={target_names:?}",
                         schedule.program_ids().len(),
                         target_count,
@@ -688,7 +692,8 @@ impl SolveRuntime {
                         for operation in operations {
                             *kinds.entry(operation.kind_name()).or_insert(0usize) += 1;
                         }
-                        eprintln!(
+                        tracing::debug!(
+                            target: "rumoca_solver::profile::ir",
                             "rumoca-assignment-program source={}:{} ops={} outputs=1 names={names:?} kinds={kinds:?}",
                             program.source().node(),
                             program.source().program(),

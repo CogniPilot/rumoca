@@ -721,8 +721,14 @@ fn clock_owned_equation_executes_only_on_the_first_whole_event_pass() {
                             solve::LinearOp::Const { dst: 0, value: 1.0 },
                             solve::LinearOp::StoreOutput { src: 0 },
                         ],
+                        // `pre(trigger)`, not the live `trigger` slot. A
+                        // clocked owner that reads its own live storage is not
+                        // a recurrence at all: it would advance once per settle
+                        // pass, and a fixture written that way can only pass
+                        // while the settle wrongly suppresses the owner after
+                        // its first pass.
                         vec![
-                            solve::LinearOp::LoadP { dst: 0, index: 1 },
+                            solve::LinearOp::LoadP { dst: 0, index: 2 },
                             solve::LinearOp::Const { dst: 1, value: 1.0 },
                             solve::LinearOp::Binary {
                                 dst: 2,

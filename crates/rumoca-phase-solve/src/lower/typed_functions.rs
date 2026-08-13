@@ -1,5 +1,6 @@
 //! Single-source DAE pure-function lowering into the checked typed vocabulary.
 
+mod abi;
 mod assertions;
 mod captures;
 mod folds;
@@ -7,7 +8,8 @@ pub(in crate::lower) mod model_events;
 mod regions;
 mod tensor;
 
-use assertions::{assertion_conditions, assertion_is_map_independent, nested_calls};
+use abi::CallAbiLayout;
+use assertions::{assertion_admitted_for_compact_reduction, assertion_conditions, nested_calls};
 use model_events::ModelCoordinateKey;
 pub(super) use model_events::lower_model_event_transactions;
 use regions::{
@@ -173,12 +175,12 @@ impl NestedIdentityIssuer {
         provenance: rumoca_core::Span,
     ) -> Result<solve::SolvePureCallIdentity, solve::SolveProgramConstructionError> {
         loop {
-            let value = NonZeroU64::new(self.next)
-                .ok_or(solve::SolveProgramConstructionError::IdentityOverflow { provenance })?;
-            self.next = self
-                .next
-                .checked_add(1)
-                .ok_or(solve::SolveProgramConstructionError::IdentityOverflow { provenance })?;
+            let value = NonZeroU64::new(self.next).ok_or_else(|| {
+                solve::SolveProgramConstructionError::IdentityOverflow { provenance }
+            })?;
+            self.next = self.next.checked_add(1).ok_or_else(|| {
+                solve::SolveProgramConstructionError::IdentityOverflow { provenance }
+            })?;
             let identity = solve::SolvePureCallIdentity::issued(value);
             if Some(identity) != self.reserved {
                 return Ok(identity);
@@ -212,6 +214,9 @@ fn register_call<'dae>(
         });
     }
     let assertions = assertion_conditions(view, function)?;
+    // One assertion statement owns one predicate output however many times its
+    // enclosing loop nest evaluates it: the predicate stays compact.
+    let direct_predicate_count = assertions.len();
     let nested_call_ids = nested_calls(view, function, &assertions);
     let mut callees = HashMap::new();
     for nested_call in nested_call_ids.iter().copied() {
@@ -230,18 +235,18 @@ fn register_call<'dae>(
         callees.insert(nested_call, registered);
     }
     let mut predicate_ranges = HashMap::new();
-    let mut next_predicate = assertions.len();
+    let mut next_predicate = direct_predicate_count;
     for nested_call in &nested_call_ids {
-        let call = callees.get(nested_call).ok_or(
+        let call = callees.get(nested_call).ok_or_else(|| {
             solve::SolveProgramConstructionError::UnknownCallOwner {
                 provenance: call_node.provenance().span(),
-            },
-        )?;
-        let end = next_predicate.checked_add(call.assertion_count).ok_or(
-            solve::SolveProgramConstructionError::IdentityOverflow {
+            }
+        })?;
+        let end = next_predicate
+            .checked_add(call.assertion_count)
+            .ok_or_else(|| solve::SolveProgramConstructionError::IdentityOverflow {
                 provenance: call_node.provenance().span(),
-            },
-        )?;
+            })?;
         predicate_ranges.insert(*nested_call, next_predicate..end);
         next_predicate = end;
     }
@@ -264,10 +269,10 @@ fn register_call<'dae>(
     let result_leaf_count = result_leaf_types.len();
     let assertion_count = callees
         .values()
-        .try_fold(assertions.len(), |count, call| {
+        .try_fold(direct_predicate_count, |count, call| {
             count.checked_add(call.assertion_count)
         })
-        .ok_or(solve::SolveProgramConstructionError::IdentityOverflow {
+        .ok_or_else(|| solve::SolveProgramConstructionError::IdentityOverflow {
             provenance: call_node.provenance().span(),
         })?;
     let mut registered_assertions = assertions
@@ -279,13 +284,13 @@ fn register_call<'dae>(
             provenance: assertion.provenance,
         })
         .collect::<Vec<_>>();
-    let mut parent_predicate = assertions.len();
+    let mut parent_predicate = direct_predicate_count;
     for nested_call in &nested_call_ids {
-        let nested = callees.get(nested_call).ok_or(
+        let nested = callees.get(nested_call).ok_or_else(|| {
             solve::SolveProgramConstructionError::UnknownCallOwner {
                 provenance: call_node.provenance().span(),
-            },
-        )?;
+            }
+        })?;
         for assertion in nested.assertions.iter() {
             registered_assertions.push(RegisteredAssertion {
                 predicate_output: result_leaf_count + parent_predicate,
@@ -335,7 +340,7 @@ fn register_call<'dae>(
                 call_values: HashMap::new(),
                 predicate_values: vec![None; assertion_count],
                 next_direct_assertion: 0,
-                direct_assertion_count: assertions.len(),
+                direct_assertion_count: direct_predicate_count,
             };
             lowerer.statements(function.statements())?;
             for ((definition, value_type), range) in function
@@ -348,7 +353,7 @@ fn register_call<'dae>(
                     .function_values
                     .get(&definition.id())
                     .cloned()
-                    .ok_or(solve::SolveProgramConstructionError::InvalidCallOutput {
+                    .ok_or_else(|| solve::SolveProgramConstructionError::InvalidCallOutput {
                         provenance: definition.provenance().span(),
                     })?;
                 if value.value_type != value_type || value.leaves.len() != range.len() {
@@ -376,19 +381,18 @@ fn register_call<'dae>(
             Ok(())
         },
     )?;
-    if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
-        eprintln!(
-            "rumoca-ir-profile kind=pure-call-owner owner={} function={} source={} start={} end={}",
-            owner.index(),
-            function.name(),
-            provenance.source.0,
-            provenance.start.0,
-            provenance.end.0,
-        );
-    }
+    tracing::debug!(
+        target: "rumoca_phase_solve::profile::ir",
+        "rumoca-ir-profile kind=pure-call-owner owner={} function={} source={} start={} end={}",
+        owner.index(),
+        function.name(),
+        provenance.source.0,
+        provenance.start.0,
+        provenance.end.0,
+    );
     let site = table
         .call_site(owner)
-        .ok_or(solve::SolveProgramConstructionError::UnknownCallOwner { provenance })?;
+        .ok_or_else(|| solve::SolveProgramConstructionError::UnknownCallOwner { provenance })?;
     Ok(RegisteredCall {
         owner,
         site,
@@ -410,9 +414,24 @@ fn boolean_map_type<'dae>(
             solve::SolveScalarType::Boolean,
         ));
     }
-    let mut dimensions = Vec::new();
+    let dimensions = domain_extents(view, domains, provenance)?;
+    let value_type = solve::SolveValueType::tensor(solve::SolveScalarType::Boolean, dimensions)
+        .map_err(|_| solve::SolveProgramConstructionError::InvalidMap { provenance })?;
+    if !value_type.belongs_to(arithmetic) {
+        return Err(solve::SolveProgramConstructionError::InvalidMap { provenance });
+    }
+    Ok(value_type)
+}
+
+/// Extents `domains` contribute to one compact map result, outermost first.
+pub(super) fn domain_extents<'dae>(
+    view: dae::DaeView<'dae>,
+    domains: &[dae::DomainId<'dae>],
+    provenance: rumoca_core::Span,
+) -> Result<Vec<u32>, solve::SolveProgramConstructionError> {
+    let mut extents = Vec::new();
     for domain in domains {
-        dimensions.extend(
+        extents.extend(
             view.domain(*domain)
                 .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
                 .structured()
@@ -427,12 +446,7 @@ fn boolean_map_type<'dae>(
                 .collect::<Result<Vec<_>, _>>()?,
         );
     }
-    let value_type = solve::SolveValueType::tensor(solve::SolveScalarType::Boolean, dimensions)
-        .map_err(|_| solve::SolveProgramConstructionError::InvalidMap { provenance })?;
-    if !value_type.belongs_to(arithmetic) {
-        return Err(solve::SolveProgramConstructionError::InvalidMap { provenance });
-    }
-    Ok(value_type)
+    Ok(extents)
 }
 
 fn arithmetic_profile() -> solve::SolveArithmeticProfile {
@@ -449,107 +463,55 @@ fn lower_value_type_leaves<'dae>(
     id: dae::ValueTypeId<'dae>,
     arithmetic: solve::SolveArithmeticProfile,
 ) -> Result<Vec<solve::SolveValueType>, solve::SolveProgramConstructionError> {
-    let value_type = view
-        .value_type(id)
-        .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-    if !value_type.is_record() {
-        return Ok(vec![lower_primitive_type(view, id, arithmetic)?]);
-    }
-    if !value_type.dimensions().is_empty() {
-        return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
-            provenance: value_type_provenance(view, id),
-        });
-    }
-    let mut leaves = Vec::new();
-    for ordinal in 0..value_type.record_field_count() {
-        let (_, field_type) = view.record_field(id, ordinal).ok_or(
-            solve::SolveProgramConstructionError::InvalidCallInterface {
-                provenance: value_type_provenance(view, id),
-            },
-        )?;
-        leaves.extend(lower_value_type_leaves(view, field_type, arithmetic)?);
-    }
-    if leaves.is_empty() {
-        return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
-            provenance: value_type_provenance(view, id),
-        });
-    }
-    Ok(leaves)
+    Ok(CallAbiLayout::issue(view, id, arithmetic)?.into_leaves())
 }
 
-fn value_type_provenance<'dae>(
+/// Reject `id`'s call interface at its issued owner span.
+///
+/// SPEC_0008: a value type with no issued provenance bubbles the explicit
+/// unspanned `MissingProvenance` rejection instead of manufacturing a span.
+fn invalid_call_interface<'dae>(
     view: dae::DaeView<'dae>,
     id: dae::ValueTypeId<'dae>,
-) -> rumoca_core::Span {
-    view.value_type_provenance(id)
-        .map_or(rumoca_core::Span::DUMMY, dae::DaeProvenance::span)
+) -> solve::SolveProgramConstructionError {
+    value_type_span(view, id).map_or(
+        solve::SolveProgramConstructionError::MissingProvenance,
+        |provenance| solve::SolveProgramConstructionError::InvalidCallInterface { provenance },
+    )
 }
 
-fn record_field_leaf_range<'dae>(
+fn value_type_span<'dae>(
     view: dae::DaeView<'dae>,
-    record: dae::ValueTypeId<'dae>,
-    field: usize,
-    arithmetic: solve::SolveArithmeticProfile,
-) -> Result<Range<usize>, solve::SolveProgramConstructionError> {
-    let value_type = view
-        .value_type(record)
-        .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-    if !value_type.is_record() || !value_type.dimensions().is_empty() {
-        return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
-            provenance: value_type_provenance(view, record),
-        });
-    }
-    let mut start = 0usize;
-    for ordinal in 0..value_type.record_field_count() {
-        let (_, field_type) = view.record_field(record, ordinal).ok_or(
-            solve::SolveProgramConstructionError::InvalidCallInterface {
-                provenance: value_type_provenance(view, record),
-            },
-        )?;
-        let width = lower_value_type_leaves(view, field_type, arithmetic)?.len();
-        if ordinal == field {
-            return Ok(start..start + width);
-        }
-        start = start.checked_add(width).ok_or(
-            solve::SolveProgramConstructionError::IdentityOverflow {
-                provenance: value_type_provenance(view, record),
-            },
-        )?;
-    }
-    Err(solve::SolveProgramConstructionError::InvalidCallInterface {
-        provenance: value_type_provenance(view, record),
-    })
+    id: dae::ValueTypeId<'dae>,
+) -> Option<rumoca_core::Span> {
+    view.value_type_provenance(id).map(dae::DaeProvenance::span)
 }
 
+/// Number of typed leaves `id` occupies at a call interface.
+///
+/// The bridge that packs a caller's arguments reads this so it declares
+/// exactly the registers the owner's interface was issued with.
+pub(in crate::lower) fn call_interface_leaf_count<'dae>(
+    view: dae::DaeView<'dae>,
+    id: dae::ValueTypeId<'dae>,
+) -> Result<usize, solve::SolveProgramConstructionError> {
+    Ok(CallAbiLayout::issue(view, id, arithmetic_profile())?.len())
+}
+
+/// One primitive value type at the call interface.
+///
+/// A zero-width component has no leaf at all, so a caller that demands exactly
+/// one type is naming a component the interface does not carry.
 fn lower_primitive_type<'dae>(
     view: dae::DaeView<'dae>,
     id: dae::ValueTypeId<'dae>,
     arithmetic: solve::SolveArithmeticProfile,
 ) -> Result<solve::SolveValueType, solve::SolveProgramConstructionError> {
-    let value_type = view
-        .value_type(id)
-        .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-    let scalar = match value_type.scalar_type() {
-        dae::ScalarType::Real => solve::SolveScalarType::real(arithmetic),
-        dae::ScalarType::Integer | dae::ScalarType::Enumeration => {
-            solve::SolveScalarType::integer(arithmetic)
-        }
-        dae::ScalarType::Boolean => solve::SolveScalarType::Boolean,
-        dae::ScalarType::String | dae::ScalarType::Record => {
-            return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
-                provenance: value_type_provenance(view, id),
-            });
-        }
+    let layout = CallAbiLayout::issue(view, id, arithmetic)?;
+    let [value_type] = layout.leaves() else {
+        return Err(invalid_call_interface(view, id));
     };
-    if value_type.dimensions().is_empty() {
-        Ok(solve::SolveValueType::scalar(scalar))
-    } else {
-        solve::SolveValueType::tensor(scalar, value_type.dimensions().to_vec()).map_err(|_| {
-            solve::SolveProgramConstructionError::InvalidCallInterface {
-                provenance: value_type_provenance(view, id),
-            }
-        })
-    }
+    Ok(value_type.clone())
 }
 
 struct ExpressionLowerer<'builder, 'program, 'dae> {
@@ -704,13 +666,23 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                     provenance,
                     ..
                 } => {
-                    if !assertion_is_map_independent(self.view, condition)
+                    if !assertion_admitted_for_compact_reduction(self.view, condition)
                         || !self.pending_predicates([condition]).is_empty()
                     {
                         return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
                             provenance: provenance.span(),
                         });
                     }
+                    // SPEC_0032: the loop nest keeps ONE compact predicate —
+                    // enumerating the domain would materialize a point per
+                    // coordinate before any final emitter.
+                    //
+                    // KNOWN NONCONFORMING TRANSITION: the eager `All`
+                    // reduction does not reproduce Modelica's domain-major,
+                    // statement-ordered assertion semantics. See the D4
+                    // ledger row and the ordered assertion-effect owner
+                    // proposal in the DRAFT spec series for the governing
+                    // contract and gates.
                     let predicate =
                         self.map_assertion_predicate(condition, domains, provenance.span())?;
                     let predicate = self.builder.reduce(
@@ -862,10 +834,9 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .into_iter()
             .zip(destinations[value_leaf_count..].iter().copied())
         {
-            let value = self
-                .predicate_values
-                .get_mut(slot)
-                .ok_or(solve::SolveProgramConstructionError::InvalidCallOutput { provenance })?;
+            let value = self.predicate_values.get_mut(slot).ok_or_else(|| {
+                solve::SolveProgramConstructionError::InvalidCallOutput { provenance }
+            })?;
             if value.replace(predicate).is_some() {
                 return Err(solve::SolveProgramConstructionError::InvalidCallOutput { provenance });
             }
@@ -1045,9 +1016,22 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         definitions: dae::FunctionDefinitionValues<'dae>,
         conditional: dae::FunctionConditionalView<'dae>,
     ) -> Result<(), solve::SolveProgramConstructionError> {
+        // SPEC_0008: every rejection below is reported at the first issued
+        // definition's owner span. The vacuous join — the conditional that
+        // writes nothing — has no definition to name, but construction
+        // guarantees it owns at least one condition, so that expression
+        // supplies the owner instead of a manufactured dummy span.
         let at = definitions
             .get(0)
-            .map_or(rumoca_core::Span::DUMMY, |value| value.provenance().span());
+            .map(|value| value.provenance().span())
+            .or_else(|| {
+                conditional
+                    .conditions()
+                    .next()
+                    .and_then(|condition| self.view.expression(condition))
+                    .map(|node| node.provenance().span())
+            })
+            .ok_or(solve::SolveProgramConstructionError::MissingProvenance)?;
         if conditional.branch_count() == 0
             || conditional.branch_count() != conditional.conditions().len()
         {
@@ -1122,9 +1106,9 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .into_iter()
             .zip(destinations[value_leaf_count..].iter().copied())
         {
-            let value = self.predicate_values.get_mut(slot).ok_or(
-                solve::SolveProgramConstructionError::InvalidCallOutput { provenance: at },
-            )?;
+            let value = self.predicate_values.get_mut(slot).ok_or_else(|| {
+                solve::SolveProgramConstructionError::InvalidCallOutput { provenance: at }
+            })?;
             if value.replace(predicate).is_some() {
                 return Err(solve::SolveProgramConstructionError::InvalidCallOutput {
                     provenance: at,
@@ -1152,26 +1136,28 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
                 parameter,
-            )) => self.parameters.get(&parameter).cloned().ok_or(
-                solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
-            )?,
+            )) => self.parameters.get(&parameter).cloned().ok_or_else(|| {
+                solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at }
+            })?,
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => {
                 let register = self
                     .binders
                     .get(&(binder.domain().index(), binder.ordinal()))
                     .copied()
-                    .ok_or(solve::SolveProgramConstructionError::InvalidCallInterface {
-                        provenance: at,
-                    })?;
+                    .ok_or_else(
+                        || solve::SolveProgramConstructionError::InvalidCallInterface {
+                            provenance: at,
+                        },
+                    )?;
                 LoweredValue::scalar(node.value_type_id(), register)
             }
             dae::ExpressionOperation::Coordinate(coordinate) => {
-                let key = ModelCoordinateKey::from_view(coordinate).ok_or(
-                    solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
-                )?;
-                self.model_coordinates.get(&key).cloned().ok_or(
-                    solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
-                )?
+                let key = ModelCoordinateKey::from_view(coordinate).ok_or_else(|| {
+                    solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at }
+                })?;
+                self.model_coordinates.get(&key).cloned().ok_or_else(|| {
+                    solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at }
+                })?
             }
             dae::ExpressionOperation::Unary { operator, operand } => {
                 let operand = self.expression(operand)?;
@@ -1229,16 +1215,20 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
                 self.function_definition_value(definition)?
             }
-            dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => {
-                self.fold_parameters.get(&(fold, carried)).cloned().ok_or(
-                    solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
-                )?
-            }
+            dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => self
+                .fold_parameters
+                .get(&(fold, carried))
+                .cloned()
+                .ok_or_else(
+                    || solve::SolveProgramConstructionError::InvalidCallInterface {
+                        provenance: at,
+                    },
+                )?,
             dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => self
                 .function_fold(fold, at)?
                 .get(carried as usize)
                 .cloned()
-                .ok_or(solve::SolveProgramConstructionError::InvalidCallOutput {
+                .ok_or_else(|| solve::SolveProgramConstructionError::InvalidCallOutput {
                     provenance: at,
                 })?,
             _ => {
@@ -1270,6 +1260,12 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         Ok(LoweredValue { value_type, leaves })
     }
 
+    /// Build one array value from its element expressions.
+    ///
+    /// A record element contributes one register per packed leaf, so the array
+    /// is assembled leaf by leaf: `Candidate[2]` becomes `length: Real[2]` and
+    /// `feasible: Boolean[2]`, each built from the matching leaf of every
+    /// element. The array is never expanded into per-element values.
     fn array(
         &mut self,
         value_type: dae::ValueTypeId<'dae>,
@@ -1278,18 +1274,30 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
         let elements = arguments
             .iter()
-            .map(|argument| self.expression(argument)?.only_register(at))
+            .map(|argument| self.expression(argument))
             .collect::<Result<Vec<_>, _>>()?;
-        let dimensions = self
-            .view
-            .value_type(value_type)
-            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
-            .dimensions()
-            .to_vec();
-        let register = self
-            .builder
-            .construct_aggregate(&elements, dimensions, at)?;
-        Ok(LoweredValue::scalar(value_type, register))
+        let layout = CallAbiLayout::issue(self.view, value_type, arithmetic_profile())?;
+        if elements
+            .iter()
+            .any(|element| element.leaves.len() != layout.len())
+        {
+            return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
+                provenance: at,
+            });
+        }
+        let mut leaves = Vec::with_capacity(layout.len());
+        for (ordinal, leaf_type) in layout.leaves().iter().enumerate() {
+            let registers = elements
+                .iter()
+                .map(|element| element.leaves[ordinal])
+                .collect::<Vec<_>>();
+            leaves.push(self.builder.construct_aggregate(
+                &registers,
+                leaf_type.dimensions().to_vec(),
+                at,
+            )?);
+        }
+        Ok(LoweredValue { value_type, leaves })
     }
 
     fn field(
@@ -1300,18 +1308,17 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         at: rumoca_core::Span,
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
         let base_value = self.expression(base)?;
-        let range = record_field_leaf_range(
-            self.view,
-            base_value.value_type,
-            field as usize,
-            arithmetic_profile(),
-        )?;
+        let base_layout =
+            CallAbiLayout::issue(self.view, base_value.value_type, arithmetic_profile())?;
+        let range = base_layout.field_range(self.view, base_value.value_type, field as usize)?;
         let leaves = base_value
             .leaves
             .get(range)
-            .ok_or(solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at })?
+            .ok_or_else(
+                || solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
+            )?
             .to_vec();
-        let expected = lower_value_type_leaves(self.view, value_type, arithmetic_profile())?;
+        let expected = CallAbiLayout::issue(self.view, value_type, arithmetic_profile())?;
         if leaves.len() != expected.len() {
             return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
                 provenance: at,
@@ -1403,8 +1410,11 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         at: rumoca_core::Span,
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
         let base_value = self.expression(base)?;
-        let base = base_value.only_register(at)?;
         let value = self.expression(value)?;
+        if self.value_is_record(base_value.value_type)? {
+            return self.update_record_array_element(value_type, base_value, value, subscripts, at);
+        }
+        let base = base_value.only_register(at)?;
         let mut value_register = value.only_register(at)?;
         let base_scalar = self
             .view
@@ -1471,6 +1481,67 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         Ok(LoweredValue::scalar(value_type, result))
     }
 
+    /// Write one element into a record array.
+    ///
+    /// The mirror of [`Self::index_record_array`]: the element's record value
+    /// arrives as one register per packed leaf, and each leaf is updated at the
+    /// same outer coordinate, so the array keeps its compact shape.
+    fn update_record_array_element(
+        &mut self,
+        value_type: dae::ValueTypeId<'dae>,
+        base_value: LoweredValue<'program, 'dae>,
+        value: LoweredValue<'program, 'dae>,
+        subscripts: dae::SubscriptsView<'dae>,
+        at: rumoca_core::Span,
+    ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
+        let base_layout =
+            CallAbiLayout::issue(self.view, base_value.value_type, arithmetic_profile())?;
+        if base_layout.len() != base_value.leaves.len()
+            || value.leaves.len() != base_layout.len()
+            || subscripts.len() != base_layout.outer_rank()
+        {
+            return Err(solve::SolveProgramConstructionError::InvalidProjection { provenance: at });
+        }
+        let mut indices = Vec::with_capacity(subscripts.len());
+        for subscript in subscripts.iter() {
+            let dae::SubscriptView::Index { expression, .. } = subscript else {
+                return Err(solve::SolveProgramConstructionError::InvalidProjection {
+                    provenance: at,
+                });
+            };
+            indices.push(self.expression(expression)?.only_register(at)?);
+        }
+        let mut leaves = Vec::with_capacity(base_layout.len());
+        for (ordinal, (leaf, element)) in base_value
+            .leaves
+            .iter()
+            .copied()
+            .zip(value.leaves.iter().copied())
+            .enumerate()
+        {
+            let trailing = base_layout.trailing_dimensions(ordinal);
+            if trailing.is_empty() {
+                leaves.push(self.builder.update_element(leaf, element, &indices, at)?);
+                continue;
+            }
+            let mut axes = indices
+                .iter()
+                .copied()
+                .map(solve::ProgramTensorViewAxis::Index)
+                .collect::<Vec<_>>();
+            axes.extend(
+                trailing
+                    .iter()
+                    .map(|extent| solve::ProgramTensorViewAxis::Span {
+                        origin: 0,
+                        extent: *extent,
+                    }),
+            );
+            leaves.push(self.builder.update_view(leaf, element, &axes, at)?);
+        }
+        Ok(LoweredValue { value_type, leaves })
+    }
+
     fn index(
         &mut self,
         value_type: dae::ValueTypeId<'dae>,
@@ -1478,7 +1549,16 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         subscripts: dae::SubscriptsView<'dae>,
         at: rumoca_core::Span,
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
-        let base = self.expression(base)?.only_register(at)?;
+        let base_value = self.expression(base)?;
+        // A record array is decided by the checked DAE value kind, never by how
+        // many leaves it happens to pack into: `record R { Real q[4] }` with
+        // `R a[2]` packs to the single leaf `Real[2, 4]`, and `a[i]` supplies
+        // only the outer subscript, so reading it as a primitive tensor would
+        // demand an index per axis.
+        if self.value_is_record(base_value.value_type)? {
+            return self.index_record_array(value_type, base_value, subscripts, at);
+        }
+        let base = base_value.only_register(at)?;
         if subscripts.iter().all(|subscript| {
             matches!(
                 subscript,
@@ -1548,6 +1628,75 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         Ok(LoweredValue::scalar(value_type, result))
     }
 
+    /// Whether the checked DAE states `value_type` as a record.
+    fn value_is_record(
+        &self,
+        value_type: dae::ValueTypeId<'dae>,
+    ) -> Result<bool, solve::SolveProgramConstructionError> {
+        Ok(self
+            .view
+            .value_type(value_type)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+            .is_record())
+    }
+
+    /// Read one element out of a record array.
+    ///
+    /// The array keeps one compact leaf per packed field, so the read projects
+    /// the same outer coordinate out of every leaf and reassembles the element
+    /// record from those projections. A field with its own extents keeps them:
+    /// its leaf is projected through a view whose trailing axes span the field
+    /// in full.
+    fn index_record_array(
+        &mut self,
+        value_type: dae::ValueTypeId<'dae>,
+        base_value: LoweredValue<'program, 'dae>,
+        subscripts: dae::SubscriptsView<'dae>,
+        at: rumoca_core::Span,
+    ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
+        let base_layout =
+            CallAbiLayout::issue(self.view, base_value.value_type, arithmetic_profile())?;
+        let element_layout = CallAbiLayout::issue(self.view, value_type, arithmetic_profile())?;
+        if base_layout.len() != base_value.leaves.len()
+            || element_layout.len() != base_layout.len()
+            || subscripts.len() != base_layout.outer_rank()
+        {
+            return Err(solve::SolveProgramConstructionError::InvalidProjection { provenance: at });
+        }
+        let mut indices = Vec::with_capacity(subscripts.len());
+        for subscript in subscripts.iter() {
+            let dae::SubscriptView::Index { expression, .. } = subscript else {
+                return Err(solve::SolveProgramConstructionError::InvalidProjection {
+                    provenance: at,
+                });
+            };
+            indices.push(self.expression(expression)?.only_register(at)?);
+        }
+        let mut leaves = Vec::with_capacity(base_layout.len());
+        for (ordinal, leaf) in base_value.leaves.iter().copied().enumerate() {
+            let trailing = base_layout.trailing_dimensions(ordinal);
+            if trailing.is_empty() {
+                leaves.push(self.builder.project_element_dynamic(leaf, &indices, at)?);
+                continue;
+            }
+            let mut axes = indices
+                .iter()
+                .copied()
+                .map(solve::ProgramTensorViewAxis::Index)
+                .collect::<Vec<_>>();
+            axes.extend(
+                trailing
+                    .iter()
+                    .map(|extent| solve::ProgramTensorViewAxis::Span {
+                        origin: 0,
+                        extent: *extent,
+                    }),
+            );
+            leaves.push(self.builder.project_view(leaf, &axes, at)?);
+        }
+        Ok(LoweredValue { value_type, leaves })
+    }
+
     fn contiguous_slice_origin(
         &self,
         subscripts: dae::SubscriptsView<'dae>,
@@ -1565,7 +1714,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                             dae::ExpressionOperation::Range(range) => Some(range),
                             _ => None,
                         })
-                        .ok_or(solve::SolveProgramConstructionError::InvalidProjection {
+                        .ok_or_else(|| solve::SolveProgramConstructionError::InvalidProjection {
                             provenance: at,
                         })?;
                     if range.effective_step() != 1 {
@@ -1578,7 +1727,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                         .value()
                         .checked_sub(1)
                         .and_then(|index| u32::try_from(index).ok())
-                        .ok_or(solve::SolveProgramConstructionError::InvalidProjection {
+                        .ok_or_else(|| solve::SolveProgramConstructionError::InvalidProjection {
                             provenance: at,
                         })
                 }
@@ -1607,7 +1756,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 dae::SubscriptView::Whole { .. } => retained
                     .next()
                     .map(|extent| solve::ProgramTensorViewAxis::Span { origin: 0, extent })
-                    .ok_or(solve::SolveProgramConstructionError::InvalidProjection {
+                    .ok_or_else(|| solve::SolveProgramConstructionError::InvalidProjection {
                         provenance: at,
                     }),
                 dae::SubscriptView::Slice { expression, .. } => {
@@ -1618,7 +1767,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                             dae::ExpressionOperation::Range(range) => Some(range),
                             _ => None,
                         })
-                        .ok_or(solve::SolveProgramConstructionError::InvalidProjection {
+                        .ok_or_else(|| solve::SolveProgramConstructionError::InvalidProjection {
                             provenance: at,
                         })?;
                     if range.effective_step() != 1 {
@@ -1631,12 +1780,12 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                         .value()
                         .checked_sub(1)
                         .and_then(|index| u32::try_from(index).ok())
-                        .ok_or(solve::SolveProgramConstructionError::InvalidProjection {
+                        .ok_or_else(|| solve::SolveProgramConstructionError::InvalidProjection {
                             provenance: at,
                         })?;
-                    let extent = retained.next().ok_or(
-                        solve::SolveProgramConstructionError::InvalidProjection { provenance: at },
-                    )?;
+                    let extent = retained.next().ok_or_else(|| {
+                        solve::SolveProgramConstructionError::InvalidProjection { provenance: at }
+                    })?;
                     Ok(solve::ProgramTensorViewAxis::Span { origin, extent })
                 }
             })
@@ -1655,11 +1804,9 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         arguments: dae::ExpressionOperands<'dae>,
         at: rumoca_core::Span,
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
-        let call = self
-            .callees
-            .get(&owner)
-            .cloned()
-            .ok_or(solve::SolveProgramConstructionError::UnknownCallOwner { provenance: at })?;
+        let call = self.callees.get(&owner).cloned().ok_or_else(|| {
+            solve::SolveProgramConstructionError::UnknownCallOwner { provenance: at }
+        })?;
         let Some(range) = call.result_ranges.get(output as usize).cloned() else {
             return Err(solve::SolveProgramConstructionError::InvalidCallOutput { provenance: at });
         };
@@ -1676,9 +1823,10 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                         provenance: at,
                     });
                 }
-                let predicate_range = self.predicate_ranges.get(&owner).cloned().ok_or(
-                    solve::SolveProgramConstructionError::InvalidCallOutput { provenance: at },
-                )?;
+                let predicate_range =
+                    self.predicate_ranges.get(&owner).cloned().ok_or_else(|| {
+                        solve::SolveProgramConstructionError::InvalidCallOutput { provenance: at }
+                    })?;
                 if predicate_range.len() != call.assertion_count {
                     return Err(solve::SolveProgramConstructionError::InvalidCallOutput {
                         provenance: at,
@@ -1687,9 +1835,9 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 for (slot, predicate) in
                     predicate_range.zip(values[call.result_leaf_count..].iter().copied())
                 {
-                    let destination = self.predicate_values.get_mut(slot).ok_or(
-                        solve::SolveProgramConstructionError::InvalidCallOutput { provenance: at },
-                    )?;
+                    let destination = self.predicate_values.get_mut(slot).ok_or_else(|| {
+                        solve::SolveProgramConstructionError::InvalidCallOutput { provenance: at }
+                    })?;
                     if destination.replace(predicate).is_some() {
                         return Err(solve::SolveProgramConstructionError::InvalidCallOutput {
                             provenance: at,

@@ -582,7 +582,7 @@ impl Drop for SimulationContext {
 #[derive(Clone, Copy, Default)]
 pub struct RowEvalContext<'a> {
     pub seed: Option<&'a [f64]>,
-    pub external_tables: Option<&'a [rumoca_core::ExternalTableData]>,
+    pub external_tables: Option<&'a [rumoca_ir_solve::ExternalTableData]>,
     pub pure_calls: Option<&'a SolvePureCallTable>,
     pub runtime_state: Option<&'a SimulationRuntimeState>,
 }

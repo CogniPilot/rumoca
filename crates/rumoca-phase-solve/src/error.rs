@@ -143,3 +143,68 @@ impl From<rumoca_eval_solve::ScalarizeError> for LowerError {
         }
     }
 }
+
+/// The one conversion from a checked typed-program rejection.
+///
+/// The typed vocabulary states the owner span the rejection was raised at, so
+/// that span is what a reader needs; a caller's enclosing span is a coarser
+/// owner that collapses two rejections raised at different source lines into
+/// one location. `SolveProgramConstructionError::provenance` reports `None`
+/// exactly for the two rejections that fire *because* no owner span was
+/// recoverable, and those become an explicitly unspanned contract violation
+/// instead of borrowing whatever span the caller happened to hold.
+impl From<rumoca_ir_solve::SolveProgramConstructionError> for LowerError {
+    fn from(error: rumoca_ir_solve::SolveProgramConstructionError) -> Self {
+        let reason = error.to_string();
+        match error.provenance() {
+            Some(span) => Self::contract(reason, span),
+            None => Self::UnspannedContractViolation { reason },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LowerError;
+    use rumoca_core::{BytePos, SourceId, Span};
+    use rumoca_ir_solve::SolveProgramConstructionError;
+
+    fn span(start: usize, end: usize) -> Span {
+        Span::new(
+            SourceId::from_source_name("provenance_closure.mo"),
+            BytePos(start),
+            BytePos(end),
+        )
+    }
+
+    #[test]
+    fn two_rejections_from_distinct_source_lines_keep_distinct_owners() {
+        let first = LowerError::from(SolveProgramConstructionError::InvalidCallInterface {
+            provenance: span(10, 20),
+        });
+        let second = LowerError::from(SolveProgramConstructionError::TypeMismatch {
+            provenance: span(40, 55),
+        });
+        let owner = |error: &LowerError| match error {
+            LowerError::ContractViolation { span, .. } => Some(*span),
+            _ => None,
+        };
+        assert_eq!(owner(&first), Some(span(10, 20)));
+        assert_eq!(owner(&second), Some(span(40, 55)));
+        assert_ne!(owner(&first), owner(&second));
+    }
+
+    #[test]
+    fn a_provenance_free_rejection_is_explicitly_unspanned() {
+        for error in [
+            SolveProgramConstructionError::MissingProvenance,
+            SolveProgramConstructionError::WireMismatch,
+        ] {
+            let reason = error.to_string();
+            assert!(matches!(
+                LowerError::from(error),
+                LowerError::UnspannedContractViolation { reason: carried } if carried == reason
+            ));
+        }
+    }
+}

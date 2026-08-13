@@ -169,6 +169,7 @@ fn simulate_model_in_session(
         dt: opts.dt,
         rtol: opts.rtol,
         atol: opts.atol,
+        execution_policy: opts.execution_policy,
     };
 
     let output = serde_json::json!({

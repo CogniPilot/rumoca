@@ -1045,7 +1045,7 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
     ctx.runtime_params
         .borrow_mut()
         .copy_from_slice(state.params);
-    let mut event_pre_p = state.params.to_vec();
+    let event_pre_p = state.params.to_vec();
     state.current_y.copy_from_slice(&event_pre_y);
     // MLS 3.7 §8.5: every event at the same time instant is handled in one
     // event iteration. A zero-crossing that lands on a scheduled time-event
@@ -1073,14 +1073,15 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
             },
         )
         .map_err(|error| backend.validate_component_event_error(error))?;
-        // The scheduled instant and the root are one event instant, so the
-        // right-limit application below continues the same event iteration.
-        // Its `pre` snapshot is the state the clock pass left behind (MLS 3.7
-        // §8.5 advances `pre(v)` to `v` between event-iteration passes), while
-        // typed row ownership below prevents that clock pass from running a
-        // second time.
-        event_pre_y.copy_from_slice(state.current_y);
-        event_pre_p.copy_from_slice(state.params);
+        // The scheduled instant and the root are one event instant, and the
+        // right-limit application below continues it. The event-entry snapshot
+        // therefore stays exactly what it was: `pre(v)` on the entry lane is
+        // the left limit of the *whole* coincident event, not of whichever pass
+        // ran most recently. Replacing it with the state the scheduled pass
+        // left behind conflated two generations — MLS 3.7 §8.5 advances
+        // `pre(v)` between event-iteration passes on the iterative lane, which
+        // `apply_projected_event_update` already advances inside each call, and
+        // that has never been a licence to overwrite the entry limit.
     }
     bracket_event_limits_kernel(
         backend,

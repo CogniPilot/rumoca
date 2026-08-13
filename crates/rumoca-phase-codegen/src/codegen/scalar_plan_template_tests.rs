@@ -175,6 +175,123 @@ fn compact_output_range_expands_only_in_final_textual_rendering() {
 }
 
 #[test]
+fn compact_tensor_ops_stay_single_plan_ops_and_expand_only_in_target_text() {
+    let problem = derivative_problem(vec![
+        solve::LinearOp::TensorLoad {
+            dst_start: 0,
+            input: solve::TensorInputKind::P,
+            input_start: 0,
+            count: 4,
+            seed_start: None,
+            lanes: 1,
+        },
+        solve::LinearOp::TensorLoad {
+            dst_start: 4,
+            input: solve::TensorInputKind::Y,
+            input_start: 0,
+            count: 2,
+            seed_start: None,
+            lanes: 1,
+        },
+        solve::LinearOp::MatrixMultiply {
+            dst_start: 6,
+            lhs_start: 0,
+            rhs_start: 4,
+            rows: 2,
+            inner: 2,
+            columns: 1,
+            lanes: 1,
+        },
+        solve::LinearOp::StoreOutputRange {
+            start: 6,
+            count: 2,
+            stride: 1,
+        },
+    ]);
+    let artifacts = solve::SolveArtifacts::default();
+    let plan = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        r#"{% for program in solve_blocks.continuous.derivative_rhs.scalar_plan.programs %}ops={{ program.ops | length }};temps={{ program.temporary_count }};{% for op in program.ops %}{{ op.kind }};{% endfor %}{% endfor %}"#,
+        "CompactTensor",
+    )
+    .expect("compact tensor operations should reach the target-neutral plan");
+    assert!(plan.contains("ops=4;"), "{plan}");
+    assert!(plan.contains("temps=8;"), "{plan}");
+    assert!(
+        plan.contains("TensorLoad;TensorLoad;MatrixMultiply;StoreOutputRange;"),
+        "{plan}"
+    );
+
+    let rust = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("rust-fixed-ode", "model_fixed_ode.rs.jinja"),
+        "CompactTensor",
+    )
+    .expect("rust-fixed-ode should render the compact operations at its final boundary");
+    assert!(rust.contains("let __r0: f64 = p[0];"), "{rust}");
+    assert!(rust.contains("let __r3: f64 = p[3];"), "{rust}");
+    assert!(rust.contains("let __r4: f64 = y[0];"), "{rust}");
+    assert!(rust.contains("let __r5: f64 = y[1];"), "{rust}");
+    assert!(
+        rust.contains("let __r6: f64 = __r0 * __r4 + __r1 * __r5;"),
+        "{rust}"
+    );
+    assert!(
+        rust.contains("let __r7: f64 = __r2 * __r4 + __r3 * __r5;"),
+        "{rust}"
+    );
+    assert!(rust.contains("out[0] = __r6;"), "{rust}");
+    assert!(rust.contains("out[1] = __r7;"), "{rust}");
+
+    let cuda = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("cuda-ode", "model_ode.cu.jinja"),
+        "CompactTensor",
+    )
+    .expect("cuda-ode should render the compact operations at its final boundary");
+    assert!(cuda.contains("const double __r0 = batch_p[0];"), "{cuda}");
+    assert!(cuda.contains("const double __r4 = batch_y[0];"), "{cuda}");
+    assert!(
+        cuda.contains("const double __r6 = __r0 * __r4 + __r1 * __r5;"),
+        "{cuda}"
+    );
+    assert!(cuda.contains("batch_out[1] = __r7;"), "{cuda}");
+}
+
+#[test]
+fn million_element_tensor_load_stays_one_plan_op_with_constant_metadata() {
+    const COUNT: usize = 1_000_000;
+    let problem = derivative_problem(vec![
+        solve::LinearOp::TensorLoad {
+            dst_start: 0,
+            input: solve::TensorInputKind::Y,
+            input_start: 0,
+            count: COUNT,
+            seed_start: None,
+            lanes: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ]);
+    let plan = render_solve_template_with_name(
+        &problem,
+        &solve::SolveArtifacts::default(),
+        r#"{% for program in solve_blocks.continuous.derivative_rhs.scalar_plan.programs %}ops={{ program.ops | length }};temps={{ program.temporary_count }};{% for op in program.ops %}{{ op.kind }}{% if op.kind == "TensorLoad" %}:{{ op.input }},{{ op.input_start }},{{ op.count }},{{ op.lanes }}{% endif %};{% endfor %}{% endfor %}"#,
+        "MillionElement",
+    )
+    .expect("a million-element tensor load should reach the plan compactly");
+
+    // The plan view carries counts, never per-element operations: the whole
+    // load stays one operation whatever its extent.
+    assert!(plan.contains("ops=2;"), "{plan}");
+    assert!(plan.contains("TensorLoad:Y,0,1000000,1;"), "{plan}");
+    assert!(plan.contains("StoreOutput;"), "{plan}");
+    assert!(plan.contains("temps=1000000;"), "{plan}");
+}
+
+#[test]
 fn textual_targets_fail_closed_on_an_unsupported_semantic_op() {
     let problem = derivative_problem(vec![
         solve::LinearOp::Const { dst: 0, value: 0.0 },

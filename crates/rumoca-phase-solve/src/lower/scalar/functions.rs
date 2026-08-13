@@ -817,10 +817,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<PendingFunctionConditionalRegion<'dae>, LowerError> {
         for expression in expressions {
             let node = self.node(expression);
-            if std::env::var_os("RUMOCA_PROFILE_IR").is_some()
+            if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG)
                 && let dae::ExpressionOperation::Call { function, .. } = node.operation()
             {
-                eprintln!(
+                tracing::debug!(
+                    target: "rumoca_phase_solve::profile::ir",
                     "rumoca-function-conditional-result call={} record={} scalar_count={:?} fields={}",
                     self.function_name_for_diagnostic(function),
                     node.value_type().is_record(),
@@ -1450,8 +1451,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 "typed pure-call record field",
             );
         }
-        if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
-            eprintln!(
+        if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG) {
+            tracing::debug!(
+                target: "rumoca_phase_solve::profile::ir",
                 "rumoca-record-call mode=aggregate function={} field={field}",
                 self.function_name_for_diagnostic(function),
             );
@@ -1716,8 +1718,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 "typed pure-call record scalar",
             );
         }
-        if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
-            eprintln!(
+        if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG) {
+            tracing::debug!(
+                target: "rumoca_phase_solve::profile::ir",
                 "rumoca-record-call mode=scalar function={} field={field} scalar={scalar}",
                 self.function_name_for_diagnostic(function),
             );
@@ -2474,8 +2477,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<bool, LowerError> {
         let expression = self.unwrap_function_value(expression);
-        if std::env::var_os("RUMOCA_PROFILE_IR").is_some() && width > 1 {
-            eprintln!(
+        if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG)
+            && width > 1
+        {
+            tracing::debug!(
+                target: "rumoca_phase_solve::profile::fold",
                 "rumoca-fold-profile nested_entry width={width} kind={:?} parent_carried={parent_carried}",
                 self.node(expression).kind(),
             );
@@ -2505,8 +2511,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                         if fold == parent_fold && carried as usize == parent_carried
                         )
                 };
-                if std::env::var_os("RUMOCA_PROFILE_IR").is_some() && width > 1 {
-                    eprintln!(
+                if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG)
+                    && width > 1
+                {
+                    tracing::debug!(
+                        target: "rumoca_phase_solve::profile::fold",
                         "rumoca-fold-profile nested_conditional width={width} true_kind={:?} false_kind={:?} true_nested={true_nested} false_nested={false_nested} true_parent={} false_parent={}",
                         self.node(if_true).kind(),
                         self.node(if_false).kind(),
@@ -2568,7 +2577,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             Some(parent_fold),
             span,
         )?;
-        if std::env::var_os("RUMOCA_PROFILE_FOLD").is_some() {
+        if tracing::enabled!(target: "rumoca_phase_solve::profile::fold", tracing::Level::DEBUG) {
             let mut kinds = std::collections::BTreeMap::<&'static str, usize>::new();
             for op in &program.update {
                 *kinds.entry(op.kind_name()).or_default() += 1;
@@ -2587,7 +2596,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     solve::FoldInitialSource::ParentCarried { .. } => None,
                 })
                 .sum::<usize>();
-            eprintln!(
+            tracing::debug!(
+                target: "rumoca_phase_solve::profile::fold",
                 "rumoca-fold-profile nested=compact width={width} carried={} captures={} update_ops={} parent_initial={parent_elements} register_initial={register_elements} kinds={kinds:?}",
                 program.carried_count,
                 program.capture_count,
@@ -2703,8 +2713,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             )?;
             let compact_nested = !compact_tensor
                 && update.compact_nested_fold_output(fold, carried, expression, width, span)?;
-            if std::env::var_os("RUMOCA_PROFILE_IR").is_some() && width > 1 {
-                eprintln!(
+            if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG)
+                && width > 1
+            {
+                tracing::debug!(
+                    target: "rumoca_phase_solve::profile::fold",
                     "rumoca-fold-profile update_owner width={width} kind={:?} tensor={compact_tensor} nested={compact_nested} emitted={}",
                     self.node(self.unwrap_function_value(expression)).kind(),
                     update.ops.len() - before,
@@ -2824,7 +2837,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return self.emit_fold_tensor_update_plan(carried_base, expression, width, plan, span);
         }
         let mut expression = self.unwrap_function_value(expression);
-        let profile = std::env::var_os("RUMOCA_PROFILE_IR").is_some() && width > 1;
+        let profile = tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG)
+            && width > 1;
         let mut conditions = Vec::new();
         loop {
             let dae::ExpressionOperation::Conditional(operands) = self.node(expression).operation()
@@ -2871,7 +2885,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                             .filter_map(|index| operands.get(index))
                             .map(|operand| self.node(self.unwrap_function_value(operand)).kind())
                             .collect::<Vec<_>>();
-                        eprintln!(
+                        tracing::debug!(
+                            target: "rumoca_phase_solve::profile::fold",
                             "rumoca-fold-profile compact=no width={width} kind=Conditional operands={kinds:?}"
                         );
                     }
@@ -2899,11 +2914,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                                 )
                             })
                             .collect::<Vec<_>>();
-                        eprintln!(
+                        tracing::debug!(
+                            target: "rumoca_phase_solve::profile::fold",
                             "rumoca-fold-profile compact=no width={width} kind=FunctionFoldOutput carried={nested_carried} initial={initial_shapes:?} updates={update_kinds:?}"
                         );
                     }
-                    _ => eprintln!(
+                    _ => tracing::debug!(
+                        target: "rumoca_phase_solve::profile::fold",
                         "rumoca-fold-profile compact=no width={width} kind={:?}",
                         self.node(expression).kind()
                     ),
@@ -2919,7 +2936,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         } = self.node(base).operation()
         else {
             if profile {
-                eprintln!(
+                tracing::debug!(
+                    target: "rumoca_phase_solve::profile::fold",
                     "rumoca-fold-profile compact=no width={width} kind=ArrayUpdate base_kind={:?}",
                     self.node(base).kind()
                 );
@@ -2931,7 +2949,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             || self.node(value).value_type().is_record()
         {
             if profile {
-                eprintln!(
+                tracing::debug!(
+                    target: "rumoca_phase_solve::profile::fold",
                     "rumoca-fold-profile compact=no width={width} kind=ArrayUpdate base_fold_match={} base_carried={} carried={} record_value={}",
                     base_fold == fold,
                     base_carried,
@@ -3022,7 +3041,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             lanes: 1,
         });
         if profile {
-            eprintln!("rumoca-fold-profile compact=yes width={width} value_count={value_count}");
+            tracing::debug!(target: "rumoca_phase_solve::profile::fold", "rumoca-fold-profile compact=yes width={width} value_count={value_count}");
         }
         Ok(true)
     }
@@ -3854,8 +3873,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             );
         }
         let typed_assertions = self.register_root_pure_call(call, function, span)?;
-        if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
-            eprintln!(
+        if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG) {
+            tracing::debug!(
+                target: "rumoca_phase_solve::profile::ir",
                 "rumoca-function-call mode=scalar function={} output={output} scalar={scalar}",
                 self.function_name_for_diagnostic(function),
             );
@@ -3935,8 +3955,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             );
         }
         let typed_assertions = self.register_root_pure_call(call, function, span)?;
-        if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
-            eprintln!(
+        if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG) {
+            tracing::debug!(
+                target: "rumoca_phase_solve::profile::ir",
                 "rumoca-function-call mode=aggregate function={} output={output}",
                 self.function_name_for_diagnostic(function),
             );
@@ -4012,9 +4033,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         if !self.function_arguments.is_empty() {
             return Ok(false);
         }
-        let profile_ir = std::env::var_os("RUMOCA_PROFILE_IR").is_some();
+        let profile_ir =
+            tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG);
         if profile_ir {
-            eprintln!(
+            tracing::debug!(
+                target: "rumoca_phase_solve::profile::ir",
                 "rumoca-pure-call-owner stage=register function={} span={span:?}",
                 self.function_name_for_diagnostic(function)
             );
@@ -4026,12 +4049,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .register_root(self.view, call)
             .map_err(|error| {
                 if profile_ir {
-                    eprintln!(
+                    tracing::debug!(
+                        target: "rumoca_phase_solve::profile::ir",
                         "rumoca-pure-call-owner stage=reject function={} span={span:?} error={error:?}",
                         self.function_name_for_diagnostic(function)
                     );
                 }
-                LowerError::contract(error.to_string(), span)
+                LowerError::from(error)
             })?;
         let scheduled = self.active_clock.is_none() && !registered.assertions.is_empty();
         if scheduled {
@@ -4073,9 +4097,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         if let Some((start, registered)) = self.typed_pure_call_cache.get(&key) {
             return Ok(Some((*start, registered.clone())));
         }
-        let profile_ir = std::env::var_os("RUMOCA_PROFILE_IR").is_some();
+        let profile_ir =
+            tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG);
         if profile_ir {
-            eprintln!(
+            tracing::debug!(
+                target: "rumoca_phase_solve::profile::ir",
                 "rumoca-typed-pure-call stage=register function={} span={span:?}",
                 self.function_name_for_diagnostic(function)
             );
@@ -4087,19 +4113,21 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .register_root(self.view, call)
             .map_err(|error| {
                 if profile_ir {
-                    eprintln!(
+                    tracing::debug!(
+                        target: "rumoca_phase_solve::profile::ir",
                         "rumoca-typed-pure-call stage=reject function={} span={span:?} error={error:?}",
                         self.function_name_for_diagnostic(function)
                     );
                 }
-                LowerError::contract(error.to_string(), span)
+                LowerError::from(error)
             })?;
         if self.active_clock.is_none()
             && !self.call_action_compilation
             && registered.site.directional().is_none()
         {
             if profile_ir {
-                eprintln!(
+                tracing::debug!(
+                    target: "rumoca_phase_solve::profile::ir",
                     "rumoca-typed-pure-call stage=retain-legacy-no-directional function={} span={span:?}",
                     self.function_name_for_diagnostic(function)
                 );
@@ -4171,6 +4199,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let value = self.view.value_type(value_type).ok_or_else(|| {
             LowerError::contract("typed pure-call argument type does not resolve", span)
         })?;
+        // The caller side packs against the same issued layout the owner's
+        // interface was built from, so a component that owns no leaf - a
+        // zero-width declaration such as `Real m[0]` - contributes no register
+        // here either. Recomputing the decomposition locally is what let the
+        // two sides disagree.
+        if crate::lower::typed_functions::call_interface_leaf_count(self.view, value_type)
+            .map_err(LowerError::from)?
+            == 0
+        {
+            return Ok(());
+        }
         if !value.is_record() {
             starts.push(self.pack_expression(argument)?);
             return Ok(());
@@ -4188,6 +4227,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             let field_value = self.view.value_type(field_type).ok_or_else(|| {
                 LowerError::contract("typed pure-call record field type does not resolve", span)
             })?;
+            if crate::lower::typed_functions::call_interface_leaf_count(self.view, field_type)
+                .map_err(LowerError::from)?
+                == 0
+            {
+                continue;
+            }
             if field_value.is_record() {
                 return Err(LowerError::contract(
                     "nested record typed pure-call inputs are not construction-complete",

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 
@@ -47,6 +49,247 @@ struct DiscreteSnapshotEvalInput<'snapshot, 'pre, 'values> {
 
 type DiscreteRowValue = (solve::ScalarSlot, f64);
 type GuardedRowValues = (usize, Vec<f64>);
+
+/// The semantic child the runtime invokes.
+///
+/// An owner is one executable program — a controller, an estimator, a guarded
+/// group, a transaction. It is deliberately *not* a scalar row: one invocation
+/// projects onto many rows, and counting rows would report a call count that
+/// scales with representation width rather than with work actually done.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum DiscreteOwnerId {
+    /// One program of the discrete scalar block, named by the program position
+    /// its outputs resolve to rather than by any single row.
+    ScalarProgram(usize),
+    GuardedAssignment(usize),
+    StructuredUpdate(usize),
+    EventTransaction(usize),
+}
+
+/// What one discrete-row pass admitted and what it actually ran.
+///
+/// Two quantities, never conflated. *Activations* are compact semantic owners,
+/// deduplicated inside the pass. *Executions* are the prepared-row, native, or
+/// interpreter invocations those owners cost — a structured owner scalarized to
+/// one prepared row per coordinate is one activation and `n` executions, so a
+/// million-row scalar adapter cannot report itself as a single call and earn
+/// tensor-native credit it has not done the work for.
+#[derive(Debug, Default)]
+pub(super) struct DiscreteRowPassTally {
+    owners: BTreeSet<DiscreteOwnerId>,
+    scheduled_owners: BTreeSet<DiscreteOwnerId>,
+    executions: usize,
+    scheduled_executions: usize,
+    projected_outputs: usize,
+}
+
+impl DiscreteRowPassTally {
+    /// `scheduled` covers both once-only families the runtime currently keeps
+    /// in one `clock_owner` field: MLS §16 synchronous clock partitions and
+    /// Boolean `sample(start, interval)` scheduled events. Collapsing the two
+    /// is migration debt — nothing here decides ordering for either, it only
+    /// counts.
+    pub(super) fn admit(&mut self, owner: DiscreteOwnerId, scheduled: bool, outputs: usize) {
+        self.owners.insert(owner);
+        self.executions += 1;
+        if scheduled {
+            self.scheduled_owners.insert(owner);
+            self.scheduled_executions += 1;
+        }
+        self.projected_outputs += outputs;
+    }
+}
+
+/// What one discrete settle instant actually did.
+///
+/// This is evidence, not enforcement. Every field is counted at the site where
+/// the decision is made, so a test can show that the restored settle loop
+/// invokes what it should instead of inferring that from the values left in
+/// storage — values cannot distinguish "ran once" from "ran twice and agreed".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiscreteSettleObservation {
+    /// Passes the instant took to reach its fixpoint.
+    pub passes: usize,
+    /// `project_algebraics` invocations across those passes.
+    pub projections: usize,
+    /// Compact semantic owners the activity gates and the row filter admitted
+    /// on the first pass, deduplicated.
+    pub eligible_owners: usize,
+    /// Scalar outputs those first-pass owners project onto, so representation
+    /// width stays separate from call cardinality.
+    pub eligible_projected_outputs: usize,
+    /// Compact owner activations summed over every pass, deduplicated within
+    /// each pass.
+    pub owner_activations: usize,
+    /// Prepared-row, native, or interpreter invocations those activations cost.
+    /// Exceeds `owner_activations` exactly by scalarization width.
+    pub owner_executions: usize,
+    /// Once-only scheduled owners admitted on the first pass, deduplicated. The
+    /// admitted set is fixed by `t`, the row filter, and the event iteration,
+    /// so this is how many the instant activates.
+    pub scheduled_owners_activated: usize,
+    /// Scheduled-owner activations across every pass, deduplicated per pass.
+    ///
+    /// A settle instant that needs `n` passes activates each admitted owner `n`
+    /// times, so this exceeds `scheduled_owners_activated` whenever `passes >
+    /// 1`. Every owner production lowering emits reads a held `pre`/`previous`
+    /// lane, so the repeat reproduces the same value; what it cannot make safe
+    /// is an owner with an effect — a checked assertion or an external call.
+    /// Collapsing the repeat needs a construction-issued causal plan for the
+    /// event instant, able to order each owner after the producers it reads. A
+    /// runtime result cache cannot stand in: replaying a first-pass result
+    /// keeps a stale value when a producer only becomes fresh later, and
+    /// recomputing repeats the effect. The counter keeps the residue measured.
+    pub scheduled_owner_activations: usize,
+    /// Prepared invocations those scheduled activations cost.
+    pub scheduled_owner_executions: usize,
+}
+
+/// Cumulative invocation ledger for the checked event owners.
+///
+/// Every entry is incremented at an execution boundary. Nothing here is
+/// recovered from stored values, so a test can pin exact cardinalities across a
+/// whole run — including the ones a value comparison cannot see, such as a
+/// transaction's checked assertions running twice.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventOwnerExecutionLedger {
+    /// Transaction payload evaluations, indexed by transaction.
+    pub transaction_evaluations: Vec<usize>,
+    /// Transaction target-tuple commits, indexed by transaction.
+    pub transaction_commits: Vec<usize>,
+    /// Transaction admissions, indexed by transaction and then by
+    /// [`EventUpdateRowFilter::ledger_index`].
+    pub transaction_admissions: Vec<[usize; EventUpdateRowFilter::LEDGER_SLOTS]>,
+    /// Checked assertion-predicate evaluations, indexed by transaction. A
+    /// transaction's assertions are evaluated with its payload, so a repeated
+    /// payload evaluation repeats every one of them — an effect no value
+    /// comparison can see.
+    pub transaction_assertion_evaluations: Vec<usize>,
+    /// Event-action condition evaluations, indexed by action.
+    pub event_action_evaluations: Vec<usize>,
+    /// Invocations of owners a transaction supersedes. A superseded producer is
+    /// never the runtime's executable child, so this must stay zero.
+    pub superseded_producer_invocations: usize,
+}
+
+impl EventOwnerExecutionLedger {
+    pub(super) fn sized_for(transactions: usize, actions: usize) -> Self {
+        Self {
+            transaction_evaluations: vec![0; transactions],
+            transaction_commits: vec![0; transactions],
+            transaction_admissions: vec![[0; EventUpdateRowFilter::LEDGER_SLOTS]; transactions],
+            transaction_assertion_evaluations: vec![0; transactions],
+            event_action_evaluations: vec![0; actions],
+            superseded_producer_invocations: 0,
+        }
+    }
+
+    /// Admissions of `transaction` under `filter`.
+    #[must_use]
+    pub fn admissions(&self, transaction: usize, filter: EventUpdateRowFilter) -> usize {
+        self.transaction_admissions
+            .get(transaction)
+            .map_or(0, |slots| slots[filter.ledger_index()])
+    }
+}
+
+impl SolveRuntime {
+    /// Invocation counts accumulated since the last reset.
+    #[must_use]
+    pub fn owner_execution_ledger(&self) -> EventOwnerExecutionLedger {
+        self.owner_execution_ledger.borrow().clone()
+    }
+
+    /// Restart the invocation ledger, so a test can scope it to one interval.
+    pub fn reset_owner_execution_ledger(&self) {
+        *self.owner_execution_ledger.borrow_mut() = EventOwnerExecutionLedger::sized_for(
+            self.event_transaction_programs.len(),
+            self.model.problem.events.actions.len(),
+        );
+    }
+
+    pub(super) fn ledger_record_transaction_assertions(&self, index: usize, assertions: usize) {
+        if let Some(count) = self
+            .owner_execution_ledger
+            .borrow_mut()
+            .transaction_assertion_evaluations
+            .get_mut(index)
+        {
+            *count += assertions;
+        }
+    }
+
+    pub(super) fn ledger_record_event_action_evaluation(&self, action: usize) {
+        if let Some(count) = self
+            .owner_execution_ledger
+            .borrow_mut()
+            .event_action_evaluations
+            .get_mut(action)
+        {
+            *count += 1;
+        }
+    }
+
+    pub(super) fn ledger_admit_transaction(&self, index: usize, filter: EventUpdateRowFilter) {
+        if let Some(slots) = self
+            .owner_execution_ledger
+            .borrow_mut()
+            .transaction_admissions
+            .get_mut(index)
+        {
+            slots[filter.ledger_index()] += 1;
+        }
+    }
+
+    pub(super) fn ledger_record_transaction_evaluation(&self, index: usize) {
+        if let Some(count) = self
+            .owner_execution_ledger
+            .borrow_mut()
+            .transaction_evaluations
+            .get_mut(index)
+        {
+            *count += 1;
+        }
+    }
+
+    pub(super) fn ledger_record_transaction_commit(&self, index: usize) {
+        if let Some(count) = self
+            .owner_execution_ledger
+            .borrow_mut()
+            .transaction_commits
+            .get_mut(index)
+        {
+            *count += 1;
+        }
+    }
+
+    /// Note one invocation of `owner`, counting it if a transaction already
+    /// supersedes it. A superseded producer is never the runtime's executable
+    /// child, so reaching this boundary is a coverage escape and is recorded
+    /// rather than passing unseen.
+    pub(super) fn ledger_note_owner_invocation(&self, owner: DiscreteOwnerId) {
+        let superseded = match owner {
+            DiscreteOwnerId::ScalarProgram(_) | DiscreteOwnerId::EventTransaction(_) => false,
+            DiscreteOwnerId::GuardedAssignment(index) => self
+                .event_transaction_coverage
+                .guarded_assignments
+                .get(index)
+                .copied()
+                .unwrap_or(false),
+            DiscreteOwnerId::StructuredUpdate(index) => self
+                .event_transaction_coverage
+                .structured_updates
+                .get(index)
+                .copied()
+                .unwrap_or(false),
+        };
+        if superseded {
+            self.owner_execution_ledger
+                .borrow_mut()
+                .superseded_producer_invocations += 1;
+        }
+    }
+}
 
 impl PreparedStructuredDiscreteRows {
     pub(super) fn new(
@@ -205,17 +448,13 @@ impl SolveRuntime {
             eval_p,
             t,
         } = input;
-        if row.clock_owner.is_some() && snapshot.event_iteration != 0 {
-            return Ok(None);
-        }
         if !self.structured_discrete_row_active_at(row, t)? {
             return Ok(None);
         }
-        let pre_mode = crate::EventPreMode::from(row.pre_mode);
-        if !snapshot
-            .row_filter
-            .accepts(pre_mode, row.clock_owner.is_some())
-        {
+        if !snapshot.admits(
+            crate::EventPreMode::from(row.pre_mode),
+            row.clock_owner.is_some(),
+        ) {
             return Ok(None);
         }
         let row_p = eval_p_cache.params(eval_p);
@@ -434,6 +673,15 @@ impl SolveRuntime {
         Ok(seeded)
     }
 
+    /// What the most recent discrete settle instant did.
+    ///
+    /// Every field is counted where the decision is made, so a test can hold
+    /// the settle loop to its once-per-tick and projection obligations instead
+    /// of inferring them from the values left in storage.
+    pub fn last_discrete_settle(&self) -> DiscreteSettleObservation {
+        *self.discrete_settle_observation.borrow()
+    }
+
     pub(super) fn settle_discrete_rows_for_pre_snapshot<P>(
         &self,
         snapshot: &DiscretePreSnapshot<'_>,
@@ -443,20 +691,47 @@ impl SolveRuntime {
     where
         P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
     {
+        let mut observation = DiscreteSettleObservation::default();
+        let settled = self.settle_discrete_rows_counted(
+            snapshot,
+            input,
+            project_algebraics,
+            &mut observation,
+        );
+        *self.discrete_settle_observation.borrow_mut() = observation;
+        settled
+    }
+
+    /// The settle instant recorded in [`DiscreteSettleObservation`].
+    ///
+    /// Kept separate from its caller only so every exit stores the record.
+    fn settle_discrete_rows_counted<P>(
+        &self,
+        snapshot: &DiscretePreSnapshot<'_>,
+        input: &mut DiscreteRowsSettleInput<'_>,
+        project_algebraics: &mut P,
+        observation: &mut DiscreteSettleObservation,
+    ) -> Result<bool, RuntimeSolveError>
+    where
+        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
+    {
         let mut changed_any = false;
-        for settle_iteration in 0..input.max_iters {
-            // A clocked equation executes once at its superdense tick. The
-            // remaining passes settle unclocked equations and algebraic
-            // projection around that held result; re-running the clock owner
-            // here both violates MLS clock semantics and repeats potentially
-            // large controller/estimator programs.
-            let settle_snapshot = DiscretePreSnapshot {
-                row_filter: snapshot.row_filter,
-                root_relation_overrides: snapshot.root_relation_overrides,
-                event_iteration: snapshot.event_iteration.max(settle_iteration),
-            };
+        for _ in 0..input.max_iters {
+            // Every settle pass sees the caller's snapshot unchanged. A pass
+            // index bumped into `event_iteration` made a scheduled owner
+            // first-pass-only *inside one instant*, which froze it on inputs
+            // that instant had not produced yet — the owner's producer is an
+            // unclocked algebraic value that only the projection below makes
+            // fresh. `event_iteration` names the event iteration, and only the
+            // caller advances it; it is not a settle-pass counter.
+            //
+            // Invoking an admitted owner on each pass is what this loop did
+            // before the regression, and the counters below measure it. Doing
+            // it exactly once needs a construction-issued causal order for the
+            // instant, not a runtime cache of the first pass.
+            let mut tally = DiscreteRowPassTally::default();
             let mut pass_changed = self.apply_discrete_rows_for_pre_snapshot(
-                &settle_snapshot,
+                snapshot,
                 input.y,
                 input.p,
                 input.t,
@@ -466,7 +741,18 @@ impl SolveRuntime {
                     observation_only: false,
                     initialization_equations_only: false,
                 },
+                &mut tally,
             )?;
+            if observation.passes == 0 {
+                observation.eligible_owners = tally.owners.len();
+                observation.eligible_projected_outputs = tally.projected_outputs;
+                observation.scheduled_owners_activated = tally.scheduled_owners.len();
+            }
+            observation.passes += 1;
+            observation.owner_activations += tally.owners.len();
+            observation.owner_executions += tally.executions;
+            observation.scheduled_owner_activations += tally.scheduled_owners.len();
+            observation.scheduled_owner_executions += tally.scheduled_executions;
             pass_changed |= self.apply_runtime_assignments_until_stable(
                 input.y,
                 input.p,
@@ -474,14 +760,12 @@ impl SolveRuntime {
                 input.tol,
                 input.max_iters,
             )?;
-            if !pass_changed {
-                // The caller supplies a projected coordinate with runtime
-                // assignments stable. If neither the active discrete owners
-                // nor their runtime assignments changed it, that certificate
-                // still holds and a full projection cannot add information.
-                return Ok(changed_any);
-            }
+            // No projection is skipped here. Skipping one would need a
+            // construction-issued certificate that the incoming coordinate is
+            // already projected with a zero remainder; this callee is handed no
+            // such capability, and a runtime "nothing changed" test is not one.
             pass_changed |= project_algebraics(input.y, input.p)?;
+            observation.projections += 1;
             pass_changed |= self.apply_runtime_assignments_until_stable(
                 input.y,
                 input.p,
@@ -517,6 +801,7 @@ impl SolveRuntime {
                 observation_only: false,
                 initialization_equations_only: true,
             },
+            &mut DiscreteRowPassTally::default(),
         )
     }
 
@@ -528,18 +813,20 @@ impl SolveRuntime {
         t: f64,
         _tol: f64,
         scope: DiscreteRowEvalScope,
+        tally: &mut DiscreteRowPassTally,
     ) -> Result<bool, RuntimeSolveError> {
         self.validate_discrete_row_eval_scope(scope)?;
         let eval_y = copy_runtime_values(y, "discrete row eval y snapshot")?;
         let eval_p = copy_runtime_values(p, "discrete row eval p snapshot")?;
         let mut eval_p_cache = EventEvalParamCache::default();
         let evaluated_transactions = self.evaluate_event_transactions_for_snapshot(
-            snapshot.event_iteration == 0,
+            snapshot,
             scope.observation_only,
             scope.skip_solver_or_time_rows,
             &eval_y,
             &eval_p,
             t,
+            tally,
         )?;
         let input = DiscreteSnapshotEvalInput {
             snapshot,
@@ -554,9 +841,15 @@ impl SolveRuntime {
             self.model.problem.discrete.rhs.len(),
             "discrete row values",
         )?;
-        self.collect_scalar_discrete_row_values(input, &mut eval_p_cache, &mut row_values)?;
-        let guarded_values = self.collect_guarded_discrete_row_values(input, &mut eval_p_cache)?;
-        self.collect_structured_discrete_row_values(input, &mut eval_p_cache, &mut row_values)?;
+        self.collect_scalar_discrete_row_values(input, &mut eval_p_cache, &mut row_values, tally)?;
+        let guarded_values =
+            self.collect_guarded_discrete_row_values(input, &mut eval_p_cache, tally)?;
+        self.collect_structured_discrete_row_values(
+            input,
+            &mut eval_p_cache,
+            &mut row_values,
+            tally,
+        )?;
         self.override_relation_memory_row_values(snapshot.root_relation_overrides, &mut row_values);
         let mut changed = false;
         for (target, value) in row_values {
@@ -580,6 +873,7 @@ impl SolveRuntime {
         input: DiscreteSnapshotEvalInput<'_, '_, '_>,
         eval_p_cache: &mut EventEvalParamCache,
         row_values: &mut Vec<DiscreteRowValue>,
+        tally: &mut DiscreteRowPassTally,
     ) -> Result<(), RuntimeSolveError> {
         for row_idx in 0..self.model.problem.discrete.rhs.len() {
             if self.event_transaction_coverage.discrete_rows[row_idx] {
@@ -611,6 +905,19 @@ impl SolveRuntime {
             else {
                 continue;
             };
+            let (program, _) = self
+                .discrete_rhs
+                .row_output_position(row_idx)
+                .ok_or_else(|| {
+                    RuntimeSolveError::solve_ir(format!(
+                        "discrete output {row_idx} has no producing program"
+                    ))
+                })?;
+            tally.admit(
+                DiscreteOwnerId::ScalarProgram(program),
+                self.model.problem.discrete.clock_owners[row_idx].is_some(),
+                1,
+            );
             row_values.push((self.model.problem.discrete.update_targets[row_idx], value));
         }
         Ok(())
@@ -634,6 +941,7 @@ impl SolveRuntime {
         &self,
         input: DiscreteSnapshotEvalInput<'_, '_, '_>,
         eval_p_cache: &mut EventEvalParamCache,
+        tally: &mut DiscreteRowPassTally,
     ) -> Result<Vec<GuardedRowValues>, RuntimeSolveError> {
         let mut guarded_values = Vec::new();
         for program_index in 0..self.guarded_assignment_programs.len() {
@@ -675,6 +983,12 @@ impl SolveRuntime {
                 input.t,
                 &mut values,
             )?;
+            self.ledger_note_owner_invocation(DiscreteOwnerId::GuardedAssignment(program_index));
+            tally.admit(
+                DiscreteOwnerId::GuardedAssignment(program_index),
+                owner.clock_owner().is_some(),
+                values.len(),
+            );
             guarded_values.push((program_index, values));
         }
         Ok(guarded_values)
@@ -685,6 +999,7 @@ impl SolveRuntime {
         input: DiscreteSnapshotEvalInput<'_, '_, '_>,
         eval_p_cache: &mut EventEvalParamCache,
         row_values: &mut Vec<DiscreteRowValue>,
+        tally: &mut DiscreteRowPassTally,
     ) -> Result<(), RuntimeSolveError> {
         for row in self.structured_discrete_rows.rows().iter().copied() {
             if self.event_transaction_coverage.structured_updates[row.update_index] {
@@ -716,6 +1031,12 @@ impl SolveRuntime {
             else {
                 continue;
             };
+            self.ledger_note_owner_invocation(DiscreteOwnerId::StructuredUpdate(row.update_index));
+            tally.admit(
+                DiscreteOwnerId::StructuredUpdate(row.update_index),
+                row.clock_owner.is_some(),
+                1,
+            );
             row_values.push((row.target, value));
         }
         Ok(())
@@ -750,10 +1071,7 @@ impl SolveRuntime {
             })?;
         let row_pre_mode = crate::EventPreMode::from(pre_mode);
         let clock_owned = self.model.problem.discrete.clock_owners[row_idx].is_some();
-        if clock_owned && snapshot.event_iteration != 0 {
-            return Ok(None);
-        }
-        if !snapshot.row_filter.accepts(row_pre_mode, clock_owned) {
+        if !snapshot.admits(row_pre_mode, clock_owned) {
             return Ok(None);
         }
         let row_p = eval_p_cache.params(eval_p);
@@ -785,6 +1103,7 @@ impl SolveRuntime {
                 &mut eval_p_cache.outputs,
             )?;
             eval_p_cache.program = Some(program);
+            self.ledger_note_owner_invocation(DiscreteOwnerId::ScalarProgram(program));
         }
         eval_p_cache
             .outputs
@@ -851,6 +1170,7 @@ impl SolveRuntime {
                     observation_only: true,
                     initialization_equations_only: false,
                 },
+                &mut DiscreteRowPassTally::default(),
             )?;
             if !changed {
                 return Ok(changed_any);

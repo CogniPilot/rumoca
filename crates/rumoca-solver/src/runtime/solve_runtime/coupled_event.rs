@@ -154,7 +154,7 @@ impl SolveRuntime {
             }
             let mode = crate::EventPreMode::from(self.model.problem.discrete.pre_modes[row]);
             let clock_owned = self.model.problem.discrete.clock_owners[row].is_some();
-            if !snapshot.row_filter.accepts(mode, clock_owned) {
+            if !snapshot.admits(mode, clock_owned) {
                 continue;
             }
             let Some(unknown) = self.real_event_unknown(target) else {
@@ -181,7 +181,7 @@ impl SolveRuntime {
                 continue;
             }
             let mode = crate::EventPreMode::from(row.pre_mode);
-            if !snapshot.row_filter.accepts(mode, row.clock_owner.is_some()) {
+            if !snapshot.admits(mode, row.clock_owner.is_some()) {
                 continue;
             }
             let Some(unknown) = self.real_event_unknown(row.target) else {

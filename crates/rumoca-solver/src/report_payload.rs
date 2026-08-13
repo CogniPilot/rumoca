@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use crate::{SimResult, SimVariableMeta};
+use crate::{SimExecutionPolicy, SimResult, SimVariableMeta};
 
 #[derive(Debug, Clone)]
 pub struct SimulationRequestSummary {
@@ -10,6 +10,15 @@ pub struct SimulationRequestSummary {
     pub dt: Option<f64>,
     pub rtol: f64,
     pub atol: f64,
+    /// Execution strategy the run was *requested* with.
+    ///
+    /// A request, not an outcome: it records which strategy the caller
+    /// allowed, so two runs of the same model under `Auto` and `Interpreter`
+    /// carry distinguishable provenance. When `NativeRequired` lands, this
+    /// payload must additionally report the EFFECTIVE result — required owner
+    /// count, natively executed count, and interpreter/fallback count —
+    /// because a request alone does not prove what executed.
+    pub execution_policy: SimExecutionPolicy,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -80,6 +89,7 @@ pub fn build_simulation_payload(
                 "dt": request.dt,
                 "rtol": request.rtol,
                 "atol": request.atol,
+                "execution_policy": request.execution_policy.label(),
             },
             "timing": {
                 "compile_seconds": metrics.compile_seconds,
@@ -157,6 +167,7 @@ mod tests {
                 dt: Some(0.1),
                 rtol: 1e-6,
                 atol: 1e-6,
+                execution_policy: SimExecutionPolicy::Auto,
             },
             &SimulationRunMetrics {
                 simulate_seconds: Some(0.25),
@@ -168,6 +179,48 @@ mod tests {
         assert_eq!(payload["names"][0], "x");
         assert_eq!(payload["allData"][0][1], 1.0);
         assert_eq!(payload["simDetails"]["timing"]["simulate_seconds"], 0.25);
+        assert_eq!(
+            payload["simDetails"]["requested"]["execution_policy"],
+            "auto"
+        );
+    }
+
+    /// Two runs that differ only in execution policy must not render identical
+    /// provenance: the differential oracle pins one side to the interpreter,
+    /// and a report that cannot tell them apart cannot witness which side it
+    /// is looking at.
+    #[test]
+    fn execution_policy_makes_run_provenance_distinguishable() {
+        let request = |execution_policy| SimulationRequestSummary {
+            solver: "rk-like".to_string(),
+            t_start: 0.0,
+            t_end: 1.0,
+            dt: Some(0.1),
+            rtol: 1e-6,
+            atol: 1e-6,
+            execution_policy,
+        };
+        let metrics = SimulationRunMetrics::default();
+        let auto = build_simulation_payload(
+            &sample_result(),
+            &request(SimExecutionPolicy::Auto),
+            &metrics,
+        );
+        let interpreter = build_simulation_payload(
+            &sample_result(),
+            &request(SimExecutionPolicy::Interpreter),
+            &metrics,
+        );
+
+        assert_eq!(auto["simDetails"]["requested"]["execution_policy"], "auto");
+        assert_eq!(
+            interpreter["simDetails"]["requested"]["execution_policy"],
+            "interpreter"
+        );
+        assert_ne!(
+            auto["simDetails"]["requested"], interpreter["simDetails"]["requested"],
+            "requested-run provenance must distinguish the execution policy"
+        );
     }
 
     #[test]

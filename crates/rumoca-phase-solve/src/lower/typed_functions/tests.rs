@@ -724,12 +724,12 @@ fn function_fold_preserves_sequential_carried_redefinitions() {
     assert_eq!(output[1].elements(), [solve::SolveValueKind::Integer(3)]);
 }
 
-#[test]
-fn assertion_only_loop_uses_map_reduction_without_empty_fold() {
+/// `function checked(limit) for i in 1:upper loop assert(i <= limit) end for`.
+fn build_assertion_loop_model(upper: i64) -> dae::Dae {
     let mut sources = SourceMap::new();
     let source = sources.add("typed_assertion_loop.mo", "for i in 1:3 assert i <= limit");
     let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 12)).unwrap();
-    let model = dae::Dae::construct(sources, |model| {
+    dae::Dae::construct(sources, |model| {
         let integer = model
             .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Integer), at))?;
         let (function, ()) = model.function(
@@ -753,7 +753,7 @@ fn assertion_only_loop_uses_map_reduction_without_empty_fold() {
                                 id: 0,
                                 display_name: "i".to_owned(),
                                 lower: 1,
-                                upper: 3,
+                                upper,
                                 step: 1,
                             }],
                         },
@@ -791,7 +791,12 @@ fn assertion_only_loop_uses_map_reduction_without_empty_fold() {
         model.expressions(|expressions| expressions.at(at).call(function, 0, [three]))?;
         Ok(())
     })
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn assertion_only_loop_uses_map_reduction_without_empty_fold() {
+    let model = build_assertion_loop_model(3);
     let table = lower_root_call(&model);
     let [owner] = table.owners() else {
         panic!("one exact assertion-loop owner expected")
@@ -817,6 +822,10 @@ fn assertion_only_loop_uses_map_reduction_without_empty_fold() {
         )
         .unwrap()
     };
+    // SPEC_0032: the whole `1:3` nest owns ONE predicate output, not one per
+    // iteration. The verdict still covers every coordinate - `limit = 2` fails
+    // because the third iteration violates it.
+    assert_eq!(owner.outputs().len(), 2);
     let accepted = rumoca_eval_solve::eval_pure_call(&table, owner.id(), &[argument(3)]).unwrap();
     let rejected = rumoca_eval_solve::eval_pure_call(&table, owner.id(), &[argument(2)]).unwrap();
     assert_eq!(
@@ -826,6 +835,46 @@ fn assertion_only_loop_uses_map_reduction_without_empty_fold() {
     assert_eq!(
         rejected[1].elements(),
         [solve::SolveValueKind::Boolean(false)]
+    );
+}
+
+/// SPEC_0032 canary: a huge assertion domain must cost O(rank + owner)
+/// metadata, never O(points).
+///
+/// The `1:1_000_000` nest below differs from the `1:3` nest above only in its
+/// extent, so every count asserted here is the count that nest produces. A
+/// lowering that gave each coordinate its own output, coordinate, or operation
+/// would need a million of each before any final emitter ran.
+#[test]
+fn a_million_point_assertion_loop_keeps_owner_sized_metadata() {
+    let model = build_assertion_loop_model(1_000_000);
+    let table = lower_root_call(&model);
+    let [owner] = table.owners() else {
+        panic!("one exact assertion-loop owner expected")
+    };
+    assert_eq!(owner.outputs().len(), 2);
+    assert!(
+        owner.body().operations().len() < 64,
+        "a domain-qualified assertion must not scale with its extent; got {} operations",
+        owner.body().operations().len()
+    );
+    let map_extents = owner
+        .body()
+        .operations()
+        .iter()
+        .filter_map(|operation| match operation.operation() {
+            solve::SolveOperation::Map { destination, .. } => owner
+                .body()
+                .register_types()
+                .get(destination.index())
+                .map(|value_type| value_type.dimensions().to_vec()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        map_extents,
+        vec![vec![1_000_000]],
+        "the domain must survive as one compact extent, not as enumerated points"
     );
 }
 
@@ -1225,4 +1274,104 @@ fn a_fold_body_captures_an_enclosing_scope_definition_instead_of_rebuilding_it()
         output[1].elements(),
         [solve::SolveValueKind::Real64(6.0_f64.to_bits())]
     );
+}
+
+/// The record-array packing layout every consumer dispatches from.
+///
+/// Leaf *count* is not a usable discriminator: the one-field-array case below
+/// packs a whole record array into a single leaf, so a consumer that treated
+/// "one leaf" as "primitive tensor" would index `a[i]` as if it owed a
+/// subscript per axis. The layout states `is_record` plus the outer rank and
+/// the trailing axes instead, and that is what read and update both key on.
+#[test]
+fn record_array_layout_states_outer_rank_and_trailing_axes() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("record_array_layout.mo", "record arrays");
+    let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 13)).unwrap();
+    let model = dae::Dae::construct(sources, |model| {
+        let (real, quaternion, empty) = model.types(|types| {
+            Ok((
+                types.derived(dae::ValueType::scalar(dae::ScalarType::Real), at)?,
+                types.derived(dae::ValueType::array(dae::ScalarType::Real, [4]), at)?,
+                types.derived(dae::ValueType::array(dae::ScalarType::Real, [0]), at)?,
+            ))
+        })?;
+        model.types(|types| {
+            // One scalar field.
+            types.record_array(
+                VarName::new("Scalar"),
+                [(VarName::new("value"), real)],
+                [2u32],
+                at,
+            )?;
+            // One array field: the whole array still packs into one leaf.
+            types.record_array(
+                VarName::new("Vector"),
+                [(VarName::new("q"), quaternion)],
+                [2u32],
+                at,
+            )?;
+            // A zero-width sibling keeps the leaf count at one.
+            types.record_array(
+                VarName::new("Sibling"),
+                [
+                    (VarName::new("marker"), empty),
+                    (VarName::new("q"), quaternion),
+                ],
+                [2u32],
+                at,
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let named = |name: &str| {
+            (0..view.value_type_count())
+                .filter_map(|index| view.value_type_id(index))
+                .find(|id| {
+                    view.value_type(*id).is_some_and(|value| {
+                        value.record_name().is_some_and(|n| n.as_str() == name)
+                    })
+                })
+                .unwrap_or_else(|| panic!("{name} is interned"))
+        };
+        let layout = |name: &str| {
+            super::abi::CallAbiLayout::issue(view, named(name), arithmetic_profile()).unwrap()
+        };
+
+        let scalar_field = layout("Scalar");
+        assert_eq!(scalar_field.len(), 1);
+        assert_eq!(scalar_field.outer_rank(), 1);
+        assert_eq!(scalar_field.leaves()[0].dimensions(), [2]);
+        assert!(scalar_field.trailing_dimensions(0).is_empty());
+
+        let array_field = layout("Vector");
+        assert_eq!(array_field.len(), 1);
+        assert_eq!(array_field.outer_rank(), 1);
+        assert_eq!(array_field.leaves()[0].dimensions(), [2, 4]);
+        assert_eq!(array_field.trailing_dimensions(0), [4]);
+
+        let with_sibling = layout("Sibling");
+        assert_eq!(
+            with_sibling.len(),
+            1,
+            "a zero-width sibling contributes no leaf"
+        );
+        assert_eq!(with_sibling.outer_rank(), 1);
+        assert_eq!(with_sibling.leaves()[0].dimensions(), [2, 4]);
+        assert!(
+            with_sibling
+                .field_range(view, named("Sibling"), 0)
+                .unwrap()
+                .is_empty(),
+            "the zero-width field owns an empty leaf range"
+        );
+        assert_eq!(
+            with_sibling.field_range(view, named("Sibling"), 1).unwrap(),
+            0..1
+        );
+    });
 }

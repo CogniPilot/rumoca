@@ -3,7 +3,6 @@
 use cranelift_jit::JITBuilder;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 pub(super) const SYMBOL: &str = "rumoca_host_profile_typed_owner";
 
@@ -12,7 +11,7 @@ thread_local! {
 }
 
 pub(super) fn enabled() -> bool {
-    std::env::var_os("RUMOCA_PROFILE_NATIVE_CALLS").is_some()
+    tracing::enabled!(target: "rumoca_exec_cranelift::profile::native_calls", tracing::Level::DEBUG)
 }
 
 pub(super) fn register_symbol(builder: &mut JITBuilder) {
@@ -40,7 +39,8 @@ impl Drop for ProfileSession {
                 .enumerate()
                 .filter(|(_, count)| *count != 0)
             {
-                eprintln!(
+                tracing::debug!(
+                    target: "rumoca_exec_cranelift::profile::native_calls",
                     "rumoca-native-call-profile table={} owner={owner} count={count}",
                     self.table,
                 );
@@ -56,15 +56,13 @@ extern "C" fn rumoca_host_profile_typed_owner(table: u64, owner: u64) {
     let Ok(owner) = usize::try_from(owner) else {
         return;
     };
-    static TRACE_OWNER: OnceLock<Option<usize>> = OnceLock::new();
-    let trace_owner = TRACE_OWNER.get_or_init(|| {
-        std::env::var("RUMOCA_PROFILE_NATIVE_CALL_TRACE")
-            .ok()
-            .and_then(|value| value.parse().ok())
-    });
-    if *trace_owner == Some(owner) {
-        eprintln!("rumoca-native-call-trace table={table} owner={owner}");
-    }
+    // Per-invocation attribution. One event per call is deliberately TRACE:
+    // selecting a single owner is the subscriber's filter job, not a hidden
+    // process-level switch.
+    tracing::trace!(
+        target: "rumoca_exec_cranelift::profile::native_calls",
+        "rumoca-native-call-trace table={table} owner={owner}"
+    );
     COUNTS.with(|counts| {
         let mut counts = counts.borrow_mut();
         let owners = counts.entry(table).or_default();

@@ -223,8 +223,45 @@ pub fn apply_discrete_slot_value(
     solve_eval::apply_scalar_slot_value_exact(target, value, y, p)
 }
 
+/// Whether any op in `ops`, or in any nested region those ops own, satisfies
+/// `predicate`.
+///
+/// The canonical `SolveVisitor` does not reach these regions: it yields a
+/// program's ops but never descends into a `FunctionConditional`'s arms or a
+/// fold body, and `visit_event_transaction_program` walks no ops at all.
+/// Repairing the visitor is a separate slice in `rumoca-ir-solve`; until it
+/// lands, every predicate that has to be exact over a whole program goes
+/// through here. Stopping at the top level under-approximates, and both known
+/// escapes were silent rather than loud — a `when time < 0.5` body whose
+/// `LoadTime` sits inside a conditional arm read as "reads no time", and a
+/// homotopy λ loaded in an arm read as "read nowhere".
+pub fn any_linear_op<F>(ops: &[solve::LinearOp], predicate: &mut F) -> bool
+where
+    F: FnMut(&solve::LinearOp) -> bool,
+{
+    ops.iter().any(|op| {
+        if predicate(op) {
+            return true;
+        }
+        match op {
+            solve::LinearOp::FunctionConditional { program, .. } => {
+                program.arms.iter().any(|arm| {
+                    any_linear_op(&arm.condition, predicate)
+                        || any_linear_op(&arm.result, predicate)
+                }) || any_linear_op(&program.fallback, predicate)
+            }
+            solve::LinearOp::FunctionFold { program, .. }
+            | solve::LinearOp::GuardedFunctionFold { program, .. }
+            | solve::LinearOp::StoreOutputFunctionFold { program, .. } => {
+                any_linear_op(&program.update, predicate)
+            }
+            _ => false,
+        }
+    })
+}
+
 pub fn row_reads_solver_or_time(row: &[solve::LinearOp]) -> bool {
-    row.iter().any(|op| {
+    any_linear_op(row, &mut |op| {
         matches!(
             op,
             solve::LinearOp::LoadY { .. }

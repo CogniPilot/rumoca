@@ -853,8 +853,9 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
     let ([row], [y_index]) = (block.rows.as_slice(), block.y_indices.as_slice()) else {
         return Ok(None);
     };
-    if std::env::var_os("RUMOCA_PROFILE_PROJECTION").is_some() && *row == 646 {
-        eprintln!(
+    if tracing::enabled!(target: "rumoca_solver::profile::projection", tracing::Level::DEBUG) {
+        tracing::debug!(
+            target: "rumoca_solver::profile::projection",
             "rumoca-projection-entry row={row} y={y_index} exact={}",
             model.implicit_target_assignment_is_exact(*row, *y_index)
         );
@@ -871,9 +872,10 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
         };
         let previous = y[*y_index];
         y[*y_index] = value;
-        if std::env::var_os("RUMOCA_PROFILE_PROJECTION").is_some() && *row >= 400 {
+        if tracing::enabled!(target: "rumoca_solver::profile::projection", tracing::Level::DEBUG) {
             let after = model.eval_implicit_residual_row(*row, y, p, t)?;
-            eprintln!(
+            tracing::debug!(
+                target: "rumoca_solver::profile::projection",
                 "rumoca-projection-profile row={row} y={y_index} exact=true previous={previous:.6e} value={value:.6e} after={after:?}"
             );
         }
@@ -900,11 +902,10 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
     let previous = y[*y_index];
     y[*y_index] = value;
     let after = model.eval_implicit_residual_row(*row, y, p, t)?;
-    if std::env::var_os("RUMOCA_PROFILE_PROJECTION").is_some() && *row >= 400 {
-        eprintln!(
-            "rumoca-projection-profile row={row} y={y_index} exact=false before={before:.6e} previous={previous:.6e} value={value:.6e} after={after:?}"
-        );
-    }
+    tracing::debug!(
+        target: "rumoca_solver::profile::projection",
+        "rumoca-projection-profile row={row} y={y_index} exact=false before={before:.6e} previous={previous:.6e} value={value:.6e} after={after:?}"
+    );
     if let Some(after) = after.filter(|after| after.is_finite()) {
         let (row_tol, variable_tol) =
             assignment_tolerances(model, *y_index, before, after, previous, value, tol);

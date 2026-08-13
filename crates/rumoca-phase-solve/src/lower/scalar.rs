@@ -604,13 +604,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         mut self,
         outputs: impl IntoIterator<Item = (dae::ExprId<'dae>, usize)>,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
-        let profile = std::env::var_os("RUMOCA_PROFILE_IR").is_some();
+        let profile =
+            tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG);
         for (expression, scalar) in outputs {
             let before = self.ops.len();
             let output = self.expression(expression, scalar)?;
             self.ops.push(solve::LinearOp::StoreOutput { src: output });
             if profile && self.ops.len() - before >= 100 {
-                eprintln!(
+                tracing::debug!(
+                    target: "rumoca_phase_solve::profile::ir",
                     "rumoca-program-output expr={expression:?} scalar={scalar} count={} kind={:?} emitted={}",
                     scalar_count(self.view, expression),
                     self.node(expression).kind(),
@@ -681,8 +683,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     stride: 1,
                 });
             }
-            if std::env::var_os("RUMOCA_PROFILE_IR").is_some() && self.ops.len() - before >= 100 {
-                eprintln!(
+            if tracing::enabled!(target: "rumoca_phase_solve::profile::ir", tracing::Level::DEBUG)
+                && self.ops.len() - before >= 100
+            {
+                tracing::debug!(
+                    target: "rumoca_phase_solve::profile::ir",
                     "rumoca-aggregate-output expr={expression:?} count={count} kind={:?} emitted={}",
                     self.node(expression).kind(),
                     self.ops.len() - before,
@@ -937,7 +942,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         for scalar in 0..count {
             values.push(self.expression(expression, scalar)?);
         }
-        if std::env::var_os("RUMOCA_PROFILE_FOLD").is_some()
+        if tracing::enabled!(target: "rumoca_phase_solve::profile::fold", tracing::Level::DEBUG)
             && count >= 10
             && values
                 .iter()
@@ -960,7 +965,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 dae::ExpressionOperation::Builtin { builtin, .. } => format!("{builtin:?}"),
                 _ => format!("{:?}", self.node(expression).kind()),
             };
-            eprintln!(
+            tracing::debug!(
+                target: "rumoca_phase_solve::profile::ir",
                 "rumoca-pack-profile count={count} emitted={} owner={detail}",
                 self.ops.len() - before,
             );

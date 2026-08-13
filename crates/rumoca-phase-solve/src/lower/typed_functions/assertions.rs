@@ -21,6 +21,11 @@ pub(super) fn assertion_conditions<'dae>(
     Ok(assertions)
 }
 
+/// Collect one entry per assertion *statement*.
+///
+/// SPEC_0032: a statement inside a loop stays one entry however large the
+/// domain is - the loop contributes extents to the compact predicate, never
+/// entries to this inventory.
 fn collect_assertion_conditions<'dae>(
     view: dae::DaeView<'dae>,
     statements: dae::FunctionStatements<'dae>,
@@ -74,7 +79,7 @@ pub(super) fn nested_calls<'dae>(
     calls
 }
 
-pub(super) fn assertion_is_map_independent<'dae>(
+pub(super) fn assertion_admitted_for_compact_reduction<'dae>(
     view: dae::DaeView<'dae>,
     condition: dae::ExprId<'dae>,
 ) -> bool {

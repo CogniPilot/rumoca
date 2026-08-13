@@ -585,9 +585,14 @@ fn measure_solve_ir(
     model: &rumoca_ir_solve::SolveModel,
     budget: SolveIrSizeBudget,
 ) -> Result<u64, String> {
+    // The artifact must be the complete checked replay root, not the nested
+    // `SolveProblem`: the wire view carries the pure-call owner table, initial
+    // and nominal vectors, external tables, and the visible projection, and it
+    // validates root correlations before a byte is written.
+    let wire = rumoca_sim::solve_model_wire(model).map_err(|error| error.to_string())?;
     let Some(path) = path else {
         return budget
-            .measure_serialized(model, std::io::sink())
+            .measure_serialized(&wire, std::io::sink())
             .map_err(|error| error.to_string());
     };
     if let Some(parent) = path.parent() {
@@ -601,7 +606,7 @@ fn measure_solve_ir(
     let file = File::create(path)
         .map_err(|e| format!("failed to create Solve IR JSON '{}': {e}", path.display()))?;
     let mut writer = BufWriter::new(file);
-    let bytes = match budget.measure_serialized(model, &mut writer) {
+    let bytes = match budget.measure_serialized(&wire, &mut writer) {
         Ok(bytes) => bytes,
         Err(error) => {
             // Do not leave a truncated artifact behind: it would deserialize as
@@ -979,6 +984,69 @@ mod tests {
             random_op_kind(&LinearOp::Const { dst: 0, value: 1.0 }),
             None
         );
+    }
+
+    #[test]
+    fn solve_ir_artifact_is_the_complete_model_wire() {
+        let source = "model WireDump\n  parameter Real p = 2;\n  Real x(start = 1);\n\
+                      equation\n  der(x) = -p * x;\nend WireDump;\n";
+        let mut session = Session::new(SessionConfig::default());
+        session
+            .add_document("wire_dump.mo", source)
+            .expect("add source file");
+        let compiled = session
+            .compile_model("WireDump")
+            .expect("compile wire dump model");
+        let dir = tempfile::tempdir().expect("create artifact dir");
+        let path = dir.path().join("wire_dump.solve.json");
+        let mut measured = None;
+        rumoca_sim::build_simulation_with_stage_timing_and_solve_model(
+            compiled.dae.as_ref(),
+            &rumoca_sim::SimOptions::default(),
+            |_stage| {},
+            |solve_model| {
+                measured = Some(super::measure_solve_ir(
+                    Some(&path),
+                    solve_model,
+                    super::SolveIrSizeBudget::default(),
+                ));
+            },
+        )
+        .expect("build simulation for wire dump model");
+        let bytes = measured
+            .expect("solve model observed during build")
+            .expect("measure within default budget");
+        assert!(bytes > 0);
+
+        // A `problem`-only artifact serializes and even measures plausibly;
+        // only the complete model wire replays. Assert both the top-level wire
+        // fields and a successful checked replay so a truncated artifact
+        // cannot pass as a size regression.
+        let payload = std::fs::read(&path).expect("read solve IR artifact");
+        let value: serde_json::Value =
+            serde_json::from_slice(&payload).expect("parse solve IR artifact JSON");
+        for key in [
+            "schema_version",
+            "problem",
+            "pure_calls",
+            "initial_y",
+            "solver_nominals",
+            "parameters",
+            "external_tables",
+            "visible_names",
+            "visible_value_rows",
+            "variable_meta",
+        ] {
+            assert!(
+                value.get(key).is_some(),
+                "solve IR artifact is missing model wire field '{key}'"
+            );
+        }
+        let mut deserializer = serde_json::Deserializer::from_slice(&payload);
+        let replayed = rumoca_sim::deserialize_solve_model(&mut deserializer)
+            .expect("replay the emitted model wire");
+        assert_eq!(replayed.initial_y.len(), 1, "one continuous state");
+        assert_eq!(replayed.parameters.len(), 1, "one tunable parameter");
     }
 
     #[test]

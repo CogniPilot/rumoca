@@ -1345,8 +1345,10 @@ impl AdBuilder {
         region.store_output_mode = store_output_mode;
         for operation in primal {
             if let Err(error) = region.lower_op(operation.clone()) {
-                if std::env::var_os("RUMOCA_PROFILE_AD").is_some() {
-                    eprintln!(
+                if tracing::enabled!(target: "rumoca_phase_solve::profile::ad", tracing::Level::DEBUG)
+                {
+                    tracing::debug!(
+                        target: "rumoca_phase_solve::profile::ad",
                         "rumoca-ad conditional_region_failure mode={store_output_mode:?} operation={operation:#?} primal={primal:#?} derived={:#?}",
                         region.ops,
                     );
@@ -2787,8 +2789,9 @@ impl AdBuilder {
                         != usize::try_from(register).ok()
                 })
         {
-            if std::env::var_os("RUMOCA_PROFILE_AD").is_some() {
-                eprintln!(
+            if tracing::enabled!(target: "rumoca_phase_solve::profile::ad", tracing::Level::DEBUG) {
+                tracing::debug!(
+                    target: "rumoca_phase_solve::profile::ad",
                     "rumoca-ad non_affine_store_range mode={:?} start={start} count={count} stride={stride} sources={sources:?}",
                     self.store_output_mode,
                 );

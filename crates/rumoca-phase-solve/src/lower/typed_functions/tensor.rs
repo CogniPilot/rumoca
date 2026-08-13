@@ -23,28 +23,35 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .expression(rhs)
             .expect("checked rhs resolves")
             .value_type();
-        if lhs_type.scalar_type() == dae::ScalarType::Real
-            && matches!(
-                rhs_type.scalar_type(),
-                dae::ScalarType::Integer | dae::ScalarType::Enumeration
-            )
-        {
-            rhs_value = self.builder.convert(
-                solve::SolveConversionOperator::IntegerToReal,
-                rhs_value,
-                at,
-            )?;
-        } else if rhs_type.scalar_type() == dae::ScalarType::Real
-            && matches!(
-                lhs_type.scalar_type(),
-                dae::ScalarType::Integer | dae::ScalarType::Enumeration
-            )
-        {
-            lhs_value = self.builder.convert(
-                solve::SolveConversionOperator::IntegerToReal,
-                lhs_value,
-                at,
-            )?;
+        // MLS 3.6 §3.4: an operator's operand type is not always recoverable
+        // from the operands alone. `/` and `^` are Real-valued on Integer
+        // operands, so `Integer / Integer` is a Real operation whose operands
+        // both need converting - the node's own declared result type is the
+        // only place that is stated. A comparison declares Boolean, so it never
+        // widens through this rule and keeps its Integer operands.
+        let result_is_real = self
+            .view
+            .value_type(value_type)
+            .is_some_and(|value| value.scalar_type() == dae::ScalarType::Real);
+        let operands_are_real = result_is_real
+            || lhs_type.scalar_type() == dae::ScalarType::Real
+            || rhs_type.scalar_type() == dae::ScalarType::Real;
+        if operands_are_real {
+            for (value, value_type) in [
+                (&mut lhs_value, lhs_type.scalar_type()),
+                (&mut rhs_value, rhs_type.scalar_type()),
+            ] {
+                if matches!(
+                    value_type,
+                    dae::ScalarType::Integer | dae::ScalarType::Enumeration
+                ) {
+                    *value = self.builder.convert(
+                        solve::SolveConversionOperator::IntegerToReal,
+                        *value,
+                        at,
+                    )?;
+                }
+            }
         }
         let register = match operator {
             dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply
@@ -368,6 +375,14 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 self.builder
                     .reduce(solve::SolveReductionOperator::Product, value, at)
             }
+            // MLS 3.6 §3.7.1.2: `integer(x)` is the largest integer not
+            // greater than `x`, which is the toward-negative-infinity
+            // conversion rather than a truncation toward zero.
+            dae::PureBuiltin::Integer => self.builder.convert(
+                solve::SolveConversionOperator::RealToIntegerTowardNegativeInfinity,
+                value,
+                at,
+            ),
             dae::PureBuiltin::Min if arguments.len() == 1 => {
                 self.builder
                     .reduce(solve::SolveReductionOperator::Minimum, value, at)

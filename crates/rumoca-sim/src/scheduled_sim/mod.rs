@@ -88,6 +88,10 @@ pub struct ScheduledSimArgs {
     pub atol: Option<f64>,
     /// Optional relative tolerance selected by CLI or `[sim].rtol`.
     pub rtol: Option<f64>,
+    /// Execution strategy selected by CLI. Carried explicitly so a scheduled
+    /// run cannot silently fall back to the default while the caller believes
+    /// it pinned the interpreter.
+    pub execution_policy: rumoca_solver::SimExecutionPolicy,
     /// HTTP server port.
     pub http_port: u16,
     /// WebSocket viz port.
@@ -190,6 +194,7 @@ pub fn run(args: ScheduledSimArgs) -> std::result::Result<(), ScheduledSimError>
         solver_mode: args.solver_mode,
         diffsol_method: DiffsolMethod::Bdf,
         pacing_mode: args.config.effective_pacing_mode(),
+        execution_policy: args.execution_policy,
         ..Default::default()
     };
     if let Some(atol) = args.atol {

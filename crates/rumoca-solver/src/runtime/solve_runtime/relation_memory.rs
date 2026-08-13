@@ -389,14 +389,16 @@ impl SolveRuntime {
             let overrides_changed =
                 self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
             changed |= overrides_changed;
-            // The discrete settle returns from a projected coordinate with
-            // runtime assignments stable. Reproject only if relation-memory
-            // writes changed an input after that certificate; an unconditional
-            // second full projection doubled unchanged clock ticks.
-            if relation_changed || overrides_changed {
-                changed |= project_algebraics(y, p)?;
-                changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
-            }
+            // Projection is unconditional here. Skipping it needs a
+            // construction-issued relation proving the incoming coordinate is
+            // already projected with a zero remainder; this loop holds no such
+            // capability, and a runtime "relation memory did not move" test is
+            // not one — the settle it follows can exit from a coordinate whose
+            // projection was never re-established. The selective refresh path
+            // keeps its skip: that one *is* backed by an issued refresh
+            // certificate and rolls back on error.
+            changed |= project_algebraics(y, p)?;
+            changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
             if !changed && event_iteration_plan_settled(&self.model, y, p)? {
                 return self.eval_event_actions(y, p, event_pre_p, t);
             }
@@ -651,6 +653,7 @@ impl SolveRuntime {
                 None => true,
             };
             if active {
+                self.ledger_record_event_action_evaluation(row);
                 active_rows.push(row);
             }
         }

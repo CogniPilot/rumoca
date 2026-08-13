@@ -6,6 +6,18 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# Debug differential oracle: shadow-interpret every compiled residual/Jacobian
+# call and compare it against the JIT result. This is NOT construction or
+# capability validation — the compile entry points check the supported opcode
+# vocabulary unconditionally, independent of this feature. Enabling it changes
+# hot execution cost and backend call cardinality, so it must stay out of
+# performance measurement and native-only qualification builds. Always on under
+# `cfg(test)`; this is the typed, build-time replacement for the ad-hoc host
+# switch that used to enable it.
+jit-differential-oracle = []
+
 [dependencies]
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
@@ -14,6 +26,7 @@ cranelift-codegen = "0.125"
 cranelift-frontend = "0.125"
 cranelift-jit = "0.125"
 cranelift-module = "0.125"
+tracing = { workspace = true }
 
 # Path A for the Cranelift execution adapter crosses a native JIT function-pointer ABI.
 # Keep the unsafe allowance local to this crate; workspace crates remain

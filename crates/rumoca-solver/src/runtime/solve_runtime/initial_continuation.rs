@@ -303,9 +303,8 @@ fn lambda_reading_equations(
     let mut reads = BTreeMap::new();
     let mut ordinal = 0usize;
     for (program_index, program) in block.programs().iter().enumerate() {
-        let program_reads = program
-            .iter()
-            .any(|op| linear_op_reads_parameter(op, index));
+        let program_reads =
+            crate::any_linear_op(program, &mut |op| linear_op_reads_parameter(op, index));
         for _ in 0..solve::ScalarProgramBlock::program_output_count(program) {
             let Some(equation) = block.output_indices().get(ordinal).copied() else {
                 return Err(EvalSolveError::ShapeContract {
@@ -341,6 +340,12 @@ fn lambda_reading_equations(
     Ok(reads)
 }
 
+/// Whether `op` itself loads parameter slot `index`.
+///
+/// Callers that need the whole program, nested regions included, pass this to
+/// [`crate::any_linear_op`]: an under-approximation here reports "λ is read
+/// nowhere" for a slot a conditional arm plainly loads, which turns a correct
+/// model into a shape-contract rejection.
 fn linear_op_reads_parameter(op: &solve::LinearOp, index: usize) -> bool {
     match op {
         solve::LinearOp::LoadP { index: slot, .. } => *slot == index,
@@ -389,7 +394,9 @@ impl solve::visitor::SolveVisitor for ParameterReadScan {
         _op_index: usize,
         op: &solve::LinearOp,
     ) -> Result<(), Self::Error> {
-        self.found |= linear_op_reads_parameter(op, self.index);
+        self.found |= crate::any_linear_op(std::slice::from_ref(op), &mut |op| {
+            linear_op_reads_parameter(op, self.index)
+        });
         Ok(())
     }
 }
@@ -758,6 +765,97 @@ mod tests {
             &solve::RefreshPlan::default(),
         )
         .expect_err("an allocated slot that nothing reads must be rejected");
+
+        assert!(
+            error.to_string().contains("no lowered row reads it"),
+            "unexpected message: {error}"
+        );
+    }
+
+    /// One λ load inside a `FunctionConditional` arm, which is where a
+    /// `when`-guarded `homotopy(...)` body puts it.
+    ///
+    /// A scan that stops at the top level sees only the `FunctionConditional`
+    /// op itself and reports "no lowered row reads λ", rejecting a model whose
+    /// `simplified` operand is present and correct.
+    fn conditional_arm_program(parameter: usize) -> Vec<solve::LinearOp> {
+        let arm = solve::FunctionConditionalArmProgram {
+            condition_register_count: 1,
+            result_register_count: 1,
+            condition: vec![
+                solve::LinearOp::Const { dst: 0, value: 1.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            result: vec![
+                solve::LinearOp::LoadP {
+                    dst: 0,
+                    index: parameter,
+                },
+                solve::LinearOp::StoreOutputRange {
+                    start: 0,
+                    count: 1,
+                    stride: 1,
+                },
+            ],
+        };
+        vec![
+            solve::LinearOp::FunctionConditional {
+                dst_start: 0,
+                capture_start: 0,
+                program: std::sync::Arc::new(solve::FunctionConditionalProgram {
+                    owner: None,
+                    capture_count: 0,
+                    target_widths: Box::new([1]),
+                    result_count: 1,
+                    arms: Box::new([arm]),
+                    fallback_register_count: 1,
+                    fallback: vec![
+                        solve::LinearOp::Const { dst: 0, value: 0.0 },
+                        solve::LinearOp::StoreOutputRange {
+                            start: 0,
+                            count: 1,
+                            stride: 1,
+                        },
+                    ],
+                }),
+            },
+            solve::LinearOp::StoreOutputRange {
+                start: 0,
+                count: 1,
+                stride: 1,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_lambda_read_inside_a_conditional_arm_is_found() {
+        let mut model = model_with_lambda(Some(1));
+        model.problem.discrete.rhs = scalar_block(vec![conditional_arm_program(1)]);
+
+        InitialContinuationCoverage::certify(
+            &model,
+            &scalar_block(vec![plain_program()]),
+            &scalar_block(vec![plain_program()]),
+            &solve::RefreshPlan::default(),
+        )
+        .expect("a lambda read nested in a conditional arm is still a read");
+    }
+
+    /// The counterpart: the nested walk must not become an over-approximation.
+    /// A conditional arm that loads a *different* parameter leaves λ genuinely
+    /// unread, and the rejection has to survive.
+    #[test]
+    fn a_conditional_arm_reading_another_parameter_still_rejects() {
+        let mut model = model_with_lambda(Some(1));
+        model.problem.discrete.rhs = scalar_block(vec![conditional_arm_program(0)]);
+
+        let error = InitialContinuationCoverage::certify(
+            &model,
+            &scalar_block(vec![plain_program()]),
+            &scalar_block(vec![plain_program()]),
+            &solve::RefreshPlan::default(),
+        )
+        .expect_err("an allocated slot that nothing reads must still be rejected");
 
         assert!(
             error.to_string().contains("no lowered row reads it"),

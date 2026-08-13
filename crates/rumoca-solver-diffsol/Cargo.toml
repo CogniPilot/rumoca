@@ -8,20 +8,15 @@ repository.workspace = true
 
 [dependencies]
 rumoca-solver = { workspace = true }
-# DEBT (SPEC_0041 §4 ratchet): a concrete solver backend must consume ONLY
-# rumoca-solver's generic opaque FMI ME importer/host contract. The remaining
-# `rumoca-eval-solve` / `rumoca-ir-solve` dependencies serve the pre-ME frozen
-# driver scaffolds and the live-session path that still name Solve IR; they are
-# scheduled for removal with the SPEC_0038 phase-2 cutover, not intended
-# design. Target-encoder (`rumoca-exec-*`) dependencies are gone for good:
-# compiled execution reaches this crate only as the opaque
-# `MeExecutionBackend` handle composed by the importer host (rumoca-sim).
 rumoca-eval-solve = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 indexmap = { workspace = true }
 diffsol = { version = "0.13" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rumoca-exec-cranelift = { workspace = true }
 
 [dev-dependencies]
 # SPEC_0039 / SOLVE-C17: pattern fixtures are a test-only surface. Declaring

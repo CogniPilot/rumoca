@@ -1902,11 +1902,17 @@ pub enum SolveProgramConstructionError {
 }
 
 impl SolveProgramConstructionError {
+    /// The owner span this rejection was raised at, when the rejected
+    /// construct had one.
+    ///
+    /// SPEC_0008: the two provenance-free rejections are exactly the ones that
+    /// fire *because* no owner span was recoverable, so they report `None`
+    /// rather than manufacturing the dummy sentinel. Callers that render a
+    /// diagnostic must handle the unspanned case explicitly.
     #[must_use]
-    pub const fn provenance(&self) -> Span {
+    pub const fn provenance(&self) -> Option<Span> {
         match self {
-            Self::MissingProvenance => Span::DUMMY,
-            Self::WireMismatch => Span::DUMMY,
+            Self::MissingProvenance | Self::WireMismatch => None,
             Self::IdentityOverflow { provenance }
             | Self::ProfileMismatch { provenance }
             | Self::WritableConstant { provenance }
@@ -1926,7 +1932,7 @@ impl SolveProgramConstructionError {
             | Self::InvalidTensorAlgebra { provenance }
             | Self::IncompleteCallOutput { provenance }
             | Self::DuplicateCallIdentity { provenance }
-            | Self::UninitializedSlot { provenance } => *provenance,
+            | Self::UninitializedSlot { provenance } => Some(*provenance),
         }
     }
 }

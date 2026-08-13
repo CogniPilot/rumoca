@@ -8,9 +8,10 @@ pub(super) fn optional_compiled<T>(label: &str, result: Result<T, String>) -> Op
     match result {
         Ok(compiled) => Some(compiled),
         Err(error) => {
-            if std::env::var_os("RUMOCA_PROFILE_COMPILED").is_some() {
-                eprintln!("rumoca-compiled-profile label={label} error={error}");
-            }
+            tracing::debug!(
+                target: "rumoca_solver::profile::compiled",
+                "rumoca-compiled-profile label={label} error={error}"
+            );
             None
         }
     }

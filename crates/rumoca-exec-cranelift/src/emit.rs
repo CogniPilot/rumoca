@@ -11,11 +11,11 @@ use cranelift_codegen::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
-use rumoca_core::ExternalTableData;
 use rumoca_eval_solve::{
     eval_table_bound_value_in, eval_table_lookup_slope_value_in, eval_table_lookup_value_in,
     eval_time_table_next_event_value_in,
 };
+use rumoca_ir_solve::ExternalTableData;
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, LinearOp, ScalarProgramBlock, UnaryOp, resolve_indexed_slot,
 };
@@ -270,7 +270,7 @@ impl CompiledResidualRows {
                 && self
                     .rows
                     .iter()
-                    .any(|row| should_validate_jit_row(row.validate_with_interpreter));
+                    .any(|row| should_shadow_interpret_jit_row(row.validate_with_interpreter));
             let expected = if validate {
                 let mut expected = vec![0.0; output_count];
                 let mut base = 0;
@@ -391,7 +391,9 @@ impl CompiledJacobianRows {
         ctx: &JacobianCallContext<'_>,
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        if row.interpreter_supported && should_validate_jit_row(row.validate_with_interpreter) {
+        if row.interpreter_supported
+            && should_shadow_interpret_jit_row(row.validate_with_interpreter)
+        {
             let mut expected = vec![0.0; out.len()];
             let inputs = RowInputs {
                 y: ctx.y,
@@ -456,7 +458,7 @@ static NEXT_ASSIGNMENT_KERNEL_ID: AtomicUsize = AtomicUsize::new(0);
 const INLINE_FIXED_FOLD_POINT_LIMIT: usize = 8;
 
 fn profile_linear_ir<R: AsRef<[LinearOp]>>(kind: &str, rows: &[R]) {
-    if std::env::var_os("RUMOCA_PROFILE_IR").is_none() {
+    if !tracing::enabled!(target: "rumoca_exec_cranelift::profile::ir", tracing::Level::DEBUG) {
         return;
     }
     let mut direct_ops = 0usize;
@@ -683,13 +685,14 @@ fn profile_linear_ir<R: AsRef<[LinearOp]>>(kind: &str, rows: &[R]) {
             max_registers = max_registers.max(flow.register_count());
         }
     }
-    eprintln!(
+    tracing::debug!(
+        target: "rumoca_exec_cranelift::profile::ir",
         "rumoca-ir-profile kind={kind} rows={} direct_ops={direct_ops} recursive_ops={recursive_ops} unique_fold_programs={} unique_fold_ops={unique_fold_ops} unique_fold_moves={unique_fold_moves} unique_fold_matmuls={unique_fold_matmuls} unique_fold_tensor_binaries={unique_fold_tensor_binaries} unique_fold_dots={unique_fold_dots} max_unique_fold_ops={max_unique_fold_ops} max_row_ops={max_row_ops} max_recursive_row_ops={max_recursive_row_ops} max_registers={max_registers} folds={folds} tensor_updates={tensor_updates} selects={selects} moves={moves}",
         rows.len(),
         unique_fold_programs.len()
     );
-    eprintln!("rumoca-ir-profile kind={kind} unique_fold_kinds={unique_fold_kinds:?}");
-    eprintln!("rumoca-ir-profile kind={kind} direct_kinds={direct_kinds:?}");
+    tracing::debug!(target: "rumoca_exec_cranelift::profile::ir", "rumoca-ir-profile kind={kind} unique_fold_kinds={unique_fold_kinds:?}");
+    tracing::debug!(target: "rumoca_exec_cranelift::profile::ir", "rumoca-ir-profile kind={kind} direct_kinds={direct_kinds:?}");
 }
 
 impl RowKind {
@@ -1159,12 +1162,19 @@ fn validate_jit_matches_interpreter(
     )))
 }
 
-fn should_validate_jit_row(_row_requires_validation: bool) -> bool {
-    if cfg!(test) {
-        return true;
-    }
-    static VALIDATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *VALIDATE.get_or_init(|| std::env::var_os("RUMOCA_VALIDATE_CRANELIFT").is_some())
+/// Whether this row runs the debug differential oracle: shadow-interpret the
+/// row and compare the result against the JIT output.
+///
+/// This is a *diagnostic* mode, not validation. Construction and capability
+/// checks (supported opcode vocabulary, row shape) run unconditionally at the
+/// compile entry points and are unaffected by this switch. Turning the oracle
+/// on doubles the work per call and changes backend call cardinality, so it is
+/// deliberately confined to test builds and the explicit
+/// `jit-differential-oracle` feature (SPEC_0018: build configuration, not an
+/// ambient host environment switch), and must stay out of performance and
+/// native-only qualification builds.
+const fn should_shadow_interpret_jit_row(_row_requires_validation: bool) -> bool {
+    cfg!(test) || cfg!(feature = "jit-differential-oracle")
 }
 
 fn validate_row_supported_by_jit(row: &[LinearOp], kind: RowKind) -> Result<(), CompileError> {
@@ -1433,13 +1443,15 @@ impl CraneliftEmitter {
             return Ok(function);
         }
         let profile_id = NEXT_FOLD_KERNEL_ID.fetch_add(1, Ordering::Relaxed);
-        if std::env::var_os("RUMOCA_PROFILE_FOLD_KERNELS").is_some() {
+        if tracing::enabled!(target: "rumoca_exec_cranelift::profile::fold_kernels", tracing::Level::DEBUG)
+        {
             let points = program.domain.scalar_count().unwrap_or(0);
             let mut kinds = BTreeMap::<&'static str, usize>::new();
             for operation in &program.update {
                 *kinds.entry(operation.kind_name()).or_default() += 1;
             }
-            eprintln!(
+            tracing::debug!(
+                target: "rumoca_exec_cranelift::profile::fold_kernels",
                 "rumoca-fold-kernel id={profile_id} points={points} carried={} captures={} registers={} ops={} kinds={kinds:?}",
                 program.carried_count,
                 program.capture_count,
@@ -1457,7 +1469,8 @@ impl CraneliftEmitter {
                     nested_when_true,
                 } = operation
                 {
-                    eprintln!(
+                    tracing::debug!(
+                        target: "rumoca_exec_cranelift::profile::fold_kernels",
                         "rumoca-fold-nested parent={} op={output} nested_ptr={:#x} points={} carried={} captures={} initial={initial:?} capture_start={capture_start} result_base={result_base} count={count} condition={condition:?} when_true={nested_when_true}",
                         profile_id,
                         Arc::as_ptr(nested) as usize,
@@ -1674,12 +1687,14 @@ impl CraneliftEmitter {
         row_index: usize,
     ) -> Result<ResidualFuncIds, CompileError> {
         let profile_id = NEXT_RESIDUAL_KERNEL_ID.fetch_add(1, Ordering::Relaxed);
-        if std::env::var_os("RUMOCA_PROFILE_RESIDUAL_KERNELS").is_some() {
+        if tracing::enabled!(target: "rumoca_exec_cranelift::profile::residual_kernels", tracing::Level::DEBUG)
+        {
             let mut kinds = BTreeMap::<&'static str, usize>::new();
             for operation in row {
                 *kinds.entry(operation.kind_name()).or_default() += 1;
             }
-            eprintln!(
+            tracing::debug!(
+                target: "rumoca_exec_cranelift::profile::residual_kernels",
                 "rumoca-residual-program id={profile_id} row={row_index} direct_ops={} recursive_ops={} outputs={} kinds={kinds:?}",
                 row.len(),
                 residual_program_cost(row),
@@ -1730,7 +1745,8 @@ impl CraneliftEmitter {
         signature.params.push(AbiParam::new(types::F64));
         signature.params.push(AbiParam::new(pointer_type));
         let profile_id = NEXT_RESIDUAL_KERNEL_ID.fetch_add(1, Ordering::Relaxed);
-        if std::env::var_os("RUMOCA_PROFILE_RESIDUAL_KERNELS").is_some() {
+        if tracing::enabled!(target: "rumoca_exec_cranelift::profile::residual_kernels", tracing::Level::DEBUG)
+        {
             let direct_ops = rows.iter().map(Vec::len).sum::<usize>();
             let recursive_ops = rows
                 .iter()
@@ -1745,7 +1761,8 @@ impl CraneliftEmitter {
                 .flat_map(|row| row.iter())
                 .filter(|op| matches!(op, LinearOp::StoreOutput { .. }))
                 .count();
-            eprintln!(
+            tracing::debug!(
+                target: "rumoca_exec_cranelift::profile::residual_kernels",
                 "rumoca-residual-kernel id={profile_id} rows={} outputs={outputs} direct_ops={direct_ops} recursive_ops={recursive_ops} kinds={kinds:?}",
                 rows.len(),
             );
@@ -1993,7 +2010,8 @@ fn profile_assignment_kernel<R: AsRef<[LinearOp]>>(
     rows: &[R],
     target_y_indices: &[usize],
 ) {
-    if std::env::var_os("RUMOCA_PROFILE_ASSIGNMENT_KERNELS").is_none() {
+    if !tracing::enabled!(target: "rumoca_exec_cranelift::profile::assignment_kernels", tracing::Level::DEBUG)
+    {
         return;
     }
     let direct_ops = rows.iter().map(|row| row.as_ref().len()).sum::<usize>();
@@ -2003,7 +2021,8 @@ fn profile_assignment_kernel<R: AsRef<[LinearOp]>>(
         .sum::<usize>();
     let target_min = target_y_indices.iter().copied().min();
     let target_max = target_y_indices.iter().copied().max();
-    eprintln!(
+    tracing::debug!(
+        target: "rumoca_exec_cranelift::profile::assignment_kernels",
         "rumoca-assignment-kernel id={profile_id} rows={} outputs={} direct_ops={direct_ops} recursive_ops={recursive_ops} target_min={target_min:?} target_max={target_max:?}",
         rows.len(),
         target_y_indices.len(),

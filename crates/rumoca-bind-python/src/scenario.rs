@@ -15,8 +15,8 @@ use rumoca_compile::compile::Session as CompileSession;
 use rumoca_compile::scenario::{ScenarioConfigFile, ScenarioTask, parse_scenario_config_file};
 use rumoca_sim::scenario_config::SimulationConfig as ScenarioSimulationConfig;
 use rumoca_sim::{
-    DiffsolMethod, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimulationRequestSummary,
-    SimulationRunMetrics, simulate_with_diagnostics_auto_nan_trace,
+    DiffsolMethod, SimExecutionPolicy, SimOptions, SimPacingMode, SimResult, SimSolverMode,
+    SimulationRequestSummary, SimulationRunMetrics, simulate_with_diagnostics_auto_nan_trace,
 };
 use serde_json::{Value, json};
 
@@ -317,6 +317,10 @@ fn run_scheduled_simulation(
         solver_label,
         atol,
         rtol,
+        // The Python scenario surface has no typed policy field yet; it runs
+        // the default. Adding one here means adding it to the scenario schema
+        // too, so the request stays inspectable end to end.
+        execution_policy: SimExecutionPolicy::default(),
         http_port,
         ws_port,
         scene_script,
@@ -405,6 +409,7 @@ fn sim_request(opts: &SimOptions, solver_label: String) -> SimulationRequestSumm
         dt: opts.dt,
         rtol: opts.rtol,
         atol: opts.atol,
+        execution_policy: opts.execution_policy,
     }
 }
 

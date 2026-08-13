@@ -41,7 +41,7 @@ use rumoca_compile::{
     compile::{Dae, FlatModel},
 };
 use rumoca_phase_resolve::ResolvedTree;
-use rumoca_sim::{DiffsolMethod, SimOptions, SimSolverMode};
+use rumoca_sim::{DiffsolMethod, SimExecutionPolicy, SimOptions, SimSolverMode};
 use rumoca_sim::{SimulationRequestSummary, SimulationRunMetrics};
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, PartialLintOptions};
 
@@ -395,6 +395,23 @@ impl EmitTarget {
     }
 }
 
+/// CLI spelling of [`SimExecutionPolicy`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum ExecutionPolicyArg {
+    #[default]
+    Auto,
+    Interpreter,
+}
+
+impl From<ExecutionPolicyArg> for SimExecutionPolicy {
+    fn from(value: ExecutionPolicyArg) -> Self {
+        match value {
+            ExecutionPolicyArg::Auto => Self::Auto,
+            ExecutionPolicyArg::Interpreter => Self::Interpreter,
+        }
+    }
+}
+
 // clap enforces "MODELICA_FILE or --config" natively (so the error carries the
 // `try --help` hint), bare `rumoca sim` prints help, and the check/init/bench
 // subcommands are exempt from the requirement.
@@ -447,6 +464,13 @@ pub struct SimCommandArgs {
     /// and the backend default).
     #[arg(long)]
     pub rtol: Option<f64>,
+
+    /// Execution strategy for compiler-issued Solve programs: auto (compiled
+    /// native execution where available) or interpreter (always evaluate
+    /// through the Solve-IR interpreter). `interpreter` pins the reference side
+    /// of the backend differential comparison.
+    #[arg(long = "execution-policy", value_enum, default_value_t = ExecutionPolicyArg::Auto)]
+    pub execution_policy: ExecutionPolicyArg,
 
     /// Output file path for simulation report (default: `<MODEL>_results.html`)
     #[arg(short, long)]
@@ -963,6 +987,7 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
             rtol: configured_sim_option(args.rtol, config.sim.rtol),
             solver_mode,
             solver_label: &solver_label,
+            execution_policy: args.execution_policy.into(),
             output: args.output.as_deref().or(config.sim.output.as_deref()),
             workspace_root: workspace_root.as_deref(),
         });
@@ -979,6 +1004,7 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
             solver_label,
             atol: configured_sim_option(args.atol, config.sim.atol),
             rtol: configured_sim_option(args.rtol, config.sim.rtol),
+            execution_policy: args.execution_policy.into(),
             http_port: config.http_port(),
             ws_port: config.websocket_port(),
             config,
@@ -1311,6 +1337,7 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
         rtol: args.rtol,
         solver_mode: solver.into(),
         solver_label: solver.as_label(),
+        execution_policy: args.execution_policy.into(),
         output: args.output.as_deref(),
         workspace_root: workspace_root.as_deref(),
     })
@@ -1751,6 +1778,7 @@ struct SimulationRun<'a> {
     rtol: Option<f64>,
     solver_mode: SimSolverMode,
     solver_label: &'a str,
+    execution_policy: SimExecutionPolicy,
     output: Option<&'a str>,
     workspace_root: Option<&'a Path>,
 }
@@ -1776,6 +1804,7 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         dt: run.dt,
         solver_mode: run.solver_mode,
         diffsol_method: DiffsolMethod::Bdf,
+        execution_policy: run.execution_policy,
         ..SimOptions::default()
     };
     // Explicit --atol/--rtol override the backend default so a host's tolerance
@@ -1830,6 +1859,7 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         dt: opts.dt,
         rtol: opts.rtol,
         atol: opts.atol,
+        execution_policy: opts.execution_policy,
     };
     let metrics = SimulationRunMetrics::default();
     rumoca_sim::report::write_html_report(

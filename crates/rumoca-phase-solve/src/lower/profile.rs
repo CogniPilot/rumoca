@@ -40,7 +40,8 @@ pub(super) fn pure_call_sites(problem: &solve::SolveProblem) {
     let result = profiler.visit_solve_problem(problem);
     debug_assert!(result.is_ok(), "the pure-call profiler is infallible");
     for (owner, count) in profiler.counts {
-        eprintln!(
+        tracing::debug!(
+            target: "rumoca_phase_solve::profile::ir",
             "rumoca-ir-profile kind=pure-call-sites owner={owner} direct={} nested={} scalar={} guarded={} compute={}",
             count.direct, count.nested, count.scalar, count.guarded, count.compute,
         );
@@ -68,7 +69,8 @@ pub(super) fn typed_owner_calls(table: &solve::SolvePureCallTable) {
             })
             .collect::<Vec<_>>()
             .join(",");
-        eprintln!(
+        tracing::debug!(
+            target: "rumoca_phase_solve::profile::ir",
             "rumoca-ir-profile kind=typed-owner-calls owner={} direct_ops={} recursive_ops={} scalar_ops={} tensor_ops={} conditionals={} maps={} folds={} conditional_capture_cells={} map_capture_cells={} fold_capture_cells={} fold_carried_cells={} max_capture_cells={} calls=[{calls}] scopes=[{scopes}]",
             owner.id().index(),
             owner.body().operations().len(),
@@ -245,7 +247,8 @@ fn collect_operation(
                 _ => count.compute += 1,
             }
             let (scope, index, span) = slice_location(kind);
-            eprintln!(
+            tracing::debug!(
+                target: "rumoca_phase_solve::profile::ir",
                 "rumoca-ir-profile kind=pure-call-site owner={} nested={nested} scope={scope} index={index} source={} start={} end={}",
                 site.owner().index(),
                 span.map_or(0, |span| span.source.0),
