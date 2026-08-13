@@ -22,7 +22,7 @@ Two classes of cell are deliberately unfilled:
 
 ---
 
-## BLOCKERS — the frozen v3 images cannot fly POSITION
+## BLOCKERS — nothing arms on the frozen v3 images
 
 **Four SEV-1 blockers were found on the receipted v3 bytes after this card's
 first draft. The frozen v3 pair (`98e622a3…` / `6a432077…`) carries all four.
@@ -31,7 +31,7 @@ re-receipted, re-reviewed bundle.**
 
 | ID | Finding | Reachability | Effect | Owner |
 | --- | --- | --- | --- | --- |
-| **B1** | **Compiler wrong-code.** `EulerB321.from_Quat` assigns three euler elements per conditional branch; the generated GALEC kept only the **last write per branch**. Pitch and yaw are **hard-zero** in the flight bytes (witnessed: pitch 0.5 rad → euler (0,0,0)); **`euler[2]` (pitch) is assigned in no branch of any container**. Quaternion and DCM outputs are correct. Confirmed in **3 of 6** containers — `Controller`, `GuidanceController`, `NavigationEstimator` (§1.3) | **Every tick.** `GuidanceController` consumes it, **and `Controller` calls the defective function itself** to build its heading basis — yielding a **constant East-pointing heading basis** in normal flight (§1.3) | Breaks the attitude reference in any Guidance-active mode, and the heading basis wherever `Controller` runs | Compiler fix agent (`fix/branch-multi-write-erasure`) |
+| **B1** | **Compiler wrong-code.** `EulerB321.from_Quat` assigns three euler elements per conditional branch; the generated GALEC kept only the **last write per branch**. Pitch and yaw are **hard-zero** in the flight bytes (witnessed: pitch 0.5 rad → euler (0,0,0)); **`euler[2]` (pitch) is assigned in no branch of any container**. Quaternion and DCM outputs are correct. Confirmed in **3 of 6** containers — `Controller`, `GuidanceController`, `NavigationEstimator` (§1.2) | **Every tick.** `GuidanceController` consumes it, **and `Controller` calls the defective function itself** to build its heading basis — yielding a **constant East-pointing heading basis** in normal flight (§1.2) | Breaks the attitude reference in any Guidance-active mode, and the heading basis wherever `Controller` runs | Compiler fix agent (`fix/branch-multi-write-erasure`) |
 | **B2** | **NaN/Inf GPS is ACCEPTED.** A NaN NIS makes every gate comparison false, so `accepted=true`. State is permanently poisoned, `estimate.valid` **stays 1**, and auto-recovery is structurally impossible because acceptance resets the rejection counter. Only an external reset clears it | Any non-finite GPS field | Silent, unrecoverable navigation loss with a valid-looking estimate | Model-hardening agent |
 | **B3** | **Auto re-init adopts the rejected fix.** 50 consecutive rejections re-seed position from the very outlier the gate rejected, reset attitude to identity and velocity to zero **mid-air**. At the 1 kHz wiring this triggers in **51 ms** — the model docstring assumed 20–100 Hz aiding, so the trigger is 10–50× faster than designed. `estimate.valid` stays 1 throughout | 50 consecutive rejections | Mid-air state teleport with no invalidity indication | Model-hardening agent |
 | **B4** | **Flow-induced re-init lockout.** Ordinary preconditions (GPS outage > 1 s + degraded flow + speed > 6.3 m/s): the **shared** rejection counter makes a broken flow sensor invisible under healthy GPS; the outage drives 50 flow rejections → auto re-init → position teleports to the **parameter** origin, velocity to zero → post-re-init `P_vv = 1.0` gates out truthful returning GPS above 6.26 m/s → **permanent re-init loop at ~20 Hz** with `estimate_valid = 1` and `error_signal = 0x0` throughout. Witnessed end-to-end: Guidance consumes v=(0,0,0) at 8–12 m/s true; final position error **147–192 m** | GPS outage + degraded flow + moderate speed | Total loss of navigation, fully silent | Model-hardening agent (acceptance scenario) |
@@ -43,22 +43,28 @@ re-receipted, re-reviewed bundle.**
 | 0–2 (provenance, props-off gates, ENU walk) | RUN | RUN — unaffected, and B1–B4 make Block 1's status-word observation more important, not less |
 | 3 steps 1–3 (ground interlock, disarmed) | RUN | RUN on v3 — these observe *interlock semantics*, not navigation quality |
 | 3 step 4 (armed restrained surrogate) | RUN | **RED on v3** — arms with Guidance active (B1) |
-| 4 (manual ACRO/ATTITUDE) | RUN | **CONDITIONAL — PENDING-B1-SCOPE.** Does any ACRO/ATTITUDE path consume `eulerRpy_rad`? Confirmed consumer is `GuidanceController`; whether the manual path is clean is **not yet established** and must be answered before Block 4 flies on v3 |
+| 4 (manual ACRO/ATTITUDE) | RUN | **RED on v3.** P11 resolved: the deployed `GuidanceController` evaluates `from_Quat` unconditionally *before* mode-select, and its branches are ACRO/ATTITUDE/POSITION — **all three modes** execute the corrupted path (§1.2) |
 | 5 (tethered POSITION) | RUN | **RED on v3** |
 | 6 (untethered POSITION) | COND | **RED on v3**, and still COND on ingress |
 | 7–8 (flow) | COND/SKIP | **RED on v3** in addition to PENDING-FLOW-PRODUCER — B4 is a flow-triggered blocker and the flow-path producer requirements are now load-bearing safety requirements, not quality-of-implementation preferences |
 
 ### The honest read
 
-The image decision (P6) is effectively made by these findings: **a new bundle
-from a fixed compiler plus a hardened model, re-receipted and re-reviewed, is
-the only path to a POSITION flight.** That also pulls the mission-ingress lanes
-into the image, which closes P5 as a side effect. Timeline consequence accepted.
+The image decision (P6) is made by these findings, **unanimously between both
+agents**: a new bundle from a fixed compiler plus a hardened model, dual-built,
+re-receipted and re-reviewed, is the only path to **any** powered flight. That
+also pulls the mission-ingress lanes into the image, which closes P5's image
+question as a side effect. Timeline consequence accepted.
 
-A GPS-only, no-Guidance day (Blocks 0–2, plus Block 3 steps 1–3) remains
-executable on the frozen v3 images and is still worth flying: it validates the
-GNSS chain, the ENU frame and the ground interlock semantics without depending
-on any of B1–B4.
+**Nothing arms on v3.** P11's resolution (§1.2) removed the last B1-independent
+block: all three flight modes execute the corrupted path. The executable day on
+the frozen v3 images is **Blocks 0, 1, 2 and Block 3 steps 1–3** — ground work
+only. That is still worth doing: it validates the GNSS chain, the ENU frame and
+the ground-side interlock semantics without depending on any of B1–B4, and none
+of it has to be repeated after the re-cut.
+
+**All old ELF/BIN receipts are superseded** (§1.5). No prior image evidence
+counts toward anything on this card.
 
 ---
 
@@ -113,17 +119,17 @@ day, not that it was reported green in the ledger at some earlier hour.
 
 | ID | Prerequisite | Evidence that closes it | Owner | Status as drafted |
 | --- | --- | --- | --- | --- |
-| **P1** | v3 eFMU bundle identity verified against the aircraft image | Manifest digest `f87f8e5acd5b1c51edd3d529a303043fb6abfc1137a759e4ca57034784a98c69` for bundle `/home/jgoppert/rdd2-flight-efmus-v3`; all 12 deployed C/H/ALG files byte-match v3; receipts under `/home/jgoppert/rdd2-flight-build-receipts-v3-final` | Codex | GREEN as of 03:36 EDT for the frozen images; **must be re-verified against whatever image is actually flashed** (see P6) |
-| **P2** | Flashed ELF sha256 matches an approved build | Normal onboard-GPS `mr_vmu_tropic`: `98e622a3…` (flash 417,064 B / 9.94%, RAM 337,140 B / 64.30%). FastDyn/radio-GNSS: `6a432077…` (flash 218,064 B / 5.20%, RAM 260,820 B / 49.75%) | Codex | GREEN for the frozen pair; **invalid if a new image is built** (P6) |
+| **P1** | eFMU bundle identity verified against the aircraft image | Manifest digest of the **re-cut** bundle; all deployed C/H/ALG files byte-matching it. *(Historical: v3 digest `f87f8e5acd5b1c51edd3d529a303043fb6abfc1137a759e4ca57034784a98c69`, bundle `/home/jgoppert/rdd2-flight-efmus-v3`, receipts `/home/jgoppert/rdd2-flight-build-receipts-v3-final`)* | Codex | **RED — awaiting the re-cut bundle.** The earlier GREEN is **withdrawn**: v3 carries B1–B4 and its receipts are superseded (§1.5) |
+| **P2** | Flashed ELF sha256 matches an approved build | sha256 of the **new** dual builds, with fit figures. *(Historical only, credits nothing: `98e622a3…` normal — flash 417,064 B / 9.94%, RAM 337,140 B / 64.30%; `6a432077…` FastDyn — flash 218,064 B / 5.20%, RAM 260,820 B / 49.75%)* | Codex | **RED — all old ELF/BIN receipts superseded** (§1.5) |
 | **P3** | **G7** — aided estimator tick on target under the 5 ms budget, plus stack watermark | On-target measurement receipt from the flown image. Bench margin is 17× at 285 µs; the ledger is explicit that it must be *measured, not assumed* | Codex | **RED / PENDING-G7.** Ledger records G7 as never satisfied — "G7 is not manufacturable without hardware". **Hard blocker for every powered block.** |
 | **P4** | Flight-model source published and pinned | `modelica_models` branch `sparsity-limit-covariance` @ `a9e5037` pushed to `git@github.com:cognipilot/modelica_models` and pinned in `cerebri_rdd2/west.yml` | Codex, or James's terminal | **RED / PENDING-R2.** `west.yml` still pins `modelica_models d319854…`, which lacks four of five required sources. Claude cannot push (ssh publickey denied). This is a **provenance** blocker, not a flight-safety blocker — see §1.1 |
-| **P5** | Mission-ingress lanes landed, frozen, and independently reviewed, and present in the flown image | Fresh adversarial APPROVE on the integrated tree covering: planner lifecycle, `mission_shell.c` loader, Guidance reference gating, SPEC_0002/SPEC_0003 updates; plus the **airborne-capability-loss contract** proven by wrapper discriminators | Codex | **PENDING-INGRESS.** Working-tree audit of `~/git/cerebri_rdd2` shows `src/interfaces/mission_shell.c`, `tests/mission_shell/`, `tests/waypoint_mission_ingress/` present but **untracked/uncommitted**; no integrated-tree APPROVE recorded in the ledger. **Gates Block 6 only.** |
+| **P5** | Mission-ingress lanes implemented, reviewed, **and present in a creditable image** | Host-level review receipts **plus** image regeneration. See §1.3 for the full precondition chain | Codex | **PENDING-INGRESS — upgraded.** No longer "uncommitted working-tree source": it is **implemented and independently host-reviewed** (shell 12/12, planner 10/10, wrapper 23/23 at their reviewed snapshots). What remains is **image regeneration**, not implementation. **Gates Block 6 only.** |
 | **P6** | Image identity decision: fly the frozen v3 pair, or a new build carrying the ingress lanes | Explicit Codex answer + a receipt for whichever image is chosen. A new image invalidates P1/P2/P3 receipts and needs its own | Codex | **PENDING-IMAGE-DECISION.** Question posed in the ledger; unanswered as drafted |
-| **P7** | Optical-flow producer calibration receipt and transport | A calibrated flow producer in `cerebri_rdd2`, a zros topic carrying it, an adapter feeding `opticalFlow_*` into the eFMU, and a **calibration receipt** (scale/focal, mount rotation, sign verification) | Codex | **RED / PENDING-FLOW-PRODUCER.** Verified directly: `src/processes/navigation_estimator.c` hard-sets `opticalFlow_valid = false; opticalFlow_fresh = false;` on every tick; no flow topic exists in `src/interfaces/zros_topics.{c,h}`; no flow driver in the tree. The `synapse_fbs` v0.9.0 schema *does* define `OpticalFlow` / `OpticalFlowVelocity`, so transport is designable but unbuilt. **Blocks 7–8 SKIP by default.** |
+| **P7** | Optical-flow producer calibration receipt and transport | A calibrated flow producer in `cerebri_rdd2`, a zros topic carrying it, an adapter feeding `opticalFlow_*` into the eFMU, and a **calibration receipt** (scale/focal, mount rotation, sign verification) | Codex | **RED — CONFIRMED UNMET, NO WORK IN PROGRESS.** See §1.4. **Blocks 7–8 SKIP.** |
 | **P8** | GNSS observability on the downlink | `gnss status` shell output, `zros topic hz gnss_fix`, and telemetry exposing navigation odometry, origin latch and correction acceptance | Codex | **PENDING-VERIFY.** An earlier audit found VehicleHealth omitted GNSS and the radio downlink exposed neither odometry, origin latch, nor correction acceptance. The M10/diagnostics lane was approved afterwards; confirm on the day against the flown image before Block 1 |
 | **P9** | CUBS2 CSyn v0.9 hard cutover | CUBS2 `west.yml` on `csyn c34dd35d…` / `synapse_fbs v0.9.0` plus validation receipt | Codex (ACKed 13:20) | **PENDING-CUBS2.** *Not an RDD2 flight blocker* — it is a cross-vehicle ABI **release** blocker. Recorded here because it was requested as a prerequisite row; it does not gate any block on this card |
-| **P10** | **B1–B4 fix set in a re-receipted bundle** | Compiler fix for the conditional multi-write erasure (B1) + model hardening for the NaN acceptance predicate (B2), the re-init policy (B3) and the flow-induced lockout (B4); a **new eFMU bundle regenerated, re-receipted with a new manifest digest, and re-reviewed**; new ELF sha256s | Compiler fix agent + model-hardening agent, then Codex for the image | **RED / PENDING-FIXSET.** **Gates every POSITION and flow block.** See the BLOCKERS section |
-| **P11** | Scope of B1 — which code paths consume corrupted euler | See §1.3. The **input-port** question is answered; a **new and worse** consumption path was found inside the generated controllers | Codex (firmware mode-router question only) | **PENDING-B1-SCOPE — NOT relieved.** Gates Block 4 on any v3 image. See §1.3 before treating this as close to closing |
+| **P10** | **B1–B4 fix set in a re-cut bundle** — **UNANIMOUS** (Codex concurrence on record) | Compiler fix for the conditional multi-write erasure (B1) + model hardening for the NaN acceptance predicate (B2), the re-init policy (B3) and the flow-induced lockout (B4); then **clean bundle freeze → fresh dual builds → exact manifest provenance → fit → adversarial artifact review** | Compiler fix agent + model-hardening agent, then Codex for the image | **RED / PENDING-FIXSET.** **Gates every block that arms the vehicle or commands motors** — i.e. everything except Blocks 0–2 and Block 3 steps 1–3. Both fixes are in adversarial review (§1.2.3) |
+| **P11** | Scope of B1 — which flight modes execute the corrupted euler path | **ANSWERED with firmware evidence** (§1.2): `efmi.cmake` + link map prove the monolithic `Controller` is absent, but the deployed `GuidanceController` evaluates `from_Quat` **unconditionally, before** its mode-select equations, whose branches are 0=ACRO / 1=ATTITUDE / 2=POSITION | Codex | **RESOLVED — RED.** **All three flight modes** execute the B1-corrupted path on v3. **No mode is credited on v3.** Block 4 goes RED |
 
 ### 1.1 Honest statement on P4
 
@@ -134,7 +140,131 @@ that the flown bytes are unverified. Flying with P4 red is a documented
 provenance debt, not an unverified-artifact hazard. The decision to accept that
 debt is James's, and it must be recorded on the card before Block 1.
 
-### 1.3 P11 status — the input-port question is answered, but B1 enters by another door
+### 1.2 P11 — RESOLVED RED: all three flight modes execute the B1-corrupted path
+
+> **Ruling, adopted from Codex with firmware evidence (ledger row ~line 21357):
+> no flight mode is credited on v3.** Flight images must be regenerated from the
+> reviewed B1-fixed compiler/model bundle and dual-built/re-reviewed before any
+> mode is credited.
+
+**Firmware evidence — the monolithic `Controller` is NOT in the flight image.**
+`cerebri_rdd2/src/efmi.cmake` adds only `WaypointTrajectoryPlanner`,
+`GuidanceController`, `RateControlAllocator` and `NavigationEstimator`. There is
+no `Vehicles_Rdd2_Controller` source or call anywhere in the firmware tree, and
+the final normal M7 **link map** carries `GuidanceController` and
+`RateControlAllocator` startup/recalibrate/dostep symbols with **no monolithic
+Controller symbols**:
+
+| Symbol | Address |
+| --- | --- |
+| `GuidanceController` startup | `0x700137cc` |
+| `GuidanceController` dostep | `0x70013a68` |
+| `GuidanceController` recalibrate | `0x7003f1f4` |
+| `Controller` (any) | **no match** |
+
+**This does not make B1 irrelevant — it makes it worse.** The deployed
+`Vehicles.Rdd2.GuidanceController` evaluates
+
+```
+LieGroups.SO3.EulerB321.from_Quat(navigation.quaternionWorldBody)
+```
+
+**unconditionally, before** its mode-select equations. Those branches are
+**mode 0 = ACRO, 1 = ATTITUDE, 2 = POSITION**. So **every one of the three flight
+modes executes the affected quaternion/Euler path** in the current generated
+artifact — including the manual modes that Block 4 was relying on as the
+B1-independent fallback.
+
+**Consequence on this card:**
+
+- **Block 4 (manual ACRO/ATTITUDE free flight) is RED on v3.**
+- The **executable day on the frozen v3 images collapses to ground work**:
+  **Blocks 0, 1, 2 and Block 3 steps 1–3.** Nothing arms.
+- **P10 (new bundle) is now the gating prerequisite for every block that arms
+  the vehicle or commands motors**, and it is **UNANIMOUS** — Codex's concurrence
+  is on record.
+
+#### 1.2.1 Superseded analysis, retained because the mechanism is the same
+
+An earlier revision of this card analyzed `Controller.alg`'s heading-basis path.
+That analysis was correct and has since been **independently reproduced as the
+B1 fix's execution witness** — but it describes a container that is **not linked
+into the flight image**, so it is **not** the flight-path argument. It is kept
+because it is the clearest available illustration of the defect's shape:
+
+`Controller.alg` declares `navigation.eulerRpy_rad` and never reads it (verified:
+one occurrence, line 13) — yet it calls the defective `from_Quat` itself at 4
+sites:
+
+```
+902  (headingEuler) := 'LieGroups.SO3.EulerB321.from_Quat'(headingQuaternionWorldBody);
+904  headingDirectionWorld[i] := (i==1 ? cos(headingEuler[1])
+                                : i==2 ? sin(headingEuler[1]) : 0.0);
+906  headingBasisWorld := headingDirectionWorld;
+907+ bodyYWorld := thrustDirectionWorld × headingBasisWorld;
+```
+
+with the emitted `from_Quat` in its erased form:
+
+```
+for i in 1:3 loop 'euler'[i] := 0.0; end for;   (twice)
+if (sinp*sinp) > 0.9999^2 then
+    'euler'[1] := atan2(...);      <- gimbal-lock branch: ONLY yaw survives
+else
+    'euler'[3] := atan2(...);      <- NORMAL branch: ONLY roll survives
+end if;
+```
+
+`euler[1]` is yaw and `euler[2]` is pitch (confirmed against `to_Quat`, which
+reads `cy := cos('euler'[1]/2)`). **`euler[2]` is assigned in no branch of any
+container.** In normal flight the `else` branch runs, yaw stays `0.0`, and
+`headingDirectionWorld` becomes the constant `(1, 0, 0)` — a fixed East-pointing
+heading basis regardless of commanded heading. The B1 fix branch's execution
+witness records exactly this quantity recovering: *"Controller
+headingDirectionWorld now tracks commanded yaw (was constant East)."*
+
+**Measured blast radius across the v3 bundle** (`from_Quat` call sites / branch
+assignments retained). Note that being unlinked is what spares the last three,
+not being clean:
+
+| Container | In flight image | `from_Quat` calls | roll | yaw | **pitch** |
+| --- | --- | --- | --- | --- | --- |
+| `Vehicles_Rdd2_GuidanceController` | **YES** | 2 | 1 | 1 | **0** |
+| `Vehicles_Rdd2_NavigationEstimator` | **YES** | 1 | 1 | 1 | **0** |
+| `Vehicles_Rdd2_Controller` | no | 4 | 1 | 1 | **0** |
+| `Vehicles_Rdd2_RateControlAllocator` | **YES** | 0 | — | — | — |
+| `Planning_Bezier_WaypointTrajectoryPlanner` | **YES** | 0 | — | — | — |
+| `Vehicles_Cubs2_OuterLoop` | no | 0 | — | — | — |
+
+Three of six containers carry the erasure, matching the ledger; **two of those
+three are linked into the flight image.**
+
+#### 1.2.2 Firmware euler consumption — clean, and immaterial
+
+`cerebri_rdd2` contains **zero** references to any euler symbol in `src/`,
+`subsys/` or `tests/`; the eFMU exposes `estimate_eulerRpy_rad` and nothing reads
+it. The only repo-wide hits are host-side `xtask` tooling and a
+`docs/ground_station_telemetry.md` note that attitude publishes as a quaternion.
+
+This is genuinely clean — and it does not help. The corruption is consumed
+**inside** `GuidanceController` before anything crosses the firmware boundary.
+Auditing the boundary was the right question to ask and the wrong place to look.
+
+#### 1.2.3 Fix status — both fixes in adversarial review
+
+| Fix | Covers | Branch / status |
+| --- | --- | --- |
+| Compiler multi-write erasure | **B1** | `fix/branch-multi-write-erasure` @ `623a6845`, suite 329/12, execution witness recorded. **Adversarial review running.** Root cause: GALEC's `lower_indexed_function_update_expression` unwrapped one level of the DAE's nested `ArrayUpdate` chain and discarded the base; fix is a full chain peel plus a root guard. The DAE/sim path was always base-recursive, which is why only the GALEC bytes were wrong |
+| Estimator hardening | **B2, B3, B4** | `estimator-nan-reinit-hardening` (modelica_models) — two-stage covariance ladder + affirmative acceptance predicate. **In review** |
+
+**The bundle re-cut starts when both clear.** Until then there is no candidate
+image for any powered block, and B1 is confirmed **LIVE at the compiler tip**
+(`galec-c-integration` `44f67022`) — the ~360 commits since the earlier base did
+not fix it.
+
+---
+
+#### 1.2.4 Original P11 evidence trail (model side)
 
 **Partial answer received (model side, from the GPS-validation agent):**
 `Controller.alg` declares `navigation.eulerRpy_rad` as an input but **never reads
@@ -213,17 +343,106 @@ That is a firmware mode-router question and it is **Codex's to answer.** Until i
 is answered, Block 4 stays CONDITIONAL and the model-side evidence does **not**
 support relaxing it.
 
-### 1.2 Hard blockers
+### 1.3 P5 — mission ingress is IMPLEMENTED and host-reviewed; only the image is missing
 
-- **P3 (G7)** blocks *every powered block*. If G7 has not been measured on the
-  flown image, the whole card is NO-GO.
-- **P10 (B1–B4 fix set)** blocks *every POSITION and flow block* — Blocks 3
-  step 4, 5, 6, 7 and 8. See the BLOCKERS section.
-- **P11 (B1 scope)** blocks Block 4 on any v3 image until answered.
+Codex's Q1 answer upgrades this row substantially. What exists **now**, in the
+dirty integration tree, independently reviewed at host level:
 
-The remaining prerequisites gate specific blocks, as marked. On the frozen v3
-images the executable day is **Blocks 0, 1, 2 and 3 steps 1–3** — and Block 4
-only if P11 comes back clean.
+- **`src/interfaces/mission_shell.c`** publishes a bounded **five-point square**
+  to the single-publisher `waypoint_plan` topic via
+  `mission box <side_m> <speed_m_s>`. It **rejects**: armed/failsafe state,
+  arm/kill switch, stale or invalid health / manual / navigation, unready onboard
+  GNSS, and out-of-range or non-finite arguments.
+- **`src/processes/waypoint_trajectory_planner.c`** is authoritative for the
+  **EMPTY / PENDING / RUNNING / ABORTED** lifecycle, current-altitude rebase,
+  **no-resume abort**, and reference invalidation on abort.
+- **Guidance independently requires** a current, finite, `LocalEnu`,
+  zero-mask reference.
+
+**Review receipts (at their reviewed snapshots):** shell **12/12**, planner
+**10/10**, wrapper **23/23**.
+
+This is a **bounded GPS square ingress** — *not* optical ingress, and *not*
+automatic takeoff or landing. It does not by itself authorize an autonomous
+mission run (§0.3 stands).
+
+**Precondition chain before ingress is CREDITABLE for Block 6:**
+
+```
+P10 new bundle (B1 fix + B2/B3/B4 hardening)
+  → fresh dual builds (normal mr_vmu_tropic + FastDyn)
+    → adversarial artifact review
+      → G7 on the new image
+        → ingress creditable
+```
+
+Every arrow is a gate, and none of them is satisfied today. The host reviews are
+real evidence and they do not shorten this chain.
+
+### 1.4 P7 — optical flow is a confirmed HARD NO for this test cycle
+
+Codex's Q2 answer, from source, matches my own independent audit exactly. In the
+current `cerebri_rdd2` source the **only** production optical-flow assignments
+are `navigation_estimator.c` hard-coding `opticalFlow_valid = false` and
+`opticalFlow_fresh = false`. Repository search finds **no** optical-flow
+producer, driver, transport, calibration, range/quality gate, or mounting/sign
+conversion.
+
+> **"Plots/model evidence cannot qualify optical for outdoor flight."**
+> — Codex, adopted verbatim as this card's position.
+
+That sentence is the one to carry forward. The estimator-side flow contract is
+fully specified (`2026-08-13-flow-producer-requirements.md`), the sim evidence is
+extensive, and the `synapse_fbs` v0.9.0 schema already defines
+`OpticalFlow` / `OpticalFlowVelocity` — **none of that is a producer.** Nothing
+in this card's flow analysis should be read as partial credit toward flying it.
+
+**Disposition: the optical-flow half of this mission is DEFERRED beyond this
+test cycle** unless a producer effort is started as its own lane. Blocks 7–8 are
+SKIP — not "conditional pending a receipt", but skipped because the work has not
+begun. If a producer lane starts, `2026-08-13-flow-producer-requirements.md` is
+its contract and Block 7 is its first flight-line gate.
+
+### 1.5 SUPERSEDING RULING — every old image receipt is void
+
+**Codex's ruling, adopted: all old ELF/BIN receipts are superseded.** The
+integration source is newer and dirty, and B1 requires new generated Guidance
+bytes regardless. Consequences for this card:
+
+- The ELF sha256s **`98e622a3…`** (normal) and **`6a432077…`** (FastDyn) **no
+  longer constitute evidence of anything.** They are recorded below only as
+  historical identifiers.
+- P1's and P2's earlier "GREEN" status is **withdrawn.**
+- The old final M7 map does contain the waypoint-planner object, but that fact
+  **credits nothing** — the source it was built from has moved.
+- The **only** path to a creditable image is: **clean bundle freeze → fresh
+  normal `mr_vmu_tropic` and FastDyn builds → exact manifest provenance → fit
+  → adversarial artifact review.**
+
+There is consequently **no fallback image** on this card any more. §7.2's
+rollback-to-frozen-v3 option is void for anything that arms.
+
+### 1.6 Hard blockers
+
+- **P10 (B1–B4 fix set)** blocks **every block that arms the vehicle or commands
+  motors** — Blocks 3 step 4, 4, 5, 6, 7 and 8. **Unanimous between both agents.**
+- **P3 (G7)** blocks every powered block, and must be re-measured on the **new**
+  image — the old measurement, like every old receipt, is superseded (§1.5).
+- ~~P11~~ is **resolved RED** (§1.2) and no longer a pending question; it is the
+  reason Block 4 joined the RED list.
+
+> **The executable day on the frozen v3 images is: Blocks 0, 1, 2 and Block 3
+> steps 1–3. Nothing arms.**
+
+The remaining prerequisites gate specific blocks, as marked.
+
+**Still unanswered by the firmware lane, and tracked here:**
+
+| Ref | Question | Gates |
+| --- | --- | --- |
+| **Q3** | CUBS2 CSyn v0.9 hard cutover status (P9) | Nothing on this card — release blocker only |
+| **Q4** | Flight-model source publish route (P4/R2) — Codex's authenticated route, or James's terminal? | Block 0's provenance row, and Codex's FastDyn CI |
+| **G7 scheduling** | When the on-target aided-tick and stack measurement happens on the **new** image | Every powered block |
 
 ---
 
@@ -371,20 +590,17 @@ aircraft to hold anything.
 
 ---
 
-### Block 4 — Manual ACRO / ATTITUDE free flight (CONDITIONAL on v3 — **PENDING-B1-SCOPE**)
+### Block 4 — Manual ACRO / ATTITUDE free flight (**RED on v3 — requires P10**)
 
-> **On a v3 image this block does not run until P11 is answered — see §1.3.**
-> The partial answer received *narrows* the question without relieving it:
-> no firmware consumer reads the eFMU's euler output (verified), and
-> `Controller.alg` never reads its `navigation.eulerRpy_rad` input (verified).
-> **But `Controller.alg` calls the defective `from_Quat` itself**, and builds its
-> heading basis from the hard-zeroed yaw — giving a constant East-pointing
-> heading basis in normal flight. The open question is now **which modes execute
-> that path**. If manual ACRO/ATTITUDE routes through `Controller`, this block is
-> **RED on v3**.
+> **P11 is RESOLVED RED (§1.2).** The deployed `GuidanceController` evaluates
+> `from_Quat` **unconditionally, before** its mode-select equations, and its
+> branches are mode 0 = ACRO / 1 = ATTITUDE / 2 = POSITION. **All three flight
+> modes execute the B1-corrupted path on v3.** Manual flight was the last
+> candidate for a B1-independent block and it does not survive: **no mode is
+> credited on v3.**
 
-**Entry criteria**: Blocks 1–3 (steps 1–3) green. **P11 answered clean, or a
-fixed bundle flown (P10).** Estimator `RatesValid` true and stable. Timing,
+**Entry criteria**: **P10 GREEN** (B1-fixed + hardened bundle, dual-built and
+re-reviewed). Blocks 1–3 green. Estimator `RatesValid` true and stable. Timing,
 stacks, RC and actuator gates all green. Pilot brief §5 delivered.
 
 **Procedure**
@@ -476,7 +692,10 @@ travel. GNSS ready. Origin latched. Spotter posted.
 > image and this block is SKIPPED.**
 
 **Entry criteria**
-- P5 GREEN against the flown image, with the APPROVE receipt named on the card.
+- The full **§1.3 precondition chain** satisfied: P10 new bundle → fresh dual
+  builds → adversarial artifact review → G7 on the new image → ingress
+  creditable. The host-level review receipts (shell 12/12, planner 10/10,
+  wrapper 23/23) are **necessary but not sufficient** and do not shorten it.
 - Block 5 green with no findings.
 - The reference actually accepted by Guidance is **observed on telemetry** to be
   a fresh, finite, LocalEnu, supported-mask reference — not a default.
@@ -508,11 +727,12 @@ travel. GNSS ready. Origin latched. Spotter posted.
 
 ### Block 7 — Optical-flow producer ground checkout (COND — **PENDING-FLOW-PRODUCER**, P7; default **SKIP**)
 
-> **Default disposition: SKIP.** As drafted, no flow producer, no flow transport,
-> and no flow adapter exist in `cerebri_rdd2`; the estimator's flow inputs are
-> hard-wired invalid. This block runs only if Codex signs off a calibrated
-> producer **and** a calibration receipt, per
-> `2026-08-13-flow-producer-requirements.md`.
+> **Disposition: SKIP — DEFERRED BEYOND THIS TEST CYCLE (§1.4).** Confirmed from
+> source by both agents independently: no producer, driver, transport,
+> calibration, range/quality gate or mounting/sign conversion exists anywhere in
+> `cerebri_rdd2`; the estimator's flow inputs are hard-wired invalid. This is not
+> a pending receipt — **the work has not started.**
+> **"Plots/model evidence cannot qualify optical for outdoor flight."**
 >
 > **Additionally RED on v3 (B4).** Byte-level validation confirmed that
 > `quality`, `groundDistance_m`, `timestamp_s`, `integrationTime_s` and
@@ -626,7 +846,7 @@ tethered; textured ground surface; height inside the sensor's valid range.
 | 2 ENU walk | Block 1 | RUN | RUN |
 | 3 Interlock, steps 1–3 | Block 2 | RUN | RUN |
 | 3 Interlock, step 4 (armed) | Block 2, **P10** | **RED** | RUN |
-| 4 Manual free flight | Block 3, **P11** | COND on P11 | RUN |
+| 4 Manual free flight | Block 3, **P10** | **RED** (P11 resolved red — all modes) | RUN |
 | 5 Tethered POSITION | Block 4, **P10** | **RED** | RUN |
 | 6 Untethered POSITION | **P10** + **P5** | **RED** | COND on P5 |
 | 7 Flow ground checkout | **P10** + **P7** | **RED** | COND — **SKIP** as drafted |
@@ -912,13 +1132,17 @@ Ascending severity. The pilot may skip levels upward at any time without asking.
   where none is allowed, refusal that is not honored) → the finding goes to
   Codex's lane and the card is not re-run until a fresh receipt exists.
 
-### 7.2 Image rollback
+### 7.2 Image rollback — **VOID**
 
-The frozen v3 pair (`98e622a3…` normal, `6a432077…` FastDyn) is the fallback
-image of record. Those build directories are read-only and must not be
-rebuilt or overwritten. If a newer image with the ingress lanes fails any block,
-reflash the frozen normal image, re-verify P1/P2, and continue at Block 5 scope
-(tethered POSITION), dropping Block 6.
+**There is no fallback image.** The frozen v3 pair (`98e622a3…` /
+`6a432077…`) carries B1–B4 and **all old ELF/BIN receipts are superseded**
+(§1.5). Rolling back to it is not a degraded-but-safe option; it is a rollback
+to the defects this card exists to avoid, and on v3 **no flight mode is
+credited** (§1.2).
+
+If a re-cut image fails any block, the response is **stop and re-cut**, not
+reflash-and-continue. The v3 build directories remain read-only and must not be
+rebuilt or overwritten — they are historical artifacts, not a fallback.
 
 ---
 
@@ -932,13 +1156,14 @@ closes it.
 | PENDING-G7 (P3) | On-target aided tick < 5 ms + stack watermark on the flown image | **all powered blocks** | Measurement receipt from the flown image |
 | PENDING-R2 (P4) | `modelica_models` `sparsity-limit-covariance` @ `a9e5037` published and pinned in `cerebri_rdd2/west.yml` | provenance row of Block 0 | `git ls-remote` showing the branch at `a9e5037`, plus the west pin |
 | PENDING-IMAGE-DECISION (P6) | Frozen v3 pair vs new build with ingress lanes | Blocks 0, 6 | Explicit Codex answer + receipts for the chosen image |
-| PENDING-INGRESS (P5) | Planner lifecycle, `mission_shell.c`, Guidance reference gating, SPEC_0002/0003 — committed, frozen, APPROVEd, **and in the flown image** | Block 6 | Fresh independent adversarial APPROVE on the integrated tree + image inventory |
+| PENDING-INGRESS (P5) | **Implemented + host-reviewed** (shell 12/12, planner 10/10, wrapper 23/23); awaiting **image regeneration** (§1.3) | Block 6 | The full §1.3 chain: P10 → dual builds → adversarial artifact review → G7 |
 | PENDING-AIRBORNE-LOSS | Wrapper discriminators proving airborne capability loss degrades to effective ATTITUDE with **no publication gap and no latch** | Blocks 3, 5, 6 | Named passing discriminators in the flown image's test receipt |
-| PENDING-FLOW-PRODUCER (P7) | Calibrated flow producer + transport + adapter + calibration receipt | Blocks 7, 8 | Producer implementation meeting `2026-08-13-flow-producer-requirements.md`, plus a calibration receipt covering scale, mount rotation and sign |
+| PENDING-FLOW-PRODUCER (P7) | **CONFIRMED UNMET, no work in progress** — deferred beyond this test cycle (§1.4) | Blocks 7, 8 (**SKIP**) | A producer lane would have to start; then `2026-08-13-flow-producer-requirements.md` is its contract and Block 7 its first flight-line gate |
 | PENDING-VERIFY-P8 | GNSS observability on shell + downlink in the flown image | Block 1 | Observed `gnss status`, `zros topic hz gnss_fix`, and downlink fields on the day |
 | PENDING-CUBS2 (P9) | CUBS2 CSyn v0.9 hard cutover | **none** — release blocker only | CUBS2 `west.yml` + validation receipt |
 | **PENDING-FIXSET (P10)** | **B1–B4** fix set: compiler conditional-multi-write fix, NaN acceptance predicate, re-init policy redesign, flow-lockout acceptance scenario — in a **new, re-receipted, re-reviewed bundle** | **Blocks 3 step 4, 5, 6, 7, 8** | New manifest digest + new ELF sha256s + fresh adversarial APPROVE |
-| **PENDING-B1-SCOPE (P11)** | **Which flight modes execute `Controller.alg`'s heading-basis path** (§1.3). The euler *input-port* and *firmware-consumer* questions are both answered and clean; the corruption enters through `Controller`'s own `from_Quat` call instead | **Block 4** on any v3 image | Codex's mode-router answer: does manual ACRO/ATTITUDE route through `Controller`? |
+| ~~PENDING-B1-SCOPE (P11)~~ | **RESOLVED — RED.** All three flight modes (ACRO/ATTITUDE/POSITION) execute the B1-corrupted path via `GuidanceController`'s unconditional pre-mode-select `from_Quat` (§1.2) | Block 4 → **RED on v3** | Closed by Codex's `efmi.cmake` + link-map evidence |
+| **SUPERSEDED-RECEIPTS** | All old ELF/BIN receipts void (§1.5) | Blocks 0, and every fallback path | New dual builds with fresh provenance, fit and adversarial artifact review |
 | PENDING-FLOW-PHASING | Flow producer phase-offset from GPS publication (§4.5) | Blocks 7, 8 | Observed publish phases + flow applied fraction ≥ 0.75 |
 | PENDING-QUAL-149c2ff3 | Confirmation of the two failing altitude qualification gates against pinned qualification rumoca revision `149c2ff3` | §4.4 interpretation | Confirmation that both failures are the known flow-vertical-unobservability behavior |
 | TBD-R1–R4, R6, R10, R18, R33–R68 | **Declined by the rehearsal agent** — not derivable from model sim | §2 success criteria, §6 envelope columns | Owed by the flight-C, producer and test-conduct agents |
@@ -950,9 +1175,12 @@ closes it.
 
 This card is not valid for flight until the following are filled in on the day:
 
-- [ ] **P10 (B1–B4 fix set) GREEN with a re-receipted bundle, or every POSITION
-      and flow block explicitly struck.** No POSITION block flies on v3.
-- [ ] **P11 (B1 scope) answered** before Block 4 flies on any v3 image.
+- [ ] **P10 (B1–B4 fix set) GREEN with a re-cut, dual-built, re-reviewed
+      bundle.** Unanimous. **Nothing arms without it** — on v3 the day is Blocks
+      0–2 plus Block 3 steps 1–3 and stops there.
+- [ ] **New image receipts recorded** — all old ELF/BIN receipts are superseded
+      (§1.5) and credit nothing.
+- [ ] **G7 re-measured on the new image**, not carried over.
 - [ ] All `PENDING-*` items either GREEN with a named receipt, or the dependent
       block explicitly marked SKIPPED.
 - [ ] Remaining `TBD-R#` cells (R1–R4, R6, R10, R18, R33–R68) populated by the
