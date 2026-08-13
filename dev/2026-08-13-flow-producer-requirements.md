@@ -54,6 +54,24 @@ correction**. `groundDistance_m` in particular is populated by callers and
 ignored by the math; this was independently confirmed and recorded in the ledger
 (2026-08-11 15:48).
 
+### 1.0 These are dead inputs — MEASURED on the flight bytes, not inferred
+
+This is no longer a reading of the source. Flow-path validation executed the
+receipted v3 bytes and witnessed the consequences directly:
+
+- a **`quality = 0`** sample **fuses at full weight**;
+- a **NaN-timestamp** sample **fuses at full weight**;
+- a **frozen / stuck flow sensor is NEVER gated** — its innovation is small *by
+  construction*, so the chi-square gate has nothing to fire on. Witnessed
+  **3000/3000 samples accepted** while the estimate settled at **~1/60 of true
+  speed**.
+
+The last case is the one to internalize: a stuck sensor is not merely
+undetected, it is *actively believed*, and it drags the state toward zero
+velocity while every status bit reads healthy. **The estimator will not protect
+the vehicle from a bad flow sample. The producer is the only gate that exists.**
+Everything in §6 follows from this and none of it is optional.
+
 Consequences, and these are requirements, not advice:
 
 1. **All range compensation is producer-side.** The record's own comment says
@@ -327,6 +345,22 @@ Low-light modes (`FlowLightMode.LowLight`, `SuperLowLight`) are **not** an
 automatic invalidation; they must be reflected in the covariance, and in `valid`
 only if quality also fails.
 
+### 6.3a Integrator requirements — outside the producer, still load-bearing
+
+These three are **not** producer requirements; they belong to whoever integrates
+the eFMU. They are recorded here because they are part of the same safety
+argument and the flow path is where they bite hardest. **None is optional.**
+
+| # | Requirement | Why |
+| --- | --- | --- |
+| **I1** | **Latch `rumoca_galec_error_signal_status != 0` as loss-of-navigation.** | NaN / Inf / `FLT_MAX` flow **or** GPS inputs are **ACCEPTED** and poison the state permanently while `estimate_valid` **stays 1**. The status word *does* flag `0x4` / `0x5` — but **the eFMU will not act on it.** The integrator must. Without this latch there is no observable that distinguishes a poisoned state from a healthy one. |
+| **I2** | **Monitor `status.covarianceReinitialized` as a flight-critical discrete.** | Pulsing at ~20 Hz is the **signature of the B4 re-init lockout**, and it is the **ONLY** observable that reveals it. Everything else — `estimate_valid`, `error_signal`, the producer's own health — reads nominal throughout. Treat any pulse as loss of navigation (test card §6.7 RF-2). |
+| **I3** | **Treat IMU-out as degraded regardless of flow health.** | Flow corrections **still apply with no prediction step**, and the covariance **SHRINKS while the filter is blind**. The state therefore becomes *more* confident precisely when it has the least information. An IMU dropout must degrade the mode on its own; a healthy flow stream must never be read as compensating for it. |
+
+I1 and I2 are the only two mechanisms by which the silent failure classes (B2,
+B3, B4) become visible to the crew at all. If they are not implemented, the
+flight-test telemetry cannot detect the failures the test is meant to bound.
+
 ### 6.4 Prohibited producer behavior
 
 - Publishing zero velocity when correlation is bad (§5.1).
@@ -489,6 +523,9 @@ Additional transport requirements:
 An implementation is not accepted on inspection. The following must exist and
 pass before any flow block on the test card runs:
 
+0. **Integrator items I1–I3** (§6.3a) implemented and independently verified —
+   these are prerequisites for the flow blocks being *observable*, not merely
+   correct.
 1. **Host tests** for each `valid=false` condition in §6.3, one discriminator each.
 2. A **one-tick freshness** test proving the same sample is never fused twice.
 3. A **priority test** proving that a flow sample colliding with a fresh GPS

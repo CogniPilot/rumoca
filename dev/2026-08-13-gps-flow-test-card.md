@@ -31,7 +31,7 @@ re-receipted, re-reviewed bundle.**
 
 | ID | Finding | Reachability | Effect | Owner |
 | --- | --- | --- | --- | --- |
-| **B1** | **Compiler wrong-code.** `EulerB321.from_Quat` assigns three euler elements per conditional branch; the generated GALEC kept only the **last write per branch**. Pitch and yaw are **hard-zero** in the flight bytes (witnessed: pitch 0.5 rad → euler (0,0,0)). Quaternion and DCM outputs are correct. Replicated in 3 of 6 containers | **Every tick.** `GuidanceController` **consumes it** — its attitude reference is built with **yaw = 0 continuously** | Breaks the attitude reference in any Guidance-active mode | Compiler fix agent (`fix/branch-multi-write-erasure`) |
+| **B1** | **Compiler wrong-code.** `EulerB321.from_Quat` assigns three euler elements per conditional branch; the generated GALEC kept only the **last write per branch**. Pitch and yaw are **hard-zero** in the flight bytes (witnessed: pitch 0.5 rad → euler (0,0,0)); **`euler[2]` (pitch) is assigned in no branch of any container**. Quaternion and DCM outputs are correct. Confirmed in **3 of 6** containers — `Controller`, `GuidanceController`, `NavigationEstimator` (§1.3) | **Every tick.** `GuidanceController` consumes it, **and `Controller` calls the defective function itself** to build its heading basis — yielding a **constant East-pointing heading basis** in normal flight (§1.3) | Breaks the attitude reference in any Guidance-active mode, and the heading basis wherever `Controller` runs | Compiler fix agent (`fix/branch-multi-write-erasure`) |
 | **B2** | **NaN/Inf GPS is ACCEPTED.** A NaN NIS makes every gate comparison false, so `accepted=true`. State is permanently poisoned, `estimate.valid` **stays 1**, and auto-recovery is structurally impossible because acceptance resets the rejection counter. Only an external reset clears it | Any non-finite GPS field | Silent, unrecoverable navigation loss with a valid-looking estimate | Model-hardening agent |
 | **B3** | **Auto re-init adopts the rejected fix.** 50 consecutive rejections re-seed position from the very outlier the gate rejected, reset attitude to identity and velocity to zero **mid-air**. At the 1 kHz wiring this triggers in **51 ms** — the model docstring assumed 20–100 Hz aiding, so the trigger is 10–50× faster than designed. `estimate.valid` stays 1 throughout | 50 consecutive rejections | Mid-air state teleport with no invalidity indication | Model-hardening agent |
 | **B4** | **Flow-induced re-init lockout.** Ordinary preconditions (GPS outage > 1 s + degraded flow + speed > 6.3 m/s): the **shared** rejection counter makes a broken flow sensor invisible under healthy GPS; the outage drives 50 flow rejections → auto re-init → position teleports to the **parameter** origin, velocity to zero → post-re-init `P_vv = 1.0` gates out truthful returning GPS above 6.26 m/s → **permanent re-init loop at ~20 Hz** with `estimate_valid = 1` and `error_signal = 0x0` throughout. Witnessed end-to-end: Guidance consumes v=(0,0,0) at 8–12 m/s true; final position error **147–192 m** | GPS outage + degraded flow + moderate speed | Total loss of navigation, fully silent | Model-hardening agent (acceptance scenario) |
@@ -123,7 +123,7 @@ day, not that it was reported green in the ledger at some earlier hour.
 | **P8** | GNSS observability on the downlink | `gnss status` shell output, `zros topic hz gnss_fix`, and telemetry exposing navigation odometry, origin latch and correction acceptance | Codex | **PENDING-VERIFY.** An earlier audit found VehicleHealth omitted GNSS and the radio downlink exposed neither odometry, origin latch, nor correction acceptance. The M10/diagnostics lane was approved afterwards; confirm on the day against the flown image before Block 1 |
 | **P9** | CUBS2 CSyn v0.9 hard cutover | CUBS2 `west.yml` on `csyn c34dd35d…` / `synapse_fbs v0.9.0` plus validation receipt | Codex (ACKed 13:20) | **PENDING-CUBS2.** *Not an RDD2 flight blocker* — it is a cross-vehicle ABI **release** blocker. Recorded here because it was requested as a prerequisite row; it does not gate any block on this card |
 | **P10** | **B1–B4 fix set in a re-receipted bundle** | Compiler fix for the conditional multi-write erasure (B1) + model hardening for the NaN acceptance predicate (B2), the re-init policy (B3) and the flow-induced lockout (B4); a **new eFMU bundle regenerated, re-receipted with a new manifest digest, and re-reviewed**; new ELF sha256s | Compiler fix agent + model-hardening agent, then Codex for the image | **RED / PENDING-FIXSET.** **Gates every POSITION and flow block.** See the BLOCKERS section |
-| **P11** | Scope of B1 outside Guidance | Confirmation of which consumers read `eulerRpy_rad`. `GuidanceController` is a **confirmed** consumer; the manual ACRO/ATTITUDE path is **unestablished** | Codex | **PENDING-B1-SCOPE.** Gates Block 4 on any v3 image. If any manual-path consumer reads euler, Block 4 is RED on v3 too and the day reduces to Blocks 0–2 + 3 steps 1–3 |
+| **P11** | Scope of B1 — which code paths consume corrupted euler | See §1.3. The **input-port** question is answered; a **new and worse** consumption path was found inside the generated controllers | Codex (firmware mode-router question only) | **PENDING-B1-SCOPE — NOT relieved.** Gates Block 4 on any v3 image. See §1.3 before treating this as close to closing |
 
 ### 1.1 Honest statement on P4
 
@@ -133,6 +133,85 @@ the *advertised clean CI path cannot reproduce them from a public source*, not
 that the flown bytes are unverified. Flying with P4 red is a documented
 provenance debt, not an unverified-artifact hazard. The decision to accept that
 debt is James's, and it must be recorded on the card before Block 1.
+
+### 1.3 P11 status — the input-port question is answered, but B1 enters by another door
+
+**Partial answer received (model side, from the GPS-validation agent):**
+`Controller.alg` declares `navigation.eulerRpy_rad` as an input but **never reads
+it** — no occurrence beyond the declaration. **I verified this independently and
+it is true:** `grep` over
+`rdd2-flight-efmus-v3/Controller/…/Vehicles_Rdd2_Controller.alg` returns exactly
+one occurrence, line 13, the declaration.
+
+**But the conclusion "the model-side attitude/rate path is clean of B1" does NOT
+follow, and is false.** B1 is a defect *inside* `EulerB321.from_Quat`, and
+`Controller.alg` **calls that function itself** — 4 call sites. The corruption
+does not need the input port.
+
+**Witnessed chain in the v3 bytes** (`Vehicles_Rdd2_Controller.alg`):
+
+```
+line 902  (headingEuler) := 'LieGroups.SO3.EulerB321.from_Quat'(headingQuaternionWorldBody);
+line 904  headingDirectionWorld[i] := (i==1 ? cos(headingEuler[1])
+                                     : i==2 ? sin(headingEuler[1]) : 0.0);
+line 906  headingBasisWorld := headingDirectionWorld;
+line 907+ bodyYWorld := thrustDirectionWorld × headingBasisWorld;
+```
+
+and the emitted `from_Quat` body (lines 683–711) is the erased form:
+
+```
+for i in 1:3 loop 'euler'[i] := 0.0; end for;   (twice)
+if (sinp*sinp) > 0.9999^2 then
+    'euler'[1] := atan2(...);      <- gimbal-lock branch: ONLY yaw survives
+else
+    'euler'[3] := atan2(...);      <- NORMAL branch: ONLY roll survives
+end if;
+```
+
+`euler[1]` is **yaw** and `euler[2]` is **pitch** (confirmed against `to_Quat`,
+which reads `cy := cos('euler'[1]/2)`). **`euler[2]` is never assigned in any
+branch, in any container.** In normal flight the `else` branch runs, so yaw stays
+`0.0` from the initialization loop, and therefore:
+
+> **`headingDirectionWorld` is the constant `(1, 0, 0)` — a fixed East-pointing
+> heading basis — regardless of the commanded heading quaternion.** The
+> controller's attitude setpoint is built on it via `bodyYWorld`.
+
+**Measured blast radius across the v3 bundle** (`from_Quat` call sites / branch
+assignments retained):
+
+| Container | `from_Quat` calls | roll assign | yaw assign | **pitch assign** |
+| --- | --- | --- | --- | --- |
+| `Vehicles_Rdd2_Controller` | 4 | 1 | 1 | **0** |
+| `Vehicles_Rdd2_GuidanceController` | 2 | 1 | 1 | **0** |
+| `Vehicles_Rdd2_NavigationEstimator` | 1 | 1 | 1 | **0** |
+| `Vehicles_Rdd2_RateControlAllocator` | 0 | — | — | — |
+| `Planning_Bezier_WaypointTrajectoryPlanner` | 0 | — | — | — |
+| `Vehicles_Cubs2_OuterLoop` | 0 | — | — | — |
+
+Three of six containers, matching the ledger's "replicated in 3 of 6".
+
+**Firmware side — verified clean.** The eFMU exposes
+`estimate_eulerRpy_rad` / `eulerRpy_rad` in the generated headers, and
+`cerebri_rdd2` contains **zero** references to any euler symbol in `src/`,
+`subsys/` or `tests/`. The only hits repo-wide are host-side `xtask` simulation
+tooling and a `docs/ground_station_telemetry.md` note stating that attitude is
+published as a quaternion. So **no firmware consumer reads the eFMU's euler
+output.**
+
+**Net effect on P11 — it does not tilt Block 4 toward RUN.** The firmware
+boundary is clean, which was the question asked; but the damage is *upstream of
+that boundary*, inside the generated controllers themselves. The remaining
+question is therefore **not** "does firmware read euler" (answered: no) but:
+
+> **Which flight modes execute `Controller.alg`'s heading-basis path?** If manual
+> ACRO/ATTITUDE routes through `Controller` at all, the attitude setpoint is
+> built on a constant heading basis and Block 4 is **RED on v3**.
+
+That is a firmware mode-router question and it is **Codex's to answer.** Until it
+is answered, Block 4 stays CONDITIONAL and the model-side evidence does **not**
+support relaxing it.
 
 ### 1.2 Hard blockers
 
@@ -294,12 +373,15 @@ aircraft to hold anything.
 
 ### Block 4 — Manual ACRO / ATTITUDE free flight (CONDITIONAL on v3 — **PENDING-B1-SCOPE**)
 
-> **On a v3 image this block does not run until P11 is answered.** B1 hard-zeros
-> pitch and yaw in `eulerRpy_rad`. `GuidanceController` is a confirmed consumer;
-> whether any manual ACRO/ATTITUDE path also consumes euler is **not
-> established**. If it does, this block is RED on v3. Quaternion and DCM outputs
-> are correct, so a manual path that uses only those is clean — but that must be
-> confirmed, not assumed.
+> **On a v3 image this block does not run until P11 is answered — see §1.3.**
+> The partial answer received *narrows* the question without relieving it:
+> no firmware consumer reads the eFMU's euler output (verified), and
+> `Controller.alg` never reads its `navigation.eulerRpy_rad` input (verified).
+> **But `Controller.alg` calls the defective `from_Quat` itself**, and builds its
+> heading basis from the hard-zeroed yaw — giving a constant East-pointing
+> heading basis in normal flight. The open question is now **which modes execute
+> that path**. If manual ACRO/ATTITUDE routes through `Controller`, this block is
+> **RED on v3**.
 
 **Entry criteria**: Blocks 1–3 (steps 1–3) green. **P11 answered clean, or a
 fixed bundle flown (P10).** Estimator `RatesValid` true and stable. Timing,
@@ -856,7 +938,7 @@ closes it.
 | PENDING-VERIFY-P8 | GNSS observability on shell + downlink in the flown image | Block 1 | Observed `gnss status`, `zros topic hz gnss_fix`, and downlink fields on the day |
 | PENDING-CUBS2 (P9) | CUBS2 CSyn v0.9 hard cutover | **none** — release blocker only | CUBS2 `west.yml` + validation receipt |
 | **PENDING-FIXSET (P10)** | **B1–B4** fix set: compiler conditional-multi-write fix, NaN acceptance predicate, re-init policy redesign, flow-lockout acceptance scenario — in a **new, re-receipted, re-reviewed bundle** | **Blocks 3 step 4, 5, 6, 7, 8** | New manifest digest + new ELF sha256s + fresh adversarial APPROVE |
-| **PENDING-B1-SCOPE (P11)** | Which consumers read `eulerRpy_rad` outside Guidance | **Block 4** on any v3 image | Codex's confirmation of the manual ACRO/ATTITUDE path |
+| **PENDING-B1-SCOPE (P11)** | **Which flight modes execute `Controller.alg`'s heading-basis path** (§1.3). The euler *input-port* and *firmware-consumer* questions are both answered and clean; the corruption enters through `Controller`'s own `from_Quat` call instead | **Block 4** on any v3 image | Codex's mode-router answer: does manual ACRO/ATTITUDE route through `Controller`? |
 | PENDING-FLOW-PHASING | Flow producer phase-offset from GPS publication (§4.5) | Blocks 7, 8 | Observed publish phases + flow applied fraction ≥ 0.75 |
 | PENDING-QUAL-149c2ff3 | Confirmation of the two failing altitude qualification gates against pinned qualification rumoca revision `149c2ff3` | §4.4 interpretation | Confirmation that both failures are the known flow-vertical-unobservability behavior |
 | TBD-R1–R4, R6, R10, R18, R33–R68 | **Declined by the rehearsal agent** — not derivable from model sim | §2 success criteria, §6 envelope columns | Owed by the flight-C, producer and test-conduct agents |
