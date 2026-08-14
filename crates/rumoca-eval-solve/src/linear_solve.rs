@@ -1,8 +1,6 @@
+use crate::tensor_policy::LinearSolveKernel;
 use crate::{EvalSolveError, get};
-use rumoca_solver::{
-    LinearSolveKernel, TensorPolicyError, matrix_is_diagonal, matrix_nonzeros,
-    select_linear_solve_kernel,
-};
+use rumoca_ir_solve::StructuralPattern;
 
 /// Evaluate a [`LinearOp::LinearSolveComponent`] op directly, destructuring its
 /// fields. Keeps the interpreter's `eval_op` match arm to a single line.
@@ -64,6 +62,8 @@ pub(crate) fn solve_all_unchecked(
     matrix_start: u32,
     rhs_start: u32,
     n: usize,
+    kernel: LinearSolveKernel,
+    matrix_pattern: Option<&StructuralPattern>,
     out: &mut [f64],
 ) -> Result<(), EvalSolveError> {
     if n == 0 {
@@ -76,27 +76,20 @@ pub(crate) fn solve_all_unchecked(
             span: None,
         });
     }
-    let start = matrix_start as usize;
     let matrix_len = checked_product(n, n, "linear solve matrix")?;
-    let matrix_end = checked_register_end(matrix_start, matrix_len)?;
-    let matrix_values = regs
-        .get(start..matrix_end)
-        .ok_or(EvalSolveError::RegisterOutOfBounds {
-            access: "read",
-            register: range_end_register(matrix_start, matrix_len),
-            len: regs.len(),
-            span: None,
-        })?;
+    ensure_register_range(regs, "read", matrix_start, matrix_len)?;
     ensure_register_range(regs, "read", rhs_start, n)?;
-    let diagonal = matrix_is_diagonal(matrix_values, n, 1.0e-14).map_err(tensor_policy_error)?;
-    let nonzeros = matrix_nonzeros(matrix_values, 1.0e-14);
-    match select_linear_solve_kernel(n, diagonal, nonzeros).map_err(tensor_policy_error)? {
+    match kernel {
         LinearSolveKernel::Diagonal => {
             solve_diagonal_unchecked(regs, matrix_start, rhs_start, n, out)?;
         }
-        LinearSolveKernel::SmallDense
-        | LinearSolveKernel::Dense
-        | LinearSolveKernel::SparseCandidate => {
+        LinearSolveKernel::SparseCandidate => {
+            let pattern = matrix_pattern.ok_or_else(|| {
+                linear_solve_error(n, None, "sparse kernel requires structural pattern")
+            })?;
+            solve_sparse_unchecked(regs, matrix_start, rhs_start, n, pattern, out)?;
+        }
+        LinearSolveKernel::SmallDense | LinearSolveKernel::Dense => {
             let mut matrix = build_augmented_matrix_unchecked(regs, matrix_start, rhs_start, n)?;
             if gaussian_eliminate(&mut matrix).is_none() {
                 return Err(linear_solve_error(n, None, "singular matrix"));
@@ -109,11 +102,36 @@ pub(crate) fn solve_all_unchecked(
     Ok(())
 }
 
-pub(crate) fn tensor_policy_error(error: TensorPolicyError) -> EvalSolveError {
-    EvalSolveError::ShapeContract {
-        message: format!("tensor policy failed: {error}"),
-        span: None,
+fn solve_sparse_unchecked(
+    regs: &[f64],
+    matrix_start: u32,
+    rhs_start: u32,
+    n: usize,
+    pattern: &StructuralPattern,
+    out: &mut [f64],
+) -> Result<(), EvalSolveError> {
+    if pattern.rows() as usize != n || pattern.columns() as usize != n {
+        return Err(linear_solve_error(
+            n,
+            None,
+            "sparse pattern shape does not match matrix",
+        ));
     }
+    let mut matrix = AugmentedMatrix::zeroed(n)?;
+    for row in 0..n {
+        pattern.visit_row_columns(row, |column| {
+            let offset = row * n + column;
+            matrix.set(row, column, regs[matrix_start as usize + offset]);
+        });
+        matrix.set(row, n, regs[rhs_start as usize + row]);
+    }
+    if gaussian_eliminate(&mut matrix).is_none() {
+        return Err(linear_solve_error(n, None, "singular matrix"));
+    }
+    for (component, destination) in out.iter_mut().take(n).enumerate() {
+        *destination = matrix.solution_component(component);
+    }
+    Ok(())
 }
 
 fn solve_diagonal_unchecked(
@@ -253,13 +271,18 @@ fn build_augmented_matrix_unchecked(
     Ok(matrix)
 }
 
-pub(crate) struct AugmentedMatrix {
+/// Dense augmented `[A | b]` matrix used by the scalar Gaussian-elimination
+/// linear solve.
+///
+/// `pub` for `rumoca_solver::runtime::jacobian`, which reuses the same dense
+/// elimination for its inspector dumps.
+pub struct AugmentedMatrix {
     values: Vec<f64>,
     n: usize,
 }
 
 impl AugmentedMatrix {
-    pub(crate) fn zeroed(n: usize) -> Result<Self, EvalSolveError> {
+    pub fn zeroed(n: usize) -> Result<Self, EvalSolveError> {
         let len = checked_augmented_matrix_len(n)?;
         let mut values = Vec::new();
         reserve_linear_solve_capacity(&mut values, len)?;
@@ -275,11 +298,11 @@ impl AugmentedMatrix {
         self.n + 1
     }
 
-    pub(crate) fn get(&self, row: usize, col: usize) -> f64 {
+    pub fn get(&self, row: usize, col: usize) -> f64 {
         self.values[self.index(row, col)]
     }
 
-    pub(crate) fn set(&mut self, row: usize, col: usize, value: f64) {
+    pub fn set(&mut self, row: usize, col: usize, value: f64) {
         let index = self.index(row, col);
         self.values[index] = value;
     }
@@ -297,7 +320,7 @@ impl AugmentedMatrix {
     }
 }
 
-pub(crate) fn gaussian_eliminate(matrix: &mut AugmentedMatrix) -> Option<()> {
+pub fn gaussian_eliminate(matrix: &mut AugmentedMatrix) -> Option<()> {
     let n = matrix.n;
     for col in 0..n {
         let pivot = (col..n).max_by(|&a, &b| {
