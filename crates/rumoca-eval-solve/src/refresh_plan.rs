@@ -4,6 +4,9 @@
 //! (the runtime state machine) and by this crate's prepared-block batching. The
 //! module is `pub` only for that cross-crate consumer; nothing outside
 //! `rumoca-solver`'s runtime should construct or mutate a [`RefreshPlan`].
+// SPEC_0021 file-size exception - split plan: extract exact-assignment catalog
+// construction into refresh_plan/exact_assignments.rs, leaving plan assembly
+// and the public evaluation facade here; tracked as refresh-plan cleanup debt.
 
 mod dependency_domain;
 mod event_dependencies;
@@ -1270,12 +1273,7 @@ fn parameter_static_refresh_targets<A: RefreshProgramAccess + ?Sized>(
             let Some(row) = block.source_program(refresh_row.source()) else {
                 continue;
             };
-            if parameter_static_refresh_row(
-                row,
-                refresh_row.target_index(),
-                state_count,
-                &static_targets,
-            ) {
+            if parameter_static_refresh_row(row, refresh_row, state_count, &static_targets) {
                 static_targets.insert(refresh_row.target_index());
                 changed = true;
             }
@@ -1288,11 +1286,45 @@ fn parameter_static_refresh_targets<A: RefreshProgramAccess + ?Sized>(
 
 fn parameter_static_refresh_row(
     row: &[solve::LinearOp],
-    target_index: usize,
+    refresh_row: &AlgebraicRefreshRow,
     state_count: usize,
     static_targets: &BTreeSet<usize>,
 ) -> bool {
-    parameter_static_refresh_program(row, target_index, state_count, static_targets)
+    let target_index = refresh_row.target_index();
+    let Some(shape) = refresh_row.assignment_shape() else {
+        return parameter_static_refresh_program(
+            row,
+            target_index,
+            state_count,
+            static_targets,
+            None,
+        );
+    };
+    let analyzer = solve::ScalarProgramYDependency::new(row);
+    let mut dependencies = BTreeSet::new();
+    let mut insert = |register| {
+        analyzer
+            .dependencies(register)
+            .map(|indices| dependencies.extend(indices))
+            .is_some()
+    };
+    let complete = match shape {
+        solve::TargetAssignmentShape::Direct { expr_reg, .. } => insert(expr_reg),
+        solve::TargetAssignmentShape::Affine {
+            offset_reg,
+            coefficient_reg,
+            ..
+        } => insert(offset_reg) && coefficient_reg.is_none_or(&mut insert),
+        solve::TargetAssignmentShape::AffineResidual { residual_reg, .. } => insert(residual_reg),
+    };
+    complete
+        && parameter_static_refresh_program(
+            row,
+            target_index,
+            state_count,
+            static_targets,
+            Some(&dependencies),
+        )
 }
 
 // SPEC_0021: Exception - exhaustive classification of every Solve LinearOp
@@ -1304,10 +1336,12 @@ fn parameter_static_refresh_program(
     target_index: usize,
     state_count: usize,
     static_targets: &BTreeSet<usize>,
+    relevant_y: Option<&BTreeSet<usize>>,
 ) -> bool {
     program.iter().all(|op| match op {
         solve::LinearOp::LoadY { index, .. } => {
-            parameter_static_y_index(*index, target_index, state_count, static_targets)
+            relevant_y.is_some_and(|relevant| !relevant.contains(index))
+                || parameter_static_y_index(*index, target_index, state_count, static_targets)
         }
         solve::LinearOp::TensorLoad {
             input: solve::TensorInputKind::Y,
@@ -1316,7 +1350,8 @@ fn parameter_static_refresh_program(
             ..
         } => input_start.checked_add(*count).is_some_and(|end| {
             (*input_start..end).all(|index| {
-                parameter_static_y_index(index, target_index, state_count, static_targets)
+                relevant_y.is_some_and(|relevant| !relevant.contains(&index))
+                    || parameter_static_y_index(index, target_index, state_count, static_targets)
             })
         }),
         solve::LinearOp::FunctionFold { program, .. }
@@ -1325,6 +1360,7 @@ fn parameter_static_refresh_program(
             target_index,
             state_count,
             static_targets,
+            relevant_y,
         ),
         solve::LinearOp::FunctionConditional { program, .. } => {
             program.arms.iter().all(|arm| {
@@ -1333,17 +1369,20 @@ fn parameter_static_refresh_program(
                     target_index,
                     state_count,
                     static_targets,
+                    relevant_y,
                 ) && parameter_static_refresh_program(
                     &arm.result,
                     target_index,
                     state_count,
                     static_targets,
+                    relevant_y,
                 )
             }) && parameter_static_refresh_program(
                 &program.fallback,
                 target_index,
                 state_count,
                 static_targets,
+                relevant_y,
             )
         }
         solve::LinearOp::StoreOutputFunctionFold { program, .. } => {
@@ -1352,6 +1391,7 @@ fn parameter_static_refresh_program(
                 target_index,
                 state_count,
                 static_targets,
+                relevant_y,
             )
         }
         solve::LinearOp::LoadTime { .. }

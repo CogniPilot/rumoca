@@ -104,12 +104,37 @@ impl<'a> ScalarProgramYDependency<'a> {
         }
     }
 
+    /// Derive output-specific pure-call dependencies from the checked owner
+    /// table instead of conservatively assigning every call input to every
+    /// call output.
+    pub fn new_with_pure_calls(
+        program: &'a [LinearOp],
+        pure_calls: &crate::SolvePureCallTable,
+    ) -> Self {
+        Self {
+            dependencies:
+                crate::structural_pattern::program_register_y_dependencies_with_pure_calls(
+                    program,
+                    Some(pure_calls),
+                )
+                .ok(),
+            program: std::marker::PhantomData,
+        }
+    }
+
     pub fn depends_on(&self, register: u32, target: usize) -> bool {
         self.dependencies
             .as_ref()
             .and_then(|dependencies| dependencies.get(register as usize))
             .and_then(Option::as_ref)
             .is_none_or(|dependencies| dependencies.contains(&target))
+    }
+
+    /// Exact solver-Y dependency set for one initialized register, or `None`
+    /// when the checked structural walk cannot prove it.
+    #[must_use]
+    pub fn dependencies(&self, register: u32) -> Option<&BTreeSet<usize>> {
+        self.dependencies.as_ref()?.get(register as usize)?.as_ref()
     }
 }
 

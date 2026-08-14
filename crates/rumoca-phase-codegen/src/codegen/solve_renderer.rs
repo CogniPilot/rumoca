@@ -58,6 +58,7 @@ impl SolveTemplateRenderer {
                 None,
                 dae_entry,
                 Value::default(),
+                Value::default(),
             )?,
         })
     }
@@ -72,7 +73,7 @@ impl SolveTemplateRenderer {
     ) -> Result<Self, CodegenError> {
         let dae_entry = checked_dae_template_value(dae_model)?;
         let fmi_entry = Value::from_serialize(&component);
-        let solve = component.into_solve();
+        let (solve, pure_calls) = component.into_executable();
         Ok(Self {
             context: solve_render_context_value_with_arcs(
                 std::sync::Arc::new(solve),
@@ -80,6 +81,7 @@ impl SolveTemplateRenderer {
                 None,
                 dae_entry,
                 fmi_entry,
+                Value::from_serialize(&pure_calls),
             )?,
         })
     }
@@ -146,6 +148,7 @@ fn solve_render_context_value_with_dae(
         model_name,
         dae_entry,
         Value::default(),
+        Value::default(),
     )
 }
 
@@ -155,6 +158,7 @@ fn solve_render_context_value_with_arcs(
     model_name: Option<&str>,
     dae_entry: Value,
     fmi_entry: Value,
+    pure_calls_entry: Value,
 ) -> Result<Value, CodegenError> {
     // Lazy `solve` / `solve_derivative_nodes` (see `solve_lazy`): structural
     // fields serialize on demand and op lists materialize one op at a time, so a
@@ -200,6 +204,7 @@ fn solve_render_context_value_with_arcs(
         Some(name) => minijinja::context! {
             dae => dae_entry.clone(),
             fmi => fmi_entry.clone(),
+            pure_calls => pure_calls_entry.clone(),
             solve => solve_value.clone(),
             solve_artifacts => artifacts_value,
             ir => solve_value,
@@ -214,6 +219,7 @@ fn solve_render_context_value_with_arcs(
         None => minijinja::context! {
             dae => dae_entry.clone(),
             fmi => fmi_entry.clone(),
+            pure_calls => pure_calls_entry.clone(),
             solve => solve_value.clone(),
             solve_artifacts => artifacts_value,
             ir => solve_value,

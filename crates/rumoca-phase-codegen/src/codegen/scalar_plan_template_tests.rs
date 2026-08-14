@@ -63,6 +63,35 @@ fn scalar_plan_preserves_indexed_load_semantics_output_mapping_and_provenance() 
 }
 
 #[test]
+fn scalar_plan_consumes_the_checked_compact_register_count() {
+    let problem = derivative_problem(vec![
+        solve::LinearOp::TensorLoad {
+            dst_start: 5,
+            input: solve::TensorInputKind::P,
+            input_start: 0,
+            count: 9,
+            seed_start: None,
+            lanes: 1,
+        },
+        solve::LinearOp::StoreOutputRange {
+            start: 5,
+            count: 9,
+            stride: 1,
+        },
+    ]);
+    let artifacts = solve::SolveArtifacts::default();
+    let rendered = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        r#"{% for program in solve_blocks.continuous.derivative_rhs.scalar_plan.programs %}temps={{ program.temporary_count }}{% endfor %}"#,
+        "CompactRegisters",
+    )
+    .expect("the scalar plan consumes the checked register-count proof");
+
+    assert_eq!(rendered, "temps=14");
+}
+
+#[test]
 fn multi_output_program_emits_every_store_and_computes_shared_register_once() {
     let problem = derivative_problem(vec![
         solve::LinearOp::LoadP { dst: 0, index: 0 },

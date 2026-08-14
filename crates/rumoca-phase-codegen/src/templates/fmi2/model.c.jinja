@@ -146,7 +146,9 @@ static fmi2Status get_real(ModelInstance* m, fmi2ValueReference vr, fmi2Real* va
 {%- set vr = namespace(value=1) %}
 {%- for variable in fmi.variables %}
 {%- for scalar in range(variable.storage.scalar_count) %}
+{%- if variable.value_kind == "Real" %}
     case {{ vr.value }}: *value = m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}]; return fmi2OK;
+{%- endif %}
 {%- set vr.value = vr.value + 1 %}
 {%- endfor %}
 {%- endfor %}
@@ -158,7 +160,7 @@ static fmi2Status get_real(ModelInstance* m, fmi2ValueReference vr, fmi2Real* va
     }
 }
 
-static fmi2Boolean can_set_real(const ModelInstance* m, fmi2ValueReference vr) {
+static fmi2Boolean can_set_value(const ModelInstance* m, fmi2ValueReference vr) {
     switch (vr) {
 {%- set vr = namespace(value=1) %}
 {%- for variable in fmi.variables %}
@@ -191,11 +193,75 @@ static fmi2Status set_real(ModelInstance* m, fmi2ValueReference vr, fmi2Real val
 {%- set vr.value = 1 %}
 {%- for variable in fmi.variables %}
 {%- for scalar in range(variable.storage.scalar_count) %}
+{%- if variable.value_kind == "Real" %}
     case {{ vr.value }}: m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}] = value; return fmi2OK;
+{%- endif %}
 {%- set vr.value = vr.value + 1 %}
 {%- endfor %}
 {%- endfor %}
     default: return fmi2Error;
+    }
+}
+
+static fmi2Status get_boolean(ModelInstance* m, fmi2ValueReference vr, fmi2Boolean* value) {
+    (void)m; (void)value;
+    switch (vr) {
+{%- set vr.value = 1 %}
+{%- for variable in fmi.variables %}
+{%- for scalar in range(variable.storage.scalar_count) %}
+{%- if variable.value_kind == "Boolean" %}
+    case {{ vr.value }}: *value = m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}] != 0.0 ? fmi2True : fmi2False; return fmi2OK;
+{%- endif %}
+{%- set vr.value = vr.value + 1 %}
+{%- endfor %}
+{%- endfor %}
+    default: return fmi2Error;
+    }
+}
+
+static fmi2Status set_boolean(ModelInstance* m, fmi2ValueReference vr, fmi2Boolean value) {
+    (void)m; (void)value;
+    switch (vr) {
+{%- set vr.value = 1 %}
+{%- for variable in fmi.variables %}
+{%- for scalar in range(variable.storage.scalar_count) %}
+{%- if variable.value_kind == "Boolean" %}
+    case {{ vr.value }}: m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}] = value != fmi2False ? 1.0 : 0.0; return fmi2OK;
+{%- endif %}
+{%- set vr.value = vr.value + 1 %}
+{%- endfor %}
+{%- endfor %}
+    default: return fmi2Error;
+    }
+}
+
+static fmi2Boolean is_real_variable(fmi2ValueReference vr) {
+    switch (vr) {
+{%- set vr.value = 1 %}
+{%- for variable in fmi.variables %}
+{%- for scalar in range(variable.storage.scalar_count) %}
+{%- if variable.value_kind == "Real" %}
+    case {{ vr.value }}: return fmi2True;
+{%- endif %}
+{%- set vr.value = vr.value + 1 %}
+{%- endfor %}
+{%- endfor %}
+    default: return fmi2False;
+    }
+}
+
+static fmi2Boolean is_boolean_variable(fmi2ValueReference vr) {
+    switch (vr) {
+{%- set vr.value = 1 %}
+{%- for variable in fmi.variables %}
+{%- for scalar in range(variable.storage.scalar_count) %}
+{%- if variable.value_kind == "Boolean" %}
+    case {{ vr.value }}: return fmi2True;
+{%- endif %}
+{%- set vr.value = vr.value + 1 %}
+{%- endfor %}
+{%- endfor %}
+    default: return fmi2False;
     }
 }
 
@@ -216,12 +282,13 @@ FMI_EXPORT fmi2Status fmi2ExitInitializationMode(fmi2Component c) { ModelInstanc
 FMI_EXPORT fmi2Status fmi2Terminate(fmi2Component c) { ModelInstance* m = c; if (!m || (m->state != MODEL_EVENT && m->state != MODEL_CONTINUOUS && m->state != MODEL_STEP)) return fmi2Error; m->state = MODEL_TERMINATED; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2Reset(fmi2Component c) { ModelInstance* m = c; if (!m) return fmi2Error; initialize_values(m); m->state = MODEL_INSTANTIATED; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2GetReal(fmi2Component c, const fmi2ValueReference vr[], size_t n, fmi2Real values[]) { ModelInstance* m = c; if (!m || (!vr && n) || (!values && n) || m->state == MODEL_INSTANTIATED) return fmi2Error; for (size_t i = 0; i < n; ++i) if (get_real(m, vr[i], &values[i]) != fmi2OK) return fmi2Error; return fmi2OK; }
-FMI_EXPORT fmi2Status fmi2SetReal(fmi2Component c, const fmi2ValueReference vr[], size_t n, const fmi2Real values[]) { ModelInstance* m = c; if (!m || (!vr && n) || (!values && n)) return fmi2Error; for (size_t i = 0; i < n; ++i) if (!can_set_real(m, vr[i]) || !isfinite(values[i])) return fmi2Error; for (size_t i = 0; i < n; ++i) if (set_real(m, vr[i], values[i]) != fmi2OK) return fmi2Error; return fmi2OK; }
+FMI_EXPORT fmi2Status fmi2SetReal(fmi2Component c, const fmi2ValueReference vr[], size_t n, const fmi2Real values[]) { ModelInstance* m = c; if (!m || (!vr && n) || (!values && n)) return fmi2Error; for (size_t i = 0; i < n; ++i) if (!is_real_variable(vr[i]) || !can_set_value(m, vr[i]) || !isfinite(values[i])) return fmi2Error; for (size_t i = 0; i < n; ++i) if (set_real(m, vr[i], values[i]) != fmi2OK) return fmi2Error; return fmi2OK; }
+FMI_EXPORT fmi2Status fmi2GetBoolean(fmi2Component c, const fmi2ValueReference vr[], size_t n, fmi2Boolean values[]) { ModelInstance* m = c; if (!m || (!vr && n) || (!values && n) || m->state == MODEL_INSTANTIATED) return fmi2Error; for (size_t i = 0; i < n; ++i) if (get_boolean(m, vr[i], &values[i]) != fmi2OK) return fmi2Error; return fmi2OK; }
+FMI_EXPORT fmi2Status fmi2SetBoolean(fmi2Component c, const fmi2ValueReference vr[], size_t n, const fmi2Boolean values[]) { ModelInstance* m = c; if (!m || (!vr && n) || (!values && n)) return fmi2Error; for (size_t i = 0; i < n; ++i) if (!is_boolean_variable(vr[i]) || !can_set_value(m, vr[i])) return fmi2Error; for (size_t i = 0; i < n; ++i) if (set_boolean(m, vr[i], values[i]) != fmi2OK) return fmi2Error; return fmi2OK; }
 #define UNSUPPORTED_GET_SET(Type, Name) \
 FMI_EXPORT fmi2Status fmi2Get##Name(fmi2Component c, const fmi2ValueReference vr[], size_t n, Type values[]) { (void)c; (void)vr; (void)values; return n == 0 ? fmi2OK : fmi2Error; } \
 FMI_EXPORT fmi2Status fmi2Set##Name(fmi2Component c, const fmi2ValueReference vr[], size_t n, const Type values[]) { (void)c; (void)vr; (void)values; return n == 0 ? fmi2OK : fmi2Error; }
 UNSUPPORTED_GET_SET(fmi2Integer, Integer)
-UNSUPPORTED_GET_SET(fmi2Boolean, Boolean)
 UNSUPPORTED_GET_SET(fmi2String, String)
 FMI_EXPORT fmi2Status fmi2SetTime(fmi2Component c, fmi2Real time) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || !isfinite(time)) return fmi2Error; m->time = time; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2SetContinuousStates(fmi2Component c, const fmi2Real x[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || nx != {{ solve.solve_layout.state_scalar_count }} || (!x && nx)) return fmi2Error; for (size_t i = 0; i < nx; ++i) if (!isfinite(x[i])) return fmi2Error; for (size_t i = 0; i < nx; ++i) m->y[i] = x[i]; return fmi2OK; }

@@ -189,9 +189,13 @@ fn build_metadata(block: &solve::ScalarProgramBlock) -> Result<Vec<ProgramMetada
     let mut output_ordinal = 0usize;
     let mut metadata = Vec::new();
     reserve_metadata(&mut metadata, block.programs().len())?;
-    for program in block.programs() {
+    for (program_index, program) in block.programs().iter().enumerate() {
+        let register_count = block.program_register_count(program_index).ok_or_else(|| {
+            CodegenError::template("checked scalar program register proof is missing")
+        })?;
         metadata.push(build_program_metadata(
             program,
+            register_count,
             block.output_indices(),
             &mut output_ordinal,
         )?);
@@ -211,6 +215,7 @@ fn reserve_metadata(
 
 fn build_program_metadata(
     program: &[solve::LinearOp],
+    register_count: usize,
     output_indices: &[usize],
     output_ordinal: &mut usize,
 ) -> Result<ProgramMetadata, CodegenError> {
@@ -221,9 +226,7 @@ fn build_program_metadata(
             CodegenError::template("scalar program plan operation metadata exceeds host limits")
         })?;
     let mut output_count = 0usize;
-    let mut temporary_count = 0usize;
     for op in program {
-        temporary_count = temporary_count.max(temporary_count_after(op)?);
         output_targets.push(take_output_target(
             op,
             output_indices,
@@ -234,25 +237,8 @@ fn build_program_metadata(
     Ok(ProgramMetadata {
         output_targets,
         output_count,
-        temporary_count,
+        temporary_count: register_count,
     })
-}
-
-fn temporary_count_after(op: &solve::LinearOp) -> Result<usize, CodegenError> {
-    let Some(dst) = op.dst_register() else {
-        return Ok(0);
-    };
-    let width = match op {
-        solve::LinearOp::FunctionFold { program, .. }
-        | solve::LinearOp::GuardedFunctionFold { program, .. } => program.carried_count,
-        _ => 1,
-    };
-    usize::try_from(dst)
-        .ok()
-        .and_then(|dst| dst.checked_add(width))
-        .ok_or_else(|| {
-            CodegenError::template("scalar program plan temporary index exceeds host range")
-        })
 }
 
 fn take_output_target(
@@ -646,6 +632,15 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             "count" => Some(Value::from(count)),
             "seed_start" => seed_start.map(Value::from),
             "lanes" => Some(Value::from(lanes)),
+            _ => None,
+        },
+        LinearOp::PureCall {
+            ref input_starts,
+            ref site,
+            ..
+        } => match key {
+            "input_starts" => Some(Value::from_serialize(input_starts)),
+            "owner" => Some(Value::from(site.owner().index())),
             _ => None,
         },
         _ => None,

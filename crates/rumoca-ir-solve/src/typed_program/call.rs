@@ -1,11 +1,12 @@
 use rumoca_core::Span;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 
 use super::program::wire::{TypedProgramWire, replay_program};
 use super::program::{
-    ProgramSlot, SolveOperation, SolveProgramConstructionError, SolveSlotAccess, SolveStorageClass,
-    TypedProgram, TypedProgramBuilder,
+    ProgramSlot, SolveOperation, SolveProgramConstructionError, SolveRegisterId, SolveSlotAccess,
+    SolveStorageClass, TypedProgram, TypedProgramBuilder,
 };
 use super::types::{SolveArithmeticProfile, SolveScalarType, SolveValueType};
 
@@ -367,6 +368,134 @@ impl SolvePureCallTable {
             })
         })
     }
+
+    /// Conservative typed-input dependencies of each typed output of one
+    /// checked pure-call owner.
+    ///
+    /// The result is output-specific: an assertion-predicate suffix does not
+    /// inherit dependencies from unrelated value results produced by the same
+    /// atomic call. Nested calls are resolved through their checked owners.
+    #[must_use]
+    pub fn output_input_dependencies(
+        &self,
+        id: SolvePureCallOwnerId,
+    ) -> Option<Box<[Box<[usize]>]>> {
+        let owner = self.owner(id)?;
+        typed_program_output_input_dependencies(
+            owner.body(),
+            owner.inputs().len(),
+            owner.outputs().len(),
+            self,
+        )
+    }
+}
+
+fn typed_program_output_input_dependencies(
+    body: &TypedProgram,
+    input_count: usize,
+    output_count: usize,
+    calls: &SolvePureCallTable,
+) -> Option<Box<[Box<[usize]>]>> {
+    let interface_count = input_count.checked_add(output_count)?;
+    if body.slots().len() < interface_count {
+        return None;
+    }
+    let mut slots = vec![None; body.slots().len()];
+    for (input, dependencies) in slots.iter_mut().take(input_count).enumerate() {
+        *dependencies = Some(BTreeSet::from([input]));
+    }
+    let mut registers: Vec<Option<BTreeSet<usize>>> = vec![None; body.register_types().len()];
+    for operation in body.operations() {
+        apply_typed_input_dependency_operation(
+            operation.operation(),
+            &mut registers,
+            &mut slots,
+            calls,
+        )?;
+    }
+    slots[input_count..interface_count]
+        .iter()
+        .map(|dependencies| {
+            dependencies
+                .as_ref()
+                .map(|dependencies| dependencies.iter().copied().collect::<Vec<_>>().into())
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(Vec::into_boxed_slice)
+}
+
+fn apply_typed_input_dependency_operation(
+    operation: &SolveOperation,
+    registers: &mut [Option<BTreeSet<usize>>],
+    slots: &mut [Option<BTreeSet<usize>>],
+    calls: &SolvePureCallTable,
+) -> Option<()> {
+    match operation {
+        SolveOperation::Constant { destination, .. } => {
+            registers[destination.index()] = Some(BTreeSet::new());
+        }
+        SolveOperation::Load { destination, slot } => {
+            registers[destination.index()] = slots.get(slot.index())?.clone();
+        }
+        SolveOperation::Store { slot, source } => {
+            slots[slot.index()] = registers.get(source.index())?.clone();
+        }
+        SolveOperation::Call {
+            owner,
+            arguments,
+            destinations,
+        } => {
+            apply_typed_call_input_dependencies(*owner, arguments, destinations, registers, calls)?
+        }
+        operation => apply_conservative_typed_input_dependencies(operation, registers)?,
+    }
+    Some(())
+}
+
+fn apply_typed_call_input_dependencies(
+    owner: SolvePureCallOwnerId,
+    arguments: &[SolveRegisterId],
+    destinations: &[SolveRegisterId],
+    registers: &mut [Option<BTreeSet<usize>>],
+    calls: &SolvePureCallTable,
+) -> Option<()> {
+    let output_dependencies = calls.output_input_dependencies(owner)?;
+    if output_dependencies.len() != destinations.len() {
+        return None;
+    }
+    for (destination, inputs) in destinations.iter().zip(output_dependencies.iter()) {
+        registers[destination.index()] =
+            Some(resolve_typed_call_inputs(inputs, arguments, registers)?);
+    }
+    Some(())
+}
+
+fn resolve_typed_call_inputs(
+    inputs: &[usize],
+    arguments: &[SolveRegisterId],
+    registers: &[Option<BTreeSet<usize>>],
+) -> Option<BTreeSet<usize>> {
+    let mut dependencies = BTreeSet::new();
+    for input in inputs {
+        dependencies.extend(registers.get(arguments.get(*input)?.index())?.as_ref()?);
+    }
+    Some(dependencies)
+}
+
+fn apply_conservative_typed_input_dependencies(
+    operation: &SolveOperation,
+    registers: &mut [Option<BTreeSet<usize>>],
+) -> Option<()> {
+    let mut inputs = Vec::new();
+    operation.visit_input_registers(|input| inputs.push(input));
+    let mut dependencies = BTreeSet::new();
+    for input in inputs {
+        dependencies.extend(registers.get(input.index())?.as_ref()?);
+    }
+    operation.visit_output_registers(|output| {
+        registers[output.index()] = Some(dependencies.clone());
+    });
+    Some(())
 }
 
 pub struct SolvePureCallTableBuilder {
@@ -645,7 +774,9 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SolveIntegerDomain, SolveRealFormat, SolveRoundingMode, SolveValue};
+    use crate::{
+        SolveCompareOperator, SolveIntegerDomain, SolveRealFormat, SolveRoundingMode, SolveValue,
+    };
     use rumoca_core::SourceId;
 
     fn span(start: usize) -> Span {
@@ -727,6 +858,42 @@ mod tests {
             owner.body().operations()[0].operation(),
             SolveOperation::Load { .. }
         ));
+        assert_eq!(
+            table.output_input_dependencies(owner.id()).as_deref(),
+            Some(&[Box::<[usize]>::from([0]), Box::<[usize]>::from([])][..])
+        );
+    }
+
+    #[test]
+    fn assertion_predicate_retains_only_its_own_typed_input_dependency() {
+        let real = SolveValueType::scalar(SolveScalarType::real(profile()));
+        let table = SolvePureCallTable::construct(profile(), |table| {
+            table.add_owner(
+                identity(1),
+                vec![real.clone(), real.clone()],
+                vec![
+                    SolvePureCallOutput::result(real.clone()),
+                    SolvePureCallOutput::assertion_predicate(),
+                ],
+                span(0),
+                |builder, inputs, outputs| {
+                    let runtime_value = builder.load(inputs[0], span(1))?;
+                    let parameter = builder.load(inputs[1], span(2))?;
+                    let zero = builder.constant(SolveValue::real(profile(), 0.0), span(3))?;
+                    let safe =
+                        builder.compare(SolveCompareOperator::Greater, parameter, zero, span(4))?;
+                    builder.store(outputs[0], runtime_value, span(5))?;
+                    builder.store(outputs[1], safe, span(6))
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let dependencies = table
+            .output_input_dependencies(table.owners()[0].id())
+            .expect("checked owner dependencies derive");
+        assert_eq!(dependencies.as_ref(), &[Box::from([0]), Box::from([1])]);
     }
 
     #[test]
@@ -786,6 +953,13 @@ mod tests {
         assert_eq!(*owner, table.owners()[0].id());
         assert_eq!(arguments.len(), 1);
         assert_eq!(destinations.len(), 2);
+        assert_eq!(
+            table
+                .output_input_dependencies(outer.id())
+                .expect("nested checked dependencies derive")
+                .as_ref(),
+            &[Box::from([0]), Box::from([])]
+        );
 
         let json = serde_json::to_string(&table).expect("call table serializes");
         let replayed: SolvePureCallTable =

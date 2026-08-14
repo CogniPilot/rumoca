@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 pub use rumoca_eval_solve::nan_trace;
 use rumoca_ir_dae as dae;
 pub use rumoca_phase_solve::{
-    deserialize_solve_model, lower_solve_artifacts, lower_solve_problem, solve_model_wire,
+    LoweredSolvePackage, deserialize_solve_model, lower_solve_artifacts, lower_solve_package,
+    lower_solve_problem, solve_model_wire,
 };
 pub use rumoca_solver::{
     BackendState, DiffsolMethod, LoopStats, RuntimeProgressSnapshot, RuntimeStopSchedule,

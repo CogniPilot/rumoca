@@ -28,6 +28,7 @@ external_functions = false
 external_tables = false
 random = false
 initialization = false
+parameter_assertions = true
 events = false
 runtime_events = false
 clocks = false

@@ -703,12 +703,16 @@ fn resolve_manifest_renderer(
         return Ok(ManifestRenderer::AlgorithmCode { renderer, artifact });
     }
     if manifest.ir == TargetTemplateIr::Fmi {
-        let solve = rumoca_sim::lower_solve_problem(&result.dae)
+        let package = rumoca_sim::lower_solve_package(&result.dae)
             .context("Lower Solve IR for checked FMI component")?;
-        let artifacts = rumoca_sim::lower_solve_artifacts(&solve)
+        let artifacts = rumoca_sim::lower_solve_artifacts(&package.problem)
             .context("Lower Solve artifacts for checked FMI component")?;
-        let component = rumoca_phase_fmi::lower_to_fmi_component(&result.dae, solve)
-            .context("Construct checked FMI component")?;
+        let component = rumoca_phase_fmi::lower_to_fmi_component(
+            &result.dae,
+            package.problem,
+            package.pure_calls,
+        )
+        .context("Construct checked FMI component")?;
         let renderer = rumoca_phase_codegen::SolveTemplateRenderer::new_owned_with_fmi(
             component,
             artifacts,

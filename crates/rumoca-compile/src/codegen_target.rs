@@ -143,6 +143,9 @@ pub struct TargetCapabilities {
     pub external_tables: Option<bool>,
     pub random: Option<bool>,
     pub initialization: Option<bool>,
+    /// The target consumes checked parameter-only assertions at initialization
+    /// without claiming the general event/update lifecycle.
+    pub parameter_assertions: Option<bool>,
     pub events: Option<bool>,
     pub runtime_events: Option<bool>,
     pub forward_ad: Option<bool>,
@@ -738,7 +741,10 @@ pub fn validate_dae_target_capabilities(
     if capabilities.initialization == Some(false) && dae_has_initialization(dae) {
         unsupported_feature(manifest, "initialization", "initial equations present")?;
     }
-    if capabilities.events != Some(true) && dae_has_events(dae) {
+    if capabilities.events != Some(true)
+        && capabilities.parameter_assertions != Some(true)
+        && dae_has_events(dae)
+    {
         unsupported_feature(manifest, "events", "event or condition partitions present")?;
     }
     if capabilities.runtime_events == Some(false) && dae_has_runtime_events(dae) {
@@ -792,7 +798,10 @@ pub fn validate_solve_target_capabilities(
             "initialization residual, projection, or assignment owners present",
         )?;
     }
-    if capabilities.events != Some(true) && solve_has_events(solve) {
+    if capabilities.events != Some(true)
+        && capabilities.parameter_assertions != Some(true)
+        && solve_has_events(solve)
+    {
         unsupported_feature(manifest, "events", "event or discrete partitions present")?;
     }
     if capabilities.runtime_events == Some(false) && solve_has_runtime_events(solve) {

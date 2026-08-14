@@ -16,11 +16,19 @@
     <Float64 name="time" valueReference="0" causality="independent" variability="continuous" unit="s"/>
 {%- set state_ordinal = namespace(value=0) %}
 {%- for variable in fmi.variables %}
+{%- if variable.value_kind == "Boolean" %}
+    <Boolean name="{{ variable.name | xml_escape }}" valueReference="{{ variable.value_reference_fmi3 }}" causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.causality in ["parameter", "calculated_parameter"] %} initial="exact"{% endif %} start="{% for value in variable.start %}{{ "true" if value != 0 else "false" }}{{ " " if not loop.last else "" }}{% endfor %}"{% if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}>
+{%- for extent in variable.dimensions %}
+      <Dimension start="{{ extent }}"/>
+{%- endfor %}
+    </Boolean>
+{%- else %}
     <Float64 name="{{ variable.name | xml_escape }}" valueReference="{{ variable.value_reference_fmi3 }}" causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.role == "State" %} initial="exact"{% elif variable.causality in ["parameter", "calculated_parameter"] %} initial="exact"{% endif %} start="{% for value in variable.start %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}{% if variable.minimum %} min="{% for value in variable.minimum %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}{% if variable.maximum %} max="{% for value in variable.maximum %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}{% if variable.nominal %} nominal="{% for value in variable.nominal %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}>
 {%- for extent in variable.dimensions %}
       <Dimension start="{{ extent }}"/>
 {%- endfor %}
     </Float64>
+{%- endif %}
 {%- if variable.role == "State" %}
 {%- set state_ordinal.value = state_ordinal.value + 1 %}
 {%- endif %}

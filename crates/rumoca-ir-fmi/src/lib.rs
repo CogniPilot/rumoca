@@ -5,7 +5,11 @@
 //! aggregate value references are derived views of this one checked object.
 
 use rumoca_core::Span;
-use rumoca_ir_solve::{ScalarSlot, SolveProblem, SolveVariableStorageRole, SolveVariableValueKind};
+use rumoca_ir_solve::{
+    DiscreteRowRole, LinearOp, ScalarProgramYDependency, ScalarSlot, SolveEventActionKind,
+    SolveEventMessagePart, SolveProblem, SolvePureCallTable, SolveVariableStorageRole,
+    SolveVariableValueKind,
+};
 use serde::Serialize;
 use std::collections::BTreeSet;
 
@@ -169,6 +173,14 @@ pub enum FmiComponentError {
     ValueReferenceOverflow,
     #[error("FMI state scalar count {actual} does not match Solve state count {expected}")]
     StateCount { actual: usize, expected: usize },
+    #[error("FMI assertion-only event profile is invalid: {0}")]
+    UnsupportedAssertionProfile(&'static str),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FmiAssertion {
+    pub message_bytes: Vec<u8>,
+    pub span: Span,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,18 +188,22 @@ pub struct FmiComponent {
     variables: Vec<FmiVariable>,
     state_variable_indices: Vec<usize>,
     derivative_value_reference_base_fmi3: u32,
+    assertions: Vec<FmiAssertion>,
     #[serde(skip)]
     solve: SolveProblem,
+    #[serde(skip)]
+    pure_calls: SolvePureCallTable,
 }
 
 impl FmiComponent {
     pub fn construct(
         solve: SolveProblem,
+        pure_calls: SolvePureCallTable,
         inputs: Vec<FmiVariableInput>,
     ) -> Result<Self, FmiComponentError> {
-        solve
-            .validate()
+        rumoca_ir_solve::validate_problem_pure_call_sites(&solve, &pure_calls)
             .map_err(|error| FmiComponentError::InvalidSolve(error.to_string()))?;
+        let assertions = checked_assertion_profile(&solve, &pure_calls)?;
         let runs = &solve.solve_layout.variable_storage_runs;
         let declarations = &solve.solve_layout.variable_declarations;
         if inputs.len() != runs.len() || inputs.len() != declarations.len() {
@@ -279,7 +295,9 @@ impl FmiComponent {
             variables,
             state_variable_indices,
             derivative_value_reference_base_fmi3,
+            assertions,
             solve,
+            pure_calls,
         })
     }
 
@@ -299,9 +317,161 @@ impl FmiComponent {
     }
 
     #[must_use]
-    pub fn into_solve(self) -> SolveProblem {
-        self.solve
+    pub fn into_executable(self) -> (SolveProblem, SolvePureCallTable) {
+        (self.solve, self.pure_calls)
     }
+}
+
+fn checked_assertion_profile(
+    solve: &SolveProblem,
+    pure_calls: &SolvePureCallTable,
+) -> Result<Vec<FmiAssertion>, FmiComponentError> {
+    let events = &solve.events;
+    let discrete = &solve.discrete;
+    if !events.scheduled_root_conditions.is_empty()
+        || !events.scheduled_time_events.is_empty()
+        || !events.dynamic_time_event_names.is_empty()
+        || !events.dynamic_time_event_rhs.programs().is_empty()
+        || events.has_terminal_event
+        || !events.delays.source_rhs.programs().is_empty()
+        || !events.delays.delay_time_rhs.programs().is_empty()
+        || !events.delays.delay_max_rhs.programs().is_empty()
+        || !events.delays.value_parameter_indices.is_empty()
+        || !discrete.runtime_assignment_rhs.programs().is_empty()
+        || !discrete.post_commit_assignment_rhs.programs().is_empty()
+        || !discrete.guarded_assignments.is_empty()
+        || !discrete.event_transactions.is_empty()
+        || !discrete.structured_updates.is_empty()
+        || !discrete.clock_partition_order.is_empty()
+        || !solve.clocks.periodic_event_schedules.is_empty()
+    {
+        return Err(FmiComponentError::UnsupportedAssertionProfile(
+            "runtime, scheduled, clocked, or updating events remain",
+        ));
+    }
+    if events
+        .root_relation_memory_targets
+        .iter()
+        .any(Option::is_some)
+        || events.root_conditions.len() > events.actions.len()
+    {
+        return Err(FmiComponentError::UnsupportedAssertionProfile(
+            "a root is not covered by the checked assertion action profile",
+        ));
+    }
+    if events.action_conditions.len() != events.actions.len() {
+        return Err(FmiComponentError::UnsupportedAssertionProfile(
+            "assertion conditions are not action-aligned",
+        ));
+    }
+    validate_discrete_assertion_rows(solve)?;
+    validate_parameter_assertion_programs(solve, pure_calls)?;
+    events
+        .actions
+        .iter()
+        .map(|action| {
+            if action.kind != SolveEventActionKind::Assert || action.clock_owner.is_some() {
+                return Err(FmiComponentError::UnsupportedAssertionProfile(
+                    "a non-assertion or clock-owned action remains",
+                ));
+            }
+            let mut message = String::new();
+            for part in &action.message.parts {
+                let SolveEventMessagePart::Text(text) = part else {
+                    return Err(FmiComponentError::UnsupportedAssertionProfile(
+                        "a dynamic assertion message remains",
+                    ));
+                };
+                message.push_str(text);
+            }
+            Ok(FmiAssertion {
+                message_bytes: message.into_bytes(),
+                span: action.span,
+            })
+        })
+        .collect()
+}
+
+fn validate_parameter_assertion_programs(
+    solve: &SolveProblem,
+    pure_calls: &SolvePureCallTable,
+) -> Result<(), FmiComponentError> {
+    let static_y = solve
+        .continuous
+        .refresh_owners
+        .algebraic()
+        .static_causal_rows()
+        .iter()
+        .map(|row| row.target_index())
+        .collect::<BTreeSet<_>>();
+    let y_count = solve.solve_layout.solver_scalar_count();
+    for program in solve.events.action_conditions.programs() {
+        let outputs = program
+            .iter()
+            .filter_map(|operation| match operation {
+                LinearOp::StoreOutput { src } => Some(*src),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if outputs.is_empty()
+            || program
+                .iter()
+                .any(|operation| matches!(operation, LinearOp::StoreOutputRange { .. }))
+        {
+            return Err(FmiComponentError::UnsupportedAssertionProfile(
+                "an assertion condition has no scalar output owner",
+            ));
+        }
+        let dependencies = ScalarProgramYDependency::new_with_pure_calls(program, pure_calls);
+        if outputs.iter().any(|output| {
+            (0..y_count)
+                .any(|index| !static_y.contains(&index) && dependencies.depends_on(*output, index))
+        }) {
+            return Err(FmiComponentError::UnsupportedAssertionProfile(
+                "an assertion depends on runtime solver storage",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_discrete_assertion_rows(solve: &SolveProblem) -> Result<(), FmiComponentError> {
+    let discrete = &solve.discrete;
+    for ((program, role), target) in discrete
+        .rhs
+        .programs()
+        .iter()
+        .zip(&discrete.row_roles)
+        .zip(&discrete.update_targets)
+    {
+        if !matches!(target, ScalarSlot::P { .. }) {
+            return Err(FmiComponentError::UnsupportedAssertionProfile(
+                "a discrete row writes non-parameter storage",
+            ));
+        }
+        match role {
+            DiscreteRowRole::ConditionMemory if !solve.events.actions.is_empty() => {}
+            DiscreteRowRole::Equation if is_constant_discrete_program(program) => {}
+            DiscreteRowRole::Equation
+            | DiscreteRowRole::EventAction
+            | DiscreteRowRole::ConditionMemory => {
+                return Err(FmiComponentError::UnsupportedAssertionProfile(
+                    "a non-constant discrete equation or event update remains",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_constant_discrete_program(program: &[LinearOp]) -> bool {
+    matches!(
+        program,
+        [
+            LinearOp::Const { dst: 0, .. },
+            LinearOp::StoreOutput { src: 0 }
+        ]
+    )
 }
 
 fn checked_scalar_count(input: &FmiVariableInput) -> Result<usize, FmiComponentError> {

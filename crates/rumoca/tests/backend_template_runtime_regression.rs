@@ -269,6 +269,274 @@ end ChainedSingletons;
     );
 }
 
+#[test]
+fn fmi3_boolean_variables_use_the_boolean_xml_and_c_abi() {
+    let source = r#"
+model BooleanParameter
+  parameter Boolean enabled = true;
+  Real x(start = 1);
+equation
+  der(x) = -x;
+end BooleanParameter;
+"#;
+    let rendered = render_fmi3_model("BooleanParameter", source);
+    let enabled_vr = rendered.boolean_value_reference("enabled");
+    assert!(
+        rendered.model_description.contains(&format!(
+            "<Boolean name=\"enabled\" valueReference=\"{enabled_vr}\" causality=\"parameter\" variability=\"tunable\" initial=\"exact\" start=\"true\">"
+        )),
+        "the checked Boolean parameter must retain its type and true start value:\n{}",
+        rendered.model_description
+    );
+    let body = format!(
+        r#"
+    ModelInstance model = {{0}};
+    model.p[0] = 1.0;
+    model.state = MODEL_INITIALIZATION; model.type = INTERFACE_CS;
+    const fmi3ValueReference enabled_vr = {enabled_vr};
+    fmi3Boolean enabled = fmi3False;
+    if (fmi3GetBoolean(&model, &enabled_vr, 1, &enabled, 1) != fmi3OK) return 1;
+    if (enabled != fmi3True) return 2;
+    fmi3Float64 wrongly_typed = 0.0;
+    if (fmi3GetFloat64(&model, &enabled_vr, 1, &wrongly_typed, 1) != fmi3Error) return 3;
+    wrongly_typed = 0.0;
+    if (fmi3SetFloat64(&model, &enabled_vr, 1, &wrongly_typed, 1) != fmi3Error) return 4;
+    if (model.p[0] != 1.0) return 5;
+    enabled = fmi3False;
+    if (fmi3SetBoolean(&model, &enabled_vr, 1, &enabled, 1) != fmi3OK) return 6;
+    enabled = fmi3True;
+    if (fmi3GetBoolean(&model, &enabled_vr, 1, &enabled, 1) != fmi3OK) return 7;
+    if (enabled != fmi3False || model.p[0] != 0.0) return 8;
+"#
+    );
+    execute_emitted_fmi3_kernel(&rendered.model_c, 1, 1, &body);
+
+    let compiled = Compiler::new()
+        .model("BooleanParameter")
+        .compile_str(source, "BooleanParameter.mo")
+        .expect("compile the shared checked Boolean FMI fixture");
+    let fmi2 = rumoca::render_target_files(&compiled, "BooleanParameter", "fmi2", None)
+        .expect("the scalar FMI2 projection also preserves the shared Boolean component");
+    let fmi2_xml = fmi2
+        .iter()
+        .find(|file| file.path == "modelDescription.xml")
+        .expect("FMI2 emits modelDescription.xml");
+    assert!(
+        fmi2_xml.content.contains("<Boolean start=\"true\"/>"),
+        "FMI2 must not mislabel the target-neutral checked Boolean as Real"
+    );
+    let fmi2_c = fmi2
+        .iter()
+        .find(|file| file.path == "sources/model.c")
+        .expect("FMI2 emits its C kernel");
+    assert!(
+        fmi2_c.content.contains("fmi2GetBoolean") && fmi2_c.content.contains("fmi2SetBoolean"),
+        "FMI2 must expose its native Boolean ABI"
+    );
+}
+
+#[test]
+fn fmi3_nested_parameter_bindings_are_exact_starts() {
+    let rendered = render_fmi3_model(
+        "NestedParameterStart",
+        r#"
+model NestedParameterStart
+  model Part
+    parameter Real base = 1.0;
+    parameter Real forwarded = base;
+  end Part;
+  parameter Real top = 2.5;
+  Part part(base = top);
+  Real x(start = 1.0);
+equation
+  der(x) = -part.forwarded*x;
+end NestedParameterStart;
+"#,
+    );
+    assert_eq!(rendered.float64_start("top"), vec![2.5]);
+    assert_eq!(rendered.float64_start("part.base"), vec![2.5]);
+    assert_eq!(rendered.float64_start("part.forwarded"), vec![2.5]);
+}
+
+#[test]
+fn fmi3_checked_parameter_assertions_fail_initialization() {
+    let rendered = render_fmi3_model(
+        "CheckedAssertion",
+        r#"
+model CheckedAssertion
+  parameter Real mass = 2.0;
+  Real x(start = 1.0);
+equation
+  assert(mass > 0.0, "mass must be positive");
+  der(x) = -mass*x;
+end CheckedAssertion;
+"#,
+    );
+    execute_emitted_fmi3_kernel_with_layout(
+        &rendered.model_c,
+        1,
+        4,
+        1,
+        r#"
+    ModelInstance model = {0};
+    model.y[0] = 1.0; model.p[0] = 2.0;
+    model.state = MODEL_INSTANTIATED; model.type = INTERFACE_CS;
+    if (fmi3EnterInitializationMode(&model, fmi3False, 0.0, 0.0,
+                                    fmi3False, 0.0) != fmi3OK) return 1;
+    if (fmi3ExitInitializationMode(&model) != fmi3OK) return 2;
+    ModelInstance invalid = {0};
+    invalid.y[0] = 1.0; invalid.p[0] = -1.0;
+    invalid.environment = &assertion_log_count;
+    invalid.logger = capture_assertion_log;
+    invalid.state = MODEL_INSTANTIATED; invalid.type = INTERFACE_CS;
+    if (fmi3EnterInitializationMode(&invalid, fmi3False, 0.0, 0.0,
+                                    fmi3False, 0.0) != fmi3OK) return 3;
+    if (fmi3ExitInitializationMode(&invalid) != fmi3Error) return 4;
+    if (invalid.state != MODEL_INITIALIZATION) return 5;
+    if (assertion_log_count != 1
+        || strcmp(assertion_log_message, "mass must be positive") != 0) return 6;
+"#,
+    );
+}
+
+#[test]
+fn fmi3_parameter_assertion_capability_rejects_runtime_assertions() {
+    let compiled = Compiler::new()
+        .model("RuntimeAssertion")
+        .compile_str(
+            r#"
+model RuntimeAssertion
+  Real x(start = 1.0);
+equation
+  assert(x > 0.0, "x must be positive");
+  der(x) = -x;
+end RuntimeAssertion;
+"#,
+            "RuntimeAssertion.mo",
+        )
+        .expect("the compiler accepts the runtime assertion fixture");
+    let error = rumoca::render_target_files(&compiled, "RuntimeAssertion", "fmi3", None)
+        .expect_err("the parameter-assertion capability cannot admit runtime assertions");
+    assert!(
+        format!("{error:#}").contains("an assertion directly depends on a runtime coordinate"),
+        "the checked parameter-assertion validator owns the rejection: {error:#}"
+    );
+}
+
+#[test]
+fn fmi3_assertion_capability_rejects_non_assertion_actions() {
+    let compiled = Compiler::new()
+        .model("InitialReinit")
+        .compile_str(
+            r#"
+model InitialReinit
+  Real x(start = 1.0);
+equation
+  der(x) = -x;
+  when initial() then
+    reinit(x, 2.0);
+  end when;
+end InitialReinit;
+"#,
+            "InitialReinit.mo",
+        )
+        .expect("the compiler accepts the initialization action fixture");
+    let error = rumoca::render_target_files(&compiled, "InitialReinit", "fmi3", None)
+        .expect_err("the assertion capability cannot admit a reinit action");
+    assert!(
+        format!("{error:#}").contains("FMI assertion-only event profile is invalid"),
+        "the checked assertion-profile validator owns the rejection: {error:#}"
+    );
+}
+
+#[test]
+fn fmi3_compact_tensor_ops_execute_from_the_checked_program() {
+    let rendered = render_fmi3_model(
+        "CompactTensorOps",
+        r#"
+model CompactTensorOps
+  parameter Real A[3, 3] = [2.0, 0.0, 0.0; 0.0, 4.0, 0.0; 0.0, 0.0, 6.0];
+  Real x[3](start = {1.0, 2.0, 3.0});
+  output Real y[3];
+equation
+  der(x) = cross(x, {4.0, 5.0, 6.0});
+  y = (transpose(A) * x) / 2.0;
+end CompactTensorOps;
+"#,
+    );
+    for operation in [
+        "MatrixMultiply",
+        "TensorBinary",
+        "TensorCross",
+        "TensorLoad",
+        "TensorTranspose",
+    ] {
+        assert!(
+            !rendered
+                .model_c
+                .contains(&format!("unsupported-feature:scalar.op.{operation}")),
+            "FMI3 must consume the checked compact {operation} operation"
+        );
+    }
+    execute_emitted_fmi3_kernel_with_layout(
+        &rendered.model_c,
+        6,
+        9,
+        3,
+        r#"
+    ModelInstance model = {0};
+    model.y[0] = 1.0; model.y[1] = 2.0; model.y[2] = 3.0;
+    model.p[0] = 2.0; model.p[4] = 4.0; model.p[8] = 6.0;
+    if (evaluate_derivatives(&model) != fmi3OK) return 1;
+    if (model.derivative[0] != -3.0 || model.derivative[1] != 6.0
+        || model.derivative[2] != -3.0) return 2;
+    if (model.y[3] != 1.0 || model.y[4] != 4.0 || model.y[5] != 9.0) return 3;
+"#,
+    );
+}
+
+#[test]
+fn fmi3_executes_checked_pure_call_owners() {
+    let rendered = render_fmi3_model(
+        "PureCallOwner",
+        r#"
+model PureCallOwner
+  function transform
+    input Real u[3];
+    output Real y[3];
+  algorithm
+    y[1] := if u[1] > 0 then 2*u[1] + 1 else -u[1];
+    y[2] := if u[2] > 0 then 2*u[2] + 2 else -u[2];
+    y[3] := if u[3] > 0 then 2*u[3] + 3 else -u[3];
+  end transform;
+  Real x[3](start = {1.0, -2.0, 3.0});
+  output Real y[3];
+equation
+  der(x) = -x;
+  y = transform(x);
+end PureCallOwner;
+"#,
+    );
+    assert!(
+        rendered
+            .model_c
+            .contains("static inline fmi3Status pure_call_0"),
+        "FMI3 must emit the checked pure-call owner exactly once"
+    );
+    execute_emitted_fmi3_kernel_with_layout(
+        &rendered.model_c,
+        6,
+        1,
+        3,
+        r#"
+    ModelInstance model = {0};
+    model.y[0] = 1.0; model.y[1] = -2.0; model.y[2] = 3.0;
+    if (evaluate_derivatives(&model) != fmi3OK) return 1;
+    if (model.y[3] != 3.0 || model.y[4] != 2.0 || model.y[5] != 9.0) return 2;
+"#,
+    );
+}
+
 struct RenderedFmi3 {
     model_c: String,
     model_description: String,
@@ -276,7 +544,35 @@ struct RenderedFmi3 {
 
 impl RenderedFmi3 {
     fn value_reference(&self, name: &str) -> usize {
-        let marker = format!("<Float64 name=\"{name}\" valueReference=\"");
+        self.typed_value_reference("Float64", name)
+    }
+
+    fn boolean_value_reference(&self, name: &str) -> usize {
+        self.typed_value_reference("Boolean", name)
+    }
+
+    fn float64_start(&self, name: &str) -> Vec<f64> {
+        let marker = format!("<Float64 name=\"{name}\"");
+        let variable = self
+            .model_description
+            .split_once(&marker)
+            .unwrap_or_else(|| panic!("FMI3 model description declares `{name}`"))
+            .1;
+        let start = variable
+            .split_once(" start=\"")
+            .unwrap_or_else(|| panic!("FMI3 Float64 variable `{name}` has a start"))
+            .1
+            .split_once('"')
+            .expect("FMI3 Float64 start terminates")
+            .0;
+        start
+            .split_whitespace()
+            .map(|value| value.parse().expect("FMI3 Float64 start is numeric"))
+            .collect()
+    }
+
+    fn typed_value_reference(&self, scalar_type: &str, name: &str) -> usize {
+        let marker = format!("<{scalar_type} name=\"{name}\" valueReference=\"");
         let tail = self
             .model_description
             .split_once(&marker)
@@ -317,6 +613,26 @@ fn render_fmi3_model(model: &str, source: &str) -> RenderedFmi3 {
 }
 
 fn execute_emitted_fmi3_kernel(model_c: &str, y_len: usize, state_len: usize, body: &str) {
+    execute_emitted_fmi3_kernel_with_layout(model_c, y_len, 1, state_len, body);
+}
+
+fn execute_emitted_fmi3_kernel_with_layout(
+    model_c: &str,
+    y_len: usize,
+    p_len: usize,
+    state_len: usize,
+    body: &str,
+) {
+    let helper = model_c
+        .find("static inline double real64_from_bits")
+        .map(|helper_start| {
+            let helper_end = model_c[helper_start..]
+                .find("static void initialize_values")
+                .map(|offset| helper_start + offset)
+                .expect("rendered FMI3 C terminates its pure-call helpers");
+            &model_c[helper_start..helper_end]
+        })
+        .unwrap_or("");
     let kernel_start = model_c
         .find("static fmi3Status refresh_algebraics")
         .expect("rendered FMI3 C owns an algebraic refresh kernel");
@@ -346,29 +662,52 @@ fn execute_emitted_fmi3_kernel(model_c: &str, y_len: usize, state_len: usize, bo
         .map(|offset| public_values_start + offset)
         .expect("rendered FMI3 C terminates Float64 accessors");
     let public_values = &model_c[public_values_start..public_values_end];
+    let initialization_start = model_c
+        .find("FMI_EXPORT fmi3Status fmi3EnterInitializationMode")
+        .expect("rendered FMI3 C owns initialization mode entry");
+    let initialization_end = model_c[initialization_start..]
+        .find("FMI_EXPORT fmi3Status fmi3EnterEventMode")
+        .map(|offset| initialization_start + offset)
+        .expect("rendered FMI3 C terminates initialization lifecycle functions");
+    let initialization = &model_c[initialization_start..initialization_end];
     let do_step = &model_c[do_step_start..do_step_end];
     let driver = format!(
         r#"
 #include <math.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <string.h>
 #define FMI_EXPORT
 typedef void* fmi3Instance;
 typedef double fmi3Float64;
 typedef int fmi3Boolean;
 typedef unsigned int fmi3ValueReference;
 typedef enum {{ fmi3OK = 0, fmi3Error = 3 }} fmi3Status;
+typedef void (*fmi3LogMessageCallback)(void*, fmi3Status, const char*, const char*);
 enum {{ fmi3False = 0, fmi3True = 1 }};
 enum ModelState {{ MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_CONTINUOUS, MODEL_STEP, MODEL_TERMINATED }};
 enum InterfaceType {{ INTERFACE_ME, INTERFACE_CS }};
 #define Y_LEN {y_len}
-#define P_LEN 1
+#define P_LEN {p_len}
 #define STATE_LEN {state_len}
-typedef struct {{ double time; double y[Y_LEN]; double p[P_LEN]; double derivative[STATE_LEN]; enum ModelState state; enum InterfaceType type; }} ModelInstance;
+typedef struct {{ double time; double y[Y_LEN]; double p[P_LEN]; double derivative[STATE_LEN]; enum ModelState state; enum InterfaceType type; void* environment; fmi3LogMessageCallback logger; }} ModelInstance;
+{helper}
 {kernel}
 {value_helpers}
+{initialization}
 {public_values}
 {do_step}
+static int assertion_log_count;
+static char assertion_log_message[128];
+static void capture_assertion_log(void* environment, fmi3Status status,
+                                  const char* category, const char* message) {{
+    (void)category;
+    if (environment != &assertion_log_count || status != fmi3Error) return;
+    ++assertion_log_count;
+    strncpy(assertion_log_message, message, sizeof(assertion_log_message) - 1);
+}}
 int main(void) {{
+    (void)capture_assertion_log;
 {body}
     return 0;
 }}

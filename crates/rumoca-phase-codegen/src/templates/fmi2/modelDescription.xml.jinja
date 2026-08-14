@@ -29,7 +29,11 @@
 {%- for variable in fmi.variables %}
 {%- for scalar in range(variable.storage.scalar_count) %}
     <ScalarVariable name="{{ variable.scalar_names[scalar] | xml_escape }}" valueReference="{{ index.vr }}" causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.role == "State" %} initial="exact"{% elif variable.causality in ["parameter", "calculated_parameter"] %} initial="exact"{% endif %}{% if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}>
+{%- if variable.value_kind == "Boolean" %}
+      <Boolean start="{{ "true" if variable.start[scalar] != 0 else "false" }}"/>
+{%- else %}
       <Real start="{{ variable.start[scalar] }}"{% if variable.minimum %} min="{{ variable.minimum[scalar] }}"{% endif %}{% if variable.maximum %} max="{{ variable.maximum[scalar] }}"{% endif %}{% if variable.nominal %} nominal="{{ variable.nominal[scalar] }}"{% endif %}/>
+{%- endif %}
     </ScalarVariable>
 {%- set index.model = index.model + 1 %}
 {%- set index.vr = index.vr + 1 %}

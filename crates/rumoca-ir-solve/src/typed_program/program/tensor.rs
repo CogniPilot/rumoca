@@ -51,7 +51,7 @@ impl<'program> TypedProgramBuilder<'program> {
             SolveOperation::ProjectView {
                 destination: destination.id,
                 aggregate: aggregate.id,
-                axes: lower_view_axes(axes),
+                axes: build_view_axes(axes),
             },
             provenance,
         );
@@ -80,7 +80,7 @@ impl<'program> TypedProgramBuilder<'program> {
                 destination: destination.id,
                 aggregate: aggregate.id,
                 value: value.id,
-                axes: lower_view_axes(axes),
+                axes: build_view_axes(axes),
             },
             provenance,
         );
@@ -385,7 +385,7 @@ impl<'program> TypedProgramBuilder<'program> {
     }
 }
 
-fn lower_view_axes(axes: &[ProgramTensorViewAxis<'_>]) -> Box<[SolveTensorViewAxis]> {
+fn build_view_axes(axes: &[ProgramTensorViewAxis<'_>]) -> Box<[SolveTensorViewAxis]> {
     axes.iter()
         .map(|axis| match *axis {
             ProgramTensorViewAxis::Index(index) => SolveTensorViewAxis::Index(index.id),

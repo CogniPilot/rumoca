@@ -10,17 +10,312 @@
 {%- macro compare(operator, lhs, rhs) -%}
 {%- if operator == "Lt" -%}(r[{{ lhs }}] < r[{{ rhs }}] ? 1.0 : 0.0){% elif operator == "Le" -%}(r[{{ lhs }}] <= r[{{ rhs }}] ? 1.0 : 0.0){% elif operator == "Gt" -%}(r[{{ lhs }}] > r[{{ rhs }}] ? 1.0 : 0.0){% elif operator == "Ge" -%}(r[{{ lhs }}] >= r[{{ rhs }}] ? 1.0 : 0.0){% elif operator == "Eq" -%}(r[{{ lhs }}] == r[{{ rhs }}] ? 1.0 : 0.0){% elif operator == "Ne" -%}(r[{{ lhs }}] != r[{{ rhs }}] ? 1.0 : 0.0){% else -%}{{ fail("unsupported-feature:scalar.compare." ~ operator) }}{% endif -%}
 {%- endmacro %}
+{%- macro typed_c_type(value_type) -%}
+{%- if value_type.scalar.kind == "real" and value_type.scalar.profile.format == "binary64" -%}double
+{%- elif value_type.scalar.kind == "integer" -%}int64_t
+{%- elif value_type.scalar.kind == "boolean" -%}fmi3Boolean
+{%- else -%}{{ fail("unsupported-feature:fmi3.pure-call.value-type") }}
+{%- endif -%}
+{%- endmacro %}
+{%- macro typed_copy(destination, source, count) %}
+{%- for element in range(count) %}        {{ destination }}[{{ element }}] = {{ source }}[{{ element }}];
+{%- endfor %}
+{%- endmacro %}
+{%- macro typed_unary(operator, operand, kind) -%}
+{%- if operator == "negate" -%}(-{{ operand }})
+{%- elif operator == "abs" and kind == "real" -%}fabs({{ operand }})
+{%- elif operator == "abs" and kind == "integer" -%}({{ operand }} < 0 ? -{{ operand }} : {{ operand }})
+{%- elif operator == "sign" -%}({{ operand }} > 0 ? 1 : ({{ operand }} < 0 ? -1 : 0))
+{%- elif operator == "sqrt" -%}sqrt({{ operand }})
+{%- elif operator == "floor" -%}floor({{ operand }})
+{%- elif operator == "ceiling" -%}ceil({{ operand }})
+{%- elif operator == "truncate" -%}trunc({{ operand }})
+{%- elif operator in ["sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp"] -%}{{ operator }}({{ operand }})
+{%- elif operator == "log" -%}log({{ operand }})
+{%- elif operator == "log10" -%}log10({{ operand }})
+{%- elif operator == "not" and kind == "boolean" -%}(!{{ operand }})
+{%- else -%}{{ fail("unsupported-feature:fmi3.pure-call.unary." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+{%- macro typed_real_binary(operator, lhs, rhs) -%}
+{%- if operator == "add" -%}({{ lhs }} + {{ rhs }})
+{%- elif operator == "subtract" -%}({{ lhs }} - {{ rhs }})
+{%- elif operator == "multiply" -%}({{ lhs }} * {{ rhs }})
+{%- elif operator == "divide" -%}({{ lhs }} / {{ rhs }})
+{%- elif operator == "power" -%}pow({{ lhs }}, {{ rhs }})
+{%- elif operator == "atan2" -%}atan2({{ lhs }}, {{ rhs }})
+{%- elif operator == "min" -%}fmin({{ lhs }}, {{ rhs }})
+{%- elif operator == "max" -%}fmax({{ lhs }}, {{ rhs }})
+{%- else -%}{{ fail("unsupported-feature:fmi3.pure-call.real-binary." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+{%- macro typed_compare(operator, lhs, rhs) -%}
+{%- if operator == "equal" -%}({{ lhs }} == {{ rhs }})
+{%- elif operator == "not_equal" -%}({{ lhs }} != {{ rhs }})
+{%- elif operator == "less" -%}({{ lhs }} < {{ rhs }})
+{%- elif operator == "less_equal" -%}({{ lhs }} <= {{ rhs }})
+{%- elif operator == "greater" -%}({{ lhs }} > {{ rhs }})
+{%- elif operator == "greater_equal" -%}({{ lhs }} >= {{ rhs }})
+{%- else -%}{{ fail("unsupported-feature:fmi3.pure-call.compare." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+{%- macro typed_constant(value) -%}
+{%- if value.kind.kind == "real64" -%}real64_from_bits(UINT64_C({{ value.kind.bits }}))
+{%- elif value.kind.kind == "integer" -%}INT64_C({{ value.kind.bits }})
+{%- elif value.kind.kind == "boolean" and value.kind.bits -%}fmi3True
+{%- elif value.kind.kind == "boolean" -%}fmi3False
+{%- else -%}{{ fail("unsupported-feature:fmi3.pure-call.constant") }}
+{%- endif -%}
+{%- endmacro %}
+{%- macro typed_declarations(program, prefix) %}
+{%- for slot in program.slots %}    {{ typed_c_type(slot.value_type) }} {{ prefix }}s{{ slot.id }}[{{ slot.value_type.scalar_count if slot.value_type.scalar_count > 0 else 1 }}]; (void){{ prefix }}s{{ slot.id }};
+{%- endfor %}
+{%- for value_type in program.register_types %}    {{ typed_c_type(value_type) }} {{ prefix }}r{{ loop.index0 }}[{{ value_type.scalar_count if value_type.scalar_count > 0 else 1 }}]; (void){{ prefix }}r{{ loop.index0 }};
+{%- endfor %}
+{%- endmacro %}
+{%- macro typed_region_inputs(region, arguments, prefix, outer_prefix) %}
+{%- for argument in arguments %}{{ typed_copy(prefix ~ "s" ~ loop.index0, outer_prefix ~ "r" ~ argument, region.inputs[loop.index0].scalar_count) }}
+{%- endfor %}
+{%- endmacro %}
+{%- macro typed_region_outputs(region, destinations, prefix, outer_prefix) %}
+{%- set input_count = region.inputs|length %}
+{%- for destination in destinations %}{{ typed_copy(outer_prefix ~ "r" ~ destination, prefix ~ "s" ~ (input_count + loop.index0), region.outputs[loop.index0].scalar_count) }}
+{%- endfor %}
+{%- endmacro %}
+{%- macro typed_fold_body(program, op, prefix, operation_index, binder_index) %}
+{%- set fold_prefix = prefix ~ "op" ~ operation_index ~ "_" %}
+{%- if binder_index < op.domain.binders|length %}
+{%- set binder = op.domain.binders[binder_index] %}
+    if ((INT64_C({{ binder.step }}) > 0 && INT64_C({{ binder.lower }}) <= INT64_C({{ binder.upper }}))
+        || (INT64_C({{ binder.step }}) < 0 && INT64_C({{ binder.lower }}) >= INT64_C({{ binder.upper }}))) {
+        int64_t {{ fold_prefix }}b{{ binder_index }} = INT64_C({{ binder.lower }});
+        for (;;) {
+{{ typed_fold_body(program, op, prefix, operation_index, binder_index + 1) }}
+            int64_t {{ fold_prefix }}next{{ binder_index }};
+            if (!checked_integer_add({{ fold_prefix }}b{{ binder_index }}, INT64_C({{ binder.step }}), &{{ fold_prefix }}next{{ binder_index }})) break;
+            if ((INT64_C({{ binder.step }}) > 0 && {{ fold_prefix }}next{{ binder_index }} > INT64_C({{ binder.upper }}))
+                || (INT64_C({{ binder.step }}) < 0 && {{ fold_prefix }}next{{ binder_index }} < INT64_C({{ binder.upper }}))) break;
+            {{ fold_prefix }}b{{ binder_index }} = {{ fold_prefix }}next{{ binder_index }};
+        }
+    }
+{%- else %}
+        {
+{%- set region_prefix = fold_prefix ~ "body_" %}
+{{ typed_declarations(op.transition.body, region_prefix) }}
+{%- for carried in op.initial %}{{ typed_copy(region_prefix ~ "s" ~ loop.index0, fold_prefix ~ "carried" ~ loop.index0, op.transition.inputs[loop.index0].scalar_count) }}
+{%- endfor %}
+{%- set carried_count = op.initial|length %}
+{%- for capture in op.captures %}{{ typed_copy(region_prefix ~ "s" ~ (carried_count + loop.index0), prefix ~ "r" ~ capture, op.transition.inputs[carried_count + loop.index0].scalar_count) }}
+{%- endfor %}
+{%- set capture_count = op.captures|length %}
+{%- for binder in op.domain.binders %}        {{ region_prefix }}s{{ carried_count + capture_count + loop.index0 }}[0] = {{ fold_prefix }}b{{ loop.index0 }};
+{%- endfor %}
+{{ typed_program_operations(op.transition.body, region_prefix) }}
+{%- set transition_input_count = op.transition.inputs|length %}
+{%- for carried in op.initial %}{{ typed_copy(fold_prefix ~ "carried" ~ loop.index0, region_prefix ~ "s" ~ (transition_input_count + loop.index0), op.transition.outputs[loop.index0].scalar_count) }}
+{%- endfor %}
+        }
+{%- endif %}
+{%- endmacro %}
+{%- macro typed_operation(program, op, prefix, operation_index) %}
+{%- if op.operation == "constant" %}
+    {{ prefix }}r{{ op.destination }}[0] = {{ typed_constant(op.value) }};
+{%- elif op.operation == "load" %}{{ typed_copy(prefix ~ "r" ~ op.destination, prefix ~ "s" ~ op.slot, program.register_types[op.destination].scalar_count) }}
+{%- elif op.operation == "store" %}{{ typed_copy(prefix ~ "s" ~ op.slot, prefix ~ "r" ~ op.source, program.slots[op.slot].value_type.scalar_count) }}
+{%- elif op.operation == "unary" %}
+{%- set value_type = program.register_types[op.destination] %}
+{%- for element in range(value_type.scalar_count) %}    {{ prefix }}r{{ op.destination }}[{{ element }}] = {{ typed_unary(op.operator, prefix ~ "r" ~ op.operand ~ "[" ~ element ~ "]", value_type.scalar.kind) }};
+{%- endfor %}
+{%- elif op.operation == "binary" %}
+{%- set value_type = program.register_types[op.destination] %}
+{%- for element in range(value_type.scalar_count) %}
+{%- if value_type.scalar.kind == "real" %}    {{ prefix }}r{{ op.destination }}[{{ element }}] = {{ typed_real_binary(op.operator, prefix ~ "r" ~ op.lhs ~ "[" ~ element ~ "]", prefix ~ "r" ~ op.rhs ~ "[" ~ element ~ "]") }};
+{%- elif value_type.scalar.kind == "boolean" and op.operator == "and" %}    {{ prefix }}r{{ op.destination }}[{{ element }}] = {{ prefix }}r{{ op.lhs }}[{{ element }}] && {{ prefix }}r{{ op.rhs }}[{{ element }}];
+{%- elif value_type.scalar.kind == "boolean" and op.operator == "or" %}    {{ prefix }}r{{ op.destination }}[{{ element }}] = {{ prefix }}r{{ op.lhs }}[{{ element }}] || {{ prefix }}r{{ op.rhs }}[{{ element }}];
+{%- elif value_type.scalar.kind == "integer" and op.operator == "add" %}    if (!checked_integer_add({{ prefix }}r{{ op.lhs }}[{{ element }}], {{ prefix }}r{{ op.rhs }}[{{ element }}], &{{ prefix }}r{{ op.destination }}[{{ element }}])) return fmi3Error;
+{%- elif value_type.scalar.kind == "integer" and op.operator == "subtract" %}    if (!checked_integer_subtract({{ prefix }}r{{ op.lhs }}[{{ element }}], {{ prefix }}r{{ op.rhs }}[{{ element }}], &{{ prefix }}r{{ op.destination }}[{{ element }}])) return fmi3Error;
+{%- else %}{{ fail("unsupported-feature:fmi3.pure-call.binary." ~ op.operator) }}
+{%- endif %}
+{%- endfor %}
+{%- elif op.operation == "compare" %}
+{%- for element in range(program.register_types[op.destination].scalar_count) %}    {{ prefix }}r{{ op.destination }}[{{ element }}] = {{ typed_compare(op.operator, prefix ~ "r" ~ op.lhs ~ "[" ~ element ~ "]", prefix ~ "r" ~ op.rhs ~ "[" ~ element ~ "]") }} ? fmi3True : fmi3False;
+{%- endfor %}
+{%- elif op.operation == "convert" and op.operator == "integer_to_real" %}
+{%- for element in range(program.register_types[op.destination].scalar_count) %}    {{ prefix }}r{{ op.destination }}[{{ element }}] = (double){{ prefix }}r{{ op.operand }}[{{ element }}];
+{%- endfor %}
+{%- elif op.operation == "select" %}
+{%- for element in range(program.register_types[op.destination].scalar_count) %}    {{ prefix }}r{{ op.destination }}[{{ element }}] = {{ prefix }}r{{ op.condition }}[0] ? {{ prefix }}r{{ op.if_true }}[{{ element }}] : {{ prefix }}r{{ op.if_false }}[{{ element }}];
+{%- endfor %}
+{%- elif op.operation == "conditional" %}
+    if ({{ prefix }}r{{ op.condition }}[0]) {
+{%- set true_prefix = prefix ~ "op" ~ operation_index ~ "t_" %}
+{{ typed_declarations(op.if_true.body, true_prefix) }}
+{{ typed_region_inputs(op.if_true, op.captures, true_prefix, prefix) }}
+{{ typed_program_operations(op.if_true.body, true_prefix) }}
+{{ typed_region_outputs(op.if_true, op.destinations, true_prefix, prefix) }}
+    } else {
+{%- set false_prefix = prefix ~ "op" ~ operation_index ~ "f_" %}
+{{ typed_declarations(op.if_false.body, false_prefix) }}
+{{ typed_region_inputs(op.if_false, op.captures, false_prefix, prefix) }}
+{{ typed_program_operations(op.if_false.body, false_prefix) }}
+{{ typed_region_outputs(op.if_false, op.destinations, false_prefix, prefix) }}
+    }
+{%- elif op.operation == "fold" %}
+{%- set fold_prefix = prefix ~ "op" ~ operation_index ~ "_" %}
+{%- for initial in op.initial %}    {{ typed_c_type(program.register_types[initial]) }} {{ fold_prefix }}carried{{ loop.index0 }}[{{ program.register_types[initial].scalar_count }}];
+{{ typed_copy(fold_prefix ~ "carried" ~ loop.index0, prefix ~ "r" ~ initial, program.register_types[initial].scalar_count) }}
+{%- endfor %}
+{{ typed_fold_body(program, op, prefix, operation_index, 0) }}
+{%- for destination in op.destinations %}{{ typed_copy(prefix ~ "r" ~ destination, fold_prefix ~ "carried" ~ loop.index0, program.register_types[destination].scalar_count) }}
+{%- endfor %}
+{%- elif op.operation == "fill" %}
+{%- for element in range(program.register_types[op.destination].scalar_count) %}    {{ prefix }}r{{ op.destination }}[{{ element }}] = {{ prefix }}r{{ op.value }}[0];
+{%- endfor %}
+{%- elif op.operation == "construct_aggregate" %}
+{%- set aggregate_offset = namespace(value=0) %}
+{%- for element_register in op.elements %}
+{%- for element in range(program.register_types[element_register].scalar_count) %}    {{ prefix }}r{{ op.destination }}[{{ aggregate_offset.value + element }}] = {{ prefix }}r{{ element_register }}[{{ element }}];
+{%- endfor %}
+{%- set aggregate_offset.value = aggregate_offset.value + program.register_types[element_register].scalar_count %}
+{%- endfor %}
+{%- elif op.operation == "scale" %}
+{%- for element in range(program.register_types[op.destination].scalar_count) %}    {{ prefix }}r{{ op.destination }}[{{ element }}] = {{ prefix }}r{{ op.aggregate }}[{{ element }}] * {{ prefix }}r{{ op.scalar }}[0];
+{%- endfor %}
+{%- elif op.operation == "transpose" %}
+{%- set operand_type = program.register_types[op.operand] %}
+{%- set rows = operand_type.dimensions[0] %}{%- set columns = operand_type.dimensions[1] %}
+{%- set trailing_width = operand_type.scalar_count // (rows * columns) %}
+{%- for column in range(columns) %}{%- for row in range(rows) %}{%- for trailing in range(trailing_width) %}    {{ prefix }}r{{ op.destination }}[{{ (column * rows + row) * trailing_width + trailing }}] = {{ prefix }}r{{ op.operand }}[{{ (row * columns + column) * trailing_width + trailing }}];
+{%- endfor %}{%- endfor %}{%- endfor %}
+{%- elif op.operation == "matrix_multiply" %}
+{%- set lhs_type = program.register_types[op.lhs] %}{%- set rhs_type = program.register_types[op.rhs] %}
+{%- set lhs_rank = lhs_type.dimensions|length %}{%- set rhs_rank = rhs_type.dimensions|length %}
+{%- set rows = lhs_type.dimensions[0] if lhs_rank > 1 else 1 %}
+{%- set inner = lhs_type.dimensions[lhs_rank - 1] %}
+{%- set columns = rhs_type.dimensions[1] if rhs_rank > 1 else 1 %}
+{%- for row in range(rows) %}{%- for column in range(columns) %}    {{ prefix }}r{{ op.destination }}[{{ row * columns + column }}] = {% for shared in range(inner) %}{% if not loop.first %} + {% endif %}{{ prefix }}r{{ op.lhs }}[{{ shared if lhs_rank == 1 else row * inner + shared }}] * {{ prefix }}r{{ op.rhs }}[{{ shared if rhs_rank == 1 else shared * columns + column }}]{% endfor %};
+{%- endfor %}{%- endfor %}
+{%- elif op.operation == "cross" %}
+    {{ prefix }}r{{ op.destination }}[0] = {{ prefix }}r{{ op.lhs }}[1] * {{ prefix }}r{{ op.rhs }}[2] - {{ prefix }}r{{ op.lhs }}[2] * {{ prefix }}r{{ op.rhs }}[1];
+    {{ prefix }}r{{ op.destination }}[1] = {{ prefix }}r{{ op.lhs }}[2] * {{ prefix }}r{{ op.rhs }}[0] - {{ prefix }}r{{ op.lhs }}[0] * {{ prefix }}r{{ op.rhs }}[2];
+    {{ prefix }}r{{ op.destination }}[2] = {{ prefix }}r{{ op.lhs }}[0] * {{ prefix }}r{{ op.rhs }}[1] - {{ prefix }}r{{ op.lhs }}[1] * {{ prefix }}r{{ op.rhs }}[0];
+{%- elif op.operation == "project_element" %}
+{%- set aggregate_type = program.register_types[op.aggregate] %}{%- set offset = namespace(value=0) %}
+{%- for index in op.indices %}{%- set offset.value = offset.value * aggregate_type.dimensions[loop.index0] + index %}{%- endfor %}
+    {{ prefix }}r{{ op.destination }}[0] = {{ prefix }}r{{ op.aggregate }}[{{ offset.value }}];
+{%- elif op.operation == "project_element_dynamic" %}
+    {
+        const size_t {{ prefix }}op{{ operation_index }}_dimensions[] = { {% for dimension in program.register_types[op.aggregate].dimensions %}{{ dimension }}, {% endfor %} };
+        const int64_t {{ prefix }}op{{ operation_index }}_indices[] = { {% for index in op.indices %}{{ prefix }}r{{ index }}[0], {% endfor %} };
+        size_t {{ prefix }}op{{ operation_index }}_offset;
+        if (!modelica_index_offset({{ prefix }}op{{ operation_index }}_dimensions, {{ prefix }}op{{ operation_index }}_indices, {{ op.indices|length }}, &{{ prefix }}op{{ operation_index }}_offset)) return fmi3Error;
+        {{ prefix }}r{{ op.destination }}[0] = {{ prefix }}r{{ op.aggregate }}[{{ prefix }}op{{ operation_index }}_offset];
+    }
+{%- elif op.operation == "update_element" %}
+{{ typed_copy(prefix ~ "r" ~ op.destination, prefix ~ "r" ~ op.aggregate, program.register_types[op.aggregate].scalar_count) }}
+    {
+        const size_t {{ prefix }}op{{ operation_index }}_dimensions[] = { {% for dimension in program.register_types[op.aggregate].dimensions %}{{ dimension }}, {% endfor %} };
+        const int64_t {{ prefix }}op{{ operation_index }}_indices[] = { {% for index in op.indices %}{{ prefix }}r{{ index }}[0], {% endfor %} };
+        size_t {{ prefix }}op{{ operation_index }}_offset;
+        if (!modelica_index_offset({{ prefix }}op{{ operation_index }}_dimensions, {{ prefix }}op{{ operation_index }}_indices, {{ op.indices|length }}, &{{ prefix }}op{{ operation_index }}_offset)) return fmi3Error;
+        {{ prefix }}r{{ op.destination }}[{{ prefix }}op{{ operation_index }}_offset] = {{ prefix }}r{{ op.value }}[0];
+    }
+{%- elif op.operation in ["project_view", "update_view"] %}
+{%- set value_register = op.destination if op.operation == "project_view" else op.value %}
+{%- set value_type = program.register_types[value_register] %}{%- set aggregate_type = program.register_types[op.aggregate] %}
+{%- if op.operation == "update_view" %}{{ typed_copy(prefix ~ "r" ~ op.destination, prefix ~ "r" ~ op.aggregate, aggregate_type.scalar_count) }}
+{%- endif %}
+    {
+        const size_t {{ prefix }}op{{ operation_index }}_value_dimensions[] = { {% for dimension in value_type.dimensions %}{{ dimension }}, {% endfor %} };
+        for (size_t {{ prefix }}op{{ operation_index }}_element = 0; {{ prefix }}op{{ operation_index }}_element < {{ value_type.scalar_count }}; ++{{ prefix }}op{{ operation_index }}_element) {
+            size_t {{ prefix }}op{{ operation_index }}_remaining = {{ prefix }}op{{ operation_index }}_element;
+            size_t {{ prefix }}op{{ operation_index }}_coordinates[{{ value_type.dimensions|length if value_type.dimensions|length > 0 else 1 }}];
+            for (size_t {{ prefix }}op{{ operation_index }}_axis = {{ value_type.dimensions|length }}; {{ prefix }}op{{ operation_index }}_axis-- > 0;) {
+                {{ prefix }}op{{ operation_index }}_coordinates[{{ prefix }}op{{ operation_index }}_axis] = {{ prefix }}op{{ operation_index }}_remaining % {{ prefix }}op{{ operation_index }}_value_dimensions[{{ prefix }}op{{ operation_index }}_axis];
+                {{ prefix }}op{{ operation_index }}_remaining /= {{ prefix }}op{{ operation_index }}_value_dimensions[{{ prefix }}op{{ operation_index }}_axis];
+            }
+            size_t {{ prefix }}op{{ operation_index }}_source_offset = 0;
+            size_t {{ prefix }}op{{ operation_index }}_span = 0;
+{%- for axis in op.axes %}
+{%- if axis.index is defined %}
+            if ({{ prefix }}r{{ axis.index }}[0] < 1 || {{ prefix }}r{{ axis.index }}[0] > {{ aggregate_type.dimensions[loop.index0] }}) return fmi3Error;
+            {{ prefix }}op{{ operation_index }}_source_offset = {{ prefix }}op{{ operation_index }}_source_offset * {{ aggregate_type.dimensions[loop.index0] }} + (size_t)({{ prefix }}r{{ axis.index }}[0] - 1);
+{%- else %}
+            if ({{ prefix }}op{{ operation_index }}_coordinates[{{ prefix }}op{{ operation_index }}_span] + {{ axis.span.origin }} >= {{ aggregate_type.dimensions[loop.index0] }}) return fmi3Error;
+            {{ prefix }}op{{ operation_index }}_source_offset = {{ prefix }}op{{ operation_index }}_source_offset * {{ aggregate_type.dimensions[loop.index0] }} + {{ prefix }}op{{ operation_index }}_coordinates[{{ prefix }}op{{ operation_index }}_span] + {{ axis.span.origin }};
+            ++{{ prefix }}op{{ operation_index }}_span;
+{%- endif %}
+{%- endfor %}
+{%- if op.operation == "project_view" %}            {{ prefix }}r{{ op.destination }}[{{ prefix }}op{{ operation_index }}_element] = {{ prefix }}r{{ op.aggregate }}[{{ prefix }}op{{ operation_index }}_source_offset];
+{%- else %}            {{ prefix }}r{{ op.destination }}[{{ prefix }}op{{ operation_index }}_source_offset] = {{ prefix }}r{{ op.value }}[{{ prefix }}op{{ operation_index }}_element];
+{%- endif %}
+        }
+    }
+{%- elif op.operation == "call" %}
+{%- set called = pure_calls.owners[op.owner] %}
+{%- for argument in op.arguments %}{%- set argument_index = namespace(value=loop.index0) %}    double {{ prefix }}op{{ operation_index }}_argument{{ argument_index.value }}[{{ program.register_types[argument].scalar_count }}];
+{%- for element in range(program.register_types[argument].scalar_count) %}    {{ prefix }}op{{ operation_index }}_argument{{ argument_index.value }}[{{ element }}] = (double){{ prefix }}r{{ argument }}[{{ element }}];
+{%- endfor %}{%- endfor %}
+{%- set output_count = namespace(value=0) %}{%- for output in called.outputs %}{%- set output_count.value = output_count.value + output.value_type.scalar_count %}{%- endfor %}
+    double {{ prefix }}op{{ operation_index }}_outputs[{{ output_count.value if output_count.value > 0 else 1 }}];
+    if (pure_call_{{ op.owner }}({% for argument in op.arguments %}{{ prefix }}op{{ operation_index }}_argument{{ loop.index0 }}, {% endfor %}{{ prefix }}op{{ operation_index }}_outputs) != fmi3OK) { return fmi3Error; }
+{%- set output_offset = namespace(value=0) %}{%- for destination in op.destinations %}
+{%- for element in range(program.register_types[destination].scalar_count) %}    {{ prefix }}r{{ destination }}[{{ element }}] = ({{ typed_c_type(program.register_types[destination]) }}){{ prefix }}op{{ operation_index }}_outputs[{{ output_offset.value + element }}];
+{%- endfor %}{%- set output_offset.value = output_offset.value + program.register_types[destination].scalar_count %}{%- endfor %}
+{%- else %}{{ fail("unsupported-feature:fmi3.pure-call.operation." ~ op.operation) }}
+{%- endif %}
+{%- endmacro %}
+{%- macro typed_program_operations(program, prefix) %}
+{%- for entry in program.operations %}{{ typed_operation(program, entry.operation, prefix, loop.index0) }}
+{%- endfor %}
+{%- endmacro %}
+{%- macro pure_call_owner(owner) %}
+static inline fmi3Status pure_call_{{ owner.id }}({% for input in owner.inputs %}const double* input{{ loop.index0 }}, {% endfor %}double* output) {
+{{ typed_declarations(owner.body, "pc" ~ owner.id ~ "_") }}
+{%- for input in owner.inputs %}{%- set input_index = namespace(value=loop.index0) %}
+{%- for element in range(input.scalar_count) %}    pc{{ owner.id }}_s{{ input_index.value }}[{{ element }}] = ({{ typed_c_type(input) }})input{{ input_index.value }}[{{ element }}];
+{%- endfor %}{%- endfor %}
+{{ typed_program_operations(owner.body, "pc" ~ owner.id ~ "_") }}
+{%- set output_offset = namespace(value=0) %}{%- set input_count = namespace(value=owner.inputs|length) %}
+{%- for result in owner.outputs %}{%- set result_index = namespace(value=loop.index0) %}
+{%- for element in range(result.value_type.scalar_count) %}    output[{{ output_offset.value + element }}] = (double)pc{{ owner.id }}_s{{ input_count.value + result_index.value }}[{{ element }}];
+{%- endfor %}{%- set output_offset.value = output_offset.value + result.value_type.scalar_count %}{%- endfor %}
+    return fmi3OK;
+}
+{%- endmacro %}
 {%- macro scalar_op(op, output="m->derivative") %}
 {%- if op.kind == "Const" %}    r[{{ op.dst }}] = {{ scalar_const(op) }};
 {%- elif op.kind == "LoadTime" %}    r[{{ op.dst }}] = m->time;
 {%- elif op.kind == "LoadY" %}    r[{{ op.dst }}] = m->y[{{ op.index }}];
 {%- elif op.kind == "LoadP" %}    r[{{ op.dst }}] = m->p[{{ op.index }}];
 {%- elif op.kind == "LoadIndexedP" %}    r[{{ op.dst }}] = m->p[{{ op.base }} + (size_t)fmin(fmax(round(r[{{ op.index_ref }}]), 0.0), {{ op.count - 1 if op.count > 0 else 0 }}.0)];
+{%- elif op.kind == "TensorLoad" %}
+{%- if op.lanes != 1 %}{{ fail("unsupported-feature:fmi3.tensor-load-dual") }}{% endif %}
+{%- for element in range(op.count) %}    r[{{ op.dst + element }}] = m->{{ "y" if op.input == "Y" else "p" }}[{{ op.input_start + element }}];
+{%- endfor %}
 {%- elif op.kind == "Move" %}    r[{{ op.dst }}] = r[{{ op.src }}];
+{%- elif op.kind == "MatrixMultiply" %}
+{%- if op.lanes != 1 %}{{ fail("unsupported-feature:fmi3.matrix-multiply-dual") }}{% endif %}
+{%- for row in range(op.rows) %}{%- for column in range(op.columns) %}    r[{{ op.dst + row * op.columns + column }}] = 0.0{% for term in range(op.inner) %} + r[{{ op.lhs_start + row * op.inner + term }}] * r[{{ op.rhs_start + term * op.columns + column }}]{% endfor %};
+{%- endfor %}{%- endfor %}
+{%- elif op.kind == "TensorBinary" %}
+{%- if op.lanes != 1 %}{{ fail("unsupported-feature:fmi3.tensor-binary-dual") }}{% endif %}
+{%- for element in range(op.count) %}    r[{{ op.dst + element }}] = {{ binary(op.operator, op.lhs_start + element * op.lhs_stride, op.rhs_start + element * op.rhs_stride) }};
+{%- endfor %}
+{%- elif op.kind == "TensorCross" %}
+{%- if op.lanes != 1 %}{{ fail("unsupported-feature:fmi3.tensor-cross-dual") }}{% endif %}
+    r[{{ op.dst }}] = r[{{ op.lhs_start + 1 }}] * r[{{ op.rhs_start + 2 }}] - r[{{ op.lhs_start + 2 }}] * r[{{ op.rhs_start + 1 }}];
+    r[{{ op.dst + 1 }}] = r[{{ op.lhs_start + 2 }}] * r[{{ op.rhs_start }}] - r[{{ op.lhs_start }}] * r[{{ op.rhs_start + 2 }}];
+    r[{{ op.dst + 2 }}] = r[{{ op.lhs_start }}] * r[{{ op.rhs_start + 1 }}] - r[{{ op.lhs_start + 1 }}] * r[{{ op.rhs_start }}];
+{%- elif op.kind == "TensorTranspose" %}
+{%- if op.lanes != 1 %}{{ fail("unsupported-feature:fmi3.tensor-transpose-dual") }}{% endif %}
+{%- for row in range(op.rows) %}{%- for column in range(op.columns) %}{%- for value_offset in range(op.element_width) %}    r[{{ op.dst + (row * op.columns + column) * op.element_width + value_offset }}] = r[{{ op.src_start + (column * op.rows + row) * op.element_width + value_offset }}];
+{%- endfor %}{%- endfor %}{%- endfor %}
 {%- elif op.kind == "Unary" %}    r[{{ op.dst }}] = {{ unary(op.operator, op.arg) }};
 {%- elif op.kind == "Binary" %}    r[{{ op.dst }}] = {{ binary(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Compare" %}    r[{{ op.dst }}] = {{ compare(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Select" %}    r[{{ op.dst }}] = r[{{ op.cond }}] != 0.0 ? r[{{ op.if_true }}] : r[{{ op.if_false }}];
+{%- elif op.kind == "PureCall" %}    if (pure_call_{{ op.owner }}({% for input_start in op.input_starts %}&r[{{ input_start }}], {% endfor %}&r[{{ op.dst }}]) != fmi3OK) { return fmi3Error; }
 {%- elif op.kind == "StoreOutput" %}    {{ output }}[{{ op.output_index }}] = r[{{ op.src }}];
 {%- elif op.kind == "StoreOutputRange" %}{%- for output_index in op.output_indices %}    {{ output }}[{{ output_index }}] = r[{{ op.start + loop.index0 * op.stride }}];
 {%- endfor %}
@@ -39,7 +334,37 @@ enum InterfaceType { INTERFACE_ME, INTERFACE_CS };
 #define Y_LEN {{ solve.layout.y_scalars if solve.layout.y_scalars > 0 else 1 }}
 #define P_LEN {{ solve.layout.p_scalars if solve.layout.p_scalars > 0 else 1 }}
 #define STATE_LEN {{ solve.solve_layout.state_scalar_count if solve.solve_layout.state_scalar_count > 0 else 1 }}
-typedef struct { double time; double y[Y_LEN]; double p[P_LEN]; double derivative[STATE_LEN]; enum ModelState state; enum InterfaceType type; } ModelInstance;
+typedef struct { double time; double y[Y_LEN]; double p[P_LEN]; double derivative[STATE_LEN]; enum ModelState state; enum InterfaceType type; fmi3InstanceEnvironment environment; fmi3LogMessageCallback logger; } ModelInstance;
+
+{%- if pure_calls.owners|length > 0 %}
+static inline double real64_from_bits(uint64_t bits) {
+    double value;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+static inline fmi3Boolean checked_integer_add(int64_t lhs, int64_t rhs, int64_t* result) {
+    if ((rhs > 0 && lhs > INT64_MAX - rhs) || (rhs < 0 && lhs < INT64_MIN - rhs)) return fmi3False;
+    *result = lhs + rhs;
+    return fmi3True;
+}
+static inline fmi3Boolean checked_integer_subtract(int64_t lhs, int64_t rhs, int64_t* result) {
+    if ((rhs < 0 && lhs > INT64_MAX + rhs) || (rhs > 0 && lhs < INT64_MIN + rhs)) return fmi3False;
+    *result = lhs - rhs;
+    return fmi3True;
+}
+static inline fmi3Boolean modelica_index_offset(const size_t dimensions[], const int64_t indices[], size_t rank, size_t* offset) {
+    size_t result = 0;
+    for (size_t axis = 0; axis < rank; ++axis) {
+        if (indices[axis] < 1 || (uint64_t)indices[axis] > dimensions[axis]) return fmi3False;
+        result = result * dimensions[axis] + (size_t)(indices[axis] - 1);
+    }
+    *offset = result;
+    return fmi3True;
+}
+{%- for owner in pure_calls.owners %}
+{{ pure_call_owner(owner) }}
+{%- endfor %}
+{%- endif %}
 
 static void initialize_values(ModelInstance* m) {
     memset(m->y, 0, sizeof(m->y)); memset(m->p, 0, sizeof(m->p)); m->time = 0.0;
@@ -63,6 +388,31 @@ static fmi3Status refresh_algebraics(ModelInstance* m) {
 {%- endfor %}
     }
 {%- endfor %}
+    return fmi3OK;
+}
+static inline fmi3Status evaluate_assertions(ModelInstance* m) {
+{%- if fmi.assertions|length == 0 %}
+    (void)m;
+{%- else %}
+    double conditions[{{ fmi.assertions|length }}];
+{%- for assertion in fmi.assertions %}
+    static const unsigned char assertion_message_{{ loop.index0 }}[] = { {% for byte in assertion.message_bytes %}{{ byte }}, {% endfor %}0 };
+{%- endfor %}
+{%- for program in solve.events.action_plan.programs %}
+    {
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "conditions") }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- for assertion in fmi.assertions %}
+    if (conditions[{{ loop.index0 }}] != 0.0) {
+        if (m->logger) m->logger(m->environment, fmi3Error, "assert", (const char*)assertion_message_{{ loop.index0 }});
+        return fmi3Error;
+    }
+{%- endfor %}
+{%- endif %}
     return fmi3OK;
 }
 static fmi3Status evaluate_derivatives(ModelInstance* m) {
@@ -112,9 +462,9 @@ static fmi3Status get_float64(ModelInstance* m, fmi3ValueReference vr, double* v
     if (refresh_algebraics(m) != fmi3OK) return fmi3Error;
     switch (vr) {
     case 0: values[0] = m->time; return fmi3OK;
-{%- for variable in fmi.variables %}
+{%- for variable in fmi.variables %}{% if variable.value_kind == "Real" %}
     case {{ variable.value_reference_fmi3 }}:{% for scalar in range(variable.storage.scalar_count) %} values[{{ scalar }}] = m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}];{% endfor %} return fmi3OK;
-{%- endfor %}
+{%- endif %}{%- endfor %}
 {%- set derivative_ordinal.value = 0 %}{%- set derivative_base = namespace(value=0) %}
 {%- for variable in fmi.variables %}{% if variable.role == "State" %}
     case {{ fmi.derivative_value_reference_base_fmi3 + derivative_ordinal.value }}: if (evaluate_derivatives(m) != fmi3OK) return fmi3Error;{% for scalar in range(variable.storage.scalar_count) %} values[{{ scalar }}] = m->derivative[{{ derivative_base.value + scalar }}];{% endfor %} return fmi3OK;
@@ -122,7 +472,7 @@ static fmi3Status get_float64(ModelInstance* m, fmi3ValueReference vr, double* v
     default: return fmi3Error;
     }
 }
-static fmi3Boolean can_set_float64(const ModelInstance* m, fmi3ValueReference vr) {
+static fmi3Boolean can_set_value(const ModelInstance* m, fmi3ValueReference vr) {
     switch (vr) {
 {%- for variable in fmi.variables %}
     case {{ variable.value_reference_fmi3 }}:
@@ -146,36 +496,73 @@ static fmi3Boolean can_set_float64(const ModelInstance* m, fmi3ValueReference vr
 }
 static fmi3Status set_float64(ModelInstance* m, fmi3ValueReference vr, const double* values) {
     switch (vr) {
-{%- for variable in fmi.variables %}
+{%- for variable in fmi.variables %}{% if variable.value_kind == "Real" %}
     case {{ variable.value_reference_fmi3 }}:{% for scalar in range(variable.storage.scalar_count) %} m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}] = values[{{ scalar }}];{% endfor %} return fmi3OK;
-{%- endfor %}
+{%- endif %}{%- endfor %}
     default: return fmi3Error;
+    }
+}
+static fmi3Status get_boolean(ModelInstance* m, fmi3ValueReference vr, fmi3Boolean* values) {
+    (void)values;
+    if (refresh_algebraics(m) != fmi3OK) return fmi3Error;
+    switch (vr) {
+{%- for variable in fmi.variables %}{% if variable.value_kind == "Boolean" %}
+    case {{ variable.value_reference_fmi3 }}:{% for scalar in range(variable.storage.scalar_count) %} values[{{ scalar }}] = m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}] != 0.0 ? fmi3True : fmi3False;{% endfor %} return fmi3OK;
+{%- endif %}{%- endfor %}
+    default: return fmi3Error;
+    }
+}
+static fmi3Status set_boolean(ModelInstance* m, fmi3ValueReference vr, const fmi3Boolean* values) {
+    (void)m; (void)values;
+    switch (vr) {
+{%- for variable in fmi.variables %}{% if variable.value_kind == "Boolean" %}
+    case {{ variable.value_reference_fmi3 }}:{% for scalar in range(variable.storage.scalar_count) %} m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}] = values[{{ scalar }}] != fmi3False ? 1.0 : 0.0;{% endfor %} return fmi3OK;
+{%- endif %}{%- endfor %}
+    default: return fmi3Error;
+    }
+}
+static fmi3Boolean is_float64_variable(fmi3ValueReference vr) {
+    switch (vr) {
+{%- for variable in fmi.variables %}{% if variable.value_kind == "Real" %}
+    case {{ variable.value_reference_fmi3 }}: return fmi3True;
+{%- endif %}{%- endfor %}
+    default: return fmi3False;
+    }
+}
+static fmi3Boolean is_boolean_variable(fmi3ValueReference vr) {
+    switch (vr) {
+{%- for variable in fmi.variables %}{% if variable.value_kind == "Boolean" %}
+    case {{ variable.value_reference_fmi3 }}: return fmi3True;
+{%- endif %}{%- endfor %}
+    default: return fmi3False;
     }
 }
 FMI_EXPORT const char* fmi3GetVersion(void) { return "3.0"; }
 FMI_EXPORT fmi3Instance fmi3InstantiateModelExchange(fmi3String name, fmi3String token, fmi3String resources, fmi3Boolean visible, fmi3Boolean loggingOn, fmi3InstanceEnvironment environment, fmi3LogMessageCallback logger) {
-    (void)name; (void)resources; (void)visible; (void)loggingOn; (void)environment; (void)logger;
+    (void)name; (void)resources; (void)visible; (void)loggingOn;
     if (!token || strcmp(token, "{{ artifact.identities.fmu }}") != 0) return NULL;
-    ModelInstance* m = calloc(1, sizeof(ModelInstance)); if (!m) return NULL; initialize_values(m); m->type=INTERFACE_ME; m->state = MODEL_INSTANTIATED; return m;
+    ModelInstance* m = calloc(1, sizeof(ModelInstance)); if (!m) return NULL; initialize_values(m); m->type=INTERFACE_ME; m->state = MODEL_INSTANTIATED; m->environment=environment; m->logger=logger; return m;
 }
 FMI_EXPORT fmi3Instance fmi3InstantiateCoSimulation(fmi3String name, fmi3String token, fmi3String resources, fmi3Boolean visible, fmi3Boolean loggingOn, fmi3Boolean eventModeUsed, fmi3Boolean earlyReturnAllowed, const fmi3ValueReference requiredIntermediateVariables[], size_t nRequiredIntermediateVariables, fmi3InstanceEnvironment environment, fmi3LogMessageCallback logger, fmi3IntermediateUpdateCallback intermediateUpdate) {
-    (void)name;(void)resources;(void)visible;(void)loggingOn;(void)earlyReturnAllowed;(void)environment;(void)logger;(void)intermediateUpdate;
+    (void)name;(void)resources;(void)visible;(void)loggingOn;(void)earlyReturnAllowed;(void)intermediateUpdate;
     (void)requiredIntermediateVariables;
     if(eventModeUsed || nRequiredIntermediateVariables!=0 || !token || strcmp(token,"{{ artifact.identities.fmu }}")!=0)return NULL;
-    ModelInstance* m=calloc(1,sizeof(ModelInstance));if(!m)return NULL;initialize_values(m);m->type=INTERFACE_CS;m->state=MODEL_INSTANTIATED;return m;
+    ModelInstance* m=calloc(1,sizeof(ModelInstance));if(!m)return NULL;initialize_values(m);m->type=INTERFACE_CS;m->state=MODEL_INSTANTIATED;m->environment=environment;m->logger=logger;return m;
 }
 FMI_EXPORT fmi3Instance fmi3InstantiateScheduledExecution(fmi3String name, fmi3String token, fmi3String resources, fmi3Boolean visible, fmi3Boolean loggingOn, fmi3InstanceEnvironment environment, fmi3LogMessageCallback logger, fmi3ClockUpdateCallback clockUpdate, fmi3LockPreemptionCallback lockPreemption, fmi3UnlockPreemptionCallback unlockPreemption) { (void)name;(void)token;(void)resources;(void)visible;(void)loggingOn;(void)environment;(void)logger;(void)clockUpdate;(void)lockPreemption;(void)unlockPreemption;return NULL; }
 FMI_EXPORT void fmi3FreeInstance(fmi3Instance instance) { free(instance); }
 FMI_EXPORT fmi3Status fmi3SetDebugLogging(fmi3Instance i, fmi3Boolean loggingOn, size_t n, const fmi3String categories[]) { (void)loggingOn; return i && (categories || n == 0) ? fmi3OK : fmi3Error; }
 FMI_EXPORT fmi3Status fmi3EnterInitializationMode(fmi3Instance i, fmi3Boolean td, fmi3Float64 tol, fmi3Float64 start, fmi3Boolean sd, fmi3Float64 stop) { ModelInstance* m=i; if (!m || m->state != MODEL_INSTANTIATED || !isfinite(start) || (td && (!isfinite(tol) || tol < 0.0)) || (sd && (!isfinite(stop) || stop < start))) return fmi3Error; m->time=start; m->state=MODEL_INITIALIZATION; return fmi3OK; }
-FMI_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance i) { ModelInstance* m=i; if (!m || m->state != MODEL_INITIALIZATION || evaluate_derivatives(m) != fmi3OK) return fmi3Error; m->state=m->type==INTERFACE_ME?MODEL_EVENT:MODEL_STEP; return fmi3OK; }
+FMI_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance i) { ModelInstance* m=i; if (!m || m->state != MODEL_INITIALIZATION || evaluate_derivatives(m) != fmi3OK || evaluate_assertions(m) != fmi3OK) return fmi3Error; m->state=m->type==INTERFACE_ME?MODEL_EVENT:MODEL_STEP; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3EnterEventMode(fmi3Instance i) { ModelInstance* m=i; if (!m || m->type != INTERFACE_ME || (m->state != MODEL_EVENT && m->state != MODEL_CONTINUOUS)) return fmi3Error; m->state=MODEL_EVENT; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3UpdateDiscreteStates(fmi3Instance i, fmi3Boolean* need, fmi3Boolean* terminate, fmi3Boolean* nominalsChanged, fmi3Boolean* valuesChanged, fmi3Boolean* nextDefined, fmi3Float64* nextTime) { ModelInstance* m=i; if (!m || m->state != MODEL_EVENT || !need || !terminate || !nominalsChanged || !valuesChanged || !nextDefined || !nextTime) return fmi3Error; *need=0; *terminate=0; *nominalsChanged=0; *valuesChanged=0; *nextDefined=0; *nextTime=0.0; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3EnterContinuousTimeMode(fmi3Instance i) { ModelInstance* m=i; if (!m || m->type != INTERFACE_ME || m->state != MODEL_EVENT) return fmi3Error; m->state=MODEL_CONTINUOUS; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3Terminate(fmi3Instance i) { ModelInstance* m=i; if (!m || (m->state != MODEL_EVENT && m->state != MODEL_CONTINUOUS && m->state != MODEL_STEP)) return fmi3Error; m->state=MODEL_TERMINATED; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3Reset(fmi3Instance i) { ModelInstance* m=i; if (!m) return fmi3Error; initialize_values(m); m->state=MODEL_INSTANTIATED; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3GetFloat64(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, fmi3Float64 values[], size_t nvalues) { ModelInstance* m=i; if (!m || (!vr && nvr) || (!values && nvalues)) return fmi3Error; size_t cursor=0; for (size_t k=0;k<nvr;++k) { size_t count=value_count(vr[k]); if (!count || cursor+count>nvalues || get_float64(m,vr[k],values+cursor)!=fmi3OK) return fmi3Error; cursor+=count; } return cursor==nvalues?fmi3OK:fmi3Error; }
-FMI_EXPORT fmi3Status fmi3SetFloat64(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, const fmi3Float64 values[], size_t nvalues) { ModelInstance* m=i; if (!m || (!vr && nvr) || (!values && nvalues)) return fmi3Error; size_t cursor=0; for (size_t k=0;k<nvr;++k) { size_t count=value_count(vr[k]); if (!count || cursor+count>nvalues || !can_set_float64(m,vr[k])) return fmi3Error; for (size_t j=0;j<count;++j) if (!isfinite(values[cursor+j])) return fmi3Error; cursor+=count; } if (cursor!=nvalues) return fmi3Error; cursor=0; for (size_t k=0;k<nvr;++k) { size_t count=value_count(vr[k]); if (set_float64(m,vr[k],values+cursor)!=fmi3OK) return fmi3Error; cursor+=count; } return fmi3OK; }
+FMI_EXPORT fmi3Status fmi3SetFloat64(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, const fmi3Float64 values[], size_t nvalues) { ModelInstance* m=i; if (!m || (!vr && nvr) || (!values && nvalues)) return fmi3Error; size_t cursor=0; for (size_t k=0;k<nvr;++k) { size_t count=value_count(vr[k]); if (!count || cursor+count>nvalues || !is_float64_variable(vr[k]) || !can_set_value(m,vr[k])) return fmi3Error; for (size_t j=0;j<count;++j) if (!isfinite(values[cursor+j])) return fmi3Error; cursor+=count; } if (cursor!=nvalues) return fmi3Error; cursor=0; for (size_t k=0;k<nvr;++k) { size_t count=value_count(vr[k]); if (set_float64(m,vr[k],values+cursor)!=fmi3OK) return fmi3Error; cursor+=count; } return fmi3OK; }
+FMI_EXPORT fmi3Status fmi3GetBoolean(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, fmi3Boolean values[], size_t nvalues) { ModelInstance* m=i; if (!m || (!vr && nvr) || (!values && nvalues)) return fmi3Error; size_t cursor=0; for (size_t k=0;k<nvr;++k) { size_t count=value_count(vr[k]); if (!count || cursor+count>nvalues || get_boolean(m,vr[k],values+cursor)!=fmi3OK) return fmi3Error; cursor+=count; } return cursor==nvalues?fmi3OK:fmi3Error; }
+FMI_EXPORT fmi3Status fmi3SetBoolean(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, const fmi3Boolean values[], size_t nvalues) { ModelInstance* m=i; if (!m || (!vr && nvr) || (!values && nvalues)) return fmi3Error; size_t cursor=0; for (size_t k=0;k<nvr;++k) { size_t count=value_count(vr[k]); if (!count || cursor+count>nvalues || !is_boolean_variable(vr[k]) || !can_set_value(m,vr[k])) return fmi3Error; cursor+=count; } if (cursor!=nvalues) return fmi3Error; cursor=0; for (size_t k=0;k<nvr;++k) { size_t count=value_count(vr[k]); if (set_boolean(m,vr[k],values+cursor)!=fmi3OK) return fmi3Error; cursor+=count; } return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3SetTime(fmi3Instance i, fmi3Float64 time) { ModelInstance* m=i; if (!m || m->type != INTERFACE_ME || m->state != MODEL_CONTINUOUS || !isfinite(time)) return fmi3Error; m->time=time; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3SetContinuousStates(fmi3Instance i, const fmi3Float64 x[], size_t nx) { ModelInstance* m=i; if (!m || m->type != INTERFACE_ME || m->state != MODEL_CONTINUOUS || nx != {{ solve.solve_layout.state_scalar_count }} || (!x && nx)) return fmi3Error; for(size_t k=0;k<nx;++k)if(!isfinite(x[k]))return fmi3Error; for(size_t k=0;k<nx;++k)m->y[k]=x[k]; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3GetContinuousStates(fmi3Instance i, fmi3Float64 x[], size_t nx) { ModelInstance* m=i; if (!m || m->type != INTERFACE_ME || m->state == MODEL_INSTANTIATED || m->state == MODEL_STEP || nx != {{ solve.solve_layout.state_scalar_count }} || (!x && nx)) return fmi3Error; for(size_t k=0;k<nx;++k)x[k]=m->y[k]; return fmi3OK; }
@@ -198,7 +585,6 @@ UNSUPPORTED_GET_SET(fmi3Int32, Int32)
 UNSUPPORTED_GET_SET(fmi3UInt32, UInt32)
 UNSUPPORTED_GET_SET(fmi3Int64, Int64)
 UNSUPPORTED_GET_SET(fmi3UInt64, UInt64)
-UNSUPPORTED_GET_SET(fmi3Boolean, Boolean)
 UNSUPPORTED_GET_SET(fmi3String, String)
 
 FMI_EXPORT fmi3Status fmi3GetBinary(fmi3Instance i,const fmi3ValueReference vr[],size_t nvr,size_t sizes[],fmi3Binary values[],size_t nvalues){(void)vr;(void)sizes;(void)values;return i&&nvr==0&&nvalues==0?fmi3OK:fmi3Error;}

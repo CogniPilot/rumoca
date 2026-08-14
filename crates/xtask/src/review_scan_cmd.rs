@@ -400,6 +400,9 @@ fn scan_file_size(path: &str, content: &str) -> Vec<ReviewFinding> {
         return Vec::new();
     }
     let line_count = content.lines().count();
+    if line_count > 2000 && has_documented_file_size_exception(content) {
+        return Vec::new();
+    }
     let (severity, rule) = if line_count > 2000 {
         ("high", "file-size-hard-limit")
     } else if line_count >= 1800 {
@@ -414,6 +417,11 @@ fn scan_file_size(path: &str, content: &str) -> Vec<ReviewFinding> {
         line: 1,
         excerpt: format!("{line_count} lines"),
     }]
+}
+
+fn has_documented_file_size_exception(content: &str) -> bool {
+    let content = content.to_ascii_lowercase();
+    content.contains("spec_0021") && content.contains("file-size") && content.contains("split plan")
 }
 
 fn is_line_count_checked_rust_source(path: &str) -> bool {
@@ -566,6 +574,12 @@ rumoca-eval-dae = { workspace = true }
             &"x\n".repeat(2001),
         );
         assert!(generated_file.is_empty());
+
+        let documented_exception = format!(
+            "// SPEC_0021 file-size split plan: extract the parser tables.\n{}",
+            "x\n".repeat(2001)
+        );
+        assert!(scan_file_size("crates/example/src/lib.rs", &documented_exception).is_empty());
     }
 
     #[test]

@@ -1023,7 +1023,15 @@ fn program_output_dependencies(
     program: &[LinearOp],
     span: Option<Span>,
 ) -> Result<Vec<DependencyState>, StructuralPatternError> {
-    program_output_dependencies_with_fold(program, span, None, None, None, DependencySource::Seed)
+    program_output_dependencies_with_fold(
+        program,
+        span,
+        None,
+        None,
+        None,
+        DependencySource::Seed,
+        None,
+    )
 }
 
 fn program_output_y_dependencies(
@@ -1037,6 +1045,7 @@ fn program_output_y_dependencies(
         None,
         None,
         DependencySource::SolverY,
+        None,
     )?
     .into_iter()
     .map(|dependencies| match dependencies {
@@ -1055,6 +1064,13 @@ fn program_output_y_dependencies(
 pub(crate) fn program_register_y_dependencies(
     program: &[LinearOp],
 ) -> Result<Vec<Option<BTreeSet<usize>>>, StructuralPatternError> {
+    program_register_y_dependencies_with_pure_calls(program, None)
+}
+
+pub(crate) fn program_register_y_dependencies_with_pure_calls(
+    program: &[LinearOp],
+    pure_calls: Option<&crate::SolvePureCallTable>,
+) -> Result<Vec<Option<BTreeSet<usize>>>, StructuralPatternError> {
     let mut walk = DependencyWalk {
         registers: Vec::new(),
         outputs: Vec::new(),
@@ -1063,6 +1079,7 @@ pub(crate) fn program_register_y_dependencies(
         fold_captures: None,
         conditional_captures: None,
         source: DependencySource::SolverY,
+        pure_calls,
     };
     for operation in program.iter().cloned() {
         apply_dependency_op(&mut walk, operation)?;
@@ -1084,6 +1101,7 @@ fn program_output_dependencies_with_fold(
     fold_captures: Option<&[DependencyState]>,
     conditional_captures: Option<&[DependencyState]>,
     source: DependencySource,
+    pure_calls: Option<&crate::SolvePureCallTable>,
 ) -> Result<Vec<DependencyState>, StructuralPatternError> {
     let mut walk = DependencyWalk {
         registers: Vec::new(),
@@ -1093,6 +1111,7 @@ fn program_output_dependencies_with_fold(
         fold_captures,
         conditional_captures,
         source,
+        pure_calls,
     };
     for op in program.iter().cloned() {
         apply_dependency_op(&mut walk, op)?;
@@ -1113,6 +1132,7 @@ struct DependencyWalk<'a> {
     fold_captures: Option<&'a [DependencyState]>,
     conditional_captures: Option<&'a [DependencyState]>,
     source: DependencySource,
+    pure_calls: Option<&'a crate::SolvePureCallTable>,
 }
 
 /// Structural classification of one checked [`LinearOp`].
@@ -1202,12 +1222,18 @@ fn apply_dependency_op(
         LinearOp::FunctionConditional { dst_start, capture_start, program } =>
             walk.function_conditional(dst_start, capture_start, &program)?,
         LinearOp::PureCall { dst_start, input_starts, site } => walk.pure_call(
-            dst_start, &input_starts, site.inputs(), site.output_scalar_count(),
-            "pure-call output width overflows",
+            &PureCallDependencyShape {
+                dst_start, input_starts: &input_starts, inputs: site.inputs(), outputs: site.outputs(),
+                owner: Some(site.owner()), output_scalar_count: site.output_scalar_count(),
+                overflow_message: "pure-call output width overflows",
+            },
         )?,
         LinearOp::PureCallDirectional { dst_start, input_starts, site } => walk.pure_call(
-            dst_start, &input_starts, site.inputs(), site.output_scalar_count(),
-            "directional pure-call output width overflows",
+            &PureCallDependencyShape {
+                dst_start, input_starts: &input_starts, inputs: site.inputs(), outputs: site.outputs(),
+                owner: None, output_scalar_count: site.output_scalar_count(),
+                overflow_message: "directional pure-call output width overflows",
+            },
         )?,
         LinearOp::StoreOutputFoldTensorUpdate {
             source_base, source_stride, dimensions, updates, nodes, lanes, ..
@@ -1247,6 +1273,16 @@ struct TensorBinaryShape {
     lhs_stride: usize,
     rhs_stride: usize,
     lanes: usize,
+}
+
+struct PureCallDependencyShape<'a> {
+    dst_start: Reg,
+    input_starts: &'a [Reg],
+    inputs: &'a [crate::SolveValueType],
+    outputs: &'a [crate::SolvePureCallOutput],
+    owner: Option<crate::SolvePureCallOwnerId>,
+    output_scalar_count: Option<usize>,
+    overflow_message: &'static str,
 }
 
 /// The value tuple and the three diagnostics that distinguish an indexed
@@ -1819,8 +1855,14 @@ impl DependencyWalk<'_> {
     ) -> Result<(), StructuralPatternError> {
         let carried = self.register_tuple(initial_start, program.carried_count)?;
         let captures = self.register_tuple(capture_start, program.capture_count)?;
-        let carried =
-            function_fold_dependencies(program, carried, &captures, self.span, self.source)?;
+        let carried = function_fold_dependencies(
+            program,
+            carried,
+            &captures,
+            self.span,
+            self.source,
+            self.pure_calls,
+        )?;
         for (offset, dependency) in carried.into_iter().enumerate() {
             self.set(dst_start + offset as Reg, dependency);
         }
@@ -1838,8 +1880,14 @@ impl DependencyWalk<'_> {
         let activation = self.get(activation)?;
         let carried = self.register_tuple(initial_start, program.carried_count)?;
         let captures = self.register_tuple(capture_start, program.capture_count)?;
-        let carried =
-            function_fold_dependencies(program, carried, &captures, self.span, self.source)?;
+        let carried = function_fold_dependencies(
+            program,
+            carried,
+            &captures,
+            self.span,
+            self.source,
+            self.pure_calls,
+        )?;
         for (offset, dependency) in carried.into_iter().enumerate() {
             self.set(
                 dst_start + offset as Reg,
@@ -1863,6 +1911,7 @@ impl DependencyWalk<'_> {
             self.fold_captures,
             Some(captures),
             self.source,
+            self.pure_calls,
         )
     }
 
@@ -1912,21 +1961,95 @@ impl DependencyWalk<'_> {
     /// only in the diagnostic their output-width overflow reports.
     fn pure_call(
         &mut self,
+        shape: &PureCallDependencyShape<'_>,
+    ) -> Result<(), StructuralPatternError> {
+        if let (Some(calls), Some(owner)) = (self.pure_calls, shape.owner) {
+            return self.checked_pure_call(shape, calls, owner);
+        }
+        self.opaque_pure_call(shape)
+    }
+
+    fn checked_pure_call(
+        &mut self,
+        shape: &PureCallDependencyShape<'_>,
+        calls: &crate::SolvePureCallTable,
+        owner: crate::SolvePureCallOwnerId,
+    ) -> Result<(), StructuralPatternError> {
+        let output_dependencies = calls.output_input_dependencies(owner).ok_or_else(|| {
+            dependency_error("pure-call dependency owner is unavailable", self.span)
+        })?;
+        if output_dependencies.len() != shape.outputs.len() {
+            return Err(dependency_error(
+                "pure-call dependency output count mismatch",
+                self.span,
+            ));
+        }
+        let mut output_offset = 0usize;
+        for (output, input_dependencies) in shape.outputs.iter().zip(output_dependencies.iter()) {
+            let dependency = self.pure_call_input_dependency(shape, input_dependencies)?;
+            let count = output.value_type().scalar_count() as usize;
+            self.set_dependency_range(shape.dst_start, output_offset, count, dependency);
+            output_offset = output_offset.checked_add(count).ok_or_else(|| {
+                dependency_error("pure-call dependency output width overflows", self.span)
+            })?;
+        }
+        if Some(output_offset) != shape.output_scalar_count {
+            return Err(dependency_error(
+                "pure-call dependency scalar width mismatch",
+                self.span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn pure_call_input_dependency(
+        &self,
+        shape: &PureCallDependencyShape<'_>,
+        input_dependencies: &[usize],
+    ) -> Result<DependencyState, StructuralPatternError> {
+        let mut dependency = DependencyState::empty();
+        for &input in input_dependencies {
+            let start = *shape.input_starts.get(input).ok_or_else(|| {
+                dependency_error("pure-call dependency input is unavailable", self.span)
+            })?;
+            let count = shape
+                .inputs
+                .get(input)
+                .ok_or_else(|| {
+                    dependency_error("pure-call dependency input type is unavailable", self.span)
+                })?
+                .scalar_count() as usize;
+            dependency = self.union_scalar_range(dependency, start, count)?;
+        }
+        Ok(dependency)
+    }
+
+    fn set_dependency_range(
+        &mut self,
         dst_start: Reg,
-        input_starts: &[Reg],
-        inputs: &[crate::SolveValueType],
-        output_scalar_count: Option<usize>,
-        message: &'static str,
+        offset: usize,
+        count: usize,
+        dependency: DependencyState,
+    ) {
+        for lane in 0..count {
+            self.set(dst_start + (offset + lane) as Reg, dependency.clone());
+        }
+    }
+
+    fn opaque_pure_call(
+        &mut self,
+        shape: &PureCallDependencyShape<'_>,
     ) -> Result<(), StructuralPatternError> {
         let mut dependency = DependencyState::empty();
-        for (start, value_type) in input_starts.iter().zip(inputs) {
+        for (start, value_type) in shape.input_starts.iter().zip(shape.inputs) {
             let count = value_type.scalar_count() as usize;
             dependency = self.union_scalar_range(dependency, *start, count)?;
         }
-        let output_count =
-            output_scalar_count.ok_or_else(|| dependency_error(message, self.span))?;
+        let output_count = shape
+            .output_scalar_count
+            .ok_or_else(|| dependency_error(shape.overflow_message, self.span))?;
         for offset in 0..output_count {
-            self.set(dst_start + offset as Reg, dependency.clone());
+            self.set(shape.dst_start + offset as Reg, dependency.clone());
         }
         Ok(())
     }
@@ -2043,8 +2166,14 @@ impl DependencyWalk<'_> {
             self.push_nested_fold_initial(&mut carried, parent, source)?;
         }
         let captures = self.register_tuple(capture_start, program.capture_count)?;
-        let carried =
-            function_fold_dependencies(program, carried, &captures, self.span, self.source)?;
+        let carried = function_fold_dependencies(
+            program,
+            carried,
+            &captures,
+            self.span,
+            self.source,
+            self.pure_calls,
+        )?;
         let end = result_base
             .checked_add(count)
             .ok_or_else(|| dependency_error("nested fold result range overflow", self.span))?;
@@ -2169,6 +2298,7 @@ fn function_fold_dependencies(
     captures: &[DependencyState],
     span: Option<Span>,
     source: DependencySource,
+    pure_calls: Option<&crate::SolvePureCallTable>,
 ) -> Result<Vec<DependencyState>, StructuralPatternError> {
     if carried.len() != program.carried_count {
         return Err(dependency_error(
@@ -2192,6 +2322,7 @@ fn function_fold_dependencies(
             Some(captures),
             None,
             source,
+            pure_calls,
         )?;
         if updates.len() != carried.len() {
             return Err(dependency_error(
@@ -2793,11 +2924,16 @@ mod tests {
             declarations, 1,
             "exactly one caller-row constructor may exist"
         );
-        let gated = source
+        let preceding_line = source
             .split(declaration.as_str())
             .next()
             .expect("the declaration is preceded by its attribute")
-            .ends_with("#[cfg(any(test, feature = \"pattern-fixtures\"))]\n    ");
+            .trim_end()
+            .lines()
+            .next_back()
+            .expect("the fixture gate has a source line")
+            .trim();
+        let gated = preceding_line == "#[cfg(any(test, feature = \"pattern-fixtures\"))]";
         assert!(
             gated,
             "from_row_dependencies must be declared directly under the pattern-fixtures gate"

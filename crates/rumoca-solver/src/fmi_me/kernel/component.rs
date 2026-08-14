@@ -1020,6 +1020,7 @@ impl SolveMeKernel {
         event_time: f64,
         _event: RuntimeEventStop,
         row_filter: EventUpdateRowFilter,
+        right_limit_solver_y: Option<Vec<f64>>,
     ) -> Result<(), MeError> {
         let event_entry_y = self
             .pending_event_pre_y
@@ -1030,7 +1031,16 @@ impl SolveMeKernel {
             .pending_event_pre_p
             .take()
             .unwrap_or_else(|| self.params.clone());
-        let mut solver_y = self.event_iteration_solver_y(&event_entry_y)?;
+        // The first superdense pass starts from the frozen event-entry view.
+        // A right-limit pass instead starts from the state the first pass
+        // settled and the infinitesimal continuous advance produced, while
+        // retaining the same event-entry vectors solely as `pre` sources.
+        // Reusing `event_entry_y` for both roles would undo a `reinit` before
+        // the importer could observe the changed continuous state.
+        let mut solver_y = match right_limit_solver_y {
+            Some(solver_y) => solver_y,
+            None => self.event_iteration_solver_y(&event_entry_y)?,
+        };
         let (pending_root_overrides, has_located_root_crossing) =
             self.take_pending_event_root_overrides();
         let root_overrides = pending_root_overrides.as_slice();

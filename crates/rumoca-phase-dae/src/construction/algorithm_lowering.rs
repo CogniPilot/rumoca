@@ -181,14 +181,14 @@ pub(super) fn lower_algorithms<'dae>(
                 )?;
                 let transaction_targets = targets
                     .into_iter()
-                    .map(|target| model_event_target(request.environment.coordinates[&target]));
-                lowering.construction.model_events(|events| {
-                    events.transaction(
-                        transaction_targets,
-                        transaction_steps.into_inner(),
-                        owner_provenance,
-                    )
-                })?;
+                    .map(|target| model_event_target(request.environment.coordinates[&target]))
+                    .collect::<Vec<_>>();
+                let transaction_steps = transaction_steps.into_inner();
+                if !transaction_targets.is_empty() || !transaction_steps.is_empty() {
+                    lowering.construction.model_events(|events| {
+                        events.transaction(transaction_targets, transaction_steps, owner_provenance)
+                    })?;
+                }
             }
         }
     }

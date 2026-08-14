@@ -250,7 +250,7 @@ pub fn render_and_package(
 /// Remove a recognized product directory and archive before a new compilation
 /// attempt. Validation is completed for both paths before either is removed, so
 /// a foreign directory or archive is never partially destroyed.
-#[cfg(feature = "fmu-packaging")]
+#[cfg(all(feature = "scheduled-sim", feature = "fmu-packaging"))]
 pub(crate) fn invalidate_existing_package(
     out_dir: &Path,
     archive_path: Option<&Path>,

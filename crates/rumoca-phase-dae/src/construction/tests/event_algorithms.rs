@@ -903,6 +903,59 @@ fn sampled_model_algorithm_assertion_keeps_the_when_activation() {
     });
 }
 
+#[test]
+fn assertion_only_model_event_owns_no_empty_transaction() {
+    let source = TestSource::new(
+        "model M algorithm when time >= 0.5 then assert(true, \"ok\"); end when; end M;",
+    );
+    let mut model = test_model();
+    let assertion_span = source.span("assert(true, \"ok\")", 0);
+    let when_span = source.span("when time >= 0.5 then assert(true, \"ok\"); end when", 0);
+    model.algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::When {
+            blocks: vec![rumoca_core::StatementBlock {
+                cond: Expression::Binary {
+                    lhs: Box::new(Expression::VarRef {
+                        name: Reference::new("time"),
+                        subscripts: Vec::new(),
+                        span: source.span("time", 0),
+                    }),
+                    op: OpBinary::Ge,
+                    rhs: Box::new(Expression::Literal {
+                        value: Literal::Real(0.5),
+                        span: source.span("0.5", 0),
+                    }),
+                    span: source.span("time >= 0.5", 0),
+                },
+                stmts: vec![rumoca_core::Statement::Assert {
+                    condition: Expression::Literal {
+                        value: Literal::Boolean(true),
+                        span: source.span("true", 0),
+                    },
+                    message: Box::new(Expression::Literal {
+                        value: Literal::String("ok".to_string()),
+                        span: source.span("\"ok\"", 0),
+                    }),
+                    level: None,
+                    span: assertion_span,
+                }],
+            }],
+            span: when_span,
+        }],
+        source.span("algorithm", 0),
+        "algorithm section",
+    ));
+    model.is_partial = true;
+
+    let dae = construct(&model, source.map).expect(
+        "an assertion-only event algorithm retains its action without an empty transaction",
+    );
+    dae.inspect(|view| {
+        assert_eq!(view.event_action_count(), 1);
+        assert_eq!(view.model_event_transaction_count(), 0);
+    });
+}
+
 fn two_stage_tensor_loop(source: &TestSource, second_index: Expression) -> flat::Algorithm {
     let index_span = source.span("i", 1);
     let target = |name: &str, occurrence: usize| {

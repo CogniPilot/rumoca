@@ -236,7 +236,7 @@ impl RuntimeEventBoundaryHandler for SolveMeKernel {
         } else {
             EventUpdateRowFilter::All
         };
-        self.apply_discrete_event_updates(application_time, event, row_filter)?;
+        self.apply_discrete_event_updates(application_time, event, row_filter, None)?;
         if self.advance_state_to_event_right_limit {
             self.refresh_frozen_event_observation(event_time)?;
         }
@@ -262,6 +262,7 @@ impl RuntimeEventBoundaryHandler for SolveMeKernel {
             advance_states_to_event_probe(&mut self.states, &derivatives, event_time, right_time);
         }
         self.time = right_time;
+        let right_limit_solver_y = self.current_solver_y()?;
         let event_pre_y = if let Some(event_pre_y) = self.boundary_event_pre_y.clone() {
             event_pre_y
         } else {
@@ -278,7 +279,12 @@ impl RuntimeEventBoundaryHandler for SolveMeKernel {
         } else {
             EventUpdateRowFilter::All
         };
-        self.apply_discrete_event_updates(right_time, event, row_filter)?;
+        self.apply_discrete_event_updates(
+            right_time,
+            event,
+            row_filter,
+            Some(right_limit_solver_y),
+        )?;
         if self.advance_state_to_event_right_limit {
             self.refresh_frozen_event_observation(right_time)?;
         }

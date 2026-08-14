@@ -8,7 +8,7 @@ fn checked(program: Vec<solve::LinearOp>) -> Vec<solve::LinearOp> {
 }
 
 fn certifies(program: &[solve::LinearOp]) -> bool {
-    parameter_static_refresh_program(program, 10, 2, &BTreeSet::from([11, 12]))
+    parameter_static_refresh_program(program, 10, 2, &BTreeSet::from([11, 12]), None)
 }
 
 #[test]
@@ -61,6 +61,55 @@ fn compact_tensor_inputs_preserve_the_parameter_static_certificate() {
         solve::LinearOp::StoreOutput { src: 0 },
     ]);
     assert!(!certifies(&dynamic_y_tensor));
+}
+
+#[test]
+fn unused_dynamic_tensor_load_does_not_taint_a_parameter_assignment() {
+    let program = checked(vec![
+        solve::LinearOp::TensorLoad {
+            dst_start: 0,
+            input: solve::TensorInputKind::Y,
+            input_start: 20,
+            count: 9,
+            seed_start: None,
+            lanes: 1,
+        },
+        solve::LinearOp::TensorLoad {
+            dst_start: 9,
+            input: solve::TensorInputKind::P,
+            input_start: 4,
+            count: 9,
+            seed_start: None,
+            lanes: 1,
+        },
+        solve::LinearOp::TensorBinary {
+            dst_start: 18,
+            op: solve::BinaryOp::Sub,
+            lhs_start: 0,
+            rhs_start: 9,
+            count: 9,
+            lhs_stride: 1,
+            rhs_stride: 1,
+            lanes: 1,
+        },
+        solve::LinearOp::StoreOutputRange {
+            start: 18,
+            count: 9,
+            stride: 1,
+        },
+    ]);
+    let analyzer = solve::ScalarProgramYDependency::new(&program);
+    let dependencies = analyzer
+        .dependencies(9)
+        .expect("the checked parameter lane has exact dependencies");
+    assert!(dependencies.is_empty());
+    assert!(parameter_static_refresh_program(
+        &program,
+        10,
+        2,
+        &BTreeSet::new(),
+        Some(dependencies),
+    ));
 }
 
 #[test]
