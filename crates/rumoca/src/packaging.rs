@@ -247,6 +247,42 @@ pub fn render_and_package(
     Ok(())
 }
 
+/// Remove a recognized product directory and archive before a new compilation
+/// attempt. Validation is completed for both paths before either is removed, so
+/// a foreign directory or archive is never partially destroyed.
+#[cfg(feature = "fmu-packaging")]
+pub(crate) fn invalidate_existing_package(
+    out_dir: &Path,
+    archive_path: Option<&Path>,
+    required_files: &[String],
+) -> Result<()> {
+    let out_dir = resolve_product_root(out_dir)?;
+    let archive_path = archive_path
+        .map(|archive| resolve_archive_path(archive, &out_dir))
+        .transpose()?;
+    let required_files = resolve_required_files(required_files)?;
+    validate_existing_root(&out_dir, &required_files)?;
+    if let Some(archive_path) = archive_path.as_deref() {
+        validate_existing_archive(archive_path, &required_files)?;
+    }
+
+    if out_dir.exists() {
+        fs::remove_dir_all(&out_dir)
+            .with_context(|| format!("Invalidate previous product '{}'", out_dir.display()))?;
+    }
+    if let Some(archive_path) = archive_path.as_deref()
+        && archive_path.exists()
+    {
+        fs::remove_file(archive_path).with_context(|| {
+            format!(
+                "Invalidate previous package archive '{}'",
+                archive_path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
 /// Render every declared file in dependency order, hashing the exact bytes
 /// and injecting each producer's SHA-1 into downstream contexts, and return
 /// the rendered `(path, bytes)` pairs **without touching the filesystem**

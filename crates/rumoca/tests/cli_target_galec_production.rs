@@ -409,6 +409,34 @@ fn build_container(work_dir: &Path, out_dir: &Path) -> BuiltContainer {
 }
 
 #[test]
+fn failed_compile_invalidates_previous_container_and_archive() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let container = build_container(dir.path(), &out_dir);
+    assert!(container.root.is_dir());
+    assert!(container.efmu_zip.is_file());
+
+    let file = write_fixture(
+        dir.path(),
+        MODEL,
+        &DISCRETE_FIXTURE.replace("gain *", "missingSymbol *"),
+    );
+    let output = run_compile_galec_production(&file, &out_dir);
+    assert!(
+        !output.status.success(),
+        "broken source must fail compilation"
+    );
+    assert!(
+        !container.root.exists(),
+        "failed compilation must invalidate the previous container directory"
+    );
+    assert!(
+        !container.efmu_zip.exists(),
+        "failed compilation must invalidate the previous eFMU archive"
+    );
+}
+
+#[test]
 fn algebraic_component_output_read_by_sampled_parent_compiles() {
     let dir = tempdir().expect("tempdir");
     let out_dir = dir.path().join("out");

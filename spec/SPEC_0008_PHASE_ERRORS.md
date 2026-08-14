@@ -49,6 +49,7 @@ must carry the original span through AST -> Flat -> DAE -> Solve.
 | Missing semantic data MUST NOT be synthesized | All semantic passes | Garbage in produces garbage out |
 | MLS-defined defaults are allowed only when explicitly modeled | Type/instantiate/sim semantics | Language defaults are not recovery |
 | Optional serialization defaults require valid absent-field meaning | IR serde boundaries | Compatibility must stay semantic |
+| A file-backed compile invocation MUST invalidate its recognized prior output before semantic compilation; failure leaves no consumable artifact at the named product paths, and foreign paths MUST NOT be deleted | CLI + package writer | A stale successful artifact is not output from the failed source |
 
 Compiler phases MUST fail immediately when required semantic data is missing,
 malformed, or unresolved. The phase MUST return a phase-local error carrying

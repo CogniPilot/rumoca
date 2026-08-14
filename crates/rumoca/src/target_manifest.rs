@@ -57,6 +57,89 @@ pub(crate) fn compile_target(
     compile_manifest_target(result, model, &bundle, &manifest, output)
 }
 
+/// Invalidate artifacts from a previous built-in target invocation before the
+/// semantic compiler runs. Built-in output paths depend only on the selected
+/// model name; external target paths may depend on arbitrary semantic context
+/// and therefore remain owned by their caller until that target has rendered.
+#[cfg(feature = "scheduled-sim")]
+pub(crate) fn invalidate_target_output(
+    model: &str,
+    target: &str,
+    output: Option<&Path>,
+    phase: Option<TemplateIr>,
+) -> Result<()> {
+    if raw_template_target(target) {
+        if let Some(path) = output {
+            invalidate_output_file(path)?;
+        }
+        return Ok(());
+    }
+
+    let is_builtin = TargetBundle::builtin(target).is_some();
+    let (_bundle, manifest) = resolve_manifest_target(target, phase)?;
+    if !is_builtin {
+        return Ok(());
+    }
+
+    let identity = TargetModelIdentity::new(model);
+    let out_dir = output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_target_output_dir(&manifest, &identity.artifact_stem));
+    if let Some(package) = &manifest.package {
+        let root = render_builtin_output_path(&package.root, &identity.artifact_stem)?;
+        let root = safe_target_join(&out_dir, root.trim())?;
+        let archive = package
+            .archive
+            .as_ref()
+            .map(|archive| {
+                render_builtin_output_path(&archive.path, &identity.artifact_stem)
+                    .and_then(|path| safe_target_join(&out_dir, path.trim()))
+            })
+            .transpose()?;
+        #[cfg(feature = "fmu-packaging")]
+        crate::packaging::invalidate_existing_package(
+            &root,
+            archive.as_deref(),
+            &package.required_files,
+        )?;
+        #[cfg(not(feature = "fmu-packaging"))]
+        let _ = (root, archive);
+        return Ok(());
+    }
+
+    for file in &manifest.files {
+        let path = render_builtin_output_path(&file.path, &identity.artifact_stem)?;
+        invalidate_output_file(&safe_target_join(&out_dir, path.trim())?)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn render_builtin_output_path(template: &str, model_identifier: &str) -> Result<String> {
+    let mut env = minijinja::Environment::new();
+    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    env.add_template("output_path", template)
+        .context("Parse built-in target output path")?;
+    env.get_template("output_path")?
+        .render(minijinja::context! { model_name => model_identifier })
+        .context("Render built-in target output path")
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn invalidate_output_file(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        bail!(
+            "output path `{}` is a directory; refusing to remove it as a generated file",
+            path.display()
+        );
+    }
+    std::fs::remove_file(path)
+        .with_context(|| format!("Invalidate previous output '{}'", path.display()))
+}
+
 /// Compile one manifest-declared package through the same checked renderer and
 /// transactional package writer used by `rumoca compile --target`.
 ///

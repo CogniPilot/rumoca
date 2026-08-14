@@ -1038,6 +1038,7 @@ fn run_config_init() -> Result<()> {
 
 fn run_compile(args: CompileArgs) -> Result<()> {
     init_debug_tracing(&args.diagnostics)?;
+    invalidate_previous_compile_output(&args)?;
     if let Some(emit) = args.emit
         && matches!(emit.phase(), CompilePhase::Ast | CompilePhase::Flat)
     {
@@ -1112,6 +1113,73 @@ fn run_compile(args: CompileArgs) -> Result<()> {
             print_summary(&model, &result);
             Ok(())
         }
+    }
+}
+
+fn invalidate_previous_compile_output(args: &CompileArgs) -> Result<()> {
+    let Some(output) = args.output.as_deref() else {
+        if args.target.is_none() {
+            return Ok(());
+        }
+        let model = selected_model_name(&args.input)?;
+        return target_manifest::invalidate_target_output(
+            &model,
+            args.target.as_deref().expect("target checked above"),
+            None,
+            args.phase.map(TemplateIr::from),
+        );
+    };
+
+    if args.emit.is_some() {
+        if output_names_input_file(output, Path::new(&args.input.model_file))? {
+            bail!(
+                "output path `{}` is the Modelica input file; refusing to invalidate the source",
+                output.display()
+            );
+        }
+        if output.is_dir() {
+            bail!(
+                "output path `{}` is a directory; --emit must write to a file \
+                 (e.g. model.dae.mo)",
+                output.display()
+            );
+        }
+        if output.exists() {
+            std::fs::remove_file(output)
+                .with_context(|| format!("Invalidate previous output '{}'", output.display()))?;
+        }
+        return Ok(());
+    }
+
+    if let Some(target) = args.target.as_deref() {
+        let model = selected_model_name(&args.input)?;
+        target_manifest::invalidate_target_output(
+            &model,
+            target,
+            Some(output),
+            args.phase.map(TemplateIr::from),
+        )?;
+    }
+    Ok(())
+}
+
+fn output_names_input_file(output: &Path, input: &Path) -> Result<bool> {
+    let output = if output.exists() {
+        std::fs::canonicalize(output)
+            .with_context(|| format!("Resolve output path '{}'", output.display()))?
+    } else {
+        std::path::absolute(output)
+            .with_context(|| format!("Resolve output path '{}'", output.display()))?
+    };
+    let input = std::fs::canonicalize(input)
+        .with_context(|| format!("Resolve Modelica input '{}'", input.display()))?;
+    Ok(output == input)
+}
+
+fn selected_model_name(args: &ModelInputArgs) -> Result<String> {
+    match &args.options.model {
+        Some(model) => Ok(model.clone()),
+        None => infer_model_name(&args.model_file),
     }
 }
 

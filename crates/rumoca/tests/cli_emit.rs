@@ -68,6 +68,20 @@ fn compile_emit(file: &Path, emit: &str) -> std::process::Output {
         .unwrap_or_else(|err| panic!("run rumoca compile --emit {emit}: {err}"))
 }
 
+fn compile_emit_to(file: &Path, emit: &str, output: &Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .arg("compile")
+        .arg(file)
+        .arg("--model")
+        .arg("EmitFixture")
+        .arg("--emit")
+        .arg(emit)
+        .arg("--output")
+        .arg(output)
+        .output()
+        .unwrap_or_else(|err| panic!("run rumoca compile --emit {emit}: {err}"))
+}
+
 fn assert_emit_ok(file: &Path, emit: &str) -> String {
     let output = compile_emit(file, emit);
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -107,6 +121,26 @@ fn emit_json_stages_are_valid_json() {
         serde_json::from_str::<serde_json::Value>(&out)
             .unwrap_or_else(|err| panic!("`--emit {emit}` did not produce valid JSON: {err}"));
     }
+}
+
+#[test]
+fn failed_emit_invalidates_previous_output() {
+    let (dir, file) = fixture_file();
+    let artifact = dir.path().join("artifact.json");
+    let first = compile_emit_to(&file, "dae-json", &artifact);
+    assert!(first.status.success(), "initial emit must succeed");
+    assert!(artifact.is_file(), "initial emit must create its artifact");
+
+    fs::write(&file, FIXTURE.replace("-g", "-missingSymbol")).expect("break fixture");
+    let second = compile_emit_to(&file, "dae-json", &artifact);
+    assert!(
+        !second.status.success(),
+        "broken source must fail compilation"
+    );
+    assert!(
+        !artifact.exists(),
+        "failed compilation must not leave the previous IR artifact"
+    );
 }
 
 #[test]
