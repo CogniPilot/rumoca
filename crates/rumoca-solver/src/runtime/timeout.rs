@@ -19,8 +19,9 @@ pub fn wall_clock_elapsed_seconds(started_at: WallClockInstant) -> f64 {
 }
 
 #[inline]
-fn wall_clock_deadline_after(seconds: f64) -> WallClockInstant {
-    wall_clock_now() + Duration::from_secs_f64(seconds)
+fn wall_clock_deadline_after(seconds: f64) -> Option<WallClockInstant> {
+    let duration = Duration::try_from_secs_f64(seconds).ok()?;
+    wall_clock_now().checked_add(duration)
 }
 
 #[inline]
@@ -42,8 +43,9 @@ pub struct TimeoutExceeded {
 
 impl TimeoutBudget {
     pub fn new(max_wall_seconds: Option<f64>) -> Self {
-        let seconds = max_wall_seconds.filter(|s| s.is_finite() && *s > 0.0);
-        let deadline = seconds.map(wall_clock_deadline_after);
+        let requested = max_wall_seconds.filter(|s| s.is_finite() && *s > 0.0);
+        let deadline = requested.and_then(wall_clock_deadline_after);
+        let seconds = requested;
         Self { deadline, seconds }
     }
 
@@ -138,4 +140,17 @@ where
     let value = step()?;
     budget.check().map_err(E::from)?;
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_timeout_does_not_panic() {
+        let budget = TimeoutBudget::new(Some(f64::MAX));
+        assert_eq!(budget.deadline(), None);
+        assert_eq!(budget.timeout_error().seconds, f64::MAX);
+        assert_eq!(budget.check(), Ok(()));
+    }
 }

@@ -5,6 +5,7 @@ use crate::timeline::{event_right_limit_time, sample_time_match_with_tol};
 pub struct RuntimeEventBoundary {
     pub event_t: f64,
     pub horizon_t: f64,
+    pub tolerance: f64,
     pub event: RuntimeEventStop,
 }
 
@@ -49,7 +50,7 @@ where
 }
 
 pub fn runtime_event_right_limit(boundary: RuntimeEventBoundary) -> f64 {
-    event_right_limit_time(boundary.event_t).min(boundary.horizon_t)
+    event_right_limit_time(boundary.event_t, boundary.tolerance).min(boundary.horizon_t)
 }
 
 pub fn runtime_event_horizon(event: RuntimeEventStop, target: f64, horizon: f64) -> f64 {
@@ -60,7 +61,7 @@ pub fn runtime_event_horizon(event: RuntimeEventStop, target: f64, horizon: f64)
     }
 }
 
-pub fn runtime_root_event_application_time(root_t: f64, target_t: f64) -> f64 {
+pub fn runtime_root_event_application_time(root_t: f64, target_t: f64, tolerance: f64) -> f64 {
     // A non-finite `target_t` (e.g. `f64::INFINITY` used by the interactive
     // session as an "unbounded next sample" sentinel) must never be reported as
     // the application time: `sample_time_match_with_tol(finite, INF)` is
@@ -71,7 +72,7 @@ pub fn runtime_root_event_application_time(root_t: f64, target_t: f64) -> f64 {
     if target_t.is_finite() && sample_time_match_with_tol(root_t, target_t) {
         target_t
     } else {
-        event_right_limit_time(root_t).min(target_t)
+        event_right_limit_time(root_t, tolerance).min(target_t)
     }
 }
 
@@ -84,10 +85,7 @@ fn runtime_event_final_time(event: RuntimeEventStop, event_t: f64, right_t: f64)
 }
 
 fn should_process_right_limit(event: RuntimeEventStop, event_t: f64, right_t: f64) -> bool {
-    event.observe_right_limit
-        && event.pre_mode == EventPreMode::FollowCurrent
-        && right_t > event_t
-        && !sample_time_match_with_tol(right_t, event_t)
+    event.observe_right_limit && event.pre_mode == EventPreMode::FollowCurrent && right_t > event_t
 }
 
 #[cfg(test)]
@@ -129,6 +127,7 @@ mod tests {
             RuntimeEventBoundary {
                 event_t: 0.5,
                 horizon_t: 1.0,
+                tolerance: 1.0e-10,
                 event: RuntimeEventStop::dynamic_time_event(),
             },
             &mut handler,
@@ -151,6 +150,7 @@ mod tests {
             RuntimeEventBoundary {
                 event_t: 0.5,
                 horizon_t: 1.0,
+                tolerance: 1.0e-10,
                 event: RuntimeEventStop::static_event(EventPreMode::EventEntry),
             },
             &mut handler,

@@ -1,5 +1,5 @@
 use super::{
-    event::{RuntimeEventBoundary, process_runtime_event_boundary},
+    event::{RuntimeEventBoundary, RuntimeEventBoundaryHandler, process_runtime_event_boundary},
     schedule::{RuntimeEventStop, RuntimeStopSchedule},
     solve_ops::EventPreMode,
 };
@@ -24,10 +24,10 @@ pub fn run_with_runtime_schedule<B, C>(
     schedule: RuntimeStopSchedule,
     t_end: f64,
     mut check_budget: C,
-) -> Result<LoopStats, B::Error>
+) -> Result<LoopStats, <B as SimulationBackend>::Error>
 where
-    B: SimulationBackend,
-    C: FnMut() -> Result<(), B::Error>,
+    B: SimulationBackend + RuntimeEventBoundaryHandler<Error = <B as SimulationBackend>::Error>,
+    C: FnMut() -> Result<(), <B as SimulationBackend>::Error>,
 {
     backend.init()?;
     let mut stats = LoopStats::default();
@@ -61,6 +61,7 @@ where
                     RuntimeEventBoundary {
                         event_t: t_root,
                         horizon_t: t_root,
+                        tolerance: 0.0,
                         event: RuntimeEventStop::static_event(EventPreMode::EventEntry),
                     },
                     backend,
@@ -80,6 +81,7 @@ where
                     RuntimeEventBoundary {
                         event_t: state_after_step.t,
                         horizon_t: state_after_step.t,
+                        tolerance: 0.0,
                         event: RuntimeEventStop::static_event(EventPreMode::FollowCurrent),
                     },
                     backend,
@@ -144,6 +146,8 @@ mod tests {
     }
 
     impl SimulationBackend for MockBackend {
+        type Error = String;
+
         fn init(&mut self) -> Result<(), Self::Error> {
             self.init_calls += 1;
             Ok(())
