@@ -49,30 +49,41 @@ impl AffineForm {
         self.coeffs.iter().all(|c| *c == 0)
     }
 
-    pub fn add(&self, other: &Self) -> Self {
-        Self {
-            constant: self.constant + other.constant,
+    pub fn checked_add(&self, other: &Self) -> Option<Self> {
+        if self.coeffs.len() != other.coeffs.len() {
+            return None;
+        }
+        Some(Self {
+            constant: self.constant.checked_add(other.constant)?,
             coeffs: self
                 .coeffs
                 .iter()
                 .zip(&other.coeffs)
-                .map(|(a, b)| a + b)
-                .collect(),
-        }
+                .map(|(a, b)| a.checked_add(*b))
+                .collect::<Option<Vec<_>>>()?,
+        })
     }
 
-    pub fn neg(&self) -> Self {
-        Self {
-            constant: -self.constant,
-            coeffs: self.coeffs.iter().map(|c| -c).collect(),
-        }
+    pub fn checked_neg(&self) -> Option<Self> {
+        Some(Self {
+            constant: self.constant.checked_neg()?,
+            coeffs: self
+                .coeffs
+                .iter()
+                .map(|coefficient| coefficient.checked_neg())
+                .collect::<Option<Vec<_>>>()?,
+        })
     }
 
-    pub fn scale(&self, factor: i64) -> Self {
-        Self {
-            constant: self.constant * factor,
-            coeffs: self.coeffs.iter().map(|c| c * factor).collect(),
-        }
+    pub fn checked_scale(&self, factor: i64) -> Option<Self> {
+        Some(Self {
+            constant: self.constant.checked_mul(factor)?,
+            coeffs: self
+                .coeffs
+                .iter()
+                .map(|coefficient| coefficient.checked_mul(factor))
+                .collect::<Option<Vec<_>>>()?,
+        })
     }
 }
 
@@ -102,21 +113,32 @@ impl ArrayAccess {
     ///
     /// `memory_strides` must have one entry per subscript dimension, i.e.
     /// `memory_strides.len() == self.subscripts.len()`.
-    pub fn binder_index_strides(&self, memory_strides: &[i64], binder_count: usize) -> Vec<i64> {
-        debug_assert_eq!(
-            self.subscripts.len(),
-            memory_strides.len(),
-            "memory_strides must have one entry per subscript dimension"
-        );
+    pub fn binder_index_strides(
+        &self,
+        memory_strides: &[usize],
+        binder_count: usize,
+    ) -> Option<Vec<i64>> {
+        if self.subscripts.len() != memory_strides.len()
+            || self
+                .subscripts
+                .iter()
+                .any(|subscript| subscript.coeffs.len() != binder_count)
+        {
+            return None;
+        }
         (0..binder_count)
             .map(|binder| {
                 self.subscripts
                     .iter()
                     .zip(memory_strides)
-                    .map(|(subscript, memory_stride)| {
-                        memory_stride * subscript.coeffs.get(binder).copied().unwrap_or(0)
+                    .try_fold(0i128, |stride, (subscript, memory_stride)| {
+                        stride.checked_add(
+                            i128::try_from(*memory_stride)
+                                .ok()?
+                                .checked_mul(i128::from(subscript.coeffs[binder]))?,
+                        )
                     })
-                    .sum()
+                    .and_then(|stride| i64::try_from(stride).ok())
             })
             .collect()
     }
@@ -128,12 +150,12 @@ impl ArrayAccess {
 /// it is `[b*c, c, 1]`. An empty `dims` yields an empty stride vector.
 ///
 /// These are the `memory_strides` consumed by [`ArrayAccess::binder_index_strides`].
-pub fn row_major_strides(dims: &[usize]) -> Vec<i64> {
-    let mut strides = vec![1i64; dims.len()];
+pub fn row_major_strides(dims: &[usize]) -> Option<Vec<usize>> {
+    let mut strides = vec![1usize; dims.len()];
     for k in (0..dims.len().saturating_sub(1)).rev() {
-        strides[k] = strides[k + 1] * dims[k + 1] as i64;
+        strides[k] = strides[k + 1].checked_mul(dims[k + 1])?;
     }
-    strides
+    Some(strides)
 }
 
 /// A regular elementwise `for` family: its (possibly nested) loop binders and
@@ -167,6 +189,49 @@ pub struct ComprehensionTemplate {
     /// family `domain`'s binder `display_name`s; binder-dependent array subscripts
     /// are kept symbolic (e.g. `u[i - 1, j]`).
     pub body: Vec<Expression>,
+    /// How a domain point derives its scalar body from `body`.
+    ///
+    /// Source `for` equations substitute the domain binders into an already
+    /// scalar body. Whole-array, slice, and connection equations instead project
+    /// one row-major element from an aggregate residual. Keeping this distinction
+    /// explicit prevents later phases from guessing based on rendered names or
+    /// whether a binder happens to occur in the expression.
+    #[serde(
+        default,
+        skip_serializing_if = "ComprehensionScalarView::is_binder_substitution"
+    )]
+    pub scalar_view: ComprehensionScalarView,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ComprehensionScalarView {
+    /// Substitute the family binder values into the symbolic scalar body.
+    #[default]
+    BinderSubstitution,
+    /// Select the row-major domain element from the aggregate body.
+    RowMajorProjection,
+    /// Substitute the leading binders and project the remaining row-major axes.
+    BinderPrefixProjection { binder_count: u32 },
+}
+
+impl ComprehensionScalarView {
+    pub fn is_binder_substitution(&self) -> bool {
+        matches!(self, Self::BinderSubstitution)
+    }
+
+    pub fn body_scalar(self, point: usize, extents: &[u32]) -> Option<usize> {
+        match self {
+            Self::BinderSubstitution => Some(0),
+            Self::RowMajorProjection => Some(point),
+            Self::BinderPrefixProjection { binder_count } => {
+                let suffix = extents.get(usize::try_from(binder_count).ok()?..)?;
+                let count = suffix.iter().try_fold(1usize, |count, extent| {
+                    count.checked_mul(usize::try_from(*extent).ok()?)
+                })?;
+                (count > 0).then_some(point % count)
+            }
+        }
+    }
 }
 
 impl StructuredIndexDomain {
@@ -373,7 +438,7 @@ impl StructuredIndexBinder {
         })
     }
 
-    fn position_of(&self, value: i64) -> Result<Option<usize>, StructuredIndexDomainError> {
+    pub fn position_of(&self, value: i64) -> Result<Option<usize>, StructuredIndexDomainError> {
         let count = self.value_count()?;
         if count == 0 {
             return Ok(None);
@@ -591,6 +656,33 @@ mod tests {
         assert_eq!(domain.ordinal_of(&[1_000_000]), Ok(Some(999_999)));
     }
 
+    #[test]
+    fn affine_form_arithmetic_declines_overflow_and_rank_mismatch() {
+        let maximum = AffineForm {
+            constant: i64::MAX,
+            coeffs: vec![i64::MAX],
+        };
+        let one = AffineForm {
+            constant: 1,
+            coeffs: vec![1],
+        };
+        let minimum = AffineForm {
+            constant: i64::MIN,
+            coeffs: vec![i64::MIN],
+        };
+
+        assert_eq!(maximum.checked_add(&one), None);
+        assert_eq!(minimum.checked_neg(), None);
+        assert_eq!(maximum.checked_scale(2), None);
+        assert_eq!(
+            one.checked_add(&AffineForm {
+                constant: 1,
+                coeffs: vec![1, 0],
+            }),
+            None
+        );
+    }
+
     fn access(var: &str, subscripts: Vec<AffineForm>) -> ArrayAccess {
         ArrayAccess {
             var: var.to_string(),
@@ -600,17 +692,18 @@ mod tests {
 
     #[test]
     fn row_major_strides_are_inner_dimension_contiguous() {
-        assert_eq!(row_major_strides(&[]), Vec::<i64>::new());
-        assert_eq!(row_major_strides(&[4]), vec![1]);
-        assert_eq!(row_major_strides(&[3, 4]), vec![4, 1]);
-        assert_eq!(row_major_strides(&[2, 3, 4]), vec![12, 4, 1]);
+        assert_eq!(row_major_strides(&[]), Some(Vec::<usize>::new()));
+        assert_eq!(row_major_strides(&[4]), Some(vec![1]));
+        assert_eq!(row_major_strides(&[3, 4]), Some(vec![4, 1]));
+        assert_eq!(row_major_strides(&[2, 3, 4]), Some(vec![12, 4, 1]));
+        assert_eq!(row_major_strides(&[2, usize::MAX, 2]), None);
     }
 
     #[test]
     fn row_major_strides_compose_with_binder_index_strides() {
         // u[NX, NY] with NX=5, NY=4: a unit i-step moves the index by NY=4,
         // a unit j-step by 1 -- exactly what binder_index_strides recovers.
-        let memory_strides = row_major_strides(&[5, 4]);
+        let memory_strides = row_major_strides(&[5, 4]).unwrap();
         let u_ij = access(
             "u",
             vec![
@@ -624,7 +717,10 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(u_ij.binder_index_strides(&memory_strides, 2), vec![4, 1]);
+        assert_eq!(
+            u_ij.binder_index_strides(&memory_strides, 2),
+            Some(vec![4, 1])
+        );
     }
 
     #[test]
@@ -659,8 +755,14 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(u_ij.binder_index_strides(&memory_strides, 2), vec![4, 1]);
-        assert_eq!(u_ip1_j.binder_index_strides(&memory_strides, 2), vec![4, 1]);
+        assert_eq!(
+            u_ij.binder_index_strides(&memory_strides, 2),
+            Some(vec![4, 1])
+        );
+        assert_eq!(
+            u_ip1_j.binder_index_strides(&memory_strides, 2),
+            Some(vec![4, 1])
+        );
     }
 
     #[test]
@@ -680,7 +782,10 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(scaled.binder_index_strides(&memory_strides, 2), vec![8, 1]);
+        assert_eq!(
+            scaled.binder_index_strides(&memory_strides, 2),
+            Some(vec![8, 1])
+        );
     }
 
     #[test]
@@ -702,7 +807,10 @@ mod tests {
                 }, // j
             ],
         );
-        assert_eq!(coupled.binder_index_strides(&memory_strides, 2), vec![4, 5]);
+        assert_eq!(
+            coupled.binder_index_strides(&memory_strides, 2),
+            Some(vec![4, 5])
+        );
     }
 
     #[test]
@@ -724,7 +832,28 @@ mod tests {
         );
         assert_eq!(
             boundary.binder_index_strides(&memory_strides, 2),
-            vec![0, 1]
+            Some(vec![0, 1])
         );
+    }
+
+    #[test]
+    fn binder_index_strides_decline_invalid_shape_and_overflow() {
+        let wrong_rank = access(
+            "u",
+            vec![AffineForm {
+                constant: 0,
+                coeffs: vec![1, 0],
+            }],
+        );
+        assert_eq!(wrong_rank.binder_index_strides(&[4, 1], 2), None);
+
+        let overflowing = access(
+            "u",
+            vec![AffineForm {
+                constant: 0,
+                coeffs: vec![i64::MAX],
+            }],
+        );
+        assert_eq!(overflowing.binder_index_strides(&[usize::MAX], 1), None);
     }
 }

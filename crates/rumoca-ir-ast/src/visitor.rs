@@ -10,7 +10,10 @@ mod rewrite;
 #[cfg(test)]
 mod tests;
 
-pub use query::{collect_component_refs, contains_component_ref, contains_function_call};
+pub use query::{
+    collect_component_refs, contains_component_ref, contains_function_call,
+    expression_component_path,
+};
 pub use read_only::{
     ComponentReferenceContext, ExpressionContext, FunctionCallContext, NameContext,
     SubscriptContext, TypeNameContext, VisitScope, Visitor, walk_class_def_default,

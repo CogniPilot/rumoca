@@ -3,6 +3,7 @@
 use indexmap::{IndexMap, IndexSet};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -16,6 +17,7 @@ mod generated_names;
 pub use generated_names::*;
 
 mod reference_serde;
+pub use reference_serde::ReferenceContractError;
 
 /// A unique identifier for a definition (class, component, etc.).
 ///
@@ -23,6 +25,46 @@ mod reference_serde;
 /// lookup and cross-referencing between compiler phases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct DefId(pub u32);
+
+/// Unique identity of one concrete component or class instance.
+///
+/// Unlike [`DefId`], this identifies a runtime occurrence rather than its
+/// source declaration. The identity is allocated by instantiation and carried
+/// through Flat so phase boundaries never reconstruct occurrence identity from
+/// rendered names.
+///
+/// Instantiation allocates occurrence identities from one, so [`InstanceId::UNSET`]
+/// (the `Default`) can never name a concrete occurrence. Stage contracts reject
+/// it instead of accepting a defaulted identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct InstanceId(pub u32);
+
+impl InstanceId {
+    /// Reserved identity meaning "no allocated occurrence".
+    ///
+    /// Occurrence allocation is one-based, so this value is unreachable for a
+    /// real instance and identifies an unset field.
+    pub const UNSET: InstanceId = InstanceId(0);
+
+    pub fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub fn index(self) -> u32 {
+        self.0
+    }
+
+    /// True when no occurrence identity has been allocated for this field.
+    pub fn is_unset(self) -> bool {
+        self == Self::UNSET
+    }
+}
+
+impl Display for InstanceId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "InstanceId({})", self.0)
+    }
+}
 
 /// Shared declaration ancestry for one resolved source or instance symbol.
 ///
@@ -71,6 +113,10 @@ impl FunctionInstanceId {
 pub struct ResolvedFunctionReference {
     pub instance_id: FunctionInstanceId,
     pub base_part_count: usize,
+    /// This exact call occurrence proved its complete MLS §6.4 exposure path
+    /// transitively non-replaceable. Automatic vectorization requires this
+    /// occurrence-level fact in addition to exact function-instance identity.
+    pub transitively_non_replaceable: bool,
 }
 
 /// A unique identifier for a type.
@@ -189,6 +235,10 @@ pub struct BytePos(pub usize);
 /// node in the flat IR.
 pub const NAMED_FUNCTION_ARG_PREFIX: &str = "__rumoca_named_arg__.";
 
+/// Marker prefix used to retain constraining-clause defaults until a
+/// replaceable declaration is redeclared during instantiation.
+pub const CONSTRAINEDBY_MOD_PREFIX: &str = "__constrainedby__.";
+
 /// A span in source code (source, start, end).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Span {
@@ -287,6 +337,16 @@ impl Span {
     }
 }
 
+/// A parser source location.
+///
+/// The owning file is identified by [`SourceId`], not by an owned path string:
+/// the id is computed once per file by the parser and copied into every token,
+/// so cloning a `Location` is a plain memcpy with no heap traffic. Resolve the
+/// human readable file name through [`crate::SourceMap`] when a diagnostic
+/// needs to print it.
+///
+/// `Copy` is deliberately NOT derived: ~100 existing call sites clone locations
+/// explicitly, and `clippy::clone_on_copy` would reject all of them at once.
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Location {
     pub start_line: u32,
@@ -295,15 +355,49 @@ pub struct Location {
     pub end_column: u32,
     pub start: u32,
     pub end: u32,
-    pub file_name: String,
+    pub source: SourceId,
+}
+
+impl Location {
+    /// The span covered by this location.
+    ///
+    /// Callers that need to reject source-free locations should gate on
+    /// [`Location::has_source`] first; this method performs no validation.
+    pub fn span(&self) -> Span {
+        Span::from_offsets(self.source, self.start as usize, self.end as usize)
+    }
+
+    /// True when this location carries real parser provenance.
+    pub fn has_source(&self) -> bool {
+        self.source != SourceId::DUMMY && self.end > self.start
+    }
+
+    /// Build a location spanning from the start of `self` to the end of `end`.
+    ///
+    /// The source identity of `self` wins; merging locations from two different
+    /// files is a caller bug and is not detected here.
+    pub fn merged_with(&self, end: &Location) -> Location {
+        Location {
+            start_line: self.start_line,
+            start_column: self.start_column,
+            end_line: end.end_line,
+            end_column: end.end_column,
+            start: self.start,
+            end: end.end,
+            source: self.source,
+        }
+    }
 }
 
 impl Display for Location {
+    /// Debug-only rendering. The source is printed as its numeric id because a
+    /// `Location` cannot resolve its own file name; user-facing diagnostics must
+    /// resolve the name through [`crate::SourceMap::name`].
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}:{}:{}",
-            self.file_name, self.start_line, self.start_column
+            "source#{}:{}:{}",
+            self.source.0, self.start_line, self.start_column
         )
     }
 }
@@ -461,14 +555,15 @@ pub use var_name::{VarName, VarNameId};
 /// Structured semantic reference used by Flat/DAE expressions.
 ///
 /// `name` is a cached display/serialization spelling. `component_ref` preserves
-/// the source/resolved reference structure carried forward from lowering. Its
-/// `def_id` records the declaration being referenced; it does not assign a
-/// `DefId` to this expression.
+/// the source/resolved reference structure carried forward from lowering.
+/// The first and final component parts identify the resolved root occurrence
+/// and exact final declaration respectively.
 #[derive(Debug, Clone)]
 pub struct Reference {
     name: VarName,
     component_ref: Option<ComponentReference>,
     resolved_function: Option<ResolvedFunctionReference>,
+    instance_id: Option<InstanceId>,
     generated: bool,
 }
 
@@ -478,6 +573,7 @@ impl Reference {
             name: VarName::new(name),
             component_ref: None,
             resolved_function: None,
+            instance_id: None,
             generated: false,
         }
     }
@@ -487,6 +583,7 @@ impl Reference {
             name,
             component_ref: None,
             resolved_function: None,
+            instance_id: None,
             generated: false,
         }
     }
@@ -496,25 +593,9 @@ impl Reference {
             name: VarName::new(name),
             component_ref: None,
             resolved_function: None,
+            instance_id: None,
             generated: true,
         }
-    }
-
-    pub fn generated_component(
-        ident: impl Into<String>,
-        subscripts: Vec<Subscript>,
-        span: Span,
-    ) -> Self {
-        Self::generated_component_reference(ComponentReference {
-            local: false,
-            span,
-            parts: vec![ComponentRefPart {
-                ident: ident.into(),
-                span,
-                subs: subscripts,
-            }],
-            def_id: None,
-        })
     }
 
     pub fn generated_component_reference(component_ref: ComponentReference) -> Self {
@@ -523,6 +604,7 @@ impl Reference {
             name: VarName::new(name),
             component_ref: Some(component_ref),
             resolved_function: None,
+            instance_id: None,
             generated: true,
         }
     }
@@ -532,6 +614,21 @@ impl Reference {
             name,
             component_ref: self.component_ref.clone(),
             resolved_function: self.resolved_function,
+            instance_id: self.instance_id,
+            generated: self.generated,
+        }
+    }
+
+    pub fn with_rewritten_component_reference(
+        &self,
+        name: impl Into<String>,
+        component_ref: ComponentReference,
+    ) -> Self {
+        Self {
+            name: VarName::new(name),
+            component_ref: Some(component_ref),
+            resolved_function: self.resolved_function,
+            instance_id: self.instance_id,
             generated: self.generated,
         }
     }
@@ -544,6 +641,7 @@ impl Reference {
             name: VarName::new(name),
             component_ref: Some(component_ref),
             resolved_function: None,
+            instance_id: None,
             generated: false,
         }
     }
@@ -554,6 +652,7 @@ impl Reference {
             name: VarName::new(name),
             component_ref: Some(component_ref),
             resolved_function: None,
+            instance_id: None,
             generated: false,
         }
     }
@@ -598,68 +697,82 @@ impl Reference {
         self
     }
 
+    /// Invalidate callable-instance evidence after changing the semantic target.
+    pub fn without_resolved_function(mut self) -> Self {
+        self.resolved_function = None;
+        self
+    }
+
+    pub fn instance_id(&self) -> Option<InstanceId> {
+        self.instance_id
+    }
+
+    pub fn with_instance_id(mut self, instance_id: InstanceId) -> Self {
+        self.instance_id = Some(instance_id);
+        self
+    }
+
     pub fn span(&self) -> Option<Span> {
         self.component_ref
             .as_ref()
-            .and_then(|reference| (!reference.span.is_dummy()).then_some(reference.span))
+            .and_then(|reference| (!reference.span().is_dummy()).then_some(reference.span()))
     }
 
     /// Element reference: this reference with a literal index appended to its
     /// last part, keeping rendered text and structure in lockstep.
     pub fn with_appended_index(&self, index: i64, span: ProvenanceSpan) -> Self {
         let rendered = format!("{}[{index}]", self.as_str());
-        match self.component_ref.clone() {
-            Some(mut reference) if !reference.parts.is_empty() => {
-                if let Some(part) = reference.parts.last_mut() {
-                    part.subs
-                        .push(Subscript::generated_index_with_provenance(index, span));
-                }
+        match self.component_ref.as_ref() {
+            Some(reference) => {
+                let mut parts = reference.parts().to_vec();
+                parts
+                    .last_mut()
+                    .expect("checked component references are nonempty")
+                    .subs
+                    .push(Subscript::generated_index_with_provenance(index, span));
+                let reference = reference
+                    .with_replaced_parts(parts)
+                    .expect("appending a subscript preserves every exact part identity");
                 Self::with_component_reference(rendered, reference)
+                    .with_optional_instance_id(self.instance_id)
                     .with_optional_resolved_function(self.resolved_function)
             }
-            _ if self.generated => {
-                Self::generated(rendered).with_optional_resolved_function(self.resolved_function)
-            }
-            _ => Self::new(rendered).with_optional_resolved_function(self.resolved_function),
+            _ if self.generated => Self::generated(rendered)
+                .with_optional_instance_id(self.instance_id)
+                .with_optional_resolved_function(self.resolved_function),
+            _ => Self::new(rendered)
+                .with_optional_instance_id(self.instance_id)
+                .with_optional_resolved_function(self.resolved_function),
         }
     }
 
     /// Member reference: this reference with a field part appended, keeping
     /// rendered text and structure in lockstep.
-    pub fn with_appended_field(&self, field: &str) -> Self {
+    pub fn with_appended_field(
+        &self,
+        field: &str,
+        def_id: DefId,
+        span: ProvenanceSpan,
+    ) -> Result<Self, ComponentReferenceError> {
         let rendered = format!("{}.{field}", self.as_str());
-        match self.component_ref.clone() {
-            Some(mut reference) if !reference.parts.is_empty() => {
-                reference.parts.push(ComponentRefPart {
-                    ident: field.to_string(),
-                    span: reference.span,
-                    subs: Vec::new(),
-                });
-                Self::with_component_reference(rendered, reference)
-                    .with_optional_resolved_function(self.resolved_function)
-            }
-            _ if self.generated => {
-                Self::generated(rendered).with_optional_resolved_function(self.resolved_function)
-            }
-            _ => Self::new(rendered).with_optional_resolved_function(self.resolved_function),
-        }
-    }
-
-    /// Append compiler-owned structured component parts while retaining the
-    /// resolved declaration identity.
-    pub fn with_appended_parts(&self, parts: &[ComponentRefPart], span: Span) -> Option<Self> {
-        let mut reference = self.component_ref.clone()?;
-        if parts.is_empty() {
-            return None;
-        }
-        reference.parts.extend_from_slice(parts);
-        reference.span = span;
-        Some(if self.generated {
-            Self::generated_component_reference(reference)
-                .with_optional_resolved_function(self.resolved_function)
-        } else {
-            Self::from_component_reference(reference)
-                .with_optional_resolved_function(self.resolved_function)
+        let reference = self
+            .component_ref
+            .as_ref()
+            .ok_or(ComponentReferenceError::MissingStructuredBase)?;
+        let mut parts = reference.parts().to_vec();
+        parts.push(ComponentRefPart {
+            ident: field.to_string(),
+            span: span.span(),
+            subs: Vec::new(),
+            def_id,
+        });
+        let extended = ComponentReference::construct(reference.local(), reference.span(), parts)?;
+        Ok(Self {
+            name: VarName::new(rendered),
+            component_ref: Some(extended),
+            resolved_function: None,
+            instance_id: self.instance_id,
+            generated: self.generated,
         })
     }
 
@@ -668,6 +781,11 @@ impl Reference {
         resolved: Option<ResolvedFunctionReference>,
     ) -> Self {
         self.resolved_function = resolved;
+        self
+    }
+
+    fn with_optional_instance_id(mut self, instance_id: Option<InstanceId>) -> Self {
+        self.instance_id = instance_id;
         self
     }
 
@@ -684,14 +802,20 @@ impl Reference {
     pub fn parts(&self) -> &[ComponentRefPart] {
         self.component_ref
             .as_ref()
-            .map(|component_ref| component_ref.parts.as_slice())
+            .map(ComponentReference::parts)
             .unwrap_or(&[])
     }
 
     pub fn target_def_id(&self) -> Option<DefId> {
         self.component_ref
             .as_ref()
-            .and_then(|component_ref| component_ref.def_id)
+            .map(ComponentReference::target_def_id)
+    }
+
+    pub fn root_def_id(&self) -> Option<DefId> {
+        self.component_ref
+            .as_ref()
+            .map(ComponentReference::root_def_id)
     }
 
     pub fn has_structure(&self) -> bool {
@@ -711,6 +835,7 @@ impl PartialEq for Reference {
         self.name == other.name
             && self.component_ref == other.component_ref
             && self.resolved_function == other.resolved_function
+            && self.instance_id == other.instance_id
             && self.generated == other.generated
     }
 }
@@ -903,6 +1028,24 @@ pub enum BuiltinFunction {
     /// Overloaded sample operator: sample(start, interval) event tick or
     /// sample(u[, clock]) clocked value sample.
     Sample,
+    /// Clock constructor: Clock(...)
+    Clock,
+    /// Clocked-to-continuous value conversion: hold(u)
+    Hold,
+    /// Previous value on the owning clock: previous(u)
+    Previous,
+    /// Interval of the owning clock: interval(u)
+    Interval,
+    /// Integer sub-clock conversion: subSample(u, factor)
+    SubSample,
+    /// Integer super-clock conversion: superSample(u, factor)
+    SuperSample,
+    /// Rational forward phase shift: shiftSample(u, counter[, resolution])
+    ShiftSample,
+    /// Rational backward phase shift: backSample(u, counter[, resolution])
+    BackSample,
+    /// Remove a clock association: noClock(u)
+    NoClock,
     /// Initial condition: initial() - true during initialization
     Initial,
     /// Terminal condition: terminal() - true during termination
@@ -915,7 +1058,7 @@ pub enum BuiltinFunction {
     Homotopy,
     /// Semi-linear: semiLinear(x, k1, k2) = if x >= 0 then k1*x else k2*x
     SemiLinear,
-    /// Delay: delay(expr, delayTime) - returns expr (no delay in continuous sim)
+    /// Transport delay: delay(expr, delayTime[, delayMax]).
     Delay,
     /// Integer conversion: integer(x)
     Integer,
@@ -966,6 +1109,23 @@ pub enum BuiltinFunction {
 }
 
 impl BuiltinFunction {
+    /// Intrinsics whose spelling may be shadowed and therefore require their
+    /// exact predefined Resolve identity.
+    pub const PREDEFINED_IDENTITY_REQUIRED: &'static [Self] = &[
+        Self::Sample,
+        Self::Clock,
+        Self::Hold,
+        Self::Previous,
+        Self::Interval,
+        Self::SubSample,
+        Self::SuperSample,
+        Self::ShiftSample,
+        Self::BackSample,
+        Self::NoClock,
+        Self::Sum,
+        Self::Product,
+    ];
+
     /// Builtin variants that are represented as `Expression::BuiltinCall`.
     pub const ALL: &'static [Self] = &[
         Self::Der,
@@ -997,6 +1157,15 @@ impl BuiltinFunction {
         Self::Change,
         Self::Reinit,
         Self::Sample,
+        Self::Clock,
+        Self::Hold,
+        Self::Previous,
+        Self::Interval,
+        Self::SubSample,
+        Self::SuperSample,
+        Self::ShiftSample,
+        Self::BackSample,
+        Self::NoClock,
         Self::Initial,
         Self::Terminal,
         Self::NoEvent,
@@ -1026,7 +1195,30 @@ impl BuiltinFunction {
         Self::Cat,
     ];
 
-    /// Try to parse a function name as a builtin.
+    /// Whether Resolve identity is required before this intrinsic can be
+    /// distinguished from a same-spelling user declaration.
+    pub const fn requires_predefined_identity(self) -> bool {
+        matches!(
+            self,
+            Self::Sample
+                | Self::Clock
+                | Self::Hold
+                | Self::Previous
+                | Self::Interval
+                | Self::SubSample
+                | Self::SuperSample
+                | Self::ShiftSample
+                | Self::BackSample
+                | Self::NoClock
+                | Self::Sum
+                | Self::Product
+        )
+    }
+
+    /// Try to parse a builtin spelling that needs no declaration check.
+    ///
+    /// Synchronous intrinsics are intentionally absent: they must be minted
+    /// from their exact predefined `DefId` after Resolve.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             // Differential
@@ -1063,7 +1255,6 @@ impl BuiltinFunction {
             "edge" => Some(Self::Edge),
             "change" => Some(Self::Change),
             "reinit" => Some(Self::Reinit),
-            "sample" => Some(Self::Sample),
             "initial" => Some(Self::Initial),
             "terminal" => Some(Self::Terminal),
             "noEvent" => Some(Self::NoEvent),
@@ -1072,9 +1263,6 @@ impl BuiltinFunction {
             "semiLinear" => Some(Self::SemiLinear),
             "delay" => Some(Self::Delay),
             "integer" | "Integer" => Some(Self::Integer),
-            // Reduction
-            "sum" => Some(Self::Sum),
-            "product" => Some(Self::Product),
             // Array
             "ndims" => Some(Self::Ndims),
             "size" => Some(Self::Size),
@@ -1129,6 +1317,15 @@ impl BuiltinFunction {
             Self::Change => "change",
             Self::Reinit => "reinit",
             Self::Sample => "sample",
+            Self::Clock => "Clock",
+            Self::Hold => "hold",
+            Self::Previous => "previous",
+            Self::Interval => "interval",
+            Self::SubSample => "subSample",
+            Self::SuperSample => "superSample",
+            Self::ShiftSample => "shiftSample",
+            Self::BackSample => "backSample",
+            Self::NoClock => "noClock",
             Self::Initial => "initial",
             Self::Terminal => "terminal",
             Self::NoEvent => "noEvent",
@@ -1195,9 +1392,24 @@ impl std::fmt::Display for Literal {
             Literal::Real(v) => write!(f, "{}", v),
             Literal::Integer(v) => write!(f, "{}", v),
             Literal::Boolean(v) => write!(f, "{}", v),
-            Literal::String(v) => write!(f, "\"{}\"", v),
+            Literal::String(v) => write!(f, "\"{}\"", crate::escape_modelica_string(v)),
         }
     }
+}
+
+/// One structured annotation attached to an external function interface.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExternalFunctionAnnotation {
+    /// Structured annotation name segments, such as `["Library"]`.
+    pub name: Vec<String>,
+    /// Semantic annotation value; never a rendered source-expression string.
+    pub value: Expression,
+    /// Source span of the complete annotation modification.
+    #[serde(
+        default = "Span::source_free_serde_default",
+        skip_serializing_if = "Span::is_dummy"
+    )]
+    pub span: Span,
 }
 
 /// External function declaration (MLS §12.9).
@@ -1212,8 +1424,15 @@ pub struct ExternalFunction {
     pub function_name: Option<String>,
     /// Output variable that receives the return value (if any).
     pub output_name: Option<String>,
-    /// Argument names passed to the external function.
-    pub arg_names: Vec<String>,
+    /// Ordered argument expressions passed to the external function.
+    ///
+    /// MLS §12.9 permits arbitrary expressions here. Keeping the expressions
+    /// in Flat/DAE form preserves ABI position, shape, declaration identity,
+    /// and source provenance without recovering semantics from rendered text.
+    pub args: Vec<Expression>,
+    /// Structured annotations attached to the external function interface.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<ExternalFunctionAnnotation>,
 }
 
 /// Function derivative annotation (MLS §12.7.1).
@@ -1303,6 +1522,22 @@ pub enum Expression {
         )]
         span: Span,
     },
+    /// One semantically resolved invocation of the predefined `String`
+    /// conversion operator (MLS §3.7.1).
+    ///
+    /// Keeping this distinct from a user function or type constructor makes
+    /// the accepted overload explicit and retains the resolved predefined
+    /// declaration identity without marker calls or argument-name strings.
+    StringConversion {
+        declaration: DefId,
+        value: Box<Expression>,
+        format: StringConversionFormat,
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
+        span: Span,
+    },
     Literal {
         value: Literal,
         #[serde(
@@ -1369,6 +1604,7 @@ pub enum Expression {
     FieldAccess {
         base: Box<Expression>,
         field: String,
+        field_def_id: DefId,
         #[serde(
             default = "Span::source_free_serde_default",
             skip_serializing_if = "Span::is_dummy"
@@ -1382,6 +1618,57 @@ pub enum Expression {
         )]
         span: Span,
     },
+}
+
+/// Return the concrete component path denoted by a Flat/DAE expression.
+///
+/// Projected record fields and expanded component-array elements are represented
+/// structurally as `FieldAccess` and `Index` nodes. Evaluators must retain those
+/// indices when looking up a parameter such as `records[1,2].n`; rendering only
+/// the base field silently falls back to declaration defaults.
+pub fn flat_expression_component_path(expr: &Expression) -> Option<ComponentPath> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => append_concrete_subscripts(ComponentPath::from_flat_path(name.as_str()), subscripts),
+        Expression::Index {
+            base, subscripts, ..
+        } => append_concrete_subscripts(flat_expression_component_path(base)?, subscripts),
+        Expression::FieldAccess { base, field, .. } => Some(
+            flat_expression_component_path(base)?.join(&ComponentPath::from_parts([field.clone()])),
+        ),
+        _ => None,
+    }
+}
+
+fn append_concrete_subscripts(
+    path: ComponentPath,
+    subscripts: &[Subscript],
+) -> Option<ComponentPath> {
+    if subscripts.is_empty() {
+        return Some(path);
+    }
+    let mut parts = path.into_parts();
+    let last = parts.last_mut()?;
+    let mut values = Vec::with_capacity(subscripts.len());
+    for subscript in subscripts {
+        let value = match subscript {
+            Subscript::Index { value, .. } => *value,
+            Subscript::Expr { expr, .. } => match expr.as_ref() {
+                Expression::Literal {
+                    value: Literal::Integer(value),
+                    ..
+                } => *value,
+                _ => return None,
+            },
+            Subscript::Colon { .. } => return None,
+        };
+        values.push(value.to_string());
+    }
+    last.push('[');
+    last.push_str(&values.join(","));
+    last.push(']');
+    Some(ComponentPath::from_parts(parts))
 }
 
 impl Expression {
@@ -1402,6 +1689,7 @@ impl Expression {
             | Expression::Unary { span, .. }
             | Expression::BuiltinCall { span, .. }
             | Expression::FunctionCall { span, .. }
+            | Expression::StringConversion { span, .. }
             | Expression::Literal { span, .. }
             | Expression::If { span, .. }
             | Expression::Array { span, .. }
@@ -1435,6 +1723,7 @@ impl Expression {
             | Expression::VarRef { span, .. }
             | Expression::BuiltinCall { span, .. }
             | Expression::FunctionCall { span, .. }
+            | Expression::StringConversion { span, .. }
             | Expression::Literal { span, .. }
             | Expression::If { span, .. }
             | Expression::Array { span, .. }
@@ -1536,6 +1825,38 @@ impl Expression {
     }
 }
 
+/// The two mutually exclusive formatting overload families of predefined
+/// `String(...)`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum StringConversionFormat {
+    Options {
+        minimum_length: Option<Box<Expression>>,
+        left_justified: Option<Box<Expression>>,
+        significant_digits: Option<Box<Expression>>,
+    },
+    Format {
+        value: Box<Expression>,
+    },
+}
+
+impl StringConversionFormat {
+    pub fn operands(&self) -> impl Iterator<Item = &Expression> {
+        let operands = match self {
+            Self::Options {
+                minimum_length,
+                left_justified,
+                significant_digits,
+            } => [
+                minimum_length.as_deref(),
+                left_justified.as_deref(),
+                significant_digits.as_deref(),
+            ],
+            Self::Format { value } => [Some(value.as_ref()), None, None],
+        };
+        operands.into_iter().flatten()
+    }
+}
+
 struct ContainsExpressionChecker<'a, F>
 where
     F: FnMut(&Expression) -> bool,
@@ -1597,351 +1918,8 @@ impl crate::ExpressionVisitor for VarRefCollector<'_> {
     }
 }
 
-/// Structural expression equality for the shared Flat/DAE expression grammar.
-///
-/// This is a syntactic IR query, not expression evaluation: it never folds,
-/// resolves, or executes expressions. It exists in `rumoca-core` because
-/// multiple phases need one span-insensitive definition of shared-expression
-/// identity.
-pub fn expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    match (lhs, rhs) {
-        (Expression::Binary { .. }, Expression::Binary { .. }) => {
-            binary_expressions_semantically_equal(lhs, rhs)
-        }
-        (Expression::Unary { .. }, Expression::Unary { .. }) => {
-            unary_expressions_semantically_equal(lhs, rhs)
-        }
-        (Expression::VarRef { .. }, Expression::VarRef { .. }) => {
-            var_refs_semantically_equal(lhs, rhs)
-        }
-        (Expression::BuiltinCall { .. }, Expression::BuiltinCall { .. }) => {
-            builtin_calls_semantically_equal(lhs, rhs)
-        }
-        (Expression::FunctionCall { .. }, Expression::FunctionCall { .. }) => {
-            function_calls_semantically_equal(lhs, rhs)
-        }
-        (Expression::Literal { value: lhs, .. }, Expression::Literal { value: rhs, .. }) => {
-            lhs == rhs
-        }
-        (Expression::If { .. }, Expression::If { .. }) => {
-            if_expressions_semantically_equal(lhs, rhs)
-        }
-        (Expression::Array { .. }, Expression::Array { .. }) => arrays_semantically_equal(lhs, rhs),
-        (Expression::Tuple { .. }, Expression::Tuple { .. }) => tuples_semantically_equal(lhs, rhs),
-        (Expression::Range { .. }, Expression::Range { .. }) => ranges_semantically_equal(lhs, rhs),
-        (Expression::ArrayComprehension { .. }, Expression::ArrayComprehension { .. }) => {
-            array_comprehensions_semantically_equal(lhs, rhs)
-        }
-        (Expression::Index { .. }, Expression::Index { .. }) => {
-            index_expressions_semantically_equal(lhs, rhs)
-        }
-        (Expression::FieldAccess { .. }, Expression::FieldAccess { .. }) => {
-            field_accesses_semantically_equal(lhs, rhs)
-        }
-        (Expression::Empty { .. }, Expression::Empty { .. }) => true,
-        _ => false,
-    }
-}
-
-fn binary_expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::Binary {
-            op: lhs_op,
-            lhs: lhs_lhs,
-            rhs: lhs_rhs,
-            ..
-        },
-        Expression::Binary {
-            op: rhs_op,
-            lhs: rhs_lhs,
-            rhs: rhs_rhs,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_op == rhs_op
-        && expressions_semantically_equal(lhs_lhs, rhs_lhs)
-        && expressions_semantically_equal(lhs_rhs, rhs_rhs)
-}
-
-fn unary_expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::Unary {
-            op: lhs_op,
-            rhs: lhs_rhs,
-            ..
-        },
-        Expression::Unary {
-            op: rhs_op,
-            rhs: rhs_rhs,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_op == rhs_op && expressions_semantically_equal(lhs_rhs, rhs_rhs)
-}
-
-fn var_refs_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::VarRef {
-            name: lhs_name,
-            subscripts: lhs_subscripts,
-            ..
-        },
-        Expression::VarRef {
-            name: rhs_name,
-            subscripts: rhs_subscripts,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    // Flat names are globally unique — `flat::Model::variables` is keyed by
-    // VarName and flatten's name simplification fails loudly on rename
-    // collisions — so two references denote the same variable iff their
-    // rendered names match; attached resolution metadata (spans, def-ids,
-    // component structure) does not change the meaning.
-    lhs_name.var_name() == rhs_name.var_name()
-        && subscripts_semantically_equal(lhs_subscripts, rhs_subscripts)
-}
-
-fn builtin_calls_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::BuiltinCall {
-            function: lhs_function,
-            args: lhs_args,
-            ..
-        },
-        Expression::BuiltinCall {
-            function: rhs_function,
-            args: rhs_args,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_function == rhs_function && expression_slices_semantically_equal(lhs_args, rhs_args)
-}
-
-fn function_calls_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::FunctionCall {
-            name: lhs_name,
-            args: lhs_args,
-            is_constructor: lhs_constructor,
-            ..
-        },
-        Expression::FunctionCall {
-            name: rhs_name,
-            args: rhs_args,
-            is_constructor: rhs_constructor,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_name == rhs_name
-        && lhs_constructor == rhs_constructor
-        && expression_slices_semantically_equal(lhs_args, rhs_args)
-}
-
-fn if_expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::If {
-            branches: lhs_branches,
-            else_branch: lhs_else,
-            ..
-        },
-        Expression::If {
-            branches: rhs_branches,
-            else_branch: rhs_else,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_branches.len() == rhs_branches.len()
-        && lhs_branches
-            .iter()
-            .zip(rhs_branches)
-            .all(expression_branch_pairs_semantically_equal)
-        && expressions_semantically_equal(lhs_else, rhs_else)
-}
-
-fn expression_branch_pairs_semantically_equal(
-    ((lhs_cond, lhs_value), (rhs_cond, rhs_value)): (
-        &(Expression, Expression),
-        &(Expression, Expression),
-    ),
-) -> bool {
-    expressions_semantically_equal(lhs_cond, rhs_cond)
-        && expressions_semantically_equal(lhs_value, rhs_value)
-}
-
-fn arrays_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::Array {
-            elements: lhs_elements,
-            is_matrix: lhs_matrix,
-            ..
-        },
-        Expression::Array {
-            elements: rhs_elements,
-            is_matrix: rhs_matrix,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_matrix == rhs_matrix && expression_slices_semantically_equal(lhs_elements, rhs_elements)
-}
-
-fn tuples_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::Tuple {
-            elements: lhs_elements,
-            ..
-        },
-        Expression::Tuple {
-            elements: rhs_elements,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    expression_slices_semantically_equal(lhs_elements, rhs_elements)
-}
-
-fn ranges_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::Range {
-            start: lhs_start,
-            step: lhs_step,
-            end: lhs_end,
-            ..
-        },
-        Expression::Range {
-            start: rhs_start,
-            step: rhs_step,
-            end: rhs_end,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    expressions_semantically_equal(lhs_start, rhs_start)
-        && optional_expressions_semantically_equal(lhs_step.as_deref(), rhs_step.as_deref())
-        && expressions_semantically_equal(lhs_end, rhs_end)
-}
-
-fn array_comprehensions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::ArrayComprehension {
-            expr: lhs_expr,
-            indices: lhs_indices,
-            filter: lhs_filter,
-            ..
-        },
-        Expression::ArrayComprehension {
-            expr: rhs_expr,
-            indices: rhs_indices,
-            filter: rhs_filter,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    expressions_semantically_equal(lhs_expr, rhs_expr)
-        && lhs_indices.len() == rhs_indices.len()
-        && lhs_indices.iter().zip(rhs_indices).all(|(lhs, rhs)| {
-            lhs.name == rhs.name && expressions_semantically_equal(&lhs.range, &rhs.range)
-        })
-        && optional_expressions_semantically_equal(lhs_filter.as_deref(), rhs_filter.as_deref())
-}
-
-fn index_expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::Index {
-            base: lhs_base,
-            subscripts: lhs_subscripts,
-            ..
-        },
-        Expression::Index {
-            base: rhs_base,
-            subscripts: rhs_subscripts,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    expressions_semantically_equal(lhs_base, rhs_base)
-        && subscripts_semantically_equal(lhs_subscripts, rhs_subscripts)
-}
-
-fn field_accesses_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::FieldAccess {
-            base: lhs_base,
-            field: lhs_field,
-            ..
-        },
-        Expression::FieldAccess {
-            base: rhs_base,
-            field: rhs_field,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_field == rhs_field && expressions_semantically_equal(lhs_base, rhs_base)
-}
-
-fn expression_slices_semantically_equal(lhs: &[Expression], rhs: &[Expression]) -> bool {
-    lhs.len() == rhs.len()
-        && lhs
-            .iter()
-            .zip(rhs)
-            .all(|(lhs, rhs)| expressions_semantically_equal(lhs, rhs))
-}
-
-fn optional_expressions_semantically_equal(
-    lhs: Option<&Expression>,
-    rhs: Option<&Expression>,
-) -> bool {
-    match (lhs, rhs) {
-        (Some(lhs), Some(rhs)) => expressions_semantically_equal(lhs, rhs),
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-fn subscripts_semantically_equal(lhs: &[Subscript], rhs: &[Subscript]) -> bool {
-    lhs.len() == rhs.len()
-        && lhs.iter().zip(rhs).all(|(lhs, rhs)| match (lhs, rhs) {
-            (Subscript::Index { value: lhs, .. }, Subscript::Index { value: rhs, .. }) => {
-                lhs == rhs
-            }
-            (Subscript::Colon { .. }, Subscript::Colon { .. }) => true,
-            (Subscript::Expr { expr: lhs, .. }, Subscript::Expr { expr: rhs, .. }) => {
-                expressions_semantically_equal(lhs, rhs)
-            }
-            _ => false,
-        })
-}
+mod expression_semantics;
+pub use expression_semantics::{expression_semantic_fingerprint, expressions_semantically_equal};
 
 #[cfg(test)]
 mod tests;
