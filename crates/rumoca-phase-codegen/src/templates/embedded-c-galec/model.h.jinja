@@ -1,45 +1,70 @@
-/* {{ block_name }} — GALEC-derived embedded C export (SPEC_0034 GAL-024).
-{%- for line in conformance_header.lines %}
- * {{ line }}
-{%- endfor %} */
-#ifndef {{ include_guard }}
-#define {{ include_guard }}
+{#- Every emitted C identifier comes from the single symbol policy in
+    `embedded-c-galec/symbols.jinja`, registered here as
+    `galec-c-symbols.jinja` and shared by the header, the source, and the
+    Production Code manifest. This template declares no reserved list and no
+    allocation of its own: a second declaration site is what renames the same
+    variable differently across artifacts. -#}
+{%- import "galec-c-symbols.jinja" as c_symbol_policy -%}
+{%- set c_symbols = c_symbol_policy.symbols -%}
+{%- set c_state_symbols = c_symbol_policy.state_symbols -%}
+{%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
+{%- macro c_type(kind) -%}
+{%- if kind == "real" -%}float{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
+{%- endmacro -%}
+{#- The block's working memory is a decision taken in the checked view, not
+    here: `scratch_layout` says which regions exist and which of them share
+    storage. The header only needs to know WHETHER there is any, so that the
+    single-instance note it costs is not printed for a block that has none. -#}
+{%- set scratch_layout = algorithm_code.package.block.scratch_layout -%}
+{% block conformance %}/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
+ * GALEC-derived embedded C export (SPEC_0034 GAL-024).
+ * NOT an eFMI Production Code container.
+ * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
+ * MISRA compliance and DO-178C compliance are not claimed.
+ * Target syntax and layout are owned by this template. */{% endblock %}
+#ifndef RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED
+#define RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED
 
 #include <stdbool.h>
 #include <stdint.h>
-
-/* Block state: every manifest-listed variable of the projected GALEC
- * block, including the 'previous(x)' discrete-state slots committed at
- * the end of dostep (eFMI trap T2). */
-typedef struct {
-{%- for variable in variables %}
-    {{ variable.c_type }} {{ variable.c_name }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* {{ variable.name }} ({{ variable.causality }}) */
+{% if scratch_layout.groups|length > 0 %}
+/* SINGLE INSTANCE PER PROGRAM.
+ *
+ * The array intermediates the generated bodies work in, and every generated
+ * function's outputs, are NOT part of this interface: they are one file-scope
+ * object private to `{{ model_name }}.c`, shared by overlaying the regions of
+ * functions that can never be active at the same time. Interface is what a
+ * caller binds to — inputs, outputs, parameters and states — and one function's
+ * intermediate row buffer is none of those; describing it here would put
+ * hundreds of internal temporaries into the block's declared surface and into
+ * the Production Code manifest, where nothing may bind to them anyway.
+ *
+ * The price is stated rather than assumed: because that object is file-scope
+ * and not a member of the state below, TWO {{ c_model }}State objects in one
+ * program would SHARE one set of working-memory slots. Declare one. The three
+ * methods must also not run concurrently or reentrantly on one state — which is
+ * already true of a block whose methods are its only entry points.
+ *
+ * SECOND CONSEQUENCE, for a reviewer of the Modelica source rather than of this
+ * file: a local that is READ BEFORE IT IS WRITTEN now observes whatever another
+ * owner sharing its storage left there, rather than what the same owner left on
+ * its own previous activation. Startup, Recalibrate and DoStep share one group,
+ * so a DoStep local read before assignment can carry a value Startup wrote.
+ * GALEC does not require definite assignment of locals, so this is reachable —
+ * but only through a source defect. Both the old behavior and this one are
+ * arbitrary; neither is a value the source asked for. It is called out because
+ * the arbitrary value CHANGED, and a test that passed by accident on the old
+ * one may fail on this one. */
+{% endif %}
+typedef struct {{ c_model }}StateTag {
+{%- for variable in algorithm_code.variables %}
+    {{ c_type(variable.kind) }} {{ symbol(c_state_symbols, variable.name) }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* declaration {{ variable.ordinal }}: {{ variable.name | replace("*/", "* /") | replace("/*", "/ *") }} ({{ variable.causality }}) */
 {%- endfor %}
-} {{ struct_name }};
+    uint32_t rumoca_galec_error_signal_status; /* eFMI ErrorSignalStatus */
+} {{ c_model }}State;
 
-/* The three GALEC block-interface methods (eFMI §3.1.3): parameter-free,
- * all I/O through the block state.
- * - startup: initializes every writable variable (call once first);
- * - recalibrate: recomputes dependent parameters after tunable-parameter
- *   changes (parameters stay tunable at runtime);
- * - dostep: one fixed-sample control-cycle tick. */
-void {{ function_prefix }}_startup({{ struct_name }} *self);
-void {{ function_prefix }}_recalibrate({{ struct_name }} *self);
-void {{ function_prefix }}_dostep({{ struct_name }} *self);
+void {{ c_model }}_startup({{ c_model }}State *self);
+void {{ c_model }}_recalibrate({{ c_model }}State *self);
+void {{ c_model }}_dostep({{ c_model }}State *self);
 
-/* Project-neutral convenience wrappers for applications that want a stable
- * eFMI-shaped call surface independent of the generated model prefix. */
-#ifndef EFMI_STATE_TYPE
-#  define EFMI_STATE_TYPE(model) model##State
 #endif
-#ifndef EFMI_INIT
-#  define EFMI_INIT(model, state) model##_startup(state)
-#endif
-#ifndef EFMI_RECALIBRATE
-#  define EFMI_RECALIBRATE(model, state) model##_recalibrate(state)
-#endif
-#ifndef EFMI_STEP
-#  define EFMI_STEP(model, state) model##_dostep(state)
-#endif
-
-#endif /* {{ include_guard }} */

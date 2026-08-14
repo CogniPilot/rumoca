@@ -1,0 +1,111 @@
+{#- The GALEC array-kernel library, header half.
+
+    This file is MODEL-INDEPENDENT and is emitted in FULL on every invocation,
+    whether or not the model beside it calls a given kernel. That is the point:
+    one compiler build emits byte-identical `rumoca_galec_kernels.h` /
+    `rumoca_galec_kernels.c` for every block, so an integrator assembling six
+    eFMUs into one Zephyr application compiles ONE copy of this pair, dedups the
+    rest by content hash, and lets the linker drop whatever nothing calls. A
+    per-model subset would defeat that: six subsets are six different files with
+    six different checksums that cannot be deduplicated at all.
+
+    Nothing in this template reads the model view. The only substituted value is
+    the library version, which is derived from the bytes of these two templates
+    (see `templates::galec_kernel_library_version`) and therefore depends on the
+    compiler build alone -- not on the date, the model, or the machine. -#}
+{%- block conformance %}/* rumoca GALEC array kernels
+ * GALEC-derived embedded C export (SPEC_0034 GAL-024).
+ * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
+ * MISRA compliance and DO-178C compliance are not claimed. */
+{%- endblock %}
+
+/* ---------------------------------------------------------------------------
+ * Shared array kernels for rumoca-generated GALEC C
+ *
+ * Every whole-array move, fill and contraction the generated model code
+ * performs goes through one of the functions below, instead of being written
+ * out as an open-coded loop nest at each of the hundreds of sites that need
+ * one. A reviewer reads each bounded loop ONCE here and then reads call sites.
+ *
+ * This pair is emitted complete and identical by every model this compiler
+ * build generates, so an application that links several generated blocks
+ * carries exactly one copy: the files dedup by content, and a toolchain that
+ * places functions in their own sections drops the kernels nothing calls.
+ *
+ * RUMOCA_GALEC_KERNELS_VERSION identifies the library CONTENT, not the build
+ * time -- it is a hash of the templates that produced these two files. Every
+ * generated model source checks it, so mixing this header with a
+ * `rumoca_galec_kernels.c` or a model `.c` from a different rumoca build is a
+ * compile-time error rather than a silent link.
+ *
+ * Contracts common to every kernel below:
+ *   - `count` is the number of elements in the run and must be >= 0; a
+ *     non-positive `count` performs no access at all.
+ *   - Every array parameter must address at least `count` elements. Callers
+ *     pass whole objects or single rows of them; no kernel walks off the end of
+ *     the run it was handed, and none performs pointer arithmetic that leaves
+ *     the array it was given.
+ *   - Elements are visited from index 0 upward, which is the order the
+ *     open-coded loops these replace used. That is what makes the substitution
+ *     value-preserving -- and, for the reduction kernels, bit-preserving --
+ *     even when operands overlap.
+ *   - Aliasing is stated per kernel below. Where the generator cannot prove the
+ *     stated condition it emits the open-coded loop instead and does not call
+ *     the kernel.
+ * ------------------------------------------------------------------------ */
+
+#ifndef RUMOCA_GALEC_KERNELS_H
+#define RUMOCA_GALEC_KERNELS_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+/* Content identity of this kernel library. Derived from the emitting
+ * templates' bytes, so two rumoca builds agree on it if and only if they emit
+ * byte-identical kernels. */
+#define RUMOCA_GALEC_KERNELS_VERSION UINT32_C(0x{{ "%08x" | format(galec_kernels_version) }})
+
+/* Copy a run of `count` elements from `source` to `target`, element 0 first.
+ * `source` and `target` may overlap; a forward copy then reproduces exactly
+ * what the open-coded loop produced. */
+void rumoca_galec_copy_real(int32_t count, float target[], const float source[]);
+void rumoca_galec_copy_integer(int32_t count, int32_t target[], const int32_t source[]);
+void rumoca_galec_copy_boolean(int32_t count, bool target[], const bool source[]);
+
+/* Set every one of `count` elements of `target` to `value`. `value` is taken by
+ * value, so it cannot alias `target`. */
+void rumoca_galec_fill_real(int32_t count, float target[], float value);
+void rumoca_galec_fill_integer(int32_t count, int32_t target[], int32_t value);
+void rumoca_galec_fill_boolean(int32_t count, bool target[], bool value);
+
+/* Inner product of two runs of `count` Real elements: the sum, over ascending
+ * element index, of `lhs[e] * rhs[e]`, accumulated in a single-precision
+ * accumulator initialised to +0.0f.
+ *
+ * The accumulation order, the accumulator's precision and the multiplication's
+ * operand order are all part of the contract: this kernel replaces an emitted
+ * loop that summed the identical products in the identical order into an
+ * identical `float` accumulator, and it must therefore produce identical bits,
+ * including for NaN operands whose payload propagation depends on operand
+ * order. Do not reassociate, do not widen the accumulator, and do not build
+ * this with contraction enabled (`-ffp-contract=off`): a fused multiply-add
+ * would change the result.
+ *
+ * `lhs` and `rhs` may alias each other and may be the same run; neither is
+ * written. */
+float rumoca_galec_dot_real(int32_t count, const float lhs[], const float rhs[]);
+
+/* Accumulate a scaled run into another: for ascending `e` below `count`,
+ * `target[e] = target[e] + (scale * source[e])`.
+ *
+ * This is the innermost step of a matrix product written so that both operands
+ * are contiguous runs. As with the inner product, the operand order of the
+ * multiply and the single-precision accumulation are part of the contract.
+ *
+ * `target` and `source` MUST NOT overlap: `target` is written as the loop
+ * proceeds, so an overlap would feed written elements back into later reads.
+ * The generator only emits this call where the target and the source are
+ * distinct declared objects. */
+void rumoca_galec_scaled_add_real(int32_t count, float target[], float scale, const float source[]);
+
+#endif /* RUMOCA_GALEC_KERNELS_H */
