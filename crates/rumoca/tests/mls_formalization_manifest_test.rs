@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const MANIFEST_REL: &str = "verification/mls-formalization-coverage.json";
-const ASSOCIATION_GAPS_REL: &str = "verification/modelica-association-gaps.json";
+const MANIFEST_REL: &str = "infra/verification/mls-formalization-coverage.json";
+const ASSOCIATION_GAPS_REL: &str = "infra/verification/modelica-association-gaps.json";
 const ALLOWED_STATUSES: &[&str] = &["unformalized", "formalized_unproved", "machine_proved"];
 
 fn workspace_root() -> PathBuf {

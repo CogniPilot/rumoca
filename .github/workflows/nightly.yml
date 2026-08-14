@@ -889,5 +889,5 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: nightly-fuzz-artifacts
-          path: fuzz/artifacts
+          path: infra/fuzz/artifacts
           if-no-files-found: ignore

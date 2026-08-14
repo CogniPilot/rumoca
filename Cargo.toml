@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-# `fuzz/` is a standalone cargo-fuzz crate with its own workspace: it needs the
-# nightly-only `-Z sanitizer` machinery and must never be built by the normal
-# workspace commands.
-exclude = ["fuzz"]
+# `infra/fuzz/` is a standalone cargo-fuzz crate with its own workspace: it
+# needs the nightly-only `-Z sanitizer` machinery and must never be built by
+# the normal workspace commands.
+exclude = ["infra/fuzz"]
 members = [
     "crates/rumoca",
     "crates/rumoca-worker",

@@ -443,7 +443,7 @@ pub(crate) enum VerifyCommand {
     MslParity(Box<VerifyMslParityArgs>),
     /// Generate real flamegraph SVGs for the hottest compile and sim models from the latest MSL run
     MslHotspots,
-    /// Bounded libFuzzer run of the standalone `fuzz/` parser fuzz target
+    /// Bounded libFuzzer run of the standalone `infra/fuzz/` parser fuzz target
     Fuzz(VerifyFuzzArgs),
 }
 

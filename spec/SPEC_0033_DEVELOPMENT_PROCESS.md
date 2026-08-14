@@ -101,7 +101,7 @@ Failure classifications:
 | Verification commands MUST run under `CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4` | local and agent workflows | Fixed budget keeps concurrent workers from oversubscribing the host; naming only the first two leaves the derived rayon pool free to reclaim every core |
 | A capability change is complete only with Tier 1 focused suites green | all capability work | Focused proof precedes every broader claim |
 | A capability change is complete only with its Tier 1 canary delta recorded in durable review evidence | PR / verification record | Deltas must outlive the session that produced them |
-| The canary target set is the fixed 20-model list in `verification/msl-canary-20.json` | canary runs | A moving target set makes deltas meaningless |
+| The canary target set is the fixed 20-model list in `infra/verification/msl-canary-20.json` | canary runs | A moving target set makes deltas meaningless |
 | Replacing a canary member MUST record the rationale and replacement in the same review evidence | PR / verification record | Keeps the fixed list auditable |
 | Each non-simulation canary phase gets one 10-second attempt; `Sim` gets a 14-second parent watchdog around its 12-second solver budget | canary runs | One honest attempt per phase, no retry or default path |
 | A canary timeout, panic, unsupported operation, or non-finite result MUST be recorded as a failure | canary runs | Retries and fallbacks manufacture passes |
@@ -139,7 +139,7 @@ Failure classifications:
 ```bash
 # Tier 1 — fixed 20-model canary; the harness marks this snapshot partial.
 CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo xtask verify msl-parity \
-  --sim-targets-file verification/msl-canary-20.json
+  --sim-targets-file infra/verification/msl-canary-20.json
 
 # Tier 2 — full cohort; CI shards it as `--shard m/n` plus `--merge-shards DIR`.
 CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo xtask verify msl-parity

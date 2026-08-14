@@ -8,7 +8,7 @@ use std::path::{Component, Path};
 use std::process::Command;
 use std::time::Instant;
 
-const MANIFEST_PATH: &str = "verification/kani-proofs.json";
+const MANIFEST_PATH: &str = "infra/verification/kani-proofs.json";
 /// Bumped 2 -> 3 when `assumptions` became a mandatory per-proof field: a
 /// version-2 manifest omits it and is no longer admissible.
 const MANIFEST_SCHEMA_VERSION: u32 = 3;

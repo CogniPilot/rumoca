@@ -1,6 +1,6 @@
 //! `cargo xtask verify fuzz` — bounded libFuzzer runs of the parser fuzz target.
 //!
-//! The fuzz crate lives at the repo root in `fuzz/`, outside the cargo
+//! The fuzz crate lives under `infra/fuzz/`, outside the cargo
 //! workspace, because `cargo fuzz` builds with nightly sanitizer flags that must
 //! not leak into normal workspace builds. This command is deliberately *not* a
 //! member of `VERIFY_SUITE_STEPS`: `verify full`/`verify quick` must stay
@@ -22,7 +22,7 @@ pub(crate) struct VerifyFuzzArgs {
     /// Wall-clock budget for the fuzz run, in seconds.
     #[arg(long, default_value_t = 60)]
     pub(crate) max_total_secs: u64,
-    /// Fuzz target name (a `[[bin]]` in `fuzz/Cargo.toml`).
+    /// Fuzz target name (a `[[bin]]` in `infra/fuzz/Cargo.toml`).
     #[arg(long, default_value = "parse_modelica")]
     pub(crate) target: String,
     /// Additional libFuzzer `-max_len` cap on generated inputs.
@@ -31,7 +31,7 @@ pub(crate) struct VerifyFuzzArgs {
 }
 
 pub(crate) fn run(args: &VerifyFuzzArgs, root: &Path) -> Result<()> {
-    let fuzz_dir = root.join("fuzz");
+    let fuzz_dir = root.join("infra/fuzz");
     if !fuzz_dir.join("Cargo.toml").is_file() {
         bail!(
             "fuzz crate not found at {} — expected the standalone cargo-fuzz manifest",

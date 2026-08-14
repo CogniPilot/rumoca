@@ -108,7 +108,7 @@ grows the list; never lower it to make a red gate green.
 - `cross-backend-msl` — the `msl-external-tests` checked C Solve and CasADi
   suites, kept off the pull-request critical path.
 - `parser-fuzz` — `cargo xtask verify fuzz --max-total-secs 900` over the
-  standalone `fuzz/` cargo-fuzz crate.
+  standalone `infra/fuzz/` cargo-fuzz crate.
 
 ## Split of Responsibilities
 
