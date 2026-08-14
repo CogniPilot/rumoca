@@ -1,118 +1,39 @@
-//! Test for for-equation parameter lookup in array components.
+use rumoca_compile::compile::{Session, SessionConfig};
+use rumoca_sim::{SimOptions, simulate_dae};
 
-use rumoca_compile::compile::{CompiledSourceRoot, PhaseResult};
-
-fn compile_model_phases(source_root: &CompiledSourceRoot, model_name: &str) -> PhaseResult {
-    source_root
-        .compile_model_phases(model_name)
-        .unwrap_or_else(|error| panic!("compiled source-root phase cache failed: {error}"))
-}
-
-/// Test with MSL-style imports and SISO.
 #[test]
-fn test_msl_style_imports() {
-    // Add import statements like MSL
-    let source = r#"
-package Modelica
-    package Constants
-        constant Real pi = 3.141592653589793;
-    end Constants;
-end Modelica;
+fn structured_for_equation_remains_compact_and_simulates_all_rows() {
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document(
+            "family.mo",
+            "model Family Real x[3]; equation for i in 1:3 loop x[i]=i; end for; end Family;",
+        )
+        .expect("fixture parses");
 
-package TestPkg
-    import Modelica.Constants.pi;
-    
-    connector RealInput = input Real;
-    connector RealOutput = output Real;
-    
-    partial model SISO
-        RealInput u;
-        RealOutput y;
-    end SISO;
-    
-    model TransferFunc
-        extends SISO;
-        parameter Real[:] b = {1};
-        parameter Real[:] a = {1, 1};
-    equation
-        y = u;
-    end TransferFunc;
-    
-    block Filter "PT1 + all-pass filter"
-        extends SISO;
-        import Modelica.Constants.pi;
-        parameter Real f = 50 "Mains Frequency";
-        parameter Real fCut = 2*f "Cut off frequency";
-        final parameter Integer na(final min=2) = 2 "Count of all-pass";
-        final parameter Real fa = f/tan(pi/na) "Characteristic frequency";
-        parameter Real yStart = 0 "Start value";
-        TransferFunc transferFunction[na](
-            each final b={-1/(2*pi*fa),1},
-            each final a={+1/(2*pi*fa),1});
-    equation
-        for j in 1:na - 1 loop
-            connect(transferFunction[j].y, transferFunction[j + 1].u);
-        end for;
-        connect(u, transferFunction[1].u);
-        connect(transferFunction[na].y, y);
-    end Filter;
+    let compiled = session
+        .compile_model("Family")
+        .expect("structured family should compile without fabricated scalar DAE rows");
+    compiled.dae.inspect(|view| {
+        assert_eq!(view.continuous_equation_count(), 0);
+        assert_eq!(view.continuous_family_count(), 1);
+    });
 
-    block Signal2mPulse "Generic control"
-        import Modelica.Constants.pi;
-        parameter Integer m(final min=1) = 3 "Number of phases";
-        parameter Boolean useFilter = true "Enable filter";
-        parameter Real f = 50 "Frequency";
-        parameter Real fCut = 2*f "Cut off frequency";
-        parameter Real vStart[m] = zeros(m) "Start voltage";
-        RealInput firingAngle;
-        RealOutput fire_p[m];
-        RealOutput fire_n[m];
-        Filter filter[m](
-            each final f=f,
-            each final fCut=fCut,
-            yStart=vStart) if useFilter;
-    end Signal2mPulse;
-
-    partial model Dimmer "Dimmer template"
-        import Modelica.Constants.pi;
-        parameter Real f = 50 "Source frequency";
-        Signal2mPulse adaptor(
-            m=1,
-            useFilter=true,
-            f=f);
-    end Dimmer;
-end TestPkg;
-"#;
-
-    let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
-    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
-
-    // Test Dimmer
-    println!("\n=== Compiling TestPkg.Dimmer ===");
-    match compile_model_phases(&source_root, "TestPkg.Dimmer") {
-        PhaseResult::Success(result) => {
-            println!("Success!");
-            let balance =
-                rumoca_phase_dae::balance::balance(&result.dae).expect("valid DAE balance fixture");
-            println!("Balance: {}", balance);
-
-            // List all variables
-            println!("\n--- Variables ---");
-            for (name, _) in result.flat.variables.iter() {
-                println!("  {}", name);
-            }
-
-            // List equations
-            println!("\n--- Equations ({}) ---", result.flat.equations.len());
-            for eq in result.flat.equations.iter().take(20) {
-                println!("  {:?}", eq);
-            }
-        }
-        PhaseResult::NeedsInner { missing_inners, .. } => {
-            println!("Needs inner: {:?}", missing_inners);
-        }
-        PhaseResult::Failed { phase, error, .. } => {
-            println!("Failed at {:?}: {}", phase, error);
-        }
+    let simulation =
+        simulate_dae(&compiled.dae, &SimOptions::default()).expect("family should simulate");
+    for (name, expected) in [("x[1]", 1.0), ("x[2]", 2.0), ("x[3]", 3.0)] {
+        let index = simulation
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("trace must retain structured coordinate `{name}`"));
+        let value = simulation.data[index]
+            .last()
+            .copied()
+            .expect("simulation trace is non-empty");
+        assert!(
+            (value - expected).abs() <= 1.0e-12,
+            "{name} = {value}, expected {expected}"
+        );
     }
 }

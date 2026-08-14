@@ -251,6 +251,12 @@ fn flat_expr_mentions_name(expr: &rumoca_core::Expression, needle: &str) -> bool
             flat_expr_mentions_name(lhs, needle) || flat_expr_mentions_name(rhs, needle)
         }
         rumoca_core::Expression::Unary { rhs, .. } => flat_expr_mentions_name(rhs, needle),
+        rumoca_core::Expression::StringConversion { value, format, .. } => {
+            flat_expr_mentions_name(value, needle)
+                || format
+                    .operands()
+                    .any(|operand| flat_expr_mentions_name(operand, needle))
+        }
         rumoca_core::Expression::If {
             branches,
             else_branch,
@@ -622,6 +628,67 @@ fn test_nested_colon_parameter_binding_drives_size_dimension() {
 
     let q = find_component(&overlay, "pathPlanning.path.q").expect("path.q should exist");
     assert_eq!(q.dims, vec![6]);
+}
+
+#[test]
+fn test_array_component_modifier_reference_typechecks_in_lexical_parent_scope() {
+    let source = r#"
+        model Sink
+            parameter Real amplitude;
+        end Sink;
+
+        model Cell
+            parameter Real V;
+            Sink sink(final amplitude = V);
+        end Cell;
+
+        model Group
+            parameter Real V[3];
+            Cell cells[3](final V = V);
+        end Group;
+
+        model Top
+            Group group;
+        end Top;
+    "#;
+
+    let (tree, mut overlay) = instantiate_test_model(source, "Top");
+
+    for index in 1..=3 {
+        let cell_parameter_name = format!("group.cells[{index}].V");
+        let cell_parameter = find_component(&overlay, &cell_parameter_name)
+            .unwrap_or_else(|| panic!("{cell_parameter_name} should exist"));
+        assert_eq!(
+            cell_parameter.binding_source_scope,
+            Some(ast::QualifiedName::from_ident("group")),
+            "{cell_parameter_name} binding must retain its enclosing lexical source scope"
+        );
+
+        let forwarded_name = format!("group.cells[{index}].sink.amplitude");
+        let forwarded = find_component(&overlay, &forwarded_name)
+            .unwrap_or_else(|| panic!("{forwarded_name} should exist"));
+        assert_eq!(
+            forwarded
+                .binding_source_scope
+                .as_ref()
+                .map(ast::QualifiedName::to_flat_string),
+            Some(format!("group.cells[{index}]")),
+            "{forwarded_name} binding must retain the scalar cell source scope"
+        );
+        assert_eq!(
+            forwarded.binding_source.as_ref().map(ToString::to_string),
+            Some("V".to_string()),
+            "{forwarded_name} must retain the written scalar expression"
+        );
+        assert_eq!(
+            forwarded.binding.as_ref().map(ToString::to_string),
+            Some(format!("V[{index}]")),
+            "{forwarded_name} must retain the resolved outer array value"
+        );
+    }
+
+    typecheck_instanced(&tree, &mut overlay, "Top")
+        .expect("source-scoped array element modifier bindings should typecheck");
 }
 
 /// Test that mimics the DFFREG structure more closely
@@ -1388,12 +1455,12 @@ fn test_flowmodel_modifier_keeps_enclosing_port_scope() {
         end Top;
     "#;
 
-    let compiled = rumoca::Compiler::new()
+    let flat = rumoca::Compiler::new()
         .model("Top")
-        .compile_str(source, "test.mo")
-        .expect("Top should compile");
+        .compile_str_flat(source, "test.mo")
+        .expect("Top should flatten");
 
-    let flat_dump = format!("{:#?}", compiled.flat);
+    let flat_dump = format!("{flat:#?}");
     assert!(
         !flat_dump.contains("pipe.flowModel.port_a.p"),
         "flowModel modifier should resolve port_a.p in enclosing scope, got over-qualified ref"

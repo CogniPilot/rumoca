@@ -4,8 +4,8 @@
 //! parameter-dependent algebraics.
 
 use rumoca::Compiler;
-use rumoca_eval_solve::{AlgebraicSettle, SolveRuntime};
 use rumoca_sim::SimOptions;
+use rumoca_solver::{AlgebraicSettle, SolveRuntime};
 
 // `y` is a parameter-dependent algebraic, and der(x) depends on it, so
 // ∂der(x)/∂a and ∂der(x)/∂b exercise the algebraic-projection path; `c` and the
@@ -136,7 +136,7 @@ fn forward_sensitivity_rhs_matches_directional_finite_difference() {
     let mut rhs = vec![0.0; n_state];
     runtime
         .eval_forward_sensitivity_column_into(
-            rumoca_eval_solve::AlgebraicLinearization {
+            rumoca_solver::AlgebraicLinearization {
                 t: 0.0,
                 params: &params,
                 settle,

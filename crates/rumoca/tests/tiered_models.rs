@@ -1,189 +1,71 @@
-//! Tiered Model Tests for the Rumoca Compiler
-//!
-//! This module tests Modelica models in increasing complexity tiers.
-//! Each tier builds on the previous, allowing us to identify issues early
-//! and track feature support progress.
-//!
-//! ## Tier Overview
-//!
-//! | Tier | Name | Description |
-//! |------|------|-------------|
-//! | 0 | Minimal | Empty models, single variables |
-//! | 1 | Basic Equations | Simple algebraic equations |
-//! | 2 | ODEs | Derivatives, state variables |
-//! | 3 | Parameters | Parameters, constants, modifications |
-//! | 4 | Arrays | Array declarations and indexing |
-//! | 5 | Conditionals | If-expressions, if-equations, when |
-//! | 6 | Functions | Built-in and user-defined functions |
-//! | 7 | Components | Component instantiation, connectors |
-//! | 8 | Inheritance | Extends, modifications, redeclarations |
-//! | 9 | Advanced | Algorithms, external functions |
+use rumoca_compile::compile::{Session, SessionConfig, VariableRole};
 
-use rumoca_compile::{Session, SessionConfig};
-use rumoca_ir_dae::Dae;
-
-/// Check if a Expression contains an If expression anywhere in its tree.
-fn contains_if_expr(expr: &rumoca_core::Expression) -> bool {
-    match expr {
-        rumoca_core::Expression::If { .. } => true,
-        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
-            contains_if_expr(lhs) || contains_if_expr(rhs)
-        }
-        rumoca_core::Expression::Unary { rhs, .. } => contains_if_expr(rhs),
-        _ => false,
-    }
-}
-
-/// Check if an expression references a lowered pre() parameter.
-fn contains_pre_param_ref(expr: &rumoca_core::Expression) -> bool {
-    match expr {
-        rumoca_core::Expression::VarRef { name, .. } => name.as_str().starts_with("__pre__."),
-        rumoca_core::Expression::Binary { lhs, rhs, .. } => {
-            contains_pre_param_ref(lhs) || contains_pre_param_ref(rhs)
-        }
-        rumoca_core::Expression::Unary { rhs, .. } => contains_pre_param_ref(rhs),
-        rumoca_core::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            branches.iter().any(|(cond, then_expr)| {
-                contains_pre_param_ref(cond) || contains_pre_param_ref(then_expr)
-            }) || contains_pre_param_ref(else_branch)
-        }
-        rumoca_core::Expression::BuiltinCall { args, .. }
-        | rumoca_core::Expression::FunctionCall { args, .. } => {
-            args.iter().any(contains_pre_param_ref)
-        }
-        rumoca_core::Expression::Array { elements, .. }
-        | rumoca_core::Expression::Tuple { elements, .. } => {
-            elements.iter().any(contains_pre_param_ref)
-        }
-        rumoca_core::Expression::Range {
-            start, step, end, ..
-        } => {
-            contains_pre_param_ref(start)
-                || step.as_ref().is_some_and(|s| contains_pre_param_ref(s))
-                || contains_pre_param_ref(end)
-        }
-        rumoca_core::Expression::Index {
-            base, subscripts, ..
-        } => {
-            contains_pre_param_ref(base)
-                || subscripts.iter().any(|sub| match sub {
-                    rumoca_core::Subscript::Expr { expr: e, .. } => contains_pre_param_ref(e),
-                    _ => false,
-                })
-        }
-        rumoca_core::Expression::FieldAccess { base, .. } => contains_pre_param_ref(base),
-        rumoca_core::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-            ..
-        } => {
-            indices
-                .iter()
-                .any(|index| contains_pre_param_ref(&index.range))
-                || contains_pre_param_ref(expr)
-                || filter
-                    .as_ref()
-                    .is_some_and(|cond| contains_pre_param_ref(cond))
-        }
-        rumoca_core::Expression::Literal { value: _, .. }
-        | rumoca_core::Expression::Empty { .. } => false,
-    }
-}
-
-/// Result of compiling a model with diagnostic information.
-#[derive(Debug)]
-struct CompileResult {
-    dae: Dae,
-    states: usize,
-    algebraics: usize,
-    parameters: usize,
-    constants: usize,
-    discrete_reals: usize,
-    discrete_valued: usize,
-    inputs: usize,
-    outputs: usize,
-    f_x_count: usize,
-    balance: i64,
-}
-
-impl CompileResult {
-    fn is_balanced(&self) -> bool {
-        self.balance == 0
-    }
-}
-
-/// Compile a model using Session and return detailed results.
-fn compile(source: &str, model_name: &str) -> Result<CompileResult, String> {
+fn compile(source: &str, model: &str) -> rumoca_compile::compile::CompilationResult {
     let mut session = Session::new(SessionConfig::default());
     session
-        .add_document("test.mo", source)
-        .map_err(|e| format!("Parse/Resolve/Typecheck: {:?}", e))?;
-
-    let result = session
-        .compile_model(model_name)
-        .map_err(|e| format!("Instantiate/Flatten/ToDae: {:?}", e))?;
-
-    let dae = result.dae;
-    Ok(CompileResult {
-        states: dae.variables.states.len(),
-        algebraics: dae.variables.algebraics.len(),
-        parameters: dae.variables.parameters.len(),
-        constants: dae.variables.constants.len(),
-        discrete_reals: dae.variables.discrete_reals.len(),
-        discrete_valued: dae.variables.discrete_valued.len(),
-        inputs: dae.variables.inputs.len(),
-        outputs: dae.variables.outputs.len(),
-        f_x_count: dae.continuous.equations.len(),
-        balance: rumoca_phase_dae::balance::balance(&dae).expect("valid DAE balance fixture"),
-        dae,
-    })
+        .add_document("tiered.mo", source)
+        .expect("fixture parses");
+    session
+        .compile_model(model)
+        .expect("fixture compiles through checked ToDAE")
 }
 
-/// Assert compilation succeeds.
-fn assert_compiles(source: &str, model_name: &str) -> CompileResult {
-    match compile(source, model_name) {
-        Ok(result) => {
-            println!(
-                "{}: states={}, alg={}, params={}, f_x={}, balance={}",
-                model_name,
-                result.states,
-                result.algebraics,
-                result.parameters,
-                result.f_x_count,
-                result.balance
-            );
-            result
-        }
-        Err(e) => panic!("Model {} failed to compile: {}", model_name, e),
-    }
+#[test]
+fn scalar_ode_is_balanced_and_retains_exact_source_provenance() {
+    let result = compile(
+        "model Decay parameter Real k=2; Real x(start=1); equation der(x)=-k*x; end Decay;",
+        "Decay",
+    );
+    assert!(result.balance_detail.is_balanced());
+    result.dae.inspect(|view| {
+        assert_eq!(
+            view.variables()
+                .filter(|(_, variable)| variable.role() == VariableRole::State)
+                .count(),
+            1
+        );
+        assert_eq!(view.continuous_owner_count(), 1);
+        assert!((0..view.expression_count()).any(|index| {
+            let expression = view
+                .expression(
+                    view.expression_id(index)
+                        .expect("dense expression identity"),
+                )
+                .expect("branded expression resolves");
+            view.source_text(expression.provenance()) == Some("k")
+        }));
+    });
 }
 
-/// Assert compilation fails in the expected phase.
-fn assert_fails(source: &str, model_name: &str, expected_phase: &str) {
-    match compile(source, model_name) {
-        Ok(_) => panic!(
-            "Model {} should have failed at {} phase",
-            model_name, expected_phase
-        ),
-        Err(e) => {
-            assert!(
-                e.contains(expected_phase),
-                "Expected {} error, got: {}",
-                expected_phase,
-                e
-            );
-        }
-    }
+#[test]
+fn array_declarations_remain_compact_checked_variables() {
+    let result = compile(
+        "model ArrayModel Real x[3]; equation x={1,2,3}; end ArrayModel;",
+        "ArrayModel",
+    );
+    result.dae.inspect(|view| {
+        let x = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == "x")
+            .map(|(_, variable)| variable)
+            .expect("array variable retained");
+        assert_eq!(x.value_type().dimensions(), &[3]);
+        assert_eq!(x.scalar_count(), 3);
+        assert_eq!(view.continuous_owner_count(), 1);
+    });
 }
 
-// =============================================================================
-// TIER 0: Minimal Models
-// =============================================================================
-// Goal: Verify the basic pipeline works with trivial models.
-
-mod tier_cases;
+#[test]
+fn undefined_reference_fails_before_checked_dae_construction() {
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document(
+            "undefined.mo",
+            "model Undefined Real x; equation x=missing; end Undefined;",
+        )
+        .expect("fixture parses");
+    let error = session
+        .compile_model("Undefined")
+        .expect_err("undefined reference cannot inhabit checked DAE");
+    assert!(error.to_string().contains("unresolved"));
+}

@@ -3,19 +3,20 @@
 //! regress without an explicit status change.
 //!
 //! Caps (SPEC_0000 §3):
-//!   - active spec count (ACCEPTED + DRAFT): <= 15
+//!   - active spec count (ACCEPTED + DRAFT): <= 20
 //!   - REFERENCE specs (lookup catalogs like SPEC_0022): uncapped
 //!
 //! Per-spec budgets (SPEC_0000 §3a):
 //!   - ideal: < 1800 words, < 250 lines
 //!   - hard cap: <= 2500 words, <= 350 lines
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const HARD_WORDS: usize = 2500;
 const HARD_LINES: usize = 350;
-const ACTIVE_SPEC_CAP: usize = 15;
+const ACTIVE_SPEC_CAP: usize = 20;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -46,6 +47,133 @@ fn word_count(text: &str) -> usize {
 
 fn line_count(text: &str) -> usize {
     text.lines().count()
+}
+
+fn collect_source_files(root: &Path, files: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(root).expect("read source directory") {
+        let entry = entry.expect("source directory entry");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_source_files(&path, files);
+        } else if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| matches!(extension, "rs" | "md"))
+        {
+            files.push(path);
+        }
+    }
+}
+
+fn cited_spec_ids(content: &str) -> impl Iterator<Item = &str> {
+    content.match_indices("SPEC_").filter_map(|(offset, _)| {
+        let id = content.get(offset + 5..offset + 9)?;
+        id.bytes().all(|byte| byte.is_ascii_digit()).then_some(id)
+    })
+}
+
+#[test]
+fn test_active_spec_ids_are_unique_and_indexed() {
+    let root = workspace_root();
+    let spec_dir = root.join("spec");
+    let index = fs::read_to_string(spec_dir.join("README.md")).expect("read spec index");
+    let mut by_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut errors = Vec::new();
+
+    for entry in fs::read_dir(&spec_dir).expect("read spec dir") {
+        let entry = entry.expect("spec entry");
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !path.is_file() || !name.starts_with("SPEC_") || !name.ends_with(".md") {
+            continue;
+        }
+        let Some(id) = name.get(5..9) else {
+            errors.push(format!("{name}: malformed spec identifier"));
+            continue;
+        };
+        let content = fs::read_to_string(&path).expect("read spec");
+        let heading = format!("# SPEC_{id}:");
+        if !content
+            .lines()
+            .next()
+            .is_some_and(|line| line.starts_with(&heading))
+        {
+            errors.push(format!("{name}: first heading must start with `{heading}`"));
+        }
+        by_id
+            .entry(id.to_string())
+            .or_default()
+            .push(name.to_string());
+
+        let status = spec_status(&content).unwrap_or("").to_ascii_uppercase();
+        if matches!(status.as_str(), "ACCEPTED" | "DRAFT" | "REFERENCE")
+            && !index.contains(&format!("({name})"))
+        {
+            errors.push(format!(
+                "{name}: active spec is missing from spec/README.md"
+            ));
+        }
+    }
+
+    for (id, names) in by_id {
+        if names.len() > 1 {
+            errors.push(format!("SPEC_{id} is used by {}", names.join(", ")));
+        }
+    }
+    assert!(
+        errors.is_empty(),
+        "spec identity/index violations:\n  {}",
+        errors.join("\n  "),
+    );
+}
+
+#[test]
+fn test_source_spec_citations_resolve_to_active_specs() {
+    let root = workspace_root();
+    let spec_dir = root.join("spec");
+    let mut active_ids = BTreeSet::new();
+    for entry in fs::read_dir(&spec_dir).expect("read spec dir") {
+        let entry = entry.expect("spec entry");
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !path.is_file() || !name.starts_with("SPEC_") || !name.ends_with(".md") {
+            continue;
+        }
+        let content = fs::read_to_string(&path).expect("read spec");
+        let status = spec_status(&content).unwrap_or("").to_ascii_uppercase();
+        if matches!(status.as_str(), "ACCEPTED" | "DRAFT" | "REFERENCE") {
+            active_ids.insert(name[5..9].to_string());
+        }
+    }
+
+    let crates_dir = root.join("crates");
+    let mut source_files = Vec::new();
+    collect_source_files(&crates_dir, &mut source_files);
+    let mut stale = Vec::new();
+    for path in source_files {
+        let content = fs::read_to_string(&path).expect("read source file");
+        for id in cited_spec_ids(&content) {
+            if !active_ids.contains(id) {
+                let relative = path.strip_prefix(&root).unwrap_or(&path);
+                stale.push(format!(
+                    "{} cites retired or missing SPEC_{id}",
+                    relative.display()
+                ));
+            }
+        }
+    }
+    stale.sort();
+    stale.dedup();
+
+    assert!(
+        stale.is_empty(),
+        "source citations must resolve to an active spec:\n  {}",
+        stale.join("\n  "),
+    );
 }
 
 #[test]

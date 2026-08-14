@@ -161,7 +161,7 @@ fn nonlinear_algebraic_refresh_converges_to_true_root() {
         .expect("SteadyModel should compile");
     let solve_model = rumoca_sim::lower_dae_for_simulation(&result.dae, &SimOptions::default())
         .expect("lowering should succeed");
-    let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model).expect("runtime should build");
+    let runtime = rumoca_solver::SolveRuntime::new(&solve_model).expect("runtime should build");
 
     // Settle the algebraics from the steady state x*=4.5, w*=3 (z is the third,
     // nonlinear, solver-y slot).

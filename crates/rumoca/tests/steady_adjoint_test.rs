@@ -4,8 +4,8 @@
 //! Pure-ODE model so `solver_y == states` and the bare reverse VJP is exact.
 
 use rumoca::Compiler;
-use rumoca_eval_solve::ObjectiveGradientReport;
 use rumoca_sim::SimOptions;
+use rumoca_solver::ObjectiveGradientReport;
 
 // Steady state (a=2, b=3, c=1.5, d=0.5):
 //   w* = c/d = 3,  x* = b*c/(a*d) = 4.5

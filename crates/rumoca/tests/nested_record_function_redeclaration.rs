@@ -1,5 +1,6 @@
 //! Regression coverage for nested record-valued function inputs whose inner
-//! record type is supplied by a redeclared package.
+//! record type is supplied by a redeclared package, and for the zero-size array
+//! dimension such a record carries into the Solve pure-call interface.
 
 use rumoca::Compiler;
 
@@ -109,6 +110,62 @@ end P;
         },
     )
     .expect("nested record fixture should simulate");
+    let x_index = simulation
+        .names
+        .iter()
+        .position(|name| name == "x")
+        .expect("simulation should expose state x");
+    let final_x = *simulation.data[x_index]
+        .last()
+        .expect("simulation should contain final x");
+    assert!((final_x - 0.01).abs() < 1.0e-8, "unexpected x: {final_x}");
+}
+
+/// MLS 3.6 §10.3.1 admits a zero-size array dimension, and MLS 3.6 §10.4 admits
+/// the zero-size constructor that fills it. Such a value holds no scalars, so a
+/// Solve pure-call interface holds no leaf for it: the owner's input list, the
+/// call site's packing, and the constructor lowering all have to agree on that
+/// width or the call is rejected as an invalid interface. This is the mechanism
+/// the redeclared-package fixture above trips through its `interfaceMarker[0]`
+/// record field, pinned here without the record and redeclaration layers.
+#[test]
+fn zero_size_array_arguments_occupy_no_pure_call_leaf() {
+    let source = r#"
+package Q
+  function gain
+    input Real markers[0];
+    input Real factor;
+    output Real y;
+  algorithm
+    y := factor;
+  end gain;
+
+  model Probe
+    parameter Real factor = 1.0;
+    Real x(start = 0.0, fixed = true);
+  equation
+    der(x) = Q.gain({}, factor);
+  end Probe;
+end Q;
+"#;
+
+    let compiled = Compiler::new()
+        .model("Q.Probe")
+        .compile_str(source, "zero_size_array_pure_call.mo")
+        .expect("zero-size array fixture should compile");
+
+    rumoca_sim::lower_solve_problem(&compiled.dae)
+        .expect("zero-size array fixture should lower through Solve IR");
+
+    let simulation = rumoca_sim::simulate_dae(
+        &compiled.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 0.01,
+            dt: Some(0.005),
+            ..Default::default()
+        },
+    )
+    .expect("zero-size array fixture should simulate");
     let x_index = simulation
         .names
         .iter()
