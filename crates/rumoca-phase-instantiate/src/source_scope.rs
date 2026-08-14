@@ -26,7 +26,7 @@ pub(super) struct SourceScopeIndex {
 
 #[derive(Debug, Clone)]
 struct SourceScopeRange {
-    file_name: String,
+    source: rumoca_core::SourceId,
     start: u32,
     end: u32,
     scope: ast::QualifiedName,
@@ -56,7 +56,7 @@ impl SourceScopeIndex {
             }
             if has_source_range(&class.location) {
                 self.class_ranges.push(SourceScopeRange {
-                    file_name: class.location.file_name.clone(),
+                    source: class.location.source,
                     start: class.location.start,
                     end: class.location.end,
                     scope: class_scope.clone(),
@@ -97,7 +97,7 @@ impl SourceScopeIndex {
         self.class_ranges
             .iter()
             .filter(|range| {
-                range.file_name == location.file_name
+                range.source == location.source
                     && range.start <= location.start
                     && location.end <= range.end
             })
@@ -112,7 +112,7 @@ impl SourceScopeIndex {
         self.class_ranges
             .iter()
             .filter(|range| {
-                range.file_name == location.file_name
+                range.source == location.source
                     && range.start <= location.start
                     && location.end <= range.end
             })
@@ -122,7 +122,7 @@ impl SourceScopeIndex {
 }
 
 fn has_source_range(location: &Location) -> bool {
-    !location.file_name.is_empty() && location.start < location.end
+    location.has_source()
 }
 
 pub(super) fn component_declaration_source_scope(

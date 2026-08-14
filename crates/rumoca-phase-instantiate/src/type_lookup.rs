@@ -34,11 +34,14 @@ fn predefined_type_id(tree: &ast::ClassTree, name: &str) -> Option<TypeId> {
     tree.type_table.lookup(name)
 }
 
+/// MLS §3.8.3: Integer, Boolean, String, and enumeration components are
+/// discrete-valued by type, independent of any variability prefix. Only `Real`
+/// (and `Clock`, which carries its own clocked semantics) stays continuous.
 fn predefined_type_is_discrete(tree: &ast::ClassTree, type_id: TypeId) -> bool {
     matches!(
         tree.type_table.get(type_id),
         Some(ast::Type::Builtin(
-            ast::BuiltinType::Integer | ast::BuiltinType::Boolean
+            ast::BuiltinType::Integer | ast::BuiltinType::Boolean | ast::BuiltinType::String
         )) | Some(ast::Type::Enumeration(_))
     )
 }

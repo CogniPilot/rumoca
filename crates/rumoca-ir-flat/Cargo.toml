@@ -17,6 +17,7 @@ serde = { workspace = true }
 
 [dev-dependencies]
 rumoca-ir-ast = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true
