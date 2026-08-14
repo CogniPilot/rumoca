@@ -875,6 +875,13 @@ fn build_and_run(model: &str, fixture: &str, driver: &str) -> (String, String) {
     let driver_path = out_dir.join("main.c");
     fs::write(&driver_path, driver).expect("write driver");
     let program = out_dir.join("probe");
+    // The model unit is NOT self-contained: its whole-array moves and fills are
+    // calls into the shared kernel library emitted beside it, so every link of a
+    // generated unit takes both translation units — which is exactly what the
+    // CLI's completion message tells an integrator to do. A link that omits the
+    // library fails on `rumoca_galec_copy_real`/`rumoca_galec_fill_real` for any
+    // fixture holding an array, which is every fixture below.
+    let kernels = out_dir.join(super::cc_support::GALEC_KERNEL_LIBRARY);
     let compile = assurance_c99_cc()
         .arg("-o")
         .arg(&program)
@@ -954,5 +961,328 @@ fn from_quat_shaped_conversion_computes_yaw_pitch_and_roll() {
     assert_eq!(
         stdout, "0.00 0.50 0.00\n0.50 0.00 0.00\n0.00 0.00 0.50\n0.00 1.57 0.00\n",
         "pitch, yaw and roll must each be recovered, gimbal-lock branch included"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Diverted update chains meeting the whole-array move (MLS §11.5 + §12.4.4).
+//
+// The chain-peel fix above emits a branch's element writes in place only when
+// the peeled chain's ROOT is one of two things: the target's own current value,
+// or a generated function-aggregate seed (a dead store analysis mints only
+// after proving every declared element is written first). Any other root is a
+// value the algorithm really assigned to the WHOLE target, which an in-place
+// element sequence cannot stand in for, so the chain is DIVERTED to the
+// aggregate path — the path that materializes the root and the updates together
+// as one tensor loop, `y[i] := (i == k) ? written : root[i]`.
+//
+// That aggregate path is also where the whole-array-move collapse lives: when a
+// projection turns out to be the identity at the loop indices, the assignment
+// is a whole-array copy through the shared kernel library and no loop is built
+// at all. The root guard and the move collapse landed independently, and the
+// coverage corpus produces ZERO diversions, so no test reached the aggregate
+// path through a diverted chain — the one place the two meet.
+//
+// The three fixtures below are that intersection, one per shape:
+//
+//   * `rootOther`     — root is ANOTHER variable's whole value (`y := a` then
+//                       an element write, in one branch);
+//   * `overwriteAfter`— a whole-array overwrite lands MID-branch, between
+//                       element writes, so it both kills the writes before it
+//                       and becomes the root of the writes after it;
+//   * `condThenElem`  — the root is a nested conditional's join value, with
+//                       element writes stacked on top of it.
+//
+// Each asserts the shape (the branch is a loop over the root, not a sequence of
+// in-place stores — i.e. the guard really diverted) AND the executed values. If
+// a shape assertion ever fails, re-derive what the guard now does before
+// touching the expected numbers: the numbers are hand-computed from the
+// Modelica and do not depend on which path lowers it.
+// ---------------------------------------------------------------------------
+
+const ADV_ROOT_OTHER_MODEL: &str = "EmbeddedGalecAdvRootOther";
+
+/// `y := a` (a local the function itself filled) followed by element writes,
+/// inside both branches. The chain peels down to a root that is `a`'s value,
+/// not `y`'s, so the element writes may not run in place: dropping the root
+/// would leave `y` holding the entry seed everywhere the branch does not name.
+const ADV_ROOT_OTHER_FIXTURE: &str = "\
+model EmbeddedGalecAdvRootOther
+  function rootOther
+    input Real u;
+    output Real y[3];
+  protected
+    Real a[3];
+  algorithm
+    a[1] := 1.0;
+    a[2] := 2.0;
+    a[3] := 3.0;
+    if u > 0.5 then
+      y := a;
+      y[2] := 5.0;
+    else
+      y := a;
+      y[1] := 7.0;
+      y[3] := 9.0;
+    end if;
+  end rootOther;
+
+  constant Real samplePeriod = 0.1;
+  input Real u;
+  discrete output Real y1(start = 0.0);
+  discrete output Real y2(start = 0.0);
+  discrete output Real y3(start = 0.0);
+protected
+  discrete Real e[3];
+equation
+  when sample(0.0, samplePeriod) then
+    e = rootOther(u);
+    y1 = e[1];
+    y2 = e[2];
+    y3 = e[3];
+  end when;
+end EmbeddedGalecAdvRootOther;
+";
+
+const ADV_ROOT_OTHER_DRIVER: &str = "\
+#include <stdio.h>
+#include \"EmbeddedGalecAdvRootOther.h\"
+
+static void probe(float u) {
+    EmbeddedGalecAdvRootOtherState state;
+    EmbeddedGalecAdvRootOther_startup(&state);
+    EmbeddedGalecAdvRootOther_recalibrate(&state);
+    state.u = u;
+    EmbeddedGalecAdvRootOther_dostep(&state);
+    printf(\"%.1f %.1f %.1f\\n\", (double)state.y1, (double)state.y2, (double)state.y3);
+}
+
+int main(void) {
+    probe(1.0f);
+    probe(0.0f);
+    return 0;
+}
+";
+
+const ADV_OVERWRITE_AFTER_MODEL: &str = "EmbeddedGalecAdvOverwriteAfter";
+
+/// A whole-array overwrite in the MIDDLE of a branch: `y[1] := 10` is killed by
+/// the `y := b` that follows it, and `y[3] := 30` is a write ON TOP of `b`.
+/// This is the shape where the whole-array move and the diverted element writes
+/// have to be materialized together — the move cannot be collapsed into a
+/// standalone whole-array copy, because the writes stacked on it would then be
+/// applied to the wrong base or dropped. The `else` branch names no whole value
+/// and must still lower as a plain in-place store, keeping both regimes in one
+/// emitted body.
+const ADV_OVERWRITE_AFTER_FIXTURE: &str = "\
+model EmbeddedGalecAdvOverwriteAfter
+  function overwriteAfter
+    input Real u;
+    output Real y[3];
+  protected
+    Real b[3];
+  algorithm
+    b[1] := 100.0;
+    b[2] := 200.0;
+    b[3] := 300.0;
+    y[1] := 1.0;
+    y[2] := 2.0;
+    y[3] := 3.0;
+    if u > 0.5 then
+      y[1] := 10.0;
+      y := b;
+      y[3] := 30.0;
+    else
+      y[2] := 20.0;
+    end if;
+  end overwriteAfter;
+
+  constant Real samplePeriod = 0.1;
+  input Real u;
+  discrete output Real y1(start = 0.0);
+  discrete output Real y2(start = 0.0);
+  discrete output Real y3(start = 0.0);
+protected
+  discrete Real e[3];
+equation
+  when sample(0.0, samplePeriod) then
+    e = overwriteAfter(u);
+    y1 = e[1];
+    y2 = e[2];
+    y3 = e[3];
+  end when;
+end EmbeddedGalecAdvOverwriteAfter;
+";
+
+const ADV_OVERWRITE_AFTER_DRIVER: &str = "\
+#include <stdio.h>
+#include \"EmbeddedGalecAdvOverwriteAfter.h\"
+
+static void probe(float u) {
+    EmbeddedGalecAdvOverwriteAfterState state;
+    EmbeddedGalecAdvOverwriteAfter_startup(&state);
+    EmbeddedGalecAdvOverwriteAfter_recalibrate(&state);
+    state.u = u;
+    EmbeddedGalecAdvOverwriteAfter_dostep(&state);
+    printf(\"%.1f %.1f %.1f\\n\", (double)state.y1, (double)state.y2, (double)state.y3);
+}
+
+int main(void) {
+    probe(1.0f);
+    probe(0.0f);
+    return 0;
+}
+";
+
+const ADV_COND_THEN_ELEM_MODEL: &str = "EmbeddedGalecAdvCondThenElem";
+
+/// A conditional INSIDE a branch, followed by element writes of the same value.
+/// Peeling `y[3] := 33` and `y[2] := 22` stops at the inner conditional's join
+/// value, which is neither the target's current value nor a generated seed, so
+/// the whole branch diverts and the join has to be materialized under the
+/// writes stacked on it. The inner branches disagree only on `y[1]`, so a lost
+/// join shows up as the wrong first component while the other two still look
+/// right.
+const ADV_COND_THEN_ELEM_FIXTURE: &str = "\
+model EmbeddedGalecAdvCondThenElem
+  function condThenElem
+    input Real u;
+    input Real v;
+    output Real y[3];
+  algorithm
+    y[1] := 1.0;
+    y[2] := 2.0;
+    y[3] := 3.0;
+    if u > 0.5 then
+      if v > 0.5 then
+        y[1] := 11.0;
+      else
+        y[1] := 12.0;
+      end if;
+      y[2] := 22.0;
+      y[3] := 33.0;
+    else
+      y[3] := 44.0;
+    end if;
+  end condThenElem;
+
+  constant Real samplePeriod = 0.1;
+  input Real u;
+  input Real v;
+  discrete output Real y1(start = 0.0);
+  discrete output Real y2(start = 0.0);
+  discrete output Real y3(start = 0.0);
+protected
+  discrete Real e[3];
+equation
+  when sample(0.0, samplePeriod) then
+    e = condThenElem(u, v);
+    y1 = e[1];
+    y2 = e[2];
+    y3 = e[3];
+  end when;
+end EmbeddedGalecAdvCondThenElem;
+";
+
+const ADV_COND_THEN_ELEM_DRIVER: &str = "\
+#include <stdio.h>
+#include \"EmbeddedGalecAdvCondThenElem.h\"
+
+static void probe(float u, float v) {
+    EmbeddedGalecAdvCondThenElemState state;
+    EmbeddedGalecAdvCondThenElem_startup(&state);
+    EmbeddedGalecAdvCondThenElem_recalibrate(&state);
+    state.u = u;
+    state.v = v;
+    EmbeddedGalecAdvCondThenElem_dostep(&state);
+    printf(\"%.1f %.1f %.1f\\n\", (double)state.y1, (double)state.y2, (double)state.y3);
+}
+
+int main(void) {
+    probe(1.0f, 1.0f);
+    probe(1.0f, 0.0f);
+    probe(0.0f, 1.0f);
+    return 0;
+}
+";
+
+/// The `then` and `else` halves of an emitted body, split at the outermost
+/// `} else {` the printer emits for a function conditional.
+fn branch_halves<'a>(body: &'a str, function: &str) -> (&'a str, &'a str) {
+    body.split_once("} else {")
+        .unwrap_or_else(|| panic!("`{function}` must emit a two-armed conditional:\n{body}"))
+}
+
+/// A chain whose root is another variable's whole value diverts to the
+/// aggregate path, and the aggregate path computes the right elements.
+#[test]
+fn a_chain_rooted_in_another_value_diverts_and_keeps_that_value() {
+    let (generated, stdout) = build_and_run(
+        ADV_ROOT_OTHER_MODEL,
+        ADV_ROOT_OTHER_FIXTURE,
+        ADV_ROOT_OTHER_DRIVER,
+    );
+    let body = emitted_definition_body(&generated, "rootOther", ADV_ROOT_OTHER_MODEL);
+    let (then_arm, else_arm) = branch_halves(body, "rootOther");
+    for (arm, label) in [(then_arm, "then"), (else_arm, "else")] {
+        assert!(
+            arm.contains("for (") && arm.contains("->a["),
+            "the {label} arm must materialize its root `a` in the aggregate \
+             loop the root guard diverted it to; in-place element stores here \
+             would mean the guard stopped diverting:\n{arm}"
+        );
+    }
+    assert_eq!(
+        stdout, "1.0 5.0 3.0\n7.0 2.0 9.0\n",
+        "`y := a` must survive the element writes stacked on it"
+    );
+}
+
+/// A whole-array overwrite between element writes kills what precedes it and
+/// becomes the root of what follows it.
+#[test]
+fn a_mid_branch_whole_array_overwrite_roots_the_writes_after_it() {
+    let (generated, stdout) = build_and_run(
+        ADV_OVERWRITE_AFTER_MODEL,
+        ADV_OVERWRITE_AFTER_FIXTURE,
+        ADV_OVERWRITE_AFTER_DRIVER,
+    );
+    let body = emitted_definition_body(&generated, "overwriteAfter", ADV_OVERWRITE_AFTER_MODEL);
+    let (then_arm, else_arm) = branch_halves(body, "overwriteAfter");
+    assert!(
+        then_arm.contains("for (") && then_arm.contains("->b["),
+        "the overwritten branch must be one loop over `b`, so the move and the \
+         write stacked on it are materialized together:\n{then_arm}"
+    );
+    assert!(
+        !else_arm.contains("for ("),
+        "the branch that names no whole value keeps its in-place store: the \
+         divert must not spread to chains that never needed it:\n{else_arm}"
+    );
+    assert_eq!(
+        stdout, "100.0 200.0 30.0\n1.0 20.0 3.0\n",
+        "the overwrite must erase `y[1] := 10` and carry `y[3] := 30` on top of `b`"
+    );
+}
+
+/// A nested conditional's join value roots the element writes that follow it.
+#[test]
+fn element_writes_after_a_nested_conditional_keep_its_join() {
+    let (generated, stdout) = build_and_run(
+        ADV_COND_THEN_ELEM_MODEL,
+        ADV_COND_THEN_ELEM_FIXTURE,
+        ADV_COND_THEN_ELEM_DRIVER,
+    );
+    let body = emitted_definition_body(&generated, "condThenElem", ADV_COND_THEN_ELEM_MODEL);
+    let (then_arm, _) = branch_halves(body, "condThenElem");
+    assert!(
+        then_arm.contains("for ("),
+        "a chain rooted in a conditional join must divert to the aggregate \
+         loop that materializes the join:\n{then_arm}"
+    );
+    assert_eq!(
+        stdout, "11.0 22.0 33.0\n12.0 22.0 33.0\n1.0 2.0 44.0\n",
+        "the inner conditional decides `y[1]` and the writes after it must not \
+         erase that decision"
     );
 }
