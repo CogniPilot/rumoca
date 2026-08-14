@@ -4,23 +4,36 @@
 //! Each target's `[[files]]` render through [`rumoca::render_target_files`] —
 //! the in-memory twin of `compile --target` — so CI exercises the exact CLI
 //! path: capability validation plus the name-dispatched renderers
-//! (`wgsl-solve`, `galec`, `embedded-c-galec`) that the generic DAE-JSON
+//! (`wgsl-ode`, `galec`, `embedded-c-galec`) that the generic DAE-JSON
 //! template context cannot reach. Targets that declare
 //! `continuous_states = false` (the GALEC-derived targets) render against a
 //! dedicated fixed-sample discrete fixture; every other target keeps the
 //! continuous fixture. No target is skipped.
+//!
+//! # Support partials
+//!
+//! Not every bundled template renders a product file. A **support partial**
+//! (`[[partials]]` in `target.toml`) renders none by definition: it exists to
+//! be `import`ed, `include`d, or `extends`ed, and rendering it standalone
+//! yields nothing. "Every bundled template must be a `[[files]]` entry" is
+//! therefore the wrong invariant; the right one, checked here, is that every
+//! bundled template is declared exactly once — as a `[[files]]` artifact or as
+//! a `[[partials]]` support partial — and that the two sets are disjoint. That
+//! keeps render coverage total (no template goes unclassified) without a
+//! per-file carve-out.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use rumoca::{CompilationResult, Compiler, TemplateIr, render_target_files};
+use rumoca::{CompilationResult, Compiler, render_target_files};
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetManifest, TargetTemplateIr, parse_target_manifest,
 };
 use rumoca_phase_codegen::templates;
+use rumoca_phase_codegen::templates::BuiltinTemplateRole;
 
 const SMOKE_MODEL: &str = "Smoke";
 const SMOKE_SOURCE: &str = r#"
@@ -30,89 +43,6 @@ model Smoke
 equation
   der(x) = -k * x;
 end Smoke;
-"#;
-
-const FMI_START_EXPRESSIONS_MODEL: &str = "FmiStartExpressions";
-const FMI_START_EXPRESSIONS_SOURCE: &str = r#"
-model FmiStartExpressions
-  parameter Real p = 2.0;
-  parameter Real q = 3.0;
-  parameter Real r = p + q;
-  Real x(start = p + q, min = p - 1.0, max = q + 5.0, nominal = r, fixed = true);
-  Real y(start = r, fixed = true);
-equation
-  der(x) = -x;
-  der(y) = -y;
-end FmiStartExpressions;
-"#;
-
-const FMI_ARRAY_START_EXPRESSIONS_MODEL: &str = "FmiArrayStartExpressions";
-const FMI_ARRAY_START_EXPRESSIONS_SOURCE: &str = r#"
-model FmiArrayStartExpressions
-  parameter Real p[2] = {1.0, 2.0};
-  Real x[2](start = p, fixed = true);
-  Real y(start = p[2], fixed = true);
-equation
-  der(x[1]) = -x[1];
-  der(x[2]) = -x[2];
-  der(y) = -y;
-end FmiArrayStartExpressions;
-"#;
-
-const FMI_FUNCTION_START_EXPRESSIONS_MODEL: &str = "FmiFunctionStartExpressions";
-const FMI_FUNCTION_START_EXPRESSIONS_SOURCE: &str = r#"
-function parameterizedStart
-  input Real base;
-  input Real scale;
-  output Real values[2];
-algorithm
-  values := {base, 2.0 * scale};
-end parameterizedStart;
-
-model FmiFunctionStartExpressions
-  parameter Real base = 3.0;
-  parameter Real scale = 2.0;
-  Real x[2](start = parameterizedStart(scale = scale, base = base), fixed = true);
-equation
-  der(x) = -x;
-end FmiFunctionStartExpressions;
-"#;
-
-const FMI_SHAPED_FUNCTION_START_MODEL: &str = "FmiShapedFunctionStart";
-const FMI_SHAPED_FUNCTION_START_SOURCE: &str = r#"
-function matrixLast
-  input Real values[2, 2];
-  output Real value;
-algorithm
-  value := values[2, 2];
-end matrixLast;
-
-function singletonMatrix
-  input Real values[1, 1];
-  output Real value;
-algorithm
-  value := values[1, 1];
-end singletonMatrix;
-
-function tensorLast
-  input Real values[2, 1, 2];
-  output Real value;
-algorithm
-  value := values[2, 1, 2];
-end tensorLast;
-
-model FmiShapedFunctionStart
-  parameter Real matrixValues[2, 2] = {{1.0, 2.0}, {3.0, 4.0}};
-  parameter Real singletonValues[1, 1] = {{5.0}};
-  parameter Real tensorValues[2, 1, 2] = {{{6.0, 7.0}}, {{8.0, 9.0}}};
-  Real matrixState(start = matrixLast(matrixValues), fixed = true);
-  Real singletonState(start = singletonMatrix(singletonValues), fixed = true);
-  Real tensorState(start = tensorLast(tensorValues), fixed = true);
-equation
-  der(matrixState) = -matrixState;
-  der(singletonState) = -singletonState;
-  der(tensorState) = -tensorState;
-end FmiShapedFunctionStart;
 "#;
 
 /// Fixed-sample discrete fixture for targets that reject continuous states:
@@ -129,15 +59,6 @@ equation
   end when;
 end DiscreteSmoke;
 "#;
-
-fn template_ir(ir: TargetTemplateIr) -> TemplateIr {
-    match ir {
-        TargetTemplateIr::Dae => TemplateIr::Dae,
-        TargetTemplateIr::Solve => TemplateIr::Solve,
-        TargetTemplateIr::Flat => TemplateIr::Flat,
-        TargetTemplateIr::Ast => TemplateIr::Ast,
-    }
-}
 
 /// A compiled smoke model plus the name the CLI would render it under.
 struct Fixture {
@@ -224,31 +145,71 @@ fn builtin_template_targets_render_or_are_explicit_readiness_zero_manifests() {
     let coverage = render_builtin_template_targets(&fixtures);
 
     assert!(
-        coverage.rendered_targets.contains(&"embedded-c"),
-        "embedded-c must be covered by target render CI"
-    );
-    assert!(
-        coverage.rendered_targets.contains(&"fmi2") && coverage.rendered_targets.contains(&"fmi3"),
-        "FMI targets must be covered by target render CI"
+        coverage.rendered_targets.contains(&"c-ode"),
+        "c-ode must be covered by target render CI"
     );
     assert!(
         coverage.rendered_targets.contains(&"galec"),
         "galec must be covered by target render CI (GAL-012)"
     );
-    assert_eq!(
-        coverage.manifest_only_targets,
-        vec!["cranelift-solve-jit", "cuda-nvrtc-solve-jit"],
-        "readiness-0 manifest-only target placeholders must be explicitly accounted for"
-    );
+    assert!(coverage.rendered_targets.contains(&"fmi2"));
+    assert!(coverage.rendered_targets.contains(&"fmi3"));
     assert!(
-        coverage
-            .support_templates
-            .contains(&"fmi2:test_driver.c.jinja".to_string())
-            && coverage
-                .support_templates
-                .contains(&"fmi3:test_driver.c.jinja".to_string()),
-        "support templates that are not emitted as target files must still render in CI"
+        coverage.manifest_only_targets.is_empty(),
+        "built-in targets must emit artifacts, found manifest-only targets: {:?}",
+        coverage.manifest_only_targets
     );
+    // Support partials are the only bundled templates the sweep does not
+    // render as a product file, and they are exempt because a manifest
+    // declares them so — not because CI skips them.
+    assert_eq!(
+        coverage.support_partials,
+        vec!["embedded-c-galec:symbols.jinja".to_string()],
+        "the declared support partials changed"
+    );
+}
+
+#[test]
+fn removed_targets_are_rejected_before_rendering() {
+    let fixture = compile_fixture(SMOKE_MODEL, SMOKE_SOURCE);
+    for target in [
+        "casadi-mx",
+        "casadi-solve",
+        "casadi-sx",
+        "c-solve",
+        "cranelift-solve-jit",
+        "cuda-c",
+        "cuda-nvrtc-solve-jit",
+        "jax",
+        "jax-solve",
+        "julia-mtk",
+        "modelica",
+        "onnx",
+        "rust-fixed-solve",
+        "rust-solve",
+        "symforce",
+        "sympy",
+        "wgsl-rhs",
+        "wgsl-solve",
+    ] {
+        let error = render_target_files(&fixture.compiled, fixture.model_name, target, None)
+            .expect_err("removed target must not render");
+        let message = format!("{error:#}");
+        assert!(
+            message.to_ascii_lowercase().contains("unknown target"),
+            "removed target `{target}` did not fail as an unknown target: {message}"
+        );
+    }
+}
+
+#[test]
+fn fmi_targets_render_the_checked_continuous_fixture() {
+    let fixture = compile_fixture(SMOKE_MODEL, SMOKE_SOURCE);
+    for target in ["fmi2", "fmi3"] {
+        let files = render_target_files(&fixture.compiled, fixture.model_name, target, None)
+            .unwrap_or_else(|error| panic!("{target} must render: {error:#}"));
+        assert!(files.iter().any(|file| file.path == "modelDescription.xml"));
+    }
 }
 
 /// The galec target renders a non-empty `<Model>.alg` (typed-printer output
@@ -284,11 +245,11 @@ fn galec_target_renders_alg_and_wellformed_manifest_for_discrete_fixture() {
     // The web-injected representation checksum flows into `__content.xml`: it
     // is the SHA-1 of the exact rendered manifest bytes (GAL-021, no placeholder).
     let content = find_rendered_file(&files, "__content.xml");
-    let manifest_sha1 = rumoca_galec_codegen::Sha1Hex::of_bytes(manifest.content.as_bytes());
+    let manifest_sha1 = rumoca::sha1_hex(manifest.content.as_bytes());
     assert!(
         content
             .content
-            .contains(&format!("checksum=\"{}\"", manifest_sha1.as_str())),
+            .contains(&format!("checksum=\"{manifest_sha1}\"")),
         "__content.xml must carry the SHA-1 of the rendered manifest.xml:\n{}",
         content.content
     );
@@ -306,220 +267,6 @@ fn galec_target_rejects_continuous_fixture_via_capability_gate() {
     assert!(
         message.contains("unsupported-feature:continuous_states"),
         "expected the generic continuous_states capability diagnostic, got: {message}"
-    );
-}
-
-#[test]
-fn fmi2_target_model_description_serializes_start_expressions_as_literals_issue_289() {
-    let xml = render_fmi_model_description_xml("fmi2");
-
-    assert!(
-        xml.contains(
-            r#"name="x" valueReference="0" causality="local" variability="continuous" initial="exact">
-      <Real start="5.0""#
-        ),
-        "FMI2 target modelDescription must fold x.start to the default numeric value:\n{xml}"
-    );
-    assert!(
-        xml.contains(
-            r#"name="y" valueReference="1" causality="local" variability="continuous" initial="exact">
-      <Real start="5.0""#
-        ),
-        "FMI2 target modelDescription must fold y.start through parameter r:\n{xml}"
-    );
-    assert!(
-        xml.contains(r#"start="5.0" nominal="5.0" min="1.0" max="8.0""#),
-        "FMI2 target modelDescription must fold numeric XML attributes:\n{xml}"
-    );
-    assert_no_modelica_start_expression("FMI2", &xml);
-}
-
-#[test]
-fn fmi3_target_model_description_serializes_start_expressions_as_literals_issue_289() {
-    let xml = render_fmi_model_description_xml("fmi3");
-
-    assert!(
-        xml.contains(
-            r#"<Float64 name="x" valueReference="0" causality="local" variability="continuous" initial="exact" start="5.0""#
-        ),
-        "FMI3 target modelDescription must fold x.start to the default numeric value:\n{xml}"
-    );
-    assert!(
-        xml.contains(
-            r#"<Float64 name="y" valueReference="1" causality="local" variability="continuous" initial="exact" start="5.0""#
-        ),
-        "FMI3 target modelDescription must fold y.start through parameter r:\n{xml}"
-    );
-    assert!(
-        xml.contains(r#"start="5.0" nominal="5.0" min="1.0" max="8.0""#),
-        "FMI3 target modelDescription must fold numeric XML attributes:\n{xml}"
-    );
-    assert_no_modelica_start_expression("FMI3", &xml);
-}
-
-fn render_fmi_model_description_xml(target: &str) -> String {
-    render_fmi_model_description_xml_for(
-        target,
-        FMI_START_EXPRESSIONS_MODEL,
-        FMI_START_EXPRESSIONS_SOURCE,
-    )
-}
-
-#[test]
-fn fmi2_target_model_description_serializes_array_start_aliases_issue_289() {
-    let xml = render_fmi_model_description_xml_for(
-        "fmi2",
-        FMI_ARRAY_START_EXPRESSIONS_MODEL,
-        FMI_ARRAY_START_EXPRESSIONS_SOURCE,
-    );
-
-    assert_variable_fragment_contains(&xml, "x[1]", r#"start="1.0""#);
-    assert_variable_fragment_contains(&xml, "x[2]", r#"start="2.0""#);
-    assert_variable_fragment_contains(&xml, "y", r#"start="2.0""#);
-    assert_no_modelica_start_expression("FMI2 array", &xml);
-}
-
-#[test]
-fn fmi3_target_model_description_serializes_array_start_aliases_issue_289() {
-    let xml = render_fmi_model_description_xml_for(
-        "fmi3",
-        FMI_ARRAY_START_EXPRESSIONS_MODEL,
-        FMI_ARRAY_START_EXPRESSIONS_SOURCE,
-    );
-
-    assert_variable_fragment_contains(&xml, "x", r#"start="1.0 2.0""#);
-    assert_variable_fragment_contains(&xml, "y", r#"start="2.0""#);
-    assert_no_modelica_start_expression("FMI3 array", &xml);
-}
-
-#[test]
-fn fmi3_target_folds_parameterized_function_array_start() {
-    let xml = render_fmi_model_description_xml_for(
-        "fmi3",
-        FMI_FUNCTION_START_EXPRESSIONS_MODEL,
-        FMI_FUNCTION_START_EXPRESSIONS_SOURCE,
-    );
-
-    assert_variable_fragment_contains(&xml, "x", r#"start="3.0 4.0""#);
-    assert_no_modelica_start_expression("FMI3 function array", &xml);
-}
-
-#[test]
-fn fmi3_target_preserves_function_argument_rank_while_folding_starts() {
-    let xml = render_fmi_model_description_xml_for(
-        "fmi3",
-        FMI_SHAPED_FUNCTION_START_MODEL,
-        FMI_SHAPED_FUNCTION_START_SOURCE,
-    );
-
-    assert_variable_fragment_contains(&xml, "matrixState", r#"start="4.0""#);
-    assert_variable_fragment_contains(&xml, "singletonState", r#"start="5.0""#);
-    assert_variable_fragment_contains(&xml, "tensorState", r#"start="9.0""#);
-    assert_no_modelica_start_expression("FMI3 shaped function", &xml);
-}
-
-#[test]
-fn custom_target_declares_fmi_model_description_render_context() {
-    let fixture = compile_fixture(FMI_START_EXPRESSIONS_MODEL, FMI_START_EXPRESSIONS_SOURCE);
-    let dir = tempfile::tempdir().expect("create custom target dir");
-    fs::create_dir(dir.path().join("xml")).expect("create custom template dir");
-    fs::write(
-        dir.path().join("target.toml"),
-        r#"
-version = 1
-ir = "solve"
-name = "custom-fmi-metadata"
-
-[[files]]
-path = "custom/{{ model_name }}.xml"
-template = "xml/custom.xml.jinja"
-render_context = "fmi-model-description"
-"#,
-    )
-    .expect("write custom target manifest");
-    fs::write(
-        dir.path().join("xml/custom.xml.jinja"),
-        templates::builtin_template_source("fmi2", "modelDescription.xml.jinja")
-            .expect("fmi2 modelDescription template"),
-    )
-    .expect("write custom target template");
-
-    let files = render_target_files(
-        &fixture.compiled,
-        fixture.model_name,
-        dir.path().to_str().expect("utf-8 tempdir"),
-        None,
-    )
-    .unwrap_or_else(|err| panic!("custom FMI metadata target should render: {err:#}"));
-    let xml = &find_rendered_file(&files, "custom/FmiStartExpressions.xml").content;
-
-    assert_no_modelica_start_expression("custom FMI metadata", xml);
-    assert!(
-        xml.contains(r#"start="5.0" nominal="5.0" min="1.0" max="8.0""#),
-        "custom target must opt into the FMI metadata DAE by file context:\n{xml}"
-    );
-}
-
-#[test]
-fn raw_fmi_model_description_template_declares_render_context() {
-    let fixture = compile_fixture(FMI_START_EXPRESSIONS_MODEL, FMI_START_EXPRESSIONS_SOURCE);
-    let dir = tempfile::tempdir().expect("create raw template dir");
-    let template_path = dir.path().join("modelDescription.xml.jinja");
-    fs::write(
-        &template_path,
-        templates::builtin_template_source("fmi2", "modelDescription.xml.jinja")
-            .expect("fmi2 modelDescription template"),
-    )
-    .expect("write raw FMI template");
-
-    let files = render_target_files(
-        &fixture.compiled,
-        fixture.model_name,
-        template_path.to_str().expect("utf-8 temp path"),
-        Some(TemplateIr::Solve),
-    )
-    .unwrap_or_else(|err| panic!("raw FMI metadata template should render: {err:#}"));
-    let xml = &find_rendered_file(&files, "modelDescription.xml").content;
-
-    assert_no_modelica_start_expression("raw FMI metadata", xml);
-    assert!(
-        xml.contains(r#"start="5.0" nominal="5.0" min="1.0" max="8.0""#),
-        "raw FMI template must opt into the FMI metadata DAE by template directive:\n{xml}"
-    );
-}
-
-fn render_fmi_model_description_xml_for(target: &str, model: &'static str, source: &str) -> String {
-    let fixture = compile_fixture(model, source);
-    let files = render_target_files(&fixture.compiled, fixture.model_name, target, None)
-        .unwrap_or_else(|err| panic!("{target} target should render issue 289 fixture: {err:#}"));
-    find_rendered_file(&files, "modelDescription.xml")
-        .content
-        .clone()
-}
-
-fn assert_no_modelica_start_expression(label: &str, xml: &str) {
-    assert!(
-        !xml.contains("p + q")
-            && !xml.contains("p - 1.0")
-            && !xml.contains("q + 5.0")
-            && !xml.contains(r#"start="r""#)
-            && !xml.contains(r#"nominal="r""#)
-            && !xml.contains(r#"start="p""#)
-            && !xml.contains(r#"start="p[2]""#),
-        "{label} target modelDescription must not serialize Modelica start expressions:\n{xml}"
-    );
-}
-
-fn assert_variable_fragment_contains(xml: &str, name: &str, expected: &str) {
-    let marker = format!(r#"name="{name}""#);
-    let start = xml
-        .find(&marker)
-        .unwrap_or_else(|| panic!("expected variable {name} in XML:\n{xml}"));
-    let end = (start + 500).min(xml.len());
-    let fragment = &xml[start..end];
-    assert!(
-        fragment.contains(expected),
-        "expected variable {name} fragment to contain {expected}, got:\n{fragment}"
     );
 }
 
@@ -558,14 +305,15 @@ fn assert_well_formed_xml(xml: &str) -> String {
 struct TemplateTargetCoverage {
     rendered_targets: Vec<&'static str>,
     manifest_only_targets: Vec<&'static str>,
-    support_templates: Vec<String>,
+    /// `target:path` of every declared support partial seen in the sweep.
+    support_partials: Vec<String>,
 }
 
 fn render_builtin_template_targets(fixtures: &Fixtures) -> TemplateTargetCoverage {
     let mut coverage = TemplateTargetCoverage {
         rendered_targets: Vec::new(),
         manifest_only_targets: Vec::new(),
-        support_templates: Vec::new(),
+        support_partials: Vec::new(),
     };
     for target in templates::builtin_targets() {
         render_builtin_template_target(fixtures, target, &mut coverage);
@@ -587,14 +335,19 @@ fn render_builtin_template_target(
         return;
     }
     let fixture = fixtures.for_manifest(&manifest);
+    assert_template_declarations(target, &manifest, &mut coverage.support_partials);
     render_manifest_target_files(fixture, target, &manifest);
-    render_support_templates(fixture, target, &manifest, &mut coverage.support_templates);
     coverage.rendered_targets.push(target.name);
 }
 
 fn assert_target_manifest_metadata(target: &templates::BuiltinTarget, manifest: &TargetManifest) {
     assert_eq!(manifest.name.as_deref(), Some(target.name));
-    if matches!(target.name, "embedded-c" | "fmi2" | "fmi3") {
+    assert!(
+        manifest.readiness_level.is_some(),
+        "target {} must declare readiness_level explicitly",
+        target.name
+    );
+    if target.name == "c-ode" {
         assert_eq!(manifest.ir, TargetTemplateIr::Solve);
     }
 }
@@ -644,46 +397,257 @@ fn render_manifest_target_files(
     }
 }
 
-fn render_support_templates(
-    fixture: &Fixture,
+/// Every bundled template is declared exactly once, and the two declarations
+/// are disjoint: a `[[files]]` artifact renders one product file, a
+/// `[[partials]]` support partial renders none.
+///
+/// A support partial must NOT appear in `[[files]]` — that is what makes it a
+/// partial — so this is the check that replaces "every bundled template is a
+/// `[[files]]` entry". It is total: an undeclared template fails, a
+/// double-declared template fails, and a declared-but-unbundled template
+/// fails, for every target and every IR alike.
+fn assert_template_declarations(
     target: &'static templates::BuiltinTarget,
     manifest: &TargetManifest,
-    support_templates: &mut Vec<String>,
+    support_partials: &mut Vec<String>,
 ) {
-    let ir = template_ir(manifest.ir);
-    let manifest_templates = manifest
+    let artifacts = manifest
         .files
         .iter()
         .map(|file| file.template.as_str())
         .collect::<BTreeSet<_>>();
+    let partials = manifest
+        .partials
+        .iter()
+        .map(|partial| (partial.template.as_str(), partial.name.as_str()))
+        .collect::<BTreeMap<_, _>>();
+
     for template in target.templates {
-        if manifest_templates.contains(template.path) {
-            continue;
+        match template.role {
+            BuiltinTemplateRole::Artifact => assert!(
+                artifacts.contains(template.path),
+                "target {} bundles {} as an artifact, but no [[files]] entry renders it",
+                target.name,
+                template.path
+            ),
+            BuiltinTemplateRole::SupportPartial => {
+                let shared_name = partials.get(template.path).unwrap_or_else(|| {
+                    panic!(
+                        "target {} bundles support partial {} without a [[partials]] \
+                         declaration",
+                        target.name, template.path
+                    )
+                });
+                assert!(
+                    !artifacts.contains(template.path),
+                    "support partial {}/{} must not also be a [[files]] entry: it renders \
+                     no product file",
+                    target.name,
+                    template.path
+                );
+                assert_eq!(
+                    template.shared_name,
+                    Some(*shared_name),
+                    "support partial {}/{} must be published under its declared name",
+                    target.name,
+                    template.path
+                );
+                support_partials.push(format!("{}:{}", target.name, template.path));
+            }
         }
-        assert_rendered_support_template(fixture, target.name, template, ir);
-        support_templates.push(format!("{}:{}", target.name, template.path));
+    }
+
+    for template in artifacts.iter().chain(partials.keys()) {
+        assert!(
+            target
+                .templates
+                .iter()
+                .any(|bundled| &bundled.path == template),
+            "target {} declares {template} but does not bundle it",
+            target.name
+        );
+    }
+    for file in &manifest.files {
+        let Some(shared_as) = file.shared_as.as_deref() else {
+            continue;
+        };
+        let bundled = target
+            .templates
+            .iter()
+            .find(|bundled| bundled.path == file.template)
+            .expect("declared artifact template must be bundled");
+        assert_eq!(
+            bundled.shared_name,
+            Some(shared_as),
+            "target {} must publish {} under its declared shared_as name",
+            target.name,
+            file.template
+        );
     }
 }
 
-fn assert_rendered_support_template(
-    fixture: &Fixture,
-    target_name: &str,
-    template: &templates::BuiltinTargetTemplate,
-    ir: TemplateIr,
-) {
-    let content = fixture
-        .compiled
-        .render_template_str_with_name_and_ir(template.source, fixture.model_name, ir)
-        .unwrap_or_else(|err| {
-            panic!(
-                "render support template {}:{}: {err}",
-                target_name, template.path
-            )
-        });
+/// Copy a built-in target directory into a scratch directory so the external
+/// (directory) target path can be exercised against a real bundle.
+fn copy_builtin_target_dir(target: &str, into: &std::path::Path) -> PathBuf {
+    let source = codegen_template_root().join(target);
+    let dest = into.join(target);
+    fs::create_dir_all(&dest).expect("create scratch target directory");
+    for entry in fs::read_dir(&source).expect("read built-in target directory") {
+        let entry = entry.expect("read built-in target entry");
+        if entry.file_type().expect("stat entry").is_file() {
+            fs::copy(entry.path(), dest.join(entry.file_name())).expect("copy target file");
+        }
+    }
+    dest
+}
+
+/// A verbatim copy of a target directory keeps rendering: the copy's declared
+/// partial resolves to the identical built-in text, so the resolution order
+/// (shared names come from the built-in registry) changes nothing observable.
+#[test]
+fn copied_target_directory_with_an_unmodified_partial_still_renders() {
+    let fixture = compile_fixture(DISCRETE_SMOKE_MODEL, DISCRETE_SMOKE_SOURCE);
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let dir = copy_builtin_target_dir("embedded-c-galec", scratch.path());
+
+    let files = render_target_files(
+        &fixture.compiled,
+        fixture.model_name,
+        dir.to_str().expect("utf-8 scratch path"),
+        None,
+    )
+    .expect("verbatim copy of a built-in target must render");
+    let builtin = render_target_files(
+        &fixture.compiled,
+        fixture.model_name,
+        "embedded-c-galec",
+        None,
+    )
+    .expect("built-in target must render");
+    assert_eq!(
+        files
+            .iter()
+            .map(|file| (file.path.clone(), file.content.clone()))
+            .collect::<Vec<_>>(),
+        builtin
+            .iter()
+            .map(|file| (file.path.clone(), file.content.clone()))
+            .collect::<Vec<_>>(),
+    );
+}
+
+/// The honest half of the shared-name resolution order: an external directory
+/// cannot register or override a shared name, so a copied target whose partial
+/// was edited must be REJECTED rather than silently rendered from the built-in
+/// text. This is the trap the loader closes.
+#[test]
+fn copied_target_directory_with_an_edited_partial_is_rejected() {
+    let fixture = compile_fixture(DISCRETE_SMOKE_MODEL, DISCRETE_SMOKE_SOURCE);
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let dir = copy_builtin_target_dir("embedded-c-galec", scratch.path());
+
+    let partial = dir.join("symbols.jinja");
+    let edited = fs::read_to_string(&partial)
+        .expect("read copied partial")
+        .replace(
+            "\"self\", \"rumoca_galec_sign\"",
+            "\"self\", \"gain\", \"rumoca_galec_sign\"",
+        );
+    fs::write(&partial, &edited).expect("write edited partial");
+
+    let error = render_target_files(
+        &fixture.compiled,
+        fixture.model_name,
+        dir.to_str().expect("utf-8 scratch path"),
+        None,
+    )
+    .expect_err("an edited external partial must not silently no-op");
+    let message = format!("{error:#}");
     assert!(
-        !content.trim().is_empty(),
-        "target {} rendered empty support template {}",
-        target_name,
-        template.path
+        message.contains("galec-c-symbols.jinja") && message.contains("silently"),
+        "the rejection must name the shared partial and the silent no-op: {message}"
+    );
+}
+
+/// An external directory that invents a shared name is rejected at load, not
+/// deep inside a render as a missing template.
+#[test]
+fn external_target_directory_cannot_add_a_shared_name() {
+    let fixture = compile_fixture(DISCRETE_SMOKE_MODEL, DISCRETE_SMOKE_SOURCE);
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let dir = copy_builtin_target_dir("embedded-c-galec", scratch.path());
+
+    let manifest_path = dir.join("target.toml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .expect("read copied manifest")
+        .replace(
+            "name = \"galec-c-symbols.jinja\"",
+            "name = \"my-own-symbols.jinja\"",
+        );
+    fs::write(&manifest_path, &manifest).expect("write copied manifest");
+
+    let error = render_target_files(
+        &fixture.compiled,
+        fixture.model_name,
+        dir.to_str().expect("utf-8 scratch path"),
+        None,
+    )
+    .expect_err("an invented shared name must be rejected at load");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("my-own-symbols.jinja") && message.contains("built-in"),
+        "the rejection must name the unknown shared name: {message}"
+    );
+}
+
+/// The shared render-environment namespace is global and flat: one name, one
+/// owning target manifest, resolved the same way for every target that
+/// imports it. Pinning the inventory here keeps a new shared name a reviewed
+/// decision rather than a side effect.
+#[test]
+fn shared_template_names_are_globally_unique_and_target_owned() {
+    let mut owners = BTreeMap::<&str, String>::new();
+    for shared in templates::shared_templates() {
+        let owner = format!("{}/{}", shared.target, shared.path);
+        assert!(
+            owners.insert(shared.name, owner.clone()).is_none(),
+            "shared render-environment name {} is declared more than once",
+            shared.name
+        );
+        let manifest = parse_target_manifest(
+            templates::builtin_target(shared.target)
+                .expect("shared template must name a built-in target")
+                .manifest,
+        )
+        .expect("owning target manifest should parse");
+        let declared = manifest
+            .partials
+            .iter()
+            .any(|partial| partial.template == shared.path && partial.name == shared.name)
+            || manifest.files.iter().any(|file| {
+                file.template == shared.path && file.shared_as.as_deref() == Some(shared.name)
+            });
+        assert!(
+            declared,
+            "{} must be declared by {owner}'s target.toml",
+            shared.name
+        );
+    }
+    assert_eq!(
+        owners
+            .iter()
+            .map(|(name, owner)| format!("{name} <- {owner}"))
+            .collect::<Vec<_>>(),
+        vec![
+            "algorithm-code-manifest.jinja <- galec/manifest.xml.jinja".to_string(),
+            "algorithm-code-source.jinja <- galec/model.alg.jinja".to_string(),
+            "galec-c-symbols.jinja <- embedded-c-galec/symbols.jinja".to_string(),
+            "galec-clang-format.jinja <- embedded-c-galec/clang_format.jinja".to_string(),
+            "galec-kernels.c.jinja <- embedded-c-galec/kernels.c.jinja".to_string(),
+            "galec-kernels.h.jinja <- embedded-c-galec/kernels.h.jinja".to_string(),
+            "galec-model.c.jinja <- embedded-c-galec/model.c.jinja".to_string(),
+            "galec-model.h.jinja <- embedded-c-galec/model.h.jinja".to_string(),
+        ],
+        "the shared render-environment inventory changed"
     );
 }

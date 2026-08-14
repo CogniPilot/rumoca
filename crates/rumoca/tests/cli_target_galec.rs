@@ -4,7 +4,7 @@
 //! Invokes the real binary so the whole chain is exercised: CLI dispatch →
 //! generic capability gate → GALEC projection facade → a product-agnostic
 //! context validated in Rust → jinja templates (the eFMI manifest) plus the
-//! typed GALEC `.alg` printer → the declared-checksum-web `build = "efmu"`
+//! typed GALEC `.alg` view → the declared checksum and `[package]` graph
 //! container packaging.
 //! The galec target claims the "eFMI Algorithm Code export" rung of the
 //! SPEC_0034 conformance ladder, so these tests machine-check that rung:
@@ -27,17 +27,16 @@ use std::process::{Command, Output};
 
 use tempfile::tempdir;
 
-#[path = "galec_cli_support/cli.rs"]
-mod cli_support;
-#[path = "galec_cli_support/container_xml.rs"]
-mod container_xml_support;
-
-use cli_support::{run_compile_target, strip_ansi, write_fixture};
-use container_xml_support::{
+// The `galec_cli_support/` helpers are declared once by the umbrella binary
+// that owns this file (see `suite_galec_fmu.rs`), so the sibling suites share
+// one copy instead of compiling the same file several times per binary.
+use super::cli_support::{run_compile_target, strip_ansi, write_fixture};
+use super::container_xml_support::{
     assert_xsd_rejects, attribute_values, mask_attribute, mask_uuids, move_line_after,
     relative_file_paths, sole_attribute_value, surgically, validate_against_xsd,
     vendored_schemas_dir, without_block, without_line,
 };
+use super::metadata_support::{assert_manifest_id, assert_strict_utc_timestamp};
 
 /// Fixed-sample discrete fixture: a parameter, a `pre()` state, an output,
 /// and one `when sample(...)` clock — the shape the galec target exists for.
@@ -65,8 +64,122 @@ equation
 end GalecCliContinuous;
 ";
 
+const COMPACT_ESTIMATOR_MODEL: &str = "CompactEstimatorCodegen";
+
+/// A small estimator-shaped regression fixture: record-valued state, tensor
+/// fields, one prediction shared by an exhaustive correction choice, and a
+/// multi-output correction result.  Its source stays deliberately compact so
+/// generated-artifact growth measures projection quality, not fixture growth.
+const COMPACT_ESTIMATOR_FIXTURE: &str = r#"
+record CompactEstimate
+  Real position[3];
+  Real covariance[3, 3];
+end CompactEstimate;
+
+function compactPredict
+  input CompactEstimate prior;
+  output CompactEstimate predicted;
+algorithm
+  predicted.position := prior.position;
+  predicted.covariance := prior.covariance;
+end compactPredict;
+
+function compactCorrectPosition
+  input CompactEstimate prior;
+  input Real measurement[3];
+  output CompactEstimate posterior;
+  output Boolean accepted;
+algorithm
+  posterior.position := prior.position;
+  posterior.covariance := prior.covariance;
+  accepted := measurement[1] > -1000.0;
+end compactCorrectPosition;
+
+function compactCorrectVelocity
+  input CompactEstimate prior;
+  input Real measurement[3];
+  output CompactEstimate posterior;
+  output Boolean accepted;
+algorithm
+  posterior.position := prior.position;
+  posterior.covariance := prior.covariance;
+  accepted := measurement[1] > -1000.0;
+end compactCorrectVelocity;
+
+function compactEstimatorStep
+  input CompactEstimate prior;
+  input Real measurement[3];
+  input Boolean positionValid;
+  input Boolean velocityValid;
+  output CompactEstimate posterior;
+  output Boolean accepted;
+protected
+  CompactEstimate predicted;
+algorithm
+  predicted := compactPredict(prior);
+  if positionValid then
+    (posterior, accepted) := compactCorrectPosition(predicted, measurement);
+  elseif velocityValid then
+    (posterior, accepted) := compactCorrectVelocity(predicted, measurement);
+  else
+    posterior.position := predicted.position;
+    posterior.covariance := predicted.covariance;
+    accepted := false;
+  end if;
+end compactEstimatorStep;
+
+model CompactEstimatorCodegen
+  constant Real samplePeriod = 0.01;
+  input Real measurement[3];
+  input Boolean positionValid;
+  input Boolean velocityValid;
+  discrete output Real position[3](each start = 0.0);
+  discrete output Real covariance[3, 3](each start = 0.0);
+  discrete output Boolean accepted(start = false);
+protected
+  discrete CompactEstimate estimate;
+algorithm
+  when sample(0.0, samplePeriod) then
+    estimate.position := pre(position);
+    estimate.covariance := pre(covariance);
+    (estimate, accepted) := compactEstimatorStep(
+      estimate,
+      measurement,
+      positionValid,
+      velocityValid);
+    position := estimate.position;
+    covariance := estimate.covariance;
+  end when;
+end CompactEstimatorCodegen;
+"#;
+
 fn run_compile_target_galec(file: &Path, out_dir: &Path) -> Output {
     run_compile_target(file, "galec", out_dir)
+}
+
+fn has_ordinal_call_temporary(source: &str) -> bool {
+    source
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .filter_map(|token| token.rsplit_once("_call_"))
+        .any(|(_, ordinal)| {
+            !ordinal.is_empty() && ordinal.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn galec_call_site_count(source: &str, function: &str) -> usize {
+    let call = format!("{function}(");
+    source
+        .lines()
+        .filter(|line| line.contains(":=") && line.contains(&call))
+        .count()
+}
+
+fn c_call_site_count(source: &str, function: &str) -> usize {
+    let call = format!("{function}(");
+    source
+        .lines()
+        .filter(|line| line.trim_start().starts_with(&call))
+        .count()
 }
 
 /// One packaged eFMU produced by a real CLI run.
@@ -120,7 +233,7 @@ fn corrupted_algorithm_code_manifest_is_rejected_by_the_xsd() {
     let out_dir = dir.path().join("out");
     let container = build_container(dir.path(), &out_dir);
     let manifest = fs::read_to_string(container.manifest_xml()).expect("read AC manifest");
-    let xsd = vendored_schemas_dir().join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd");
+    let xsd = vendored_schemas_dir("galec").join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd");
 
     // Sanity: the pristine rendered manifest is valid (else the negatives
     // below would be vacuous).
@@ -186,14 +299,14 @@ fn compile_target_galec_emits_schema_valid_efmu_container() {
         "eFMU root must hold exactly __content.xml, schemas/, AlgorithmCode/"
     );
 
-    // schemas/ is the complete vendored Beta-1 tree, byte for byte
-    // (GAL-023; the repository-only README.md is not part of the copies).
-    let mut vendored = relative_file_paths(&vendored_schemas_dir());
-    vendored.remove("README.md");
+    // schemas/ is the complete target-owned Beta-1 asset tree, byte for byte
+    // (GAL-023), including its origin/license README.
+    let schemas = vendored_schemas_dir("galec");
+    let vendored = relative_file_paths(&schemas);
     let emitted = relative_file_paths(&container.root.join("schemas"));
     assert_eq!(emitted, vendored, "schemas/ must mirror the vendored tree");
     for relative in &vendored {
-        let vendored_bytes = fs::read(vendored_schemas_dir().join(relative)).unwrap();
+        let vendored_bytes = fs::read(schemas.join(relative)).unwrap();
         let emitted_bytes = fs::read(container.root.join("schemas").join(relative)).unwrap();
         assert_eq!(
             emitted_bytes, vendored_bytes,
@@ -213,12 +326,12 @@ fn compile_target_galec_emits_schema_valid_efmu_container() {
     // skips schema validation (GAL-012/GAL-021).
     validate_against_xsd(
         &container.content_xml(),
-        &vendored_schemas_dir().join("efmiContainerManifest.xsd"),
+        &vendored_schemas_dir("galec").join("efmiContainerManifest.xsd"),
     )
     .expect("__content.xml must validate against the vendored container XSD");
     validate_against_xsd(
         &container.manifest_xml(),
-        &vendored_schemas_dir().join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd"),
+        &vendored_schemas_dir("galec").join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd"),
     )
     .expect("manifest.xml must validate against the vendored Algorithm Code XSD");
 }
@@ -240,7 +353,7 @@ fn container_checksums_recompute_from_written_bytes() {
     let recorded = sole_attribute_value(&container.content_xml(), "checksum");
     assert_eq!(
         recorded,
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&manifest_bytes).as_str(),
+        rumoca::sha1_hex(&manifest_bytes),
         "__content.xml checksum must be the SHA-1 of the written manifest.xml"
     );
 
@@ -248,7 +361,7 @@ fn container_checksums_recompute_from_written_bytes() {
     let listed = sole_attribute_value(&container.manifest_xml(), "checksum");
     assert_eq!(
         listed,
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&alg_bytes).as_str(),
+        rumoca::sha1_hex(&alg_bytes),
         "manifest.xml File checksum must be the SHA-1 of the written .alg"
     );
 }
@@ -282,18 +395,11 @@ fn container_ids_unique_and_generation_metadata_strict() {
         manifest_ref_id, manifest_id,
         "__content.xml manifestRefId must be the manifest's own root id"
     );
-    rumoca_galec_codegen::ManifestId::parse(&manifest_ref_id)
-        .expect("manifestRefId must be a brace-wrapped UUID");
+    assert_manifest_id(&manifest_ref_id, &container.content_xml());
 
     for path in [container.content_xml(), container.manifest_xml()] {
         let timestamp = sole_attribute_value(&path, "generationDateAndTime");
-        rumoca_galec_codegen::UtcTimestamp::parse(&timestamp).unwrap_or_else(|error| {
-            panic!(
-                "generationDateAndTime `{timestamp}` in {} must match the strict \
-                 UTC pattern: {error}",
-                path.display()
-            )
-        });
+        assert_strict_utc_timestamp(&timestamp, &path);
         let tool = sole_attribute_value(&path, "generationTool");
         assert!(
             tool.starts_with("rumoca "),
@@ -430,7 +536,7 @@ fn rerunning_same_command_replaces_previous_container() {
     let recorded = sole_attribute_value(&second.content_xml(), "checksum");
     assert_eq!(
         recorded,
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&second_manifest).as_str(),
+        rumoca::sha1_hex(&second_manifest),
         "the replaced container's checksum must recompute from its own bytes"
     );
     assert!(second.efmu_zip.is_file(), ".efmu zip must be rebuilt too");
@@ -494,40 +600,41 @@ fn content_name_carries_dotted_source_model_name() {
     let dir = tempdir().expect("tempdir");
     let file = dir.path().join("GalecCliPkg.mo");
     fs::write(&file, NESTED_FIXTURE).expect("write nested fixture");
-    let out_dir = dir.path().join("out");
+    for target in ["galec", "galec-production"] {
+        let out_dir = dir.path().join(target);
+        let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+            .arg("compile")
+            .arg(&file)
+            .arg("--model")
+            .arg("GalecCliPkg.Inner")
+            .arg("--target")
+            .arg(target)
+            .arg("-o")
+            .arg(&out_dir)
+            .output()
+            .unwrap_or_else(|error| panic!("run nested-model {target} compile: {error}"));
+        assert!(
+            output.status.success(),
+            "nested-model {target} compile failed.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
-        .arg("compile")
-        .arg(&file)
-        .arg("--model")
-        .arg("GalecCliPkg.Inner")
-        .arg("--target")
-        .arg("galec")
-        .arg("-o")
-        .arg(&out_dir)
-        .output()
-        .expect("run rumoca compile --model GalecCliPkg.Inner --target galec");
-    assert!(
-        output.status.success(),
-        "nested-model compile failed.\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let root = out_dir.join("GalecCliPkg_Inner");
-    assert!(root.is_dir(), "container directory uses the identifier");
-    assert!(
-        out_dir.join("GalecCliPkg_Inner.efmu").is_file(),
-        ".efmu archive uses the identifier"
-    );
-    // Document order: the root Content element's name comes first, before
-    // the ModelRepresentation entries' names.
-    let names = attribute_values(&root.join("__content.xml"), "name");
-    assert_eq!(
-        names.first().map(String::as_str),
-        Some("GalecCliPkg.Inner"),
-        "Content/@name must be the source model name, got {names:?}"
-    );
+        let root = out_dir.join("GalecCliPkg_Inner");
+        assert!(root.is_dir(), "container directory uses the identifier");
+        assert!(
+            out_dir.join("GalecCliPkg_Inner.efmu").is_file(),
+            ".efmu archive uses the identifier"
+        );
+        // Document order: the root Content element's name comes first, before
+        // the ModelRepresentation entries' names.
+        let names = attribute_values(&root.join("__content.xml"), "name");
+        assert_eq!(
+            names.first().map(String::as_str),
+            Some("GalecCliPkg.Inner"),
+            "{target} Content/@name must be the source model name, got {names:?}"
+        );
+    }
 }
 
 #[test]
@@ -551,6 +658,393 @@ fn compile_target_galec_rejects_continuous_model_with_capability_diagnostic() {
     assert!(
         !out_dir.exists(),
         "capability rejection must happen before the output directory is created"
+    );
+}
+
+/// GAL-036/GAL-037 regression ratchet.  The structural assertions are the
+/// proof obligations; line ceilings are a secondary, reviewable alarm for a
+/// new form of expression or tensor expansion that those obligations do not
+/// yet name.
+#[test]
+fn estimator_projection_preserves_call_cardinality_and_compact_tensors() {
+    let dir = tempdir().expect("tempdir");
+    let file = write_fixture(
+        dir.path(),
+        COMPACT_ESTIMATOR_MODEL,
+        COMPACT_ESTIMATOR_FIXTURE,
+    );
+
+    let galec_out = dir.path().join("galec");
+    let galec_compile = run_compile_target(&file, "galec", &galec_out);
+    assert!(
+        galec_compile.status.success(),
+        "compact GALEC fixture failed:\n{}",
+        String::from_utf8_lossy(&galec_compile.stderr)
+    );
+    let galec_path = galec_out
+        .join(COMPACT_ESTIMATOR_MODEL)
+        .join("AlgorithmCode")
+        .join(format!("{COMPACT_ESTIMATOR_MODEL}.alg"));
+    let galec = fs::read_to_string(&galec_path).expect("read compact GALEC artifact");
+
+    let c_out = dir.path().join("embedded-c-galec");
+    let c_compile = run_compile_target(&file, "embedded-c-galec", &c_out);
+    assert!(
+        c_compile.status.success(),
+        "compact embedded-C fixture failed:\n{}",
+        String::from_utf8_lossy(&c_compile.stderr)
+    );
+    let c_path = c_out.join(format!("{COMPACT_ESTIMATOR_MODEL}.c"));
+    let c = fs::read_to_string(&c_path).expect("read compact generated C artifact");
+
+    assert!(!has_ordinal_call_temporary(&galec), "{galec}");
+    assert!(!has_ordinal_call_temporary(&c), "{c}");
+    for function in [
+        "compactPredict",
+        "compactCorrectPosition",
+        "compactCorrectVelocity",
+        "compactEstimatorStep",
+    ] {
+        assert_eq!(
+            galec_call_site_count(&galec, function),
+            1,
+            "one source call to {function} must remain one GALEC call site:\n{galec}"
+        );
+        assert_eq!(
+            c_call_site_count(&c, function),
+            1,
+            "one GALEC call to {function} must remain one C call site:\n{c}"
+        );
+    }
+    // A whole-tensor move no longer prints a `rumoca_tensor_` loop nest at
+    // all: the projection emits the whole-array assignment directly, and the
+    // C target prints it as a counted call into the shared kernel library.
+    // The bounded-ness evidence is therefore the `INT32_C(count)` kernel
+    // call, not a loop header — and its absence would mean the moves fell
+    // back to some new expanded form this ratchet must catch.
+    assert!(
+        c.contains("rumoca_galec_copy_real(INT32_C("),
+        "tensor moves must lower to counted shared-kernel calls:\n{c}"
+    );
+    let constant_coordinate_assignments = c
+        .lines()
+        .filter(|line| {
+            line.contains("[((int32_t)(")
+                && line.contains(")) - 1] =")
+                && line.split("[((int32_t)(").nth(1).is_some_and(|tail| {
+                    tail.starts_with(|character: char| character.is_ascii_digit())
+                })
+        })
+        .count();
+    assert!(
+        constant_coordinate_assignments <= 36,
+        "constant-coordinate C assignments regressed from the reviewed ceiling: {constant_coordinate_assignments}"
+    );
+    assert!(
+        galec.lines().count() <= 240,
+        "GALEC artifact unexpectedly expanded to {} lines",
+        galec.lines().count()
+    );
+    assert!(
+        c.lines().count() <= 850,
+        "C artifact unexpectedly expanded to {} lines",
+        c.lines().count()
+    );
+    let longest_galec = galec
+        .lines()
+        .max_by_key(|line| line.len())
+        .unwrap_or_default();
+    assert!(
+        longest_galec.len() <= 240,
+        "GALEC artifact contains an expanded {}-byte expression line:\n{longest_galec}",
+        longest_galec.len()
+    );
+    assert!(
+        c.lines().map(str::len).max().unwrap_or_default() <= 240,
+        "C artifact contains an expanded expression line"
+    );
+}
+
+/// The reduced form of the `Vehicles.Rdd2.Controller` integral-reset
+/// rejection.
+///
+/// `held` is a discrete state whose `when` algorithm has one branch that reads
+/// nothing (`held := 0.0`) and one that breaks the loop with `pre(held)`.
+/// The other algorithm is one atomic owner whose second statement reads the
+/// first statement's target, so the checked DAE gives both targets the SAME
+/// `galecStep` call occurrence — exactly the "one owner, several projections"
+/// shape the clock-domain preamble hoists to domain entry. That call reaches
+/// `held` only through the exact causal algebraic alias `aliased = held`, so
+/// hoisting it would evaluate it against the PREVIOUS tick's `held`, and every
+/// assignment of the domain would then be waiting on a hoist that is itself
+/// waiting on `held`.
+const CAUSAL_ALIAS_PREAMBLE_MODEL: &str = "GalecCliCausalAliasPreamble";
+const CAUSAL_ALIAS_PREAMBLE_FIXTURE: &str = "\
+function galecStep
+  input Real value;
+  output Real stepped;
+algorithm
+  stepped := 2.0 * value;
+end galecStep;
+
+model GalecCliCausalAliasPreamble
+  constant Real samplePeriod = 0.1;
+  input Boolean resetState;
+  input Real u;
+  discrete output Real held(start = 0.0, fixed = true);
+  discrete output Real first(start = 0.0, fixed = true);
+  discrete output Real second(start = 0.0, fixed = true);
+  Real aliased;
+equation
+  aliased = held;
+algorithm
+  when sample(0.0, samplePeriod) then
+    first := galecStep(aliased);
+    second := first + 1.0;
+  end when;
+algorithm
+  when sample(0.0, samplePeriod) then
+    if resetState then
+      held := 0.0;
+    else
+      held := pre(held) + u;
+    end if;
+  end when;
+end GalecCliCausalAliasPreamble;
+";
+
+/// The same shape with the alias assembled one array element at a time.
+///
+/// `via[1] = held; via[2] = 0.0;` is a COMPLETE elementwise definition rather
+/// than one whole-variable definition, so an expansion that follows only whole
+/// definitions cannot see that the shared call reaches `held`. This one is not
+/// a rejection but SILENT wrong code: the hoisted call reads the previous
+/// tick's `held`.
+const ELEMENTWISE_ALIAS_PREAMBLE_MODEL: &str = "GalecCliElementwiseAliasPreamble";
+const ELEMENTWISE_ALIAS_PREAMBLE_FIXTURE: &str = "\
+function galecStep
+  input Real value;
+  output Real stepped;
+algorithm
+  stepped := 2.0 * value;
+end galecStep;
+
+model GalecCliElementwiseAliasPreamble
+  constant Real samplePeriod = 0.1;
+  input Boolean resetState;
+  input Real u;
+  discrete output Real held(start = 0.0, fixed = true);
+  discrete output Real first(start = 0.0, fixed = true);
+  discrete output Real second(start = 0.0, fixed = true);
+  Real via[2];
+equation
+  via[1] = held;
+  via[2] = 0.0;
+algorithm
+  when sample(0.0, samplePeriod) then
+    first := galecStep(via[1] + via[2]);
+    second := first + 1.0;
+  end when;
+algorithm
+  when sample(0.0, samplePeriod) then
+    if resetState then
+      held := 0.0;
+    else
+      held := pre(held) + u;
+    end if;
+  end when;
+end GalecCliElementwiseAliasPreamble;
+";
+
+/// A GENUINE coincident-tick cycle: two atomic owners on one clock, each
+/// reading the other's target through an exact causal algebraic alias.
+///
+/// No topological order exists, and none may be invented.
+const ALIAS_CYCLE_MODEL: &str = "GalecCliAliasCycle";
+const ALIAS_CYCLE_FIXTURE: &str = "\
+model GalecCliAliasCycle
+  constant Real samplePeriod = 0.1;
+  discrete output Real a(start = 0.0, fixed = true);
+  discrete output Real b(start = 0.0, fixed = true);
+  Real viaA;
+  Real viaB;
+equation
+  viaA = a;
+  viaB = b;
+algorithm
+  when sample(0.0, samplePeriod) then
+    a := viaB + 1.0;
+  end when;
+algorithm
+  when sample(0.0, samplePeriod) then
+    b := viaA + 2.0;
+  end when;
+end GalecCliAliasCycle;
+";
+
+/// The same genuine cycle carried by a complete ELEMENTWISE alias array, which
+/// only a scalar-complete read expansion can see.
+const ELEMENTWISE_ALIAS_CYCLE_MODEL: &str = "GalecCliElementwiseAliasCycle";
+const ELEMENTWISE_ALIAS_CYCLE_FIXTURE: &str = "\
+model GalecCliElementwiseAliasCycle
+  constant Real samplePeriod = 0.1;
+  discrete output Real a(start = 0.0, fixed = true);
+  discrete output Real b(start = 0.0, fixed = true);
+  Real via[2];
+equation
+  via[1] = a;
+  via[2] = b;
+algorithm
+  when sample(0.0, samplePeriod) then
+    a := via[2] + 1.0;
+  end when;
+algorithm
+  when sample(0.0, samplePeriod) then
+    b := via[1] + 2.0;
+  end when;
+end GalecCliElementwiseAliasCycle;
+";
+
+/// Compile one inline fixture with `--target galec` and return the emitted
+/// `.alg` body, failing loudly with the CLI diagnostic on rejection.
+fn projected_alg(model: &str, fixture: &str) -> String {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let file = write_fixture(dir.path(), model, fixture);
+    let output = run_compile_target_galec(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "`compile --target galec` rejected `{model}` (status {:?}).\nstderr:\n{}",
+        output.status.code(),
+        strip_ansi(&String::from_utf8_lossy(&output.stderr))
+    );
+    fs::read_to_string(
+        out_dir
+            .join(model)
+            .join("AlgorithmCode")
+            .join(format!("{model}.alg")),
+    )
+    .expect("read projected GALEC")
+}
+
+/// Compile one inline fixture expected to be rejected and return the plain
+/// stderr diagnostic.
+fn projection_rejection(model: &str, fixture: &str) -> String {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let file = write_fixture(dir.path(), model, fixture);
+    let output = run_compile_target_galec(&file, &out_dir);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        !output.status.success(),
+        "`{model}` must be rejected, but the projection succeeded.\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    stderr
+}
+
+/// The `DoStep` body of a projected `.alg`, so ordering assertions cannot be
+/// satisfied by the `Startup` initializers that assign the same names.
+fn do_step_body(alg: &str) -> Vec<&str> {
+    let mut lines = alg
+        .lines()
+        .skip_while(|line| line.trim() != "method DoStep");
+    lines
+        .by_ref()
+        .position(|line| line.trim() == "algorithm")
+        .expect("projected DoStep has an algorithm section");
+    lines
+        .take_while(|line| line.trim() != "end DoStep;")
+        .collect()
+}
+
+/// Index of the first `DoStep` line assigning `self.<name>`.
+fn assignment_line(body: &[&str], name: &str) -> usize {
+    let needle = format!("self.{name} :=");
+    body.iter()
+        .position(|line| line.trim_start().starts_with(&needle))
+        .unwrap_or_else(|| panic!("projected DoStep assigns `{name}`:\n{}", body.join("\n")))
+}
+
+/// A discrete state reached only through a causal algebraic alias still
+/// schedules before its readers, and the shared call that reads it is NOT
+/// hoisted to domain entry.
+///
+/// The pre-fix projection rejected this model with
+/// `unsupported-feature:clock-domain-cycle`.
+#[test]
+fn causal_alias_of_discrete_state_keeps_its_shared_call_at_the_use_site() {
+    let alg = projected_alg(CAUSAL_ALIAS_PREAMBLE_MODEL, CAUSAL_ALIAS_PREAMBLE_FIXTURE);
+    let body = do_step_body(&alg);
+    let held = assignment_line(&body, "held");
+    assert!(
+        held < assignment_line(&body, "first") && held < assignment_line(&body, "second"),
+        "`held` must be assigned before both readers of its alias:\n{alg}"
+    );
+    let first_call = body
+        .iter()
+        .position(|line| line.contains("galecStep("))
+        .expect("projected DoStep calls galecStep");
+    assert!(
+        held < first_call,
+        "no call reading `held` may be hoisted ahead of its update:\n{alg}"
+    );
+}
+
+/// The same guarantee when the alias is a complete ELEMENTWISE array
+/// definition, which a whole-variable-only expansion cannot see through.
+///
+/// The pre-fix projection accepted this model and hoisted `galecStep` to
+/// domain entry, so the call read the PREVIOUS tick's `held`.
+#[test]
+fn elementwise_alias_of_discrete_state_keeps_its_shared_call_at_the_use_site() {
+    let alg = projected_alg(
+        ELEMENTWISE_ALIAS_PREAMBLE_MODEL,
+        ELEMENTWISE_ALIAS_PREAMBLE_FIXTURE,
+    );
+    let body = do_step_body(&alg);
+    let held = assignment_line(&body, "held");
+    assert!(
+        held < assignment_line(&body, "first") && held < assignment_line(&body, "second"),
+        "`held` must be assigned before both readers of its elementwise alias:\n{alg}"
+    );
+    let first_call = body
+        .iter()
+        .position(|line| line.contains("galecStep("))
+        .expect("projected DoStep calls galecStep");
+    assert!(
+        held < first_call,
+        "no call reading `held` may be hoisted ahead of its update:\n{alg}"
+    );
+}
+
+/// A genuine coincident-tick cycle is still rejected, and no order is
+/// invented for it.
+#[test]
+fn genuine_coincident_tick_cycle_is_still_rejected() {
+    let stderr = projection_rejection(ALIAS_CYCLE_MODEL, ALIAS_CYCLE_FIXTURE);
+    assert!(
+        stderr.contains("unsupported-feature:clock-domain-cycle"),
+        "a real same-tick cycle must fail closed with the clock-domain-cycle feature id:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("coincident-tick"),
+        "the diagnostic must name the coincident-tick dependency:\n{stderr}"
+    );
+}
+
+/// A genuine cycle carried by a complete elementwise alias array is rejected
+/// too — the scalar-complete read expansion must not lose that edge and let
+/// the scheduler invent an order among simultaneous assignments.
+#[test]
+fn genuine_elementwise_alias_cycle_is_still_rejected() {
+    let stderr = projection_rejection(
+        ELEMENTWISE_ALIAS_CYCLE_MODEL,
+        ELEMENTWISE_ALIAS_CYCLE_FIXTURE,
+    );
+    assert!(
+        stderr.contains("unsupported-feature:clock-domain-cycle"),
+        "an elementwise-alias cycle must fail closed, not be scheduled:\n{stderr}"
     );
 }
 
