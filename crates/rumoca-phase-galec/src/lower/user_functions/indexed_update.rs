@@ -180,22 +180,40 @@ fn writes_read_only_untouched_elements<'dae>(
     // `writes` runs outermost first, so reversing walks them in the order the
     // emitted statements execute — which is the order storage changes in.
     for (value, subscripts) in chain.writes.iter().rev() {
-        if written.touched_anything() {
-            if reads_replayed_storage(view, target, chain.root, *value, &written) {
-                return false;
-            }
-            // A computed subscript is evaluated against the same storage the
-            // values are, so it owes the same proof.
-            for subscript in subscripts.iter() {
-                let dae::SubscriptView::Index { expression, .. } = subscript else {
-                    return false;
-                };
-                if reads_replayed_storage(view, target, chain.root, expression, &written) {
-                    return false;
-                }
-            }
+        // Nothing is owed before the first write, where storage still holds
+        // exactly the root.
+        if written.touched_anything()
+            && !write_reads_untouched_storage(view, target, chain, *value, *subscripts, &written)
+        {
+            return false;
         }
         written.record(literal_coordinates(view, *subscripts));
+    }
+    true
+}
+
+/// Whether one write's value and computed subscripts both read only storage the
+/// replay has not already changed.
+fn write_reads_untouched_storage<'dae>(
+    view: dae::DaeView<'dae>,
+    target: dae::FunctionValueView<'dae>,
+    chain: &IndexedUpdateChain<'dae>,
+    value: dae::ExprId<'dae>,
+    subscripts: dae::SubscriptsView<'dae>,
+    written: &WrittenElements,
+) -> bool {
+    if reads_replayed_storage(view, target, chain.root, value, written) {
+        return false;
+    }
+    // A computed subscript is evaluated against the same storage the values
+    // are, so it owes the same proof.
+    for subscript in subscripts.iter() {
+        let dae::SubscriptView::Index { expression, .. } = subscript else {
+            return false;
+        };
+        if reads_replayed_storage(view, target, chain.root, expression, written) {
+            return false;
+        }
     }
     true
 }

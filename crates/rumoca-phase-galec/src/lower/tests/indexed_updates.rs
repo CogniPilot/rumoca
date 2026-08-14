@@ -351,16 +351,16 @@ fn is_whole_target_loop(statement: Option<&gast::Spanned<gast::Statement>>, exte
 /// assignment that the element writes cannot stand in for, so the chain is
 /// diverted to the aggregate path and lowers as one loop over the whole target.
 ///
-/// * `nested`     — four writes stacked into ONE definition. Every one must
-///                  survive; replaying only the outermost is the erasure the
-///                  chain-peel fix removed.
+/// * `nested` — four writes stacked into ONE definition. Every one must
+///   survive; replaying only the outermost is the erasure the chain-peel fix
+///   removed.
 /// * `sequential` — the same four writes as four definitions. Same result, so
-///                  the peel does not depend on how the definitions are cut.
-/// * `conditional`— a write stacked on a conditional's join value. The join is
-///                  neither the target's value nor a seed, so the chain
-///                  diverts: no in-place writes, one whole-target loop.
-/// * `fresh`      — a write stacked on a fresh array literal. Emitting the
-///                  write alone would drop the literal, so this diverts too.
+///   the peel does not depend on how the definitions are cut.
+/// * `conditional` — a write stacked on a conditional's join value. The join
+///   is neither the target's value nor a seed, so the chain diverts: no
+///   in-place writes, one whole-target loop.
+/// * `fresh` — a write stacked on a fresh array literal. Emitting the write
+///   alone would drop the literal, so this diverts too.
 #[test]
 fn function_array_updates_preserve_nested_writes_without_replaying_prior_definitions() {
     let mut sources = SourceMap::new();
