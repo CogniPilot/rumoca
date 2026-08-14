@@ -4,7 +4,7 @@
 //! structural/lowering phases. It must stay free of DAE evaluation and phase
 //! logic.
 
-// SPEC_0021 file-size exception - split plan: extract the Solve program validation and invariant checks into ir-solve/src/program_checks.rs, leaving this file as the module facade and re-exports; tracked as RDD2/GALEC cleanup debt (dev/2026-08-11 remediation note).
+// SPEC_0021 file-size exception - split plan: extract the Solve program validation and invariant checks into ir-solve/src/program_checks.rs, leaving this file as the module facade and re-exports; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 
 mod certificate;
 #[cfg(test)]

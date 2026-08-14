@@ -168,7 +168,7 @@ pub(crate) struct VerifyMslParityArgs {
     /// Per-model compile/simulation worker resident-plus-swap ceiling in MB
     #[arg(long)]
     model_worker_memory_mb: Option<usize>,
-    /// Simulation worker count (default: stage parallelism, memory-capped)
+    /// Simulation worker count (default: at most four, memory-capped)
     #[arg(long)]
     sim_parallelism: Option<usize>,
     /// Per-sim-worker address-space cap in MB

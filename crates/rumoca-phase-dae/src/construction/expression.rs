@@ -1,4 +1,4 @@
-// SPEC_0021 file-size exception - split plan: extract array/comprehension and subscript expression lowering into construction/expression/arrays.rs alongside the existing calls and operators submodules; tracked as RDD2/GALEC cleanup debt (dev/2026-08-11 remediation note).
+// SPEC_0021 file-size exception - split plan: extract array/comprehension and subscript expression lowering into construction/expression/arrays.rs alongside the existing calls and operators submodules; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 
 use super::*;
 

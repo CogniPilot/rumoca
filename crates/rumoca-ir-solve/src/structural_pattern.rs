@@ -1,4 +1,4 @@
-// SPEC_0021 file-size exception - split plan: split the derivation walk by construction owner (scalar-JVP derivation into structural_pattern/scalar_jvp.rs, seed/output dependency derivation into structural_pattern/dependency.rs, wire records into structural_pattern/wire.rs), leaving construction + provenance here; tracked as the pattern-authority follow-up slice (dev/2026-08-11 remediation note).
+// SPEC_0021 file-size exception - split plan: split the derivation walk by construction owner (scalar-JVP derivation into structural_pattern/scalar_jvp.rs, seed/output dependency derivation into structural_pattern/dependency.rs, wire records into structural_pattern/wire.rs), leaving construction + provenance here; tracked as the pattern-authority follow-up slice (SPEC_0021 follow-up).
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 

@@ -1,4 +1,4 @@
-// SPEC_0021 file-size exception - split plan: extract wire record decoding (Deserialize impls and rehydration) into model/wire/decode.rs, leaving serialization and the module facade here; tracked as RDD2/GALEC cleanup debt (dev/2026-08-11 remediation note).
+// SPEC_0021 file-size exception - split plan: extract wire record decoding (Deserialize impls and rehydration) into model/wire/decode.rs, leaving serialization and the module facade here; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 
 mod equation_systems;
 mod expression_wire;

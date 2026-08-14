@@ -2,7 +2,7 @@
 //!
 //! This is the structural half of the SPEC_0040 `SOLVE-C57`
 //! `ClockPartitionTransactionProgram` design
-//! (`dev/2026-08-11-clock-partition-transaction-design.md` §2/§6 step 3),
+//! (SPEC_0046 §2/§6 step 3),
 //! implemented toward the SPEC_0046 SDO-001/SDO-002 semantics: inside one
 //! event/clock tick an ordinary same-instant read consumes this tick's value
 //! (`next`), and only an explicit `pre`, `previous`, or `sample(u)` consumes

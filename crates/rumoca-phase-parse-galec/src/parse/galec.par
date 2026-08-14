@@ -1,6 +1,6 @@
 %start block
 %title "GALEC grammar (eFMI 1.0.0 Beta 1, §3.2)"
-%comment "GALEC for parol 4.2.2; encodes the normative G-x.y EBNF. See dev/galec/map/efmi-galec-language.md"
+%comment "GALEC for parol 4.2.2; encodes the normative G-x.y EBNF. See spec/SPEC_0034_GALEC_EFMI_EXPORT.md"
 %block_comment "/\*" "\*/"
 %t_type crate::parse::token::ParserToken
 %nt_type block                = rumoca_ir_galec::ast::Block

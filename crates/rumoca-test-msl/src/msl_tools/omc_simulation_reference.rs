@@ -1,14 +1,16 @@
+use super::band_table::{TraceExitKind, TraceExitRecord};
 use super::common::{
     AUTO_WORKERS_DEFAULT, BATCH_SIZE_OMC_SIMULATION_DEFAULT, BATCH_TIMEOUT_SECONDS_DEFAULT,
     BatchElapsedStats, BatchTimingDetail, MSL_VERSION, MslPaths, OMC_THREADS_DEFAULT,
-    SIM_STOP_TIME_DEFAULT, choose_effective_batch_size, get_git_commit, get_omc_version,
-    has_fatal_omc_error, load_target_models, msl_load_lines, round3, summarize_batch_timings,
+    SIM_STOP_TIME_DEFAULT, TRACE_EXCLUSIONS_FILE_REL, choose_effective_batch_size, get_git_commit,
+    get_omc_version, git_worktree_is_dirty, has_fatal_omc_error, load_target_models,
+    load_trace_exclusions_file, msl_load_lines, round3, summarize_batch_timings,
     summarize_omc_error, unix_timestamp_seconds, write_pretty_json,
 };
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use rumoca_sim::sim_trace_compare::{
-    ModelDeviationMetric, SimTrace, compare_model_traces, load_trace_json,
+    ModelDeviationMetric, SimTrace, TraceCompareError, compare_model_traces, load_trace_json,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -23,6 +25,7 @@ use std::time::{Duration, Instant};
 
 mod omc_session;
 mod output;
+mod retry_policy;
 mod runtime;
 mod speed_report;
 mod state_selection;
@@ -32,16 +35,12 @@ use omc_session::{OmcEvalError, OmcSession, OmcSimOutcome};
 use output::{
     build_sim_output_payload, compute_trace_output_summary, print_summary, write_trace_report,
 };
+use retry_policy::{carry_failed_attempts, omc_failure_retry_budget};
 use runtime::{
     attach_rumoca_runtime, ensure_target_placeholders, load_rumoca_runtime,
     path_for_rumoca_results, select_omc_simulation_models,
 };
 use state_selection::StateSelectionMetric;
-
-const DEFAULT_TRACE_EXCLUSIONS_FILE_REL: &str =
-    "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json";
-const STOCHASTIC_TRACE_EXCLUSION_REASON: &str =
-    "stochastic random-input model; skipped until generator + seed parity is implemented";
 
 #[derive(Debug, Clone, ClapArgs)]
 pub struct Args {
@@ -121,6 +120,12 @@ struct SimModelResult {
     rumoca_sim_wall_seconds: Option<f64>,
     rumoca_trace_file: Option<String>,
     rumoca_trace_error: Option<String>,
+    /// How many consecutive OMC runs produced this failure. A failure is only
+    /// cached (i.e. stops being retried) once it has reproduced enough times to
+    /// be believable; see [`omc_failure_retry_budget`]. Always `0` for a
+    /// success, so a model that starts passing resets its history.
+    #[serde(default)]
+    failed_attempts: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -134,11 +139,20 @@ struct SimRunState {
     pending_models: Vec<String>,
 }
 
+/// Every candidate the comparator handled: compared, or recorded under the map
+/// that names *which boundary* stopped the comparison.
+///
+/// The two absence maps carry [`TraceExitRecord`]s rather than bare strings: a
+/// `skipped` model is either a tracked policy exclusion or a comparator failure,
+/// and a `missing_trace` model is either our gap or OMC's. Both distinctions are
+/// only knowable here, so they are decided here and written down, instead of
+/// being re-guessed downstream from the wording of a reason string.
 #[derive(Debug, Clone, Default)]
 struct TraceQuantification {
     models: BTreeMap<String, TraceModelMetric>,
-    missing_trace: BTreeMap<String, String>,
-    skipped: BTreeMap<String, String>,
+    missing_trace: BTreeMap<String, TraceExitRecord>,
+    skipped: BTreeMap<String, TraceExitRecord>,
+    trace_nonidentifiable: BTreeMap<String, TraceExitRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -164,7 +178,7 @@ struct ModelSelection {
     selection_seconds: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct RumocaRuntime {
     status: String,
     ic_status: Option<String>,
@@ -237,6 +251,8 @@ struct TraceOutputSummary {
     models_compared: usize,
     missing_trace_models: usize,
     skipped_models: usize,
+    policy_excluded_models: usize,
+    trace_nonidentifiable_models: usize,
     agreement_high: usize,
     agreement_minor: usize,
     agreement_deviation: usize,
@@ -273,8 +289,10 @@ struct InitialConditionSummary {
     models_compared: usize,
     models_with_accurate_initial_conditions: usize,
     models_with_initial_condition_deviation: usize,
+    models_with_unmeasured_initial_conditions: usize,
     accurate_initial_conditions_percent: f64,
     models_with_initial_condition_deviation_percent: f64,
+    models_with_unmeasured_initial_conditions_percent: f64,
     total_channels_compared: usize,
     high_channels_total: usize,
     near_channels_total: usize,
@@ -786,7 +804,9 @@ fn run_session_pending(
             timed_out: outcome.timed_out,
             skipped: false,
         });
-        state.all_results.insert(outcome.model, outcome.result);
+        let mut result = outcome.result;
+        carry_failed_attempts(&mut result, state.all_results.get(&outcome.model));
+        state.all_results.insert(outcome.model, result);
         if completed.is_multiple_of(25) || completed == total {
             println!("  OMC session progress: {completed}/{total} models");
         }
@@ -965,6 +985,7 @@ fn empty_omc_result() -> SimModelResult {
         rumoca_sim_wall_seconds: None,
         rumoca_trace_file: None,
         rumoca_trace_error: None,
+        failed_attempts: 0,
     }
 }
 
@@ -1010,6 +1031,14 @@ fn omc_assertion_failure_lines(error_text: &str) -> Vec<String> {
 
 fn ensure_omc_trace_artifacts(paths: &MslPaths, results: &mut BTreeMap<String, SimModelResult>) {
     for (model_name, result) in results {
+        if result.status != "success" {
+            result.trace_file = None;
+            result.trace_error = Some(format!(
+                "OMC attempt status `{}` is not eligible for trace provenance",
+                result.status
+            ));
+            continue;
+        }
         if !omc_result_can_produce_trace(result)
             || omc_trace_artifact_exists(paths, model_name, result)
         {
@@ -1032,7 +1061,9 @@ fn cached_omc_result_is_reusable(
     result: &SimModelResult,
 ) -> bool {
     match result.status.as_str() {
-        "error" | "timeout" => true,
+        // A failure is only believable once it has reproduced: reusing it after a
+        // single transient run permanently drops the model from the parity set.
+        "error" | "timeout" => result.failed_attempts >= omc_failure_retry_budget(result),
         "success" => cached_omc_success_has_trace_source(paths, model_name, result),
         _ => false,
     }
@@ -1048,26 +1079,27 @@ fn cached_omc_success_has_trace_source(
 }
 
 fn omc_result_can_produce_trace(result: &SimModelResult) -> bool {
-    result.status == "success" || result.result_file.is_some() || result.trace_file.is_some()
+    result.status == "success" && (result.result_file.is_some() || result.trace_file.is_some())
 }
 
-fn omc_model_is_trace_candidate(result: &SimModelResult) -> bool {
-    result.rumoca_status.as_deref() == Some("sim_ok") && omc_result_can_produce_trace(result)
+fn rumoca_model_is_trace_candidate(result: &SimModelResult) -> bool {
+    result.rumoca_status.as_deref() == Some("sim_ok")
 }
 
 fn resolve_declared_omc_trace_path(
     paths: &MslPaths,
-    model_name: &str,
+    _model_name: &str,
     model: &SimModelResult,
 ) -> Option<PathBuf> {
-    if let Some(trace_file) = model.trace_file.as_ref() {
-        let path = PathBuf::from(trace_file);
-        if path.is_absolute() {
-            return Some(path);
-        }
-        return Some(paths.results_dir.join(path));
+    if model.status != "success" {
+        return None;
     }
-    Some(paths.omc_trace_dir.join(format!("{model_name}.json")))
+    let trace_file = model.trace_file.as_ref()?;
+    let path = PathBuf::from(trace_file);
+    if path.is_absolute() {
+        return Some(path);
+    }
+    Some(paths.results_dir.join(path))
 }
 
 fn write_omc_trace_artifact(
@@ -1159,6 +1191,7 @@ fn load_omc_csv_trace(model_name: &str, csv_path: &Path) -> Result<SimTrace> {
         names,
         data,
         variable_meta: None,
+        certification_profile: None,
     })
 }
 
@@ -1230,6 +1263,9 @@ fn merge_cached_results_for_resume(
     Ok(())
 }
 fn hydrate_omc_fields_from_cached(current: &mut SimModelResult, cached: &SimModelResult) {
+    if current.failed_attempts == 0 {
+        current.failed_attempts = cached.failed_attempts;
+    }
     if current.error.is_none() {
         current.error = cached.error.clone();
     }
@@ -1252,8 +1288,14 @@ fn hydrate_omc_fields_from_cached(current: &mut SimModelResult, cached: &SimMode
         current.trace_error = cached.trace_error.clone();
     }
 }
+/// Load the tracked exclusion list, model name -> that entry's own reason.
+///
+/// The reason is per entry, not a shared constant: the comparator writes it into
+/// `sim_trace_comparison.json` and the band table records it as the reason a
+/// cohort model is absent, so one constant covering every entry would publish a
+/// false rationale the moment a non-stochastic model is excluded.
 fn load_trace_exclusions(args: &Args, paths: &MslPaths) -> Result<BTreeMap<String, String>> {
-    let default_file = paths.repo_root.join(DEFAULT_TRACE_EXCLUSIONS_FILE_REL);
+    let default_file = paths.repo_root.join(TRACE_EXCLUSIONS_FILE_REL);
     let file = args
         .trace_exclusions_file
         .clone()
@@ -1262,19 +1304,10 @@ fn load_trace_exclusions(args: &Args, paths: &MslPaths) -> Result<BTreeMap<Strin
     if !file.is_file() {
         return Ok(BTreeMap::new());
     }
-    let names = load_target_models(&file).with_context(|| {
-        format!(
-            "failed to load trace exclusions model list from '{}'",
-            file.display()
-        )
-    })?;
-    if names.is_empty() {
+    let exclusions = load_trace_exclusions_file(&file)?;
+    if exclusions.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let exclusions = names
-        .into_iter()
-        .map(|name| (name, STOCHASTIC_TRACE_EXCLUSION_REASON.to_string()))
-        .collect::<BTreeMap<_, _>>();
     println!(
         "Trace comparison exclusions loaded: {} model(s) from {}",
         exclusions.len(),
@@ -1290,94 +1323,147 @@ fn quantify_trace_differences(
 ) -> Result<TraceQuantification> {
     let mut report = TraceQuantification::default();
     for (model_name, omc_model) in all_results {
-        if !omc_model_is_trace_candidate(omc_model) {
+        if !rumoca_model_is_trace_candidate(omc_model) {
             continue;
         }
-        if let Some(reason) = trace_exclusions.get(model_name) {
-            report.skipped.insert(model_name.clone(), reason.clone());
-            continue;
+        match compare_one_candidate(paths, model_name, omc_model, trace_exclusions) {
+            Ok(metric) => {
+                report.models.insert(model_name.clone(), metric);
+            }
+            Err(exit) => {
+                // Every candidate the comparator did not compare lands in the map
+                // its kind names, so a policy exclusion and a comparator failure
+                // are never merged into one bucket.
+                let map = match exit.kind {
+                    TraceExitKind::PolicyExcluded
+                    | TraceExitKind::ComparatorFailed
+                    | TraceExitKind::NoComparableSamples => &mut report.skipped,
+                    TraceExitKind::TraceNonidentifiable => &mut report.trace_nonidentifiable,
+                    TraceExitKind::RumocaTraceMissing | TraceExitKind::OmcTraceMissing => {
+                        &mut report.missing_trace
+                    }
+                };
+                map.insert(model_name.clone(), exit);
+            }
         }
-        let Some(rumoca_trace_path) = resolve_rumoca_trace_path(paths, model_name, omc_model)
-        else {
-            report
-                .missing_trace
-                .insert(model_name.clone(), "missing rumoca trace path".to_string());
-            continue;
-        };
-        let Some(omc_trace_path) = resolve_omc_trace_path(paths, model_name, omc_model) else {
-            report
-                .missing_trace
-                .insert(model_name.clone(), "missing omc trace path".to_string());
-            continue;
-        };
-        let rumoca_trace = match load_trace_json(&rumoca_trace_path) {
-            Ok(trace) => trace,
-            Err(error) => {
-                report.missing_trace.insert(
-                    model_name.clone(),
-                    format!("failed to load rumoca trace: {error}"),
-                );
-                continue;
-            }
-        };
-        let omc_trace = match load_trace_json(&omc_trace_path) {
-            Ok(trace) => trace,
-            Err(error) => {
-                report.missing_trace.insert(
-                    model_name.clone(),
-                    format!("failed to load omc trace: {error}"),
-                );
-                continue;
-            }
-        };
-        let metric = match compare_model_traces(model_name, &rumoca_trace, &omc_trace) {
-            Ok(metric) => metric,
-            Err(error) => {
-                report
-                    .skipped
-                    .insert(model_name.clone(), format!("trace compare failed: {error}"));
-                continue;
-            }
-        };
-        let state_selection =
-            state_selection::compare_model_state_selection(paths, model_name, &rumoca_trace);
-        report.models.insert(
-            model_name.clone(),
-            TraceModelMetric {
-                metric,
-                state_selection,
-                rumoca_sim_wall_seconds: omc_model.rumoca_sim_wall_seconds,
-                rumoca_sim_seconds: omc_model.rumoca_sim_seconds,
-                rumoca_sim_build_seconds: omc_model.rumoca_sim_build_seconds,
-                rumoca_sim_run_seconds: omc_model.rumoca_sim_run_seconds,
-                omc_sim_system_seconds: omc_model.sim_system_seconds,
-                omc_total_system_seconds: omc_model.total_system_seconds,
-                omc_wall_seconds: omc_model.omc_wall_seconds,
-            },
-        );
     }
     write_trace_report(paths, all_results, &report)?;
     Ok(report)
 }
 
-fn resolve_rumoca_trace_path(
+/// Compare one candidate, or name the boundary that stopped the comparison.
+///
+/// The `Err` side is the whole point: each early return records *which* gate the
+/// model hit — policy, our own missing trace, OMC's, or the comparator itself —
+/// because this is the only place that knows. Downstream readers must never have
+/// to infer it from the wording of a reason string.
+fn compare_one_candidate(
     paths: &MslPaths,
     model_name: &str,
+    omc_model: &SimModelResult,
+    trace_exclusions: &BTreeMap<String, String>,
+) -> std::result::Result<TraceModelMetric, TraceExitRecord> {
+    if let Some(reason) = trace_exclusions.get(model_name) {
+        return Err(TraceExitRecord::new(
+            TraceExitKind::PolicyExcluded,
+            reason.clone(),
+        ));
+    }
+    if omc_model.status != "success" {
+        return Err(TraceExitRecord::new(
+            TraceExitKind::OmcTraceMissing,
+            format!(
+                "OMC attempt status `{}` is not successful; stale trace artifacts are ineligible",
+                omc_model.status
+            ),
+        ));
+    }
+    let rumoca_trace_path =
+        resolve_rumoca_trace_path(paths, model_name, omc_model).ok_or_else(|| {
+            TraceExitRecord::new(
+                TraceExitKind::RumocaTraceMissing,
+                "successful Rumoca attempt did not declare a trace file",
+            )
+        })?;
+    let rumoca_trace = load_trace_json(&rumoca_trace_path).map_err(|error| {
+        TraceExitRecord::new(
+            TraceExitKind::RumocaTraceMissing,
+            format!("failed to load rumoca trace: {error}"),
+        )
+    })?;
+    if let Some(exit) = pointwise_nonidentifiability_exit(&rumoca_trace)? {
+        return Err(exit);
+    }
+    let omc_trace_path = resolve_omc_trace_path(paths, model_name, omc_model).ok_or_else(|| {
+        TraceExitRecord::new(
+            TraceExitKind::OmcTraceMissing,
+            if omc_model.trace_file.is_some() {
+                "declared OMC trace file does not exist"
+            } else {
+                "successful OMC attempt did not declare a trace file"
+            },
+        )
+    })?;
+    let omc_trace = load_trace_json(&omc_trace_path).map_err(|error| {
+        TraceExitRecord::new(
+            TraceExitKind::OmcTraceMissing,
+            format!("failed to load omc trace: {error}"),
+        )
+    })?;
+    let metric = compare_model_traces(model_name, &rumoca_trace, &omc_trace).map_err(|error| {
+        // "nothing was comparable" is a property of the two traces; every other
+        // error is a defect in the comparison itself. The distinction is decided
+        // here, where the typed error is in hand, so no reader downstream has to
+        // recover it from the message text.
+        let kind = match error {
+            TraceCompareError::NoComparableSamples => TraceExitKind::NoComparableSamples,
+            _ => TraceExitKind::ComparatorFailed,
+        };
+        TraceExitRecord::new(kind, format!("trace compare failed: {error}"))
+    })?;
+    Ok(TraceModelMetric {
+        metric,
+        state_selection: state_selection::compare_model_state_selection(
+            paths,
+            model_name,
+            &rumoca_trace,
+        ),
+        rumoca_sim_wall_seconds: omc_model.rumoca_sim_wall_seconds,
+        rumoca_sim_seconds: omc_model.rumoca_sim_seconds,
+        rumoca_sim_build_seconds: omc_model.rumoca_sim_build_seconds,
+        rumoca_sim_run_seconds: omc_model.rumoca_sim_run_seconds,
+        omc_sim_system_seconds: omc_model.sim_system_seconds,
+        omc_total_system_seconds: omc_model.total_system_seconds,
+        omc_wall_seconds: omc_model.omc_wall_seconds,
+    })
+}
+
+fn pointwise_nonidentifiability_exit(
+    rumoca_trace: &SimTrace,
+) -> std::result::Result<Option<TraceExitRecord>, TraceExitRecord> {
+    let Some(profile) = rumoca_trace.certification_profile.clone() else {
+        return Ok(None);
+    };
+    profile.validate().map_err(|error| {
+        TraceExitRecord::new(
+            TraceExitKind::ComparatorFailed,
+            format!("invalid trace certification profile: {error}"),
+        )
+    })?;
+    Ok(Some(TraceExitRecord::trace_nonidentifiable(profile)))
+}
+
+fn resolve_rumoca_trace_path(
+    paths: &MslPaths,
+    _model_name: &str,
     model: &SimModelResult,
 ) -> Option<PathBuf> {
-    if let Some(trace_file) = model.rumoca_trace_file.as_ref() {
-        let path = PathBuf::from(trace_file);
-        if path.is_absolute() {
-            return Some(path);
-        }
-        return Some(paths.results_dir.join(path));
+    let trace_file = model.rumoca_trace_file.as_ref()?;
+    let path = PathBuf::from(trace_file);
+    if path.is_absolute() {
+        return Some(path);
     }
-    let fallback = paths.rumoca_trace_dir.join(format!("{model_name}.json"));
-    if fallback.is_file() {
-        Some(fallback)
-    } else {
-        None
-    }
+    Some(paths.results_dir.join(path))
 }
 
 fn resolve_omc_trace_path(

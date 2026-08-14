@@ -1206,7 +1206,7 @@ fn sim_009_pre_of_continuous_state_in_when_condition_is_rejected() {
 // pre-advance property leaves clocked lanes unchanged. Same-tick value
 // exchange between producers inside that single partition solution IS
 // implemented, by the SPEC_0040 SOLVE-C57 owner
-// (`dev/2026-08-11-clock-partition-transaction-design.md`, implemented toward
+// (SPEC_0046, implemented toward
 // the SPEC_0046 SDO-001/SDO-002 read semantics): construction issues the
 // ordered producer list (`DiscreteSolveSystem::clock_partition_order`) and the
 // runtime replays it over private work state, so an ordinary same-instant read
@@ -1336,8 +1336,7 @@ fn sim_010_mixed_b1b_b1c_same_tick_cycle_is_rejected_at_construction() {
         ..rumoca_sim::SimOptions::default()
     };
     let error = rumoca_sim::simulate_with_diagnostics(&result.dae, &opts)
-        .err()
-        .expect("a same-tick discrete cycle must be rejected");
+        .expect_err("a same-tick discrete cycle must be rejected");
     let message = error.to_string();
     // The same-clock shape is caught by the earlier clocked-feedback owner
     // (`reject_clocked_continuous_feedback`); both diagnostics are typed
@@ -1384,8 +1383,7 @@ fn sim_010_cross_clock_coincident_same_tick_cycle_is_rejected_at_construction() 
         ..rumoca_sim::SimOptions::default()
     };
     let error = rumoca_sim::simulate_with_diagnostics(&result.dae, &opts)
-        .err()
-        .expect("a cross-clock coincident same-tick cycle must be rejected");
+        .expect_err("a cross-clock coincident same-tick cycle must be rejected");
     let message = error.to_string();
     assert!(
         message.contains("algebraic loop"),

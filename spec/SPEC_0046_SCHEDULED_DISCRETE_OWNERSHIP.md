@@ -51,8 +51,8 @@ governed: the Solve grammar, type algebra, profiles, and identity ladder
 refinement and prepared products
 ([SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md)).
 
-Provenance: `dev/2026-08-11-core-structure-decisions.md` §13.1–§13.3 and the
-coordination mailbox rulings of 2026-08-12.
+Provenance: the accepted ownership decisions consolidated by this
+specification and its normative catalog.
 
 ### 2. The Total Next Relation
 
@@ -173,8 +173,8 @@ each row there names the `SDO` rule it covers.
 
 ## References
 
-- `dev/2026-08-11-core-structure-decisions.md` §13.1–§13.3 — the ratified
-  event-strata and ownership record this spec consolidates.
+- [SPEC_0043](SPEC_0043_CONSTRUCTION_CATALOG.md) — the normative construction
+  catalog for the event-strata and ownership rules consolidated here.
 - [SPEC_0045](SPEC_0045_SOLVE_EXECUTABLE_VOCABULARY_AND_PROFILES.md),
   [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) — the
   grammar, identity ladder, profiles, and product refinement this spec composes

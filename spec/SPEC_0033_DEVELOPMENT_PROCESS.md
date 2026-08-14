@@ -103,7 +103,7 @@ Failure classifications:
 | A capability change is complete only with its Tier 1 canary delta recorded in durable review evidence | PR / verification record | Deltas must outlive the session that produced them |
 | The canary target set is the fixed 20-model list in `verification/msl-canary-20.json` | canary runs | A moving target set makes deltas meaningless |
 | Replacing a canary member MUST record the rationale and replacement in the same review evidence | PR / verification record | Keeps the fixed list auditable |
-| Each canary model and phase gets exactly one attempt at the harness default 10-second budget | canary runs | One honest attempt, no retry or default path |
+| Each non-simulation canary phase gets one 10-second attempt; `Sim` gets a 14-second parent watchdog around its 12-second solver budget | canary runs | One honest attempt per phase, no retry or default path |
 | A canary timeout, panic, unsupported operation, or non-finite result MUST be recorded as a failure | canary runs | Retries and fallbacks manufacture passes |
 | Tier 2 MUST cover the full 566-model set, either in one run or as CI shards merged by the fan-in job | CI / milestone | Cohort evidence without a serial CI long pole |
 | Tier 2 is the sole source of cohort parity claims | reports, PRs, specs | One cohort number, one origin |

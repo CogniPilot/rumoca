@@ -1,4 +1,4 @@
-// SPEC_0021 file-size exception - split plan: extract the lowering context struct with its register allocation and scope bookkeeping into lower/context.rs, leaving the phase entry points here; tracked as RDD2/GALEC cleanup debt (dev/2026-08-11 remediation note).
+// SPEC_0021 file-size exception - split plan: extract the lowering context struct with its register allocation and scope bookkeeping into lower/context.rs, leaving the phase entry points here; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 

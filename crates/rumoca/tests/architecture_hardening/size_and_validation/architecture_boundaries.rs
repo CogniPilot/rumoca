@@ -3,6 +3,94 @@
 use super::super::*;
 
 #[test]
+fn test_production_sources_use_real_module_paths() {
+    let root = workspace_root();
+    let mut sources = Vec::new();
+    for crate_entry in fs::read_dir(root.join("crates")).expect("read crates directory") {
+        let source_root = crate_entry.expect("read crate entry").path().join("src");
+        if source_root.is_dir() {
+            collect_rs_files(&source_root, &mut sources);
+        }
+    }
+    let mut offenders = Vec::new();
+    for path in sources {
+        if is_test_only_source(&path) {
+            continue;
+        }
+        let source = fs::read_to_string(&path).expect("read production Rust source");
+        let lines = source.lines().collect::<Vec<_>>();
+        for (line_index, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            let path_bypass =
+                trimmed.starts_with("#[path") && !preceded_by_test_cfg(&lines, line_index);
+            let non_generated_include =
+                trimmed.starts_with("include!(") && !trimmed.contains("OUT_DIR");
+            if path_bypass || non_generated_include {
+                offenders.push(format!("{}:{}", path.display(), line_index + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "production modules must use real content-based module layout; \
+`#[path]` and non-generated `include!` bypasses are forbidden: {offenders:#?}"
+    );
+}
+
+fn is_test_only_source(path: &Path) -> bool {
+    path.components().any(|part| part.as_os_str() == "tests")
+        || path.file_name().is_some_and(|name| {
+            let name = name.to_string_lossy();
+            name == "tests.rs" || name.ends_with("_tests.rs")
+        })
+}
+
+fn preceded_by_test_cfg(lines: &[&str], line_index: usize) -> bool {
+    lines[line_index.saturating_sub(3)..line_index]
+        .iter()
+        .any(|line| line.contains("cfg(test)"))
+}
+
+#[test]
+fn test_content_split_module_roots_declare_submodules_before_imports() {
+    let root = workspace_root();
+    let module_roots = [
+        "crates/rumoca/src/cli.rs",
+        "crates/rumoca-phase-dae/src/construction/function_shapes/mod.rs",
+        "crates/rumoca-phase-dae/src/construction/analysis/loop_compaction/mod.rs",
+        "crates/rumoca-phase-flatten/src/postprocess.rs",
+        "crates/rumoca-phase-resolve/src/semantic_checks/restrictions.rs",
+        "crates/rumoca-phase-typecheck/src/typechecker/late_methods.rs",
+    ];
+    for relative in module_roots {
+        let source = fs::read_to_string(root.join(relative)).expect("read module root");
+        let first_import = source
+            .lines()
+            .position(|line| line.trim_start().starts_with("use "))
+            .expect("content-split module root has imports");
+        let lines = source.lines().collect::<Vec<_>>();
+        let misplaced = lines.iter().enumerate().find(|(line_index, line)| {
+            *line_index > first_import
+                && external_module_declaration(line)
+                && !preceded_by_test_cfg(&lines, *line_index)
+        });
+        assert!(
+            misplaced.is_none(),
+            "{relative} must declare external submodules before imports: {misplaced:?}"
+        );
+    }
+}
+
+fn external_module_declaration(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(mod_index) = trimmed.find("mod ") else {
+        return false;
+    };
+    let prefix = &trimmed[..mod_index];
+    (prefix.is_empty() || prefix.starts_with("pub")) && trimmed.ends_with(';')
+}
+
+#[test]
 fn test_ir_crates_have_no_public_scalarize_functions() {
     // SPEC_0007 keeps scalarization out of IR crates; backend/evaluator
     // fallback helpers live in rumoca-eval-solve.
@@ -201,110 +289,118 @@ fn test_dae_structural_transforms_live_in_phase_structural() {
 (SPEC_0029 §12, SPEC_0007 §Structural Transformation Scope), not phase-solve: \
 {offenders:#?}"
     );
-
-    assert!(
-        root.join("crates/rumoca-phase-structural/src/dae_prepare")
-            .exists(),
-        "phase-structural must own the dae_prepare module after relocation"
-    );
 }
 
-/// SPEC_0007 Stage 3 Contract: source temporal operators are eliminated in every DAE partition.
-/// The `phase-dae::appendix_b_validation::validate_no_source_temporal_operator_survives`
-/// gate must exist as a positive runtime check (not just absent from compile).
 #[test]
-fn test_source_temporal_operator_validation_gate_exists() {
-    let path = workspace_root().join("crates/rumoca-phase-dae/src/appendix_b_validation.rs");
-    let content = fs::read_to_string(&path).expect("read appendix_b_validation.rs");
-
-    assert!(
-        content.contains("validate_no_source_temporal_operator_survives"),
-        "phase-dae::appendix_b_validation must define validate_no_source_temporal_operator_survives \
-to enforce SPEC_0007 Stage 3 Contract (no pre/edge/change/sample/previous in solver-facing DAE-IR)"
-    );
-
-    let error_path = workspace_root().join("crates/rumoca-phase-dae/src/errors.rs");
-    let error_content = fs::read_to_string(&error_path).expect("read errors.rs");
-    assert!(
-        error_content.contains("SourceTemporalOperatorSurvivedDaeBoundary"),
-        "ToDaeError must include SourceTemporalOperatorSurvivedDaeBoundary so the gate \
-produces a structured diagnostic per SPEC_0008"
-    );
-
-    let pre_lowering_path = workspace_root().join("crates/rumoca-phase-dae/src/pre_lowering.rs");
-    let pre_lowering_content =
-        fs::read_to_string(&pre_lowering_path).expect("read pre_lowering.rs");
-    for partition in [
-        "dae.continuous.equations",
-        "dae.discrete.real_updates",
-        "dae.discrete.valued_updates",
-        "dae.conditions.equations",
-    ] {
-        assert!(
-            pre_lowering_content.contains(partition),
-            "phase-dae::pre_lowering must process every DAE partition; missing {partition}"
-        );
-    }
-}
-
-/// SPEC_0007 Stage 4 Contract: Solve-IR is the register-machine form of
-/// Appendix B and must have a positive validation gate at the lowering boundary.
-#[test]
-fn test_solve_ir_appendix_b_validation_gate_exists() {
+fn test_checked_dae_is_the_only_production_dae_representation() {
     let root = workspace_root();
-    let path = root.join("crates/rumoca-phase-solve/src/appendix_b_validation.rs");
-    let content = fs::read_to_string(&path).expect("read phase-solve appendix_b_validation.rs");
-
-    for required in [
-        "validate_solve_input_appendix_b_invariants",
-        "validate_solve_problem_appendix_b_invariants",
-        "validate_solve_artifacts_appendix_b_invariants",
-        "find_source_temporal_operator",
-        "validate_function_calls_resolve",
-        "validate_row_ops",
-        "validate_compute_node",
-        "SeedUse::Forbidden",
-        "SeedUse::Allowed",
-    ] {
+    let dae_src = root.join("crates/rumoca-ir-dae/src");
+    for removed in ["checked", "types.rs", "visitor.rs", "clock_schedule.rs"] {
         assert!(
-            content.contains(required),
-            "phase-solve Appendix-B validation must define `{required}`"
+            !dae_src.join(removed).exists(),
+            "removed DAE representation path must not coexist with the canonical checked DAE: \
+             {removed}"
         );
     }
 
-    let lib_path = root.join("crates/rumoca-phase-solve/src/lib.rs");
-    let lib_content = fs::read_to_string(&lib_path).expect("read phase-solve lib.rs");
+    let mut offenders = Vec::new();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+    for path in rs_files {
+        if path
+            .components()
+            .any(|component| component.as_os_str() == "tests")
+            || path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == "tests.rs" || name.ends_with("_tests.rs"))
+        {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for forbidden in [
+            "rumoca_ir_dae::checked",
+            "rumoca_ir_dae::DaeDraft",
+            "Dae::build(",
+            "deserialize_v10",
+            "schema_version = 10",
+        ] {
+            if content.contains(forbidden) {
+                offenders.push(format!("{}:{forbidden}", path.display()));
+            }
+        }
+    }
     assert!(
-        lib_content.contains("mod appendix_b_validation;")
-            && lib_content.contains("validate_solve_input_appendix_b_invariants(dae_model)")
-            && lib_content.contains("validate_solve_problem_appendix_b_invariants(&problem)")
-            && lib_content.contains("validate_solve_artifacts_appendix_b_invariants(&artifacts)"),
-        "lower_solve_problem must call the Solve-IR Appendix-B validation gate \
-at the DAE input, SolveProblem output, and SolveArtifacts output boundaries"
+        offenders.is_empty(),
+        "production code still references a removed DAE representation or wire path: \
+         {offenders:#?}"
     );
+}
+
+#[test]
+fn test_todae_uses_constructor_enforced_invariants_without_validation_passes() {
+    let root = workspace_root();
+    let phase_dae = root.join("crates/rumoca-phase-dae/src");
+    let construction =
+        fs::read_to_string(phase_dae.join("construction.rs")).expect("read DAE construction");
     assert!(
-        !lib_content.contains("pub fn lower_continuous_solve_artifacts"),
-        "continuous artifact helper must stay private so public callers use \
-the validated SolveArtifacts lowering path"
+        construction.contains("Dae::construct("),
+        "ToDAE must enter the canonical Dae::construct boundary"
     );
 
-    let solve_model_path = root.join("crates/rumoca-phase-solve/src/solve_model.rs");
-    let solve_model_content =
-        fs::read_to_string(&solve_model_path).expect("read phase-solve solve_model.rs");
-    let problem_lowering = solve_model_content
-        .find("crate::lower_solve_problem_with_solver_len(&dae_model, solver_len)?")
-        .or_else(|| {
-            solve_model_content.find("crate::lower_solve_problem_with_solver_len_and_model_span(")
-        })
-        .expect(
-            "lower_dae_to_solve_model_inner must lower through the validated SolveProblem path",
+    for removed in [
+        "appendix_b_validation.rs",
+        "reference_validation.rs",
+        "temporal_finalization.rs",
+    ] {
+        assert!(
+            !phase_dae.join(removed).exists(),
+            "constructor-enforced invariants replace obsolete validation pass {removed}"
         );
-    let artifact_lowering = solve_model_content
-        .find("crate::lower_solve_artifacts_with_mass_matrix(&problem, mass_matrix)?")
-        .expect("lower_dae_to_solve_model_inner must derive runtime artifacts from SolveProblem");
+    }
+
+    let dae_model =
+        fs::read_to_string(root.join("crates/rumoca-ir-dae/src/model.rs")).expect("read DAE model");
     assert!(
-        problem_lowering < artifact_lowering,
-        "lower_dae_to_solve_model_inner must run validated Solve-IR lowering before artifact lowering"
+        !dae_model.contains("pub fn validate(") && !dae_model.contains("pub fn insert_unchecked"),
+        "canonical DAE must not expose validation or unchecked insertion escape hatches"
+    );
+}
+
+#[test]
+fn test_dae_expression_insertion_is_confined_to_expression_at() {
+    let root = workspace_root();
+    let dae_source = root.join("crates/rumoca-ir-dae/src");
+    let expression_source = dae_source.join("expression.rs");
+    let expression =
+        fs::read_to_string(&expression_source).expect("read canonical DAE expression arena");
+    assert!(
+        !expression.contains("pub(crate) fn push(") && !expression.contains("pub fn push("),
+        "raw DAE expression arena insertion must remain private to ExpressionAt"
+    );
+
+    let mut files = Vec::new();
+    collect_rs_files(&dae_source, &mut files);
+    let offenders = files
+        .into_iter()
+        .filter(|path| path != &expression_source)
+        .filter_map(|path| {
+            let content = fs::read_to_string(&path).ok()?;
+            let compact = content
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>();
+            (content.contains("ExpressionInsertionFacts")
+                || compact.contains("storage.expressions.push("))
+            .then(|| path.display().to_string())
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        offenders.is_empty(),
+        "raw DAE expression insertion and its facts must remain inside ExpressionAt: \
+{offenders:#?}"
     );
 }
 
