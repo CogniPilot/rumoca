@@ -90,6 +90,22 @@ fn assert_elements(actual: &[f64], expected: &[f64]) {
     }
 }
 
+/// Assert that the inner element loop did *not* gain a compact slice-write
+/// owner.
+///
+/// A compaction that fires leaves exactly the one enclosing loop the "still
+/// compacts" tests pin at depth 1. A refusal leaves the coordinates to some
+/// other legal owner — today the refused nest is scalarized away entirely, at
+/// depth 0 — so the claim worth asserting is the negation of the compaction,
+/// not one particular shape of the fallback.
+fn assert_no_compact_owner(lowered: &Lowered) {
+    assert_ne!(
+        lowered.loop_depth, 1,
+        "the sliced dimension does not land where the loop stacked it, so no \
+         single slice write may own these coordinates"
+    );
+}
+
 /// An MLS §10.4 array construction stacks its elements along a *new leading*
 /// dimension, so elements that each gained the sliced dimension build the
 /// transpose of the matrix the scalar loop wrote.
@@ -188,14 +204,22 @@ end ObserveRowDotProduct;
 /// The flight-model witness for the shape above, with its explicit range
 /// subscript and its own dimensions.
 ///
-/// `NavigationEstimator`'s conjugate reset writes
+/// The witness is `Estimation/MultiSensorInvariant/conjugateReset.mo`, which
+/// conjugates a covariance by the block-diagonal reset Jacobian. It is a
+/// witness because the form is one that file *documents avoiding*, not one it
+/// writes: its third load-bearing note records that the natural
 /// `conjugated[i,j] := rotated[i, 1:n] * rotationJacobian[j, :]` — the ordinary
-/// spelling of `rotated * transpose(rotationJacobian)`. Compacting `j` emitted
-/// the contraction `rotated[i,k] * rotationJacobian[k,col]`, so the estimator
-/// ran `rotated * rotationJacobian` with no diagnostic. The left factor is
-/// written as an explicit `1:n` range rather than `:` because that is what the
-/// model writes, and because the two reach the compaction as different
-/// subscript forms.
+/// spelling of `rotated * transpose(rotationJacobian)` — compacts `j` into the
+/// contraction `rotated[i,k] * rotationJacobian[k,col]`, computing
+/// `rotated * rotationJacobian` with no diagnostic. The file therefore
+/// materializes `transpose(rotationJacobian)` and writes the contraction as one
+/// row-vector-times-matrix expression, leaving the rewrite nothing to do. This
+/// test pins the miscompile that forced that workaround, so the workaround can
+/// be retired against evidence rather than hope.
+///
+/// The left factor is written as an explicit `1:n` range rather than `:`
+/// because that is what the model writes, and because the two reach the
+/// compaction as different subscript forms.
 #[test]
 fn the_conjugate_reset_shape_keeps_its_transposed_contraction() {
     let lowered = lower(
@@ -332,4 +356,306 @@ end ObserveRowsTimesVector;
         lowered.loop_depth, 1,
         "a matrix-vector product over the sliced left factor must stay compact"
     );
+}
+
+/// The textbook matrix product, which the rank-position guard must admit.
+///
+/// `y[i,j] := a[i,:] * b[:,j]` slices `b`'s *trailing* dimension, so `b[:,r]` is
+/// the whole matrix with the sliced dimension second. MLS §10.6.4's
+/// vector-matrix product then contracts `b`'s *leading* dimension — the one the
+/// scalar loop contracted — and leaves the sliced dimension alone and therefore
+/// leading, which is exactly the stack the loop wrote. Element for element,
+/// `(a[i,:] * b[:,r])[j] = sum(k) a[i,k] * b[k,j]`.
+///
+/// A two-valued gain lattice could not say "gained trailing, then contracted
+/// back to leading", so it refused this shape: values stayed correct, but the
+/// loop lost its compact owner and solve-lowering fell off a cliff at realistic
+/// extents. Both halves are asserted here — the values the source defines, and
+/// the single compact write that must own them.
+#[test]
+fn the_matrix_product_over_a_trailing_sliced_right_factor_compacts() {
+    let lowered = lower(
+        "ObserveMatrixProduct",
+        r#"
+within;
+
+function elementLoop
+  input Real a[3, 3];
+  input Real b[3, 3];
+  output Real y[3, 3];
+algorithm
+  for i in 1:3 loop
+    for j in 1:3 loop
+      y[i, j] := a[i, :] * b[:, j];
+    end for;
+  end for;
+end elementLoop;
+
+model ObserveMatrixProduct
+  Real product[3, 3];
+  Real state[9](each start = 0.0, each fixed = true);
+equation
+  product = elementLoop(
+    {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}},
+    {{1.0, 0.0, 2.0}, {3.0, 1.0, 0.0}, {0.0, 4.0, 1.0}});
+  der(state) = {
+    product[1, 1], product[1, 2], product[1, 3],
+    product[2, 1], product[2, 2], product[2, 3],
+    product[3, 1], product[3, 2], product[3, 3]};
+end ObserveMatrixProduct;
+"#,
+    );
+    // Hand-computed `a * b`: row i of a dotted with column j of b.
+    // Row 1: {1,2,3} against columns {1,3,0}, {0,1,4}, {2,0,1} -> 7, 14, 5.
+    // Row 2: {4,5,6} -> 19, 29, 14.  Row 3: {7,8,9} -> 31, 44, 23.
+    assert_elements(
+        &lowered.elements,
+        &[7.0, 14.0, 5.0, 19.0, 29.0, 14.0, 31.0, 44.0, 23.0],
+    );
+    assert_eq!(
+        lowered.loop_depth, 1,
+        "the matrix product must collapse into one slice write"
+    );
+}
+
+/// The mirror of the admitted rule, which must stay refused.
+///
+/// `y[i,j] := b[:,j] * v` puts the trailing-sliced operand on the *left*. Per
+/// iteration it is a scalar product of two vectors, but `b[:,r] * v` is a
+/// matrix-vector product, and MLS §10.6.4 contracts a matrix's *second*
+/// dimension — which here is the one the slice added. The surviving dimension
+/// indexes `b`'s rows, not the loop's iterations, so the result is a permuted
+/// vector of the same 3 elements and nothing is reported.
+#[test]
+fn a_trailing_sliced_left_factor_is_not_compacted() {
+    let lowered = lower(
+        "ObserveTrailingLeftFactor",
+        r#"
+within;
+
+function elementLoop
+  input Real b[3, 3];
+  input Real v[3];
+  output Real y[3, 3];
+algorithm
+  for i in 1:3 loop
+    for j in 1:3 loop
+      y[i, j] := b[:, j] * v;
+    end for;
+  end for;
+end elementLoop;
+
+model ObserveTrailingLeftFactor
+  Real contracted[3, 3];
+  Real state[9](each start = 0.0, each fixed = true);
+equation
+  contracted = elementLoop(
+    {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {7.0, 8.0, 9.0}}, {1.0, 0.0, 2.0});
+  der(state) = {
+    contracted[1, 1], contracted[1, 2], contracted[1, 3],
+    contracted[2, 1], contracted[2, 2], contracted[2, 3],
+    contracted[3, 1], contracted[3, 2], contracted[3, 3]};
+end ObserveTrailingLeftFactor;
+"#,
+    );
+    // Column j of b dotted with v, repeated for every i:
+    // column 1 {1,4,7}.{1,0,2} = 15, column 2 {2,5,8} = 18, column 3 {3,6,9} = 21.
+    assert_elements(
+        &lowered.elements,
+        &[15.0, 18.0, 21.0, 15.0, 18.0, 21.0, 15.0, 18.0, 21.0],
+    );
+    assert_no_compact_owner(&lowered);
+}
+
+/// An MLS §10.6.3 addition requires equal shapes, so it carries a trailing gain
+/// outward exactly where the operands put it — which is not where the loop
+/// stacked it.
+///
+/// `y[i,j,:] := b[:,j] + c[:,j]` writes, for each `j`, the sum of two columns.
+/// Compacting `j` gives `b[:,r] + c[:,r]`, a 3x3 matrix indexed `[k,j]` where
+/// the target `y[i,r,:]` is indexed `[j,k]` — the transpose, at identical
+/// shape.
+#[test]
+fn an_addition_of_two_trailing_sliced_operands_is_not_compacted() {
+    let lowered = lower(
+        "ObserveTrailingSum",
+        r#"
+within;
+
+function elementLoop
+  input Real b[2, 2];
+  input Real c[2, 2];
+  output Real y[2, 2, 2];
+algorithm
+  for i in 1:2 loop
+    for j in 1:2 loop
+      y[i, j, :] := b[:, j] + c[:, j];
+    end for;
+  end for;
+end elementLoop;
+
+model ObserveTrailingSum
+  Real summed[2, 2, 2];
+  Real state[8](each start = 0.0, each fixed = true);
+equation
+  summed = elementLoop(
+    {{1.0, 2.0}, {3.0, 4.0}}, {{10.0, 20.0}, {30.0, 40.0}});
+  der(state) = {
+    summed[1, 1, 1], summed[1, 1, 2], summed[1, 2, 1], summed[1, 2, 2],
+    summed[2, 1, 1], summed[2, 1, 2], summed[2, 2, 1], summed[2, 2, 2]};
+end ObserveTrailingSum;
+"#,
+    );
+    // y[i,j,k] = b[k,j] + c[k,j].
+    assert_elements(
+        &lowered.elements,
+        &[11.0, 33.0, 22.0, 44.0, 11.0, 33.0, 22.0, 44.0],
+    );
+    assert_no_compact_owner(&lowered);
+}
+
+/// MLS §10.6.1 maps a built-in element-wise over whatever shape it is handed,
+/// so it would report a trailing gain as the loop's leading stack.
+///
+/// `y[i,j,:] := abs(b[:,j])` compacts to `abs(b[:,r])`, the 3x3 transpose of
+/// the matrix the loop wrote.
+#[test]
+fn an_elementwise_builtin_over_a_trailing_sliced_argument_is_not_compacted() {
+    let lowered = lower(
+        "ObserveTrailingBuiltin",
+        r#"
+within;
+
+function elementLoop
+  input Real b[2, 2];
+  output Real y[2, 2, 2];
+algorithm
+  for i in 1:2 loop
+    for j in 1:2 loop
+      y[i, j, :] := abs(b[:, j]);
+    end for;
+  end for;
+end elementLoop;
+
+model ObserveTrailingBuiltin
+  Real magnitudes[2, 2, 2];
+  Real state[8](each start = 0.0, each fixed = true);
+equation
+  magnitudes = elementLoop({{-1.0, 2.0}, {3.0, -4.0}});
+  der(state) = {
+    magnitudes[1, 1, 1], magnitudes[1, 1, 2],
+    magnitudes[1, 2, 1], magnitudes[1, 2, 2],
+    magnitudes[2, 1, 1], magnitudes[2, 1, 2],
+    magnitudes[2, 2, 1], magnitudes[2, 2, 2]};
+end ObserveTrailingBuiltin;
+"#,
+    );
+    // y[i,j,k] = |b[k,j]|.
+    assert_elements(&lowered.elements, &[1.0, 3.0, 2.0, 4.0, 1.0, 3.0, 2.0, 4.0]);
+    assert_no_compact_owner(&lowered);
+}
+
+/// An argument's rank is what selects a call's MLS §12.4.6 reading, so a
+/// trailing gain must not reach one.
+///
+/// `y[i,j,:] := scaled(b[:,j])` compacts to `scaled(b[:,r])`, which hands the
+/// function a matrix where it was checked against a vector.
+#[test]
+fn a_function_call_over_a_trailing_sliced_argument_is_not_compacted() {
+    let lowered = lower(
+        "ObserveTrailingCall",
+        r#"
+within;
+
+function scaled
+  input Real v[2];
+  output Real w[2];
+algorithm
+  w := 2.0 * v;
+end scaled;
+
+function elementLoop
+  input Real b[2, 2];
+  output Real y[2, 2, 2];
+algorithm
+  for i in 1:2 loop
+    for j in 1:2 loop
+      y[i, j, :] := scaled(b[:, j]);
+    end for;
+  end for;
+end elementLoop;
+
+model ObserveTrailingCall
+  Real doubled[2, 2, 2];
+  Real state[8](each start = 0.0, each fixed = true);
+equation
+  doubled = elementLoop({{1.0, 2.0}, {3.0, 4.0}});
+  der(state) = {
+    doubled[1, 1, 1], doubled[1, 1, 2], doubled[1, 2, 1], doubled[1, 2, 2],
+    doubled[2, 1, 1], doubled[2, 1, 2], doubled[2, 2, 1], doubled[2, 2, 2]};
+end ObserveTrailingCall;
+"#,
+    );
+    // y[i,j,k] = 2*b[k,j].
+    assert_elements(&lowered.elements, &[2.0, 6.0, 4.0, 8.0, 2.0, 6.0, 4.0, 8.0]);
+    assert_no_compact_owner(&lowered);
+}
+
+/// A slice with dimensions on *both* sides of it is neither gain, and admitting
+/// it as trailing would be the same transposition defect one dimension over.
+///
+/// `y[i,j,:,:] := b[:,j,:]` compacts to `b[:,r,:]`, which carries the sliced
+/// dimension in the middle where the target carries it leading. Every extent is
+/// 2, so the shapes agree and nothing is reported.
+///
+/// This is also what pins the guard to the read's per-iteration *rank* rather
+/// than to the subscripts that were written down. MLS §10.5.3 appends a read's
+/// unsubscripted dimensions after its subscripted ones, so `b[:,j]` on this
+/// same `b[2,2,2]` denotes exactly the value `b[:,j,:]` does and is equally a
+/// middle slice — with nothing spelled behind the binder to reveal it. Counting
+/// named subscripts would call that one trailing and admit it; comparing
+/// `leading` against the rank refuses both. The unsubscripted spelling is not
+/// exercised as its own case because solve-lowering rejects the partial
+/// projection it produces ("typed aggregate projection is invalid") before any
+/// value can be read back, on this branch and independently of this guard.
+#[test]
+fn a_slice_with_dimensions_on_both_sides_is_not_compacted() {
+    let lowered = lower(
+        "ObserveMiddleSlice",
+        r#"
+within;
+
+function elementLoop
+  input Real b[2, 2, 2];
+  output Real y[2, 2, 2, 2];
+algorithm
+  for i in 1:2 loop
+    for j in 1:2 loop
+      y[i, j, :, :] := b[:, j, :];
+    end for;
+  end for;
+end elementLoop;
+
+model ObserveMiddleSlice
+  Real picked[2, 2, 2, 2];
+  Real state[16](each start = 0.0, each fixed = true);
+equation
+  picked = elementLoop(
+    {{{1.0, 2.0}, {3.0, 4.0}}, {{5.0, 6.0}, {7.0, 8.0}}});
+  der(state) = {
+    picked[1, 1, 1, 1], picked[1, 1, 1, 2], picked[1, 1, 2, 1], picked[1, 1, 2, 2],
+    picked[1, 2, 1, 1], picked[1, 2, 1, 2], picked[1, 2, 2, 1], picked[1, 2, 2, 2],
+    picked[2, 1, 1, 1], picked[2, 1, 1, 2], picked[2, 1, 2, 1], picked[2, 1, 2, 2],
+    picked[2, 2, 1, 1], picked[2, 2, 1, 2], picked[2, 2, 2, 1], picked[2, 2, 2, 2]};
+end ObserveMiddleSlice;
+"#,
+    );
+    // y[i,j,k,l] = b[k,j,l].
+    assert_elements(
+        &lowered.elements,
+        &[
+            1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0, 1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0,
+        ],
+    );
+    assert_no_compact_owner(&lowered);
 }

@@ -576,7 +576,7 @@ fn binder_slice_gain(
             }
             let mut scan = SliceScan::new(binder, shapes);
             scan.subscripts(subscripts)?;
-            Some(scan.gain())
+            scan.gain(expression)
         }
         Expression::Index {
             base, subscripts, ..
@@ -588,9 +588,14 @@ fn binder_slice_gain(
             }
             let mut scan = SliceScan::new(binder, shapes);
             scan.subscripts(subscripts)?;
-            Some(scan.gain())
+            scan.gain(expression)
         }
-        Expression::Unary { rhs, .. } => binder_slice_gain(rhs, binder, shapes),
+        // MLS §10.6.1 negation is element-wise, so it keeps its operand's gain
+        // — including a trailing one, which `reject_trailing` then refuses
+        // rather than carry outward as the loop's stack.
+        Expression::Unary { rhs, .. } => {
+            binder_slice_gain(rhs, binder, shapes).and_then(reject_trailing)
+        }
         Expression::Binary { op, lhs, rhs, .. } => {
             let lhs_gain = binder_slice_gain(lhs, binder, shapes)?;
             let rhs_gain = binder_slice_gain(rhs, binder, shapes)?;
@@ -601,7 +606,7 @@ fn binder_slice_gain(
             else_branch,
             ..
         } => {
-            let gain = binder_slice_gain(else_branch, binder, shapes)?;
+            let gain = reject_trailing(binder_slice_gain(else_branch, binder, shapes)?)?;
             for (condition, value) in branches {
                 if binder_slice_gain(condition, binder, shapes)?.gains()
                     || binder_slice_gain(value, binder, shapes)? != gain
@@ -612,7 +617,9 @@ fn binder_slice_gain(
             Some(gain)
         }
         Expression::Literal { .. } | Expression::Empty { .. } => Some(SliceGain::Invariant),
-        Expression::FieldAccess { base, .. } => binder_slice_gain(base, binder, shapes),
+        Expression::FieldAccess { base, .. } => {
+            binder_slice_gain(base, binder, shapes).and_then(reject_trailing)
+        }
         // MLS §10.6.1 applies these operators element-wise to an array
         // argument, so an argument that gained the sliced dimension keeps the
         // per-element meaning the scalar loop wrote.
@@ -670,6 +677,15 @@ fn binder_slice_gain(
 /// leading dimension of its own, so `{f(x[j]), g(x[j])}` compacts to the
 /// *transpose* of the matrix the loop wrote, at identical shape whenever the
 /// constructor's element count equals the sliced extent.
+///
+/// A two-valued "leading or nothing" lattice cannot express the textbook matrix
+/// product. `y[i,j] := a[i,:] * b[:,j]` slices `b`'s *trailing* dimension, and
+/// MLS §10.6.4's vector-matrix product then contracts `b`'s leading one — so the
+/// sliced dimension is the compacted result's only dimension, which is the very
+/// leading stack the loop wrote. "Gained trailing, then contracted back to
+/// leading" is a legal path through the rewrite and needs a name of its own;
+/// [`SliceGain::Trailing`] is that name, and [`binder_slice_product`] is the one
+/// place it is allowed to reach an answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SliceGain {
     /// The subtree never reads the binder. The rewrite leaves it — and, which
@@ -678,12 +694,34 @@ enum SliceGain {
     Invariant,
     /// The subtree gains the sliced dimension as its leading dimension.
     Leading,
+    /// The subtree gains the sliced dimension as its *trailing* dimension:
+    /// every dimension the per-iteration read produces comes ahead of it.
+    ///
+    /// This is not a stack the scalar loop wrote, so it is never an answer on
+    /// its own — [`compact_one_perfect_inner_loop`] demands
+    /// [`SliceGain::Leading`] of the whole value. It is admitted only where MLS
+    /// §10.6.4 contracts it back to leading, and refused by every other
+    /// operator, which is what keeps the single admitted rule from widening
+    /// into the transposition defects this proof exists to catch.
+    Trailing,
 }
 
 impl SliceGain {
     fn gains(self) -> bool {
-        matches!(self, Self::Leading)
+        matches!(self, Self::Leading | Self::Trailing)
     }
+}
+
+/// Refuse a trailing gain, which only MLS §10.6.4's vector-matrix product may
+/// consume.
+///
+/// Every operator that propagates its operand's gain unchanged — negation, a
+/// record field projection, the branches of an `if` — would carry a trailing
+/// gain outward as if it were the loop's stack. Refusing here costs a
+/// compaction the two-valued lattice already refused, and keeps the new value
+/// confined to the one rule that proves it back into a leading one.
+fn reject_trailing(gain: SliceGain) -> Option<SliceGain> {
+    (gain != SliceGain::Trailing).then_some(gain)
 }
 
 /// One left-to-right scan of a reference's subscripts.
@@ -722,9 +760,8 @@ impl<'scope> SliceScan<'scope> {
         if is_binder_subscript(subscript, self.binder) {
             // Naming the binder twice in one reference — `a[j,j]` — slices two
             // dimensions of the same read, which is a submatrix rather than the
-            // diagonal the scalar loop walked. A dimension raised ahead of it
-            // puts the loop's stack second.
-            if self.sliced || self.leading > 0 {
+            // diagonal the scalar loop walked.
+            if self.sliced {
                 return None;
             }
             self.sliced = true;
@@ -741,11 +778,41 @@ impl<'scope> SliceScan<'scope> {
         Some(())
     }
 
-    fn gain(&self) -> SliceGain {
-        if self.sliced {
-            SliceGain::Leading
-        } else {
-            SliceGain::Invariant
+    /// Where this read carries the sliced dimension, given the rank the read
+    /// has *per iteration*.
+    ///
+    /// The scan counts the dimensions produced ahead of the sliced subscript
+    /// directly. It cannot count the ones produced after it the same way: MLS
+    /// §10.5.3 appends every *unsubscripted* dimension behind the subscripted
+    /// ones, so `b[:,j]` on a `b[3,4,5]` puts the sliced dimension in the
+    /// middle while naming nothing after it. The per-iteration rank closes
+    /// that gap — it counts every dimension the read produces, so the ones
+    /// behind the slice are exactly `rank - leading`, however they were
+    /// spelled. The sliced dimension is therefore trailing precisely when
+    /// `leading == rank`, and a slice with dimensions on both sides is neither
+    /// gain and is refused.
+    fn gain(&self, read: &Expression) -> Option<SliceGain> {
+        if !self.sliced {
+            return Some(SliceGain::Invariant);
+        }
+        if self.leading == 0 {
+            return Some(SliceGain::Leading);
+        }
+        (self.leading == binder_slice_rank(read, self.shapes)?).then_some(SliceGain::Trailing)
+    }
+
+    /// The gain of a read that may only ever be the loop's own leading stack.
+    ///
+    /// An assignment target is the one such read: `A[..,r,..]` names the
+    /// coordinates the loop wrote, and only a leading slice makes the compacted
+    /// write cover them in the order the iterations produced. Answering without
+    /// the per-iteration rank keeps the target scan independent of whether the
+    /// target's shape happens to be provable.
+    fn leading_gain(&self) -> Option<SliceGain> {
+        match (self.sliced, self.leading) {
+            (false, _) => Some(SliceGain::Invariant),
+            (true, 0) => Some(SliceGain::Leading),
+            (true, _) => None,
         }
     }
 }
@@ -773,7 +840,7 @@ fn binder_slice_target_gain(
     for part in component.parts() {
         scan.subscripts(&part.subs)?;
     }
-    Some(scan.gain())
+    scan.leading_gain()
 }
 
 fn binder_slice_binary(
@@ -784,6 +851,15 @@ fn binder_slice_binary(
 ) -> Option<SliceGain> {
     use rumoca_core::OpBinary;
     let ((lhs_value, lhs_gain), (rhs_value, rhs_gain)) = (lhs, rhs);
+    if !matches!(op, OpBinary::Mul) {
+        // `*` is the only operator whose MLS §10.6.4 reading can contract a
+        // trailing gain back into the loop's leading stack. Every other
+        // operator here either requires equal shapes or broadcasts a scalar,
+        // and both of those carry the sliced dimension outward exactly where
+        // the operand put it — which is not where the loop stacked it.
+        reject_trailing(lhs_gain)?;
+        reject_trailing(rhs_gain)?;
+    }
     match op {
         OpBinary::Mul => binder_slice_product((lhs_value, lhs_gain), (rhs_value, rhs_gain), shapes),
         // MLS §10.6.4 admits only a scalar divisor and a scalar exponent. A
@@ -838,11 +914,21 @@ fn binder_slice_binary(
 ///   vector or a matrix — `[n, k] * [k]` and `[n, k] * [k, m]` contract exactly
 ///   the dimension the source contracted and leave `n` leading.
 ///
-/// The two refusals that most look right are the defects this proof exists for.
-/// A sliced *right* factor is contracted on the dimension the slice added:
-/// `a[i,:] * b[j,:]` is a scalar product of two rows, and `a[i,:] * b[r,:]`
-/// reads `n` as `b`'s inner dimension and returns `a * b`. And slicing both
-/// operands contracts the loop's own dimension away.
+/// The refusal that most looks right is the defect this proof exists for. A
+/// sliced right factor that gained its dimension *leading* is contracted on the
+/// dimension the slice added: `a[i,:] * b[j,:]` is a scalar product of two rows,
+/// and `a[i,:] * b[r,:]` reads `n` as `b`'s inner dimension and returns `a * b`.
+/// Slicing both operands likewise contracts the loop's own dimension away.
+///
+/// A right factor that gained its dimension *trailing* is the opposite case,
+/// and it is the ordinary matrix product. `y[i,j] := a[i,:] * b[:,j]` slices
+/// `b`'s second dimension, so `b[:,r]` is the `[k, n]` matrix whose *leading*
+/// dimension is the one the source contracted. MLS §10.6.4's vector-matrix
+/// product contracts exactly that one, leaving `[n]` — the sliced dimension,
+/// alone and therefore leading, which is the stack the scalar loop wrote.
+/// Element for element, `(a[i,:] * b[:,r])[j] = sum(k) a[i,k] * b[k,j]` is the
+/// `y[i,j]` the loop assigned. Both operands must be vectors per iteration for
+/// that reading to be the one MLS picks, which is what the ranks below check.
 fn binder_slice_product(
     lhs: (&Expression, SliceGain),
     rhs: (&Expression, SliceGain),
@@ -851,7 +937,6 @@ fn binder_slice_product(
     let ((lhs_value, lhs_gain), (rhs_value, rhs_gain)) = (lhs, rhs);
     match (lhs_gain, rhs_gain) {
         (SliceGain::Invariant, SliceGain::Invariant) => Some(SliceGain::Invariant),
-        (SliceGain::Leading, SliceGain::Leading) => None,
         (SliceGain::Leading, SliceGain::Invariant) => {
             let factor = binder_slice_rank(rhs_value, shapes)?;
             let sliced = binder_slice_rank(lhs_value, shapes)?;
@@ -861,6 +946,19 @@ fn binder_slice_product(
         (SliceGain::Invariant, SliceGain::Leading) => {
             (binder_slice_rank(lhs_value, shapes)? == 0).then_some(SliceGain::Leading)
         }
+        // The one rule that consumes a trailing gain: two per-iteration vectors
+        // whose scalar product becomes the vector-matrix product contracting
+        // the dimension the slice did *not* add.
+        (SliceGain::Invariant, SliceGain::Trailing) => (binder_slice_rank(lhs_value, shapes)? == 1
+            && binder_slice_rank(rhs_value, shapes)? == 1)
+            .then_some(SliceGain::Leading),
+        // A trailing gain on the *left* is contracted away or transposed: with
+        // `a[:,j] * v` the compacted `a[:,r]` is `[k, n]`, whose second
+        // dimension MLS §10.6.4 contracts against `v` — so the surviving `[k]`
+        // is not the loop's stack at all, and against a scalar the result is
+        // `[k, n]` where the loop wrote `[n, k]`. Slicing both operands
+        // contracts the loop's own dimension away whichever end it landed on.
+        _ => None,
     }
 }
 
@@ -896,7 +994,12 @@ fn binder_slice_broadcast(
 ) -> Option<SliceGain> {
     let mut gains = Vec::with_capacity(expressions.len());
     for expression in expressions {
-        gains.push(binder_slice_gain(expression, binder, shapes)?);
+        // An element-wise builtin maps over whatever shape it is handed, so it
+        // would report a trailing gain as the loop's leading stack. Only
+        // MLS §10.6.4's vector-matrix product may consume one.
+        gains.push(reject_trailing(binder_slice_gain(
+            expression, binder, shapes,
+        )?)?);
     }
     if !gains.iter().any(|gain| gain.gains()) {
         return Some(SliceGain::Invariant);
