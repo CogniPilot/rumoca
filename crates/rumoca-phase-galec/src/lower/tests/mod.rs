@@ -1652,7 +1652,7 @@ fn whole_array_move_needs_shape_equality_not_just_subscript_identity() {
         };
 
         // Identity subscripts, equal declared shapes: the move is provable.
-        let proven = user_functions::provable_whole_array_move(
+        let proven = whole_array_move::provable_whole_array_move(
             &mut lowerer,
             &projection("exact"),
             std::slice::from_ref(&index),
@@ -1672,7 +1672,7 @@ fn whole_array_move_needs_shape_equality_not_just_subscript_identity() {
         // write a whole-array assignment between differently-shaped objects,
         // so the loop must stay.
         assert_eq!(
-            user_functions::provable_whole_array_move(
+            whole_array_move::provable_whole_array_move(
                 &mut lowerer,
                 &projection("wide"),
                 std::slice::from_ref(&index),
@@ -1685,7 +1685,7 @@ fn whole_array_move_needs_shape_equality_not_just_subscript_identity() {
 
         // Element type is part of the shape: same extents, different scalar.
         assert_eq!(
-            user_functions::provable_whole_array_move(
+            whole_array_move::provable_whole_array_move(
                 &mut lowerer,
                 &projection("exact"),
                 std::slice::from_ref(&index),

@@ -14,6 +14,7 @@ mod expression_projection;
 mod pre_references;
 mod start;
 mod user_functions;
+mod whole_array_move;
 
 use std::collections::{HashMap, HashSet};
 
