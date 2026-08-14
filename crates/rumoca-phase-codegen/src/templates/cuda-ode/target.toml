@@ -1,0 +1,42 @@
+version = 1
+ir = "solve"
+name = "cuda-ode"
+description = "Batched CUDA C explicit-ODE right-hand-side evaluator from checked Solve IR"
+execution_mode = "compiled"
+deployment_class = "gpu"
+readiness_level = 1
+completion_message = """CUDA ODE right-hand-side source written to: {{ out_dir }}
+Compile: nvcc -c {{ out_dir }}/{{ model_name }}_ode.cu"""
+
+[capabilities]
+continuous_states = true
+residual_equations = false
+scalar_fallback = true
+external_functions = false
+external_tables = false
+random = false
+initialization = false
+events = false
+runtime_events = false
+clocks = false
+dynamic_ranges = false
+dynamic_derivative_subscripts = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+[capabilities.tensor]
+matmul = "scalar"
+linsolve = "unsupported"
+elementwise = "scalar"
+stencil = "scalar"
+reductions = "scalar"
+layout = "row-major"
+supports_dynamic_shapes = false
+sparse = false
+dtypes = ["f64"]
+
+[[files]]
+path = "{{ model_name }}_ode.cu"
+template = "model_ode.cu.jinja"

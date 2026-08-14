@@ -1,78 +1,247 @@
-{# Flat Modelica output template — matches OMC instantiateModel() format. #}
-{%- set cfg = {
-  "power": "^",
-  "and_op": "and",
-  "or_op": "or",
-  "not_op": "not ",
-  "true_val": "true",
-  "false_val": "false",
-  "array_start": "{",
-  "array_end": "}",
-  "if_style": "modelica",
-  "sanitize_dots": false,
-  "one_based_index": true,
-  "modelica_builtins": true
-} -%}
-{#- Macro: variable attributes (unit, min, max, start, fixed, nominal, stateSelect) -#}
-{%- macro var_attrs(var) -%}
-{%- set ns = namespace(parts="") -%}
-{%- if var.unit -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ 'unit = "' ~ var.unit ~ '"' -%}
+{% macro scalar_name(scalar, provenance) -%}
+{%- if scalar == "real" -%}Real
+{%- elif scalar == "integer" -%}Integer
+{%- elif scalar == "boolean" -%}Boolean
+{%- elif scalar == "string" -%}String
+{%- elif scalar == "record" -%}record
+{%- else -%}{{ fail_at("unsupported-feature:dae-modelica-scalar:" ~ scalar, provenance) }}
 {%- endif -%}
-{%- if var.min is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "min = " ~ render_expr(var.min, cfg) -%}
+{%- endmacro %}
+
+{% macro type_decl(name, type_id) -%}
+{%- set ty = dae.value_types[type_id].value_type -%}
+{{ ty.record_name if ty.record_name is not none else scalar_name(ty.scalar, dae.value_types[type_id].provenance) }} {{ name }}
+{%- if ty.dimensions | length > 0 -%}
+[{% for extent in ty.dimensions %}{{ extent }}{% if not loop.last %}, {% endif %}{% endfor %}]
 {%- endif -%}
-{%- if var.max is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "max = " ~ render_expr(var.max, cfg) -%}
+{%- endmacro %}
+
+{% macro binary_operator(operator, provenance) -%}
+{%- if operator in ["add", "elementwise_add"] -%}+
+{%- elif operator in ["subtract", "elementwise_subtract"] -%}-
+{%- elif operator == "multiply" -%}*
+{%- elif operator == "elementwise_multiply" -%}.*
+{%- elif operator == "divide" -%}/
+{%- elif operator == "elementwise_divide" -%}./
+{%- elif operator == "power" -%}^
+{%- elif operator == "elementwise_power" -%}.^
+{%- elif operator == "equal" -%}==
+{%- elif operator == "not_equal" -%}<>
+{%- elif operator == "less" -%}<
+{%- elif operator == "less_equal" -%}<=
+{%- elif operator == "greater" -%}>
+{%- elif operator == "greater_equal" -%}>=
+{%- elif operator == "and" -%}and
+{%- elif operator == "or" -%}or
+{%- else -%}{{ fail_at("unsupported-feature:dae-modelica-binary-operator:" ~ operator, provenance) }}
 {%- endif -%}
-{%- if var.start is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "start = " ~ render_expr(var.start, cfg) -%}
+{%- endmacro %}
+
+{% macro coordinate(c, provenance) -%}
+{%- if c.kind in ["parameter", "input", "state", "algebraic", "discrete_real", "discrete_value"] -%}
+{{ dae.variables[c.id].name }}
+{%- elif c.kind == "derivative" -%}der({{ dae.variables[c.id].name }})
+{%- elif c.kind in ["pre_discrete_real", "pre_discrete_value"] -%}pre({{ dae.variables[c.id].name }})
+{%- elif c.kind == "time" -%}time
+{%- elif c.kind == "condition" -%}$condition{{ c.id }}
+{%- elif c.kind == "delay" -%}$delay{{ c.id }}
+{%- elif c.kind == "previous" -%}$previous{{ c.id }}
+{%- elif c.kind == "clock_interval" -%}interval()
+{%- elif c.kind == "terminal" -%}$terminal{{ c.id }}
+{%- elif c.kind == "binder" -%}{{ dae.domains[c.domain].domain.binders[c.ordinal].display_name }}
+{%- elif c.kind == "function_parameter" -%}{{ dae.functions[c.function].parameters[c.ordinal].name }}
+{%- else -%}{{ fail_at("unsupported-feature:dae-modelica-coordinate:" ~ c.kind, provenance) }}
 {%- endif -%}
-{%- if var.fixed is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "fixed = " ~ ("true" if var.fixed else "false") -%}
+{%- endmacro %}
+
+{% macro subscript(s) -%}
+{%- if s.kind == "whole" -%}:
+{%- elif s.kind in ["index", "slice"] -%}{{ expr(s.expression) }}
+{%- else -%}{{ fail_at("unsupported-feature:dae-modelica-subscript:" ~ s.kind, s.provenance) }}
 {%- endif -%}
-{%- if var.nominal is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "nominal = " ~ render_expr(var.nominal, cfg) -%}
+{%- endmacro %}
+
+{% macro expression_list(ids) -%}
+{%- for id in ids -%}{{ expr(id) }}{% if not loop.last %}, {% endif %}{%- endfor -%}
+{%- endmacro %}
+
+{% macro expr(id) -%}
+{%- set e = dae.expressions[id] -%}
+{%- set op = e.operation -%}
+{%- if op.kind == "literal" -%}
+  {%- if op.value.real is defined -%}{{ op.value.real }}
+  {%- elif op.value.integer is defined -%}{{ op.value.integer }}
+  {%- elif op.value.enumeration is defined -%}{{ op.value.enumeration }}
+  {%- elif op.value.boolean is defined -%}{{ op.value.boolean }}
+  {%- elif op.value.string is defined -%}{{ op.value.string | tojson }}
+  {%- else -%}{{ fail_at("unsupported-feature:dae-modelica-literal", e.provenance) }}
+  {%- endif -%}
+{%- elif op.kind == "coordinate" -%}{{ coordinate(op.coordinate, e.provenance) }}
+{%- elif op.kind == "unary" -%}(
+  {%- if op.operator == "plus" -%}+
+  {%- elif op.operator == "negate" -%}-
+  {%- elif op.operator == "not" -%}not{{ " " }}
+  {%- else -%}{{ fail_at("unsupported-feature:dae-modelica-unary-operator:" ~ op.operator, e.provenance) }}
+  {%- endif -%}
+  {{- expr(op.operand) }})
+{%- elif op.kind == "binary" -%}({{ expr(op.lhs) }} {{ binary_operator(op.operator, e.provenance) }} {{ expr(op.rhs) }})
+{%- elif op.kind == "conditional" -%}
+  {%- for ordinal in range(0, op.operands | length - 1, 2) -%}
+    {{ "if" if loop.first else "elseif" }} {{ expr(op.operands[ordinal]) }} then {{ expr(op.operands[ordinal + 1]) }}
+  {%- endfor -%}
+  else {{ expr(op.operands[op.operands | length - 1]) }}
+{%- elif op.kind == "array" -%}{{ "{" }}{{ expression_list(op.elements) }}{{ "}" }}
+{%- elif op.kind == "record" -%}{{ dae.value_types[e.value_type_id].value_type.record_name }}({{ expression_list(op.fields) }})
+{%- elif op.kind == "field" -%}{{ expr(op.base) }}.{{ dae.value_types[dae.expressions[op.base].value_type_id].value_type.record_fields[op.field].name }}
+{%- elif op.kind == "range" -%}
+{{ op.start.value }}:{% if op.explicit_step is not none %}{{ op.explicit_step.value }}:{% endif %}{{ op.stop.value }}
+{%- elif op.kind == "comprehension" -%}
+{{ "{" }}{{ expr(op.body) }} for {% for binder in dae.domains[op.domain].domain.binders %}{{ binder.display_name }} in {{ binder.lower }}:{% if binder.step != 1 %}{{ binder.step }}:{% endif %}{{ binder.upper }}{% if not loop.last %}, {% endif %}{% endfor %}{{ "}" }}
+{%- elif op.kind == "index" -%}
+{{ expr(op.base) }}[{% for item in op.subscripts %}{{ subscript(item) }}{% if not loop.last %}, {% endif %}{% endfor %}]
+{%- elif op.kind == "array_update" -%}
+{{ fail_at("unsupported-feature:dae-modelica-expression:array_update", e.provenance) }}
+{%- elif op.kind == "builtin" -%}
+  {%- if op.builtin == "no_event" -%}noEvent
+  {%- elif op.builtin in ["abs", "sign", "sqrt", "div", "mod", "rem", "floor", "ceil", "integer", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "exp", "log", "log10", "smooth", "homotopy", "min", "max", "sum", "product", "size", "zeros", "ones", "fill", "linspace", "cross"] -%}{{ op.builtin }}
+  {%- else -%}{{ fail_at("unsupported-feature:dae-modelica-builtin:" ~ op.builtin, e.provenance) }}
+  {%- endif -%}
+({{ expression_list(op.arguments) }})
+{%- elif op.kind == "call" -%}
+  {%- if op.output != 0 -%}{{ fail_at("unsupported-feature:dae-modelica-call-output:" ~ op.output, e.provenance) }}
+  {%- else -%}{{ dae.functions[op.function].name }}({{ expression_list(op.arguments) }})
+  {%- endif -%}
+{%- elif op.kind == "function_value" -%}{{ dae.functions[op.function].values[op.value].name }}
+{%- elif op.kind in ["function_fold_parameter", "function_fold_output"] -%}
+{{ dae.functions[op.function].values[dae.functions[op.function].folds[op.fold].targets[op.carried]].name }}
+{%- else -%}
+{{ fail_at("unsupported-feature:dae-modelica-expression:" ~ op.kind, e.provenance) }}
 {%- endif -%}
-{%- if var.state_select and var.state_select != "Default" -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "stateSelect = StateSelect." ~ var.state_select -%}
+{%- endmacro %}
+
+{% macro binder_clause(binder) -%}
+{{ binder.display_name }} in {{ binder.lower }}:{% if binder.step != 1 %}{{ binder.step }}:{% endif %}{{ binder.upper }}
+{%- endmacro %}
+
+{% macro function_statement(function, statement, depth) -%}
+{%- if statement.kind == "assignment" -%}
+  {%- set definition = function.definitions[statement.definition] -%}
+  {%- set rhs = dae.expressions[definition.rhs].operation -%}
+{{ "  " * depth }}{{ function.values[definition.target].name }}{% if rhs.kind == "array_update" -%}
+  {%- set base = dae.expressions[rhs.base].operation -%}
+  {%- if base.kind != "function_value" or base.function != function.id or base.value != definition.target or base.definition != definition.previous_target_definition -%}
+{{ fail_at("unsupported-feature:dae-modelica-array-update-owner", definition.provenance) }}
+  {%- else -%}
+[{% for item in rhs.subscripts %}{{ subscript(item) }}{% if not loop.last %}, {% endif %}{% endfor %}] := {{ expr(rhs.value) }};
+  {%- endif -%}
+  {%- else %} := {{ expr(definition.rhs) }};
+  {%- endif -%}
+  {%- elif statement.kind == "assignment_group" -%}
+  {%- for nested in statement.statements %}
+{{ function_statement(function, nested, depth) }}
+  {%- endfor %}
+  {%- elif statement.kind == "for" -%}
+  {%- set fold = function.folds[statement.fold] -%}
+{{ "  " * depth }}for {% for binder in dae.domains[fold.domain].domain.binders %}{{ binder_clause(binder) }}{% if not loop.last %}, {% endif %}{% endfor %} loop
+  {%- for nested in statement.statements %}
+{{ function_statement(function, nested, depth + 1) }}
+  {%- endfor %}
+{{ "  " * depth }}end for;
+{%- else -%}
+{{ fail("unsupported-feature:dae-modelica-function-statement:" ~ statement.kind) }}
 {%- endif -%}
-{%- if ns.parts %}({{ ns.parts }}){% endif -%}
-{%- endmacro -%}
-{#- Macro: array dimensions -#}
-{%- macro dims(var) -%}
-{%- if var.dims | length > 0 %}[{{ var.dims | join(", ") }}]{% endif -%}
-{%- endmacro -%}
-{#- Macro: description string -#}
-{%- macro desc(var) -%}
-{%- if var.description %} "{{ var.description }}"{% endif -%}
-{%- endmacro -%}
-class {{ model_name }}{% if dae.model_description %} "{{ dae.model_description }}"{% endif %}
-{%- for name, var in dae.p | items %}
-  parameter Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{% if var.start is not none %} = {{ render_expr(var.start, cfg) }}{% endif %}{{ desc(var) }};
-{%- endfor -%}
-{%- for name, var in dae.constants | items %}
-  constant Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{% if var.start is not none %} = {{ render_expr(var.start, cfg) }}{% endif %}{{ desc(var) }};
-{%- endfor -%}
-{%- for name, var in dae.x | items %}
-  Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
-{%- endfor -%}
-{%- for name, var in dae.y | items %}
-  Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
-{%- endfor -%}
-{%- for name, var in dae.u | items %}
-  input Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
-{%- endfor -%}
-{%- for name, var in dae.w | items %}
-  output Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
-{%- endfor -%}
-{%- for name, var in dae.z | items %}
-  discrete Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
+{%- endmacro %}
+
+{% macro function_decl(function) -%}
+function {{ function.name }}
+{%- for parameter in function.parameters %}
+  input {{ type_decl(parameter.name, parameter.value_type) }};
 {%- endfor %}
-equation
-{{ render_dae_equations(dae, "f_x", cfg) }}
-{%- if dae.initial_equations | length > 0 %}
-initial equation
-{{ render_dae_equations(dae, "initial_equations", cfg) }}
+{%- for value in function.values if value.role == "output" %}
+  output {{ type_decl(value.name, value.value_type) }};
+{%- endfor %}
+{%- if function.values | selectattr("role", "equalto", "local") | list | length > 0 %}
+protected
+  {%- for value in function.values if value.role == "local" %}
+  {{ type_decl(value.name, value.value_type) }};
+  {%- endfor %}
 {%- endif %}
+algorithm
+{%- for statement in function.statements %}
+{{ function_statement(function, statement, 1) }}
+{%- endfor %}
+end {{ function.name }};
+{%- endmacro %}
+
+{% macro variable_decl(variable) -%}
+{%- set ty = dae.value_types[variable.value_type_id].value_type -%}
+{%- if ty.scalar == "record" -%}
+{{ fail_at("unsupported-feature:dae-modelica-variable-record", variable.declaration) }}
+{%- endif -%}
+{%- if variable.role == "parameter" -%}parameter{{ " " }}
+{%- elif variable.role == "constant" -%}constant{{ " " }}
+{%- elif variable.role == "input" -%}input{{ " " }}
+{%- elif variable.role == "output" -%}output{{ " " }}
+{%- elif variable.role in ["discrete_real", "discrete_value"] -%}discrete{{ " " }}
+{%- elif variable.role in ["state", "algebraic"] -%}
+{%- else -%}{{ fail_at("unsupported-feature:dae-modelica-variable-role:" ~ variable.role, variable.declaration) }}
+{%- endif -%}
+{{ type_decl(variable.name, variable.value_type_id) }}
+{%- set a = variable.attributes -%}
+{%- if a.start is not none or a.minimum is not none or a.maximum is not none or a.nominal is not none or a.fixed is not none or a.unit is not none -%}
+(
+  {%- set parts = [] -%}
+  {%- if a.start is not none -%}{%- set parts = parts + ["start = " ~ expr(a.start)] -%}{%- endif -%}
+  {%- if a.minimum is not none -%}{%- set parts = parts + ["min = " ~ expr(a.minimum)] -%}{%- endif -%}
+  {%- if a.maximum is not none -%}{%- set parts = parts + ["max = " ~ expr(a.maximum)] -%}{%- endif -%}
+  {%- if a.nominal is not none -%}{%- set parts = parts + ["nominal = " ~ expr(a.nominal)] -%}{%- endif -%}
+  {%- if a.fixed is not none -%}{%- set parts = parts + ["fixed = " ~ a.fixed] -%}{%- endif -%}
+  {%- if a.unit is not none -%}{%- set parts = parts + ["unit = " ~ (a.unit | tojson)] -%}{%- endif -%}
+  {{- parts | join(", ") -}}
+)
+{%- endif -%}
+{%- if a.binding is not none %} = {{ expr(a.binding) }}{% endif -%}
+{%- if a.description is not none %} {{ a.description | tojson }}{% endif %};
+{%- endmacro %}
+
+{% macro residual(id) -%}
+{%- set expression = dae.expressions[id] -%}
+{%- if expression.value_type.dimensions | length == 0 -%}0.0
+{%- else -%}zeros({% for extent in expression.value_type.dimensions %}{{ extent }}{% if not loop.last %}, {% endif %}{% endfor %})
+{%- endif %} = {{ expr(id) }};
+{%- endmacro %}
+
+{% macro equation_owner(owner) -%}
+{%- if owner.kind == "residual" -%}
+{{ residual(owner.residual) }}
+{%- elif owner.kind == "structured" -%}
+for {% for binder in dae.domains[owner.domain].domain.binders %}{{ binder_clause(binder) }}{% if not loop.last %}, {% endif %}{% endfor %} loop
+  {%- for body in owner.bodies %}
+  {{ residual(body) }}
+  {%- endfor %}
+end for;
+{%- else -%}
+{{ fail_at("unsupported-feature:dae-modelica-equation-owner:" ~ owner.kind, owner.provenance) }}
+{%- endif -%}
+{%- endmacro %}
+
+class {{ model_name }}
+{% for function in dae.functions %}
+  {{ function_decl(function) | indent(2) }}
+{% endfor %}
+{% for variable in dae.variables %}
+  {{ variable_decl(variable) }}
+{% endfor %}
+{% if dae.systems.continuous.owners | length > 0 %}
+equation
+{% for owner in dae.systems.continuous.owners %}
+  {{ equation_owner(owner) | indent(2) }}
+{% endfor %}
+{% endif %}
+{% if dae.systems.initialization.owners | length > 0 %}
+initial equation
+{% for owner in dae.systems.initialization.owners %}
+  {{ equation_owner(owner) | indent(2) }}
+{% endfor %}
+{% endif %}
 end {{ model_name }};
