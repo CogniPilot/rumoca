@@ -13,14 +13,16 @@ fn compile_failure_report_handles_missing_primary_label() {
     let failure = ModelFailureDiagnostic {
         model_name: "Broken".to_string(),
         phase: None,
-        error_code: Some("EX999".to_string()),
+        error_code: Some("ZZ999".to_string()),
         error: "phase failed before labeling source".to_string(),
         primary_label: None,
+        secondary_labels: Vec::new(),
+        notes: Vec::new(),
     };
     let report = build_compile_failure_report(&failure, &SourceMap::new());
     let rendered = format!("{report:?}");
 
-    assert!(rendered.contains("EX999"));
+    assert!(rendered.contains("ZZ999"));
     assert!(rendered.contains("missing a primary source label"));
 }
 
@@ -29,19 +31,60 @@ fn compile_failure_report_handles_missing_label_source() {
     let failure = ModelFailureDiagnostic {
         model_name: "Broken".to_string(),
         phase: None,
-        error_code: Some("EX998".to_string()),
+        error_code: Some("ZZ998".to_string()),
         error: "phase emitted stale source id".to_string(),
         primary_label: Some(Label::primary(Span::from_offsets(
             SourceId::from_source_name("rumoca_main_tests_source_99.mo"),
             0,
             1,
         ))),
+        secondary_labels: Vec::new(),
+        notes: Vec::new(),
     };
     let report = build_compile_failure_report(&failure, &SourceMap::new());
     let rendered = format!("{report:?}");
 
-    assert!(rendered.contains("EX998"));
+    assert!(rendered.contains("ZZ998"));
     assert!(rendered.contains("references a missing source file"));
+}
+
+/// A label pointing into a file other than the one the report renders cannot
+/// become a miette label — miette draws one source per report — so it must
+/// survive as a note naming a one-based `file:line:col`. Dropping it is the
+/// silent loss this renderer exists to prevent.
+#[test]
+fn compile_failure_report_names_a_label_from_another_file() {
+    let mut source_map = SourceMap::new();
+    let anchor_source = source_map.add("anchor.mo", "model A\n  Real x;\nend A;\n");
+    let other_source = source_map.add("other.mo", "connector C\n  Real e;\nend C;\n");
+    let failure = ModelFailureDiagnostic {
+        model_name: "A".to_string(),
+        phase: None,
+        error_code: Some("ZZ997".to_string()),
+        error: "two files, one report".to_string(),
+        primary_label: Some(
+            Label::primary(Span::from_offsets(anchor_source, 10, 14)).with_message("used here"),
+        ),
+        // `Real e;` starts at byte 14 of other.mo: line 2, column 3 one-based.
+        secondary_labels: vec![
+            Label::secondary(Span::from_offsets(other_source, 14, 20))
+                .with_message("declared here"),
+        ],
+        notes: vec!["MLS §9.1: connectors must match".to_string()],
+    };
+    let report = build_compile_failure_report(&failure, &source_map);
+    let rendered = format!("{report:?}");
+
+    assert!(rendered.contains("ZZ997"), "{rendered}");
+    assert!(rendered.contains("used here"), "{rendered}");
+    assert!(
+        rendered.contains("declared here: ") && rendered.contains("other.mo:2:3"),
+        "the cross-file label must survive as a one-based location: {rendered}"
+    );
+    assert!(
+        rendered.contains("MLS §9.1: connectors must match"),
+        "the diagnostic note must reach the CLI: {rendered}"
+    );
 }
 
 #[test]
@@ -89,6 +132,28 @@ fn expand_trace_filter_expands_short_phase_aliases() {
         expand_trace_filter("resolve:debug,solve:info"),
         "rumoca_phase_resolve=debug,rumoca_phase_solve=info"
     );
+}
+
+/// The backend-neutral simulation driver traces under `rumoca_solver::driver`,
+/// not under a concrete backend's namespace (SPEC_0029 §3b). The `bdf` alias
+/// must keep pointing at the diffsol backend's own target.
+#[test]
+fn expand_trace_filter_exposes_backend_neutral_driver_target() {
+    assert_eq!(expand_trace_filter("driver"), "rumoca_solver::driver=debug");
+    assert_eq!(
+        expand_trace_filter("driver:trace"),
+        "rumoca_solver::driver=trace"
+    );
+    assert_eq!(
+        expand_trace_filter("bdf"),
+        "rumoca_solver_diffsol::bdf=debug"
+    );
+    assert_eq!(
+        expand_trace_filter("driver"),
+        format!("{}=debug", rumoca_solver::DRIVER_TRACE_TARGET),
+        "the `driver` alias must track the constant the driver actually traces under"
+    );
+    assert!(TRACE_LONG_HELP.contains("::driver"));
 }
 
 #[test]
@@ -396,21 +461,13 @@ fn compile_phase_maps_to_template_ir() {
 #[test]
 fn cli_parses_compile_manifest_target() {
     let cli = Cli::try_parse_from([
-        "rumoca",
-        "compile",
-        "model.mo",
-        "--model",
-        "M",
-        "--target",
-        "embedded-c",
-        "--output",
-        "out",
+        "rumoca", "compile", "model.mo", "--model", "M", "--target", "c-ode", "--output", "out",
     ])
     .expect("parse compile target");
     match cli.command {
         Commands::Compile(args) => {
             assert_eq!(args.input.options.model.as_deref(), Some("M"));
-            assert_eq!(args.target.as_deref(), Some("embedded-c"));
+            assert_eq!(args.target.as_deref(), Some("c-ode"));
             assert_eq!(args.output, Some(PathBuf::from("out")));
         }
         other => panic!("expected compile command, got {other:?}"),
@@ -420,14 +477,14 @@ fn cli_parses_compile_manifest_target() {
 #[test]
 fn cli_parses_compile_builtin_manifest_target() {
     let cli = Cli::try_parse_from([
-        "rumoca", "compile", "model.mo", "--model", "M", "--target", "sympy", "--output",
+        "rumoca", "compile", "model.mo", "--model", "M", "--target", "c-ode", "--output",
         "model.py",
     ])
     .expect("parse compile template target");
     match cli.command {
         Commands::Compile(args) => {
             assert_eq!(args.input.options.model.as_deref(), Some("M"));
-            assert_eq!(args.target.as_deref(), Some("sympy"));
+            assert_eq!(args.target.as_deref(), Some("c-ode"));
             assert_eq!(args.output, Some(PathBuf::from("model.py")));
         }
         other => panic!("expected compile command, got {other:?}"),
@@ -464,7 +521,7 @@ fn compile_flag_separation_is_enforced() {
     // --emit and --target are mutually exclusive (don't overload --target).
     assert!(
         Cli::try_parse_from([
-            "rumoca", "compile", "m.mo", "--emit", "dae-mo", "--target", "sympy"
+            "rumoca", "compile", "m.mo", "--emit", "dae-mo", "--target", "c-ode"
         ])
         .is_err()
     );
@@ -479,7 +536,6 @@ fn compile_flag_separation_is_enforced() {
     );
     // every <stage>-<format> dump value is accepted.
     for value in [
-        "ast-mo",
         "ast-json",
         "flat-mo",
         "flat-json",
@@ -498,7 +554,7 @@ fn compile_flag_separation_is_enforced() {
 
 #[test]
 fn cli_rejects_compile_backend_option() {
-    let err = Cli::try_parse_from(["rumoca", "compile", "model.mo", "--backend", "sympy"])
+    let err = Cli::try_parse_from(["rumoca", "compile", "model.mo", "--backend", "c-ode"])
         .expect_err("backend option was unified into target");
     assert!(
         err.to_string().contains("unexpected argument '--backend'"),
@@ -510,28 +566,6 @@ fn cli_rejects_compile_backend_option() {
 fn compile_rejects_bare_json_flag() {
     // The old `--json` boolean is gone; JSON is selected via `--emit <stage>-json`.
     assert!(Cli::try_parse_from(["rumoca", "compile", "model.mo", "--json"]).is_err());
-}
-
-#[test]
-fn fmi3_build_uses_fmi3_platform_tuple() {
-    let (fmi2_platform, _) = crate::fmu::fmu_binary_platform(Some("fmi2")).expect("fmi2 platform");
-    let (fmi3_platform, _) = crate::fmu::fmu_binary_platform(Some("fmi3")).expect("fmi3 platform");
-
-    #[cfg(target_os = "linux")]
-    {
-        assert_eq!(fmi2_platform, "linux64");
-        assert_eq!(fmi3_platform, "x86_64-linux");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        assert_eq!(fmi2_platform, "darwin64");
-        assert!(matches!(fmi3_platform, "aarch64-darwin" | "x86_64-darwin"));
-    }
-    #[cfg(target_os = "windows")]
-    {
-        assert_eq!(fmi2_platform, "win64");
-        assert_eq!(fmi3_platform, "x86_64-windows");
-    }
 }
 
 #[test]
@@ -672,4 +706,81 @@ fn compile_target_flat_modelica_uses_flat_template_context() {
         rendered.contains("class Test"),
         "flat-modelica output should contain the rendered flat model: {rendered}"
     );
+}
+
+/// SPEC_0008: a simulation failure must reach a CLI user with its stable code.
+/// Flattening the typed error (`anyhow::Error::msg` / `anyhow!("…: {e}")`)
+/// discards the `EL0xx`/`ES0xx`/`EX0xx` identity the LSP already publishes, so
+/// both `sim` surfaces render it as `[CODE] message`.
+#[test]
+fn simulate_to_value_failure_carries_its_spec_0008_code() {
+    // A model with nothing to solve compiles but declines deterministically in
+    // solve lowering, so this pins the rendering without depending on solver
+    // numerics.
+    let source = "model Empty\nend Empty;\n";
+    let cli = Cli::try_parse_from(["rumoca", "sim", "Empty.mo"]).expect("parse direct sim");
+    let Commands::Sim(args) = cli.command else {
+        panic!("expected the sim command");
+    };
+
+    let error = simulate_to_value(&args, source).expect_err("empty model must fail to simulate");
+    let message = error.to_string();
+    let Some((code, _)) = message
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+    else {
+        panic!("simulation failure must render its code as `[CODE] message`: {message}");
+    };
+    let digits = code.trim_start_matches(|c: char| c.is_ascii_uppercase());
+    assert!(
+        code.starts_with('E') && digits.len() == 3 && digits.chars().all(|c| c.is_ascii_digit()),
+        "expected a SPEC_0008 mnemonic such as `[EL005]`, got `[{code}]` in: {message}"
+    );
+}
+
+#[test]
+fn simulation_failure_error_renders_the_code_prefix() {
+    let error = simulation_failure_error(&rumoca_sim::SimulationDiagnosticError::InvalidOverride {
+        message: "`k` is not a parameter of this model".to_string(),
+    });
+
+    assert_eq!(
+        error.to_string(),
+        "[EX003] `k` is not a parameter of this model"
+    );
+}
+
+/// `--solver` must offer exactly the solvers the rest of the pipeline runs.
+///
+/// The flag is validated by clap against its own value enum, while every
+/// free-text route (scenario `sim.solver`, `experiment(Solver=...)`) is
+/// validated by `rumoca_core::canonical_solver_name`. If the two lists drift, a
+/// name is accepted on one entry point and reported on the other — which is the
+/// split this wave removed.
+#[test]
+fn the_solver_flag_offers_exactly_the_solvers_the_tree_runs() {
+    let mut flag_values: Vec<String> = SimulateSolverMode::value_variants()
+        .iter()
+        .filter_map(|mode| {
+            clap::ValueEnum::to_possible_value(mode).map(|value| value.get_name().to_string())
+        })
+        .collect();
+    flag_values.sort();
+
+    let mut authority: Vec<String> = rumoca_core::SOLVER_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    authority.sort();
+
+    assert_eq!(
+        flag_values, authority,
+        "--solver values and rumoca_core::SOLVER_NAMES must name the same solvers"
+    );
+
+    // And each flag value round-trips through the authority unchanged.
+    for mode in SimulateSolverMode::value_variants() {
+        let label = mode.as_label();
+        assert_eq!(rumoca_core::canonical_solver_name(label), Ok(label));
+    }
 }

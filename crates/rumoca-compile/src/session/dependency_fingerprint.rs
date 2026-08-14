@@ -1,10 +1,11 @@
 use indexmap::{IndexMap, IndexSet};
+use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::PhaseResult;
-use crate::traversal_adapter::collect_class_dependencies;
+use crate::traversal_adapter::{RedeclareSubstitutions, collect_class_dependencies};
 
 pub(crate) type Fingerprint = [u8; 32];
 
@@ -37,10 +38,52 @@ pub(crate) struct DependencyFingerprintCache {
     model_fingerprints: IndexMap<String, Fingerprint>,
 }
 
+enum LifecycleDependency<'tree> {
+    Ordinary,
+    Complete {
+        constructor_def_id: DefId,
+        destructor_def_id: DefId,
+    },
+    Malformed {
+        owner: &'tree ast::ClassDef,
+    },
+}
+
+fn lifecycle_dependency<'tree>(
+    class_index: &ast::ClassDefIndex<'tree>,
+    owner_def_id: DefId,
+    owner: &'tree ast::ClassDef,
+) -> LifecycleDependency<'tree> {
+    match class_index.external_object_lifecycle(owner_def_id) {
+        Ok(None) => LifecycleDependency::Ordinary,
+        Ok(Some(lifecycle)) => LifecycleDependency::Complete {
+            constructor_def_id: lifecycle.constructor_def_id(),
+            destructor_def_id: lifecycle.destructor_def_id(),
+        },
+        Err(_error) => LifecycleDependency::Malformed { owner },
+    }
+}
+
+fn extend_class_dependencies(
+    dependencies: &mut IndexSet<String>,
+    class_index: &ast::ClassDefIndex<'_>,
+    def_ids: impl IntoIterator<Item = DefId>,
+) {
+    dependencies.extend(
+        def_ids
+            .into_iter()
+            .filter_map(|def_id| class_index.qualified_name(def_id))
+            .map(str::to_string),
+    );
+}
+
 impl DependencyFingerprintCache {
     pub(crate) fn from_tree(tree: &ast::ClassTree) -> Self {
         let mut cache = Self::default();
         let mut file_bytes_cache: HashMap<String, Option<Vec<u8>>> = HashMap::new();
+        let class_index = ast::ClassDefIndex::from_tree(tree);
+        let substitutions = RedeclareSubstitutions::from_index(&class_index);
+        let mut direct_dependencies = HashMap::new();
 
         for (qualified_name, &def_id) in &tree.name_map {
             let Some(class) = tree.get_class_by_def_id(def_id) else {
@@ -51,10 +94,60 @@ impl DependencyFingerprintCache {
                 qualified_name.clone(),
                 class_source_fingerprint(tree, class, qualified_name, &mut file_bytes_cache),
             );
-            cache.class_deps.insert(
-                qualified_name.clone(),
-                collect_class_dependencies(tree, class, qualified_name),
-            );
+            let dependencies = direct_dependencies.entry(def_id).or_insert_with(|| {
+                collect_class_dependencies(
+                    tree,
+                    &class_index,
+                    &substitutions,
+                    class,
+                    qualified_name,
+                )
+            });
+            match lifecycle_dependency(&class_index, def_id, class) {
+                LifecycleDependency::Complete {
+                    constructor_def_id,
+                    destructor_def_id,
+                } => {
+                    // MLS §12.9.7: constructor and destructor are one
+                    // lifecycle owned by the ExternalObject class. Add both
+                    // exact child identities atomically.
+                    extend_class_dependencies(
+                        dependencies,
+                        &class_index,
+                        [constructor_def_id, destructor_def_id],
+                    );
+                }
+                LifecycleDependency::Ordinary => {}
+                LifecycleDependency::Malformed { owner } => {
+                    // Planning trees may be incomplete. Conservatively retain
+                    // every exact direct-owned child so strict re-resolution
+                    // diagnoses the original malformed declaration span. This
+                    // is not a lifecycle proof and cannot mint a ResolvedTree.
+                    extend_class_dependencies(
+                        dependencies,
+                        &class_index,
+                        owner.classes.values().filter_map(|child| child.def_id),
+                    );
+                }
+            }
+        }
+
+        for (qualified_name, &def_id) in &tree.name_map {
+            // A nested class's completed Resolve proof and fingerprint depend
+            // on every dependency declared by its lexical ancestors (MLS
+            // §5.3). Exact DefId ancestry gives both reachability and cache
+            // invalidation one effective-dependency definition without
+            // treating unrelated sibling bodies as dependencies.
+            let mut dependencies = class_index
+                .def_ancestry(def_id)
+                .into_iter()
+                .filter_map(|ancestor| direct_dependencies.get(&ancestor))
+                .flat_map(|ancestor_dependencies| ancestor_dependencies.iter().cloned())
+                .collect::<IndexSet<_>>();
+            dependencies.shift_remove(qualified_name);
+            cache
+                .class_deps
+                .insert(qualified_name.clone(), dependencies);
         }
 
         cache
@@ -227,8 +320,11 @@ fn class_source_fingerprint(
     hasher.update(b"rumoca-class-source-v1");
     hasher.update(class_name.as_bytes());
 
-    if let Some(source_id) = tree.source_map.get_id(&location.file_name)
-        && let Some((_, content)) = tree.source_map.get_source(source_id)
+    // Locations carry a `SourceId`, not a path, so the file name is recovered
+    // through the source map. Registered source text hashes exactly the class
+    // byte range the pre-`SourceId` compiler hashed, so warm caches survive.
+    let registered = tree.source_map.get_source(location.source);
+    if let Some((_, content)) = registered
         && !content.is_empty()
     {
         let bytes = content.as_bytes();
@@ -238,19 +334,33 @@ fn class_source_fingerprint(
         }
     }
 
-    let file_bytes = file_bytes_cache
-        .entry(location.file_name.clone())
-        .or_insert_with(|| std::fs::read(&location.file_name).ok());
-    if let Some(bytes) = file_bytes.as_deref()
-        && start < end
-        && end <= bytes.len()
-    {
-        hasher.update(&bytes[start..end]);
-        return *hasher.finalize().as_bytes();
+    // A source map that kept names but dropped contents still yields the real
+    // path, so the class bytes can be recovered from disk. A source that is not
+    // registered at all has no path to read: `fs::read("")` would fail on every
+    // class and collapse them onto one fingerprint, so it is not attempted.
+    let file_name = registered.map(|(name, _)| name);
+    if let Some(file_name) = file_name {
+        let file_bytes = file_bytes_cache
+            .entry(file_name.to_string())
+            .or_insert_with(|| std::fs::read(file_name).ok());
+        if let Some(bytes) = file_bytes.as_deref()
+            && start < end
+            && end <= bytes.len()
+        {
+            hasher.update(&bytes[start..end]);
+            return *hasher.finalize().as_bytes();
+        }
     }
 
-    // Fallback for virtual or unavailable files.
-    hasher.update(location.file_name.as_bytes());
+    // Fallback for virtual or unavailable files. `SourceId` is the stable
+    // identity derived from the file name (SPEC_0008), so it keeps classes in
+    // different files apart even when the map has no name for them or when
+    // several files share one placeholder display name. Hashing only the name
+    // here would let two files collide and serve a stale compile cache.
+    hasher.update(&location.source.0.to_le_bytes());
+    if let Some(file_name) = file_name {
+        hasher.update(file_name.as_bytes());
+    }
     hasher.update(&location.start.to_le_bytes());
     hasher.update(&location.end.to_le_bytes());
     hasher.update(format!("{:?}", class.class_type).as_bytes());
@@ -307,10 +417,10 @@ mod tests {
         session
             .build_resolved()
             .expect("resolved tree should be available");
-        let tree = &session
+        let tree = session
             .ensure_resolved()
             .expect("resolved tree should be cached")
-            .0;
+            .inner();
         let cache = DependencyFingerprintCache::from_tree(tree);
         let deps = cache
             .class_dependencies()
@@ -321,6 +431,185 @@ mod tests {
         assert!(
             deps.iter().any(|dep| dep == "P.Dep"),
             "import dependency should be included in class dependency graph"
+        );
+    }
+
+    #[test]
+    fn from_tree_retains_the_exact_owner_of_an_imported_component() {
+        let source = r#"
+            package P
+              package Constants
+                constant Real pi = 3.141592653589793;
+              end Constants;
+
+              model Root
+                import P.Constants.pi;
+                Real x;
+              equation
+                x = pi;
+              end Root;
+            end P;
+        "#;
+
+        let mut session = Session::default();
+        session
+            .add_document("component_import.mo", source)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        let tree = session
+            .ensure_resolved()
+            .expect("resolved tree should be cached")
+            .inner();
+        let cache = DependencyFingerprintCache::from_tree(tree);
+
+        assert_eq!(
+            cache.class_dependencies().get("P.Root"),
+            Some(&IndexSet::from(["P.Constants".to_string()])),
+            "a component DefId dependency must retain its exact owning class"
+        );
+
+        let report = session.compile_model_strict_reachable_uncached_with_recovery("P.Root");
+        assert!(
+            report.requested_succeeded(),
+            "strict closure must preserve the imported component owner: {:?}",
+            report.requested_result
+        );
+    }
+
+    #[test]
+    fn strict_closure_keeps_distinct_same_leaf_package_targets() {
+        let source = r#"
+            package A
+              package Constants
+                constant Real eps = 0.125;
+              end Constants;
+            end A;
+
+            package B
+              package Constants
+                constant Real eps = 0.5;
+              end Constants;
+            end B;
+
+            model Root
+              Real x = A.Constants.eps;
+              Real y = B.Constants.eps;
+            end Root;
+        "#;
+
+        let mut session = Session::default();
+        session
+            .add_document("same_leaf_packages.mo", source)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        let dependencies = {
+            let tree = session
+                .ensure_resolved()
+                .expect("resolved tree should be cached")
+                .inner();
+            DependencyFingerprintCache::from_tree(tree)
+                .class_dependencies()
+                .get("Root")
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        assert!(
+            dependencies.contains("A.Constants"),
+            "the exact A.Constants owner must survive strict pruning"
+        );
+        assert!(
+            dependencies.contains("B.Constants"),
+            "the exact B.Constants owner must survive strict pruning"
+        );
+        assert!(
+            session.resolve_strict_target("Root").is_ok(),
+            "strict Resolve should retain both same-leaf package targets"
+        );
+    }
+
+    #[test]
+    fn strict_closure_keeps_root_anchor_and_inherited_function_target() {
+        let source = r#"
+            package BaseOperations
+              function evaluate
+                input Real u;
+                output Real y;
+              algorithm
+                y := u;
+              end evaluate;
+            end BaseOperations;
+
+            package DerivedOperations
+              extends BaseOperations;
+            end DerivedOperations;
+
+            model Root
+              Real y = DerivedOperations.evaluate(1.0);
+            end Root;
+        "#;
+
+        let mut session = Session::default();
+        session
+            .add_document("inherited_package_function.mo", source)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        let dependencies = {
+            let tree = session
+                .ensure_resolved()
+                .expect("resolved tree should be cached")
+                .inner();
+            DependencyFingerprintCache::from_tree(tree)
+                .class_dependencies()
+                .get("Root")
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        assert!(
+            dependencies.contains("DerivedOperations"),
+            "the written path anchor must survive strict pruning"
+        );
+        assert!(
+            dependencies.contains("BaseOperations.evaluate"),
+            "the exact inherited function target must survive strict pruning"
+        );
+        assert!(
+            session.resolve_strict_target("Root").is_ok(),
+            "strict Resolve should retain the inherited function target"
+        );
+    }
+
+    #[test]
+    fn from_tree_includes_dependencies_declared_by_lexical_ancestors() {
+        let source = r#"
+            package Icons
+              partial package ExamplesPackage
+              end ExamplesPackage;
+            end Icons;
+            package P
+              extends Icons.ExamplesPackage;
+              package Sub
+                model M
+                  Real x;
+                end M;
+              end Sub;
+            end P;
+        "#;
+
+        let tree = resolved_tree_for("nested.mo", source);
+        let cache = DependencyFingerprintCache::from_tree(&tree);
+
+        assert_eq!(
+            cache.class_dependencies().get("P.Sub.M"),
+            Some(&IndexSet::from(["Icons.ExamplesPackage".to_string()])),
+            "a nested target must inherit dependencies declared by its exact DefId ancestors"
         );
     }
 
@@ -428,10 +717,10 @@ mod tests {
         session_v1
             .build_resolved()
             .expect("first tree should resolve");
-        let tree_v1 = &session_v1
+        let tree_v1 = session_v1
             .ensure_resolved()
             .expect("first resolved tree should be cached")
-            .0;
+            .inner();
         let mut cache_v1 = DependencyFingerprintCache::from_tree(tree_v1);
         let fingerprint_v1 = cache_v1.model_fingerprint("P.Root");
 
@@ -442,16 +731,47 @@ mod tests {
         session_v2
             .build_resolved()
             .expect("second tree should resolve");
-        let tree_v2 = &session_v2
+        let tree_v2 = session_v2
             .ensure_resolved()
             .expect("second resolved tree should be cached")
-            .0;
+            .inner();
         let mut cache_v2 = DependencyFingerprintCache::from_tree(tree_v2);
         let fingerprint_v2 = cache_v2.model_fingerprint("P.Root");
 
         assert_eq!(
             fingerprint_v1, fingerprint_v2,
             "reachable model fingerprint should not change when an unreachable class changes"
+        );
+    }
+
+    #[test]
+    fn nested_model_fingerprint_includes_ancestor_dependencies() {
+        let source_v1 = r#"
+            package Icons
+              partial package ExamplesPackage
+                constant Integer version = 1;
+              end ExamplesPackage;
+            end Icons;
+            package P
+              extends Icons.ExamplesPackage;
+              package Sub
+                model M
+                  Real x;
+                end M;
+              end Sub;
+            end P;
+        "#;
+        let source_v2 = source_v1.replace("version = 1", "version = 2");
+
+        let tree_v1 = resolved_tree_for("ancestor-v1.mo", source_v1);
+        let tree_v2 = resolved_tree_for("ancestor-v2.mo", &source_v2);
+        let mut cache_v1 = DependencyFingerprintCache::from_tree(&tree_v1);
+        let mut cache_v2 = DependencyFingerprintCache::from_tree(&tree_v2);
+
+        assert_ne!(
+            cache_v1.model_fingerprint("P.Sub.M"),
+            cache_v2.model_fingerprint("P.Sub.M"),
+            "a dependency reached through a lexical ancestor must invalidate the nested target"
         );
     }
 
@@ -481,10 +801,10 @@ mod tests {
         session
             .build_resolved()
             .expect("resolved tree should be available");
-        let tree = &session
+        let tree = session
             .ensure_resolved()
             .expect("resolved tree should be cached")
-            .0;
+            .inner();
         let cache = DependencyFingerprintCache::from_tree(tree);
         let deps = cache
             .class_dependencies()
@@ -495,6 +815,109 @@ mod tests {
         assert!(
             deps.iter().any(|dep| dep == "P.Helper"),
             "external declaration arguments should participate in dependency collection"
+        );
+    }
+
+    const FINGERPRINT_MODEL: &str = "model M\n  Real x;\nequation\n  x = 1;\nend M;\n";
+
+    fn resolved_tree_for(uri: &str, source: &str) -> ast::ClassTree {
+        let mut session = Session::default();
+        session
+            .add_document(uri, source)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        session
+            .ensure_resolved()
+            .expect("resolved tree should be cached")
+            .inner()
+            .clone()
+    }
+
+    #[test]
+    fn class_source_fingerprint_hashes_the_registered_class_source_bytes() {
+        // Pins the exact hash input: domain tag, qualified class name, and the
+        // class byte range of the registered source. This is the value the
+        // pre-`SourceId` compiler produced, so warm caches stay valid.
+        let tree = resolved_tree_for("fingerprint_test.mo", FINGERPRINT_MODEL);
+        let class = tree.definitions.classes.get("M").expect("class M");
+        assert_eq!(
+            tree.source_map.name(class.location.source),
+            Some("fingerprint_test.mo"),
+            "the class location must resolve back to its registered file name"
+        );
+
+        let start = class.location.start as usize;
+        let end = class.location.end as usize;
+        assert!(start < end && end <= FINGERPRINT_MODEL.len());
+        let mut expected = blake3::Hasher::new();
+        expected.update(b"rumoca-class-source-v1");
+        expected.update(b"M");
+        expected.update(&FINGERPRINT_MODEL.as_bytes()[start..end]);
+
+        let mut cache = HashMap::new();
+        assert_eq!(
+            class_source_fingerprint(&tree, class, "M", &mut cache),
+            *expected.finalize().as_bytes()
+        );
+    }
+
+    #[test]
+    fn class_source_fingerprint_survives_a_file_rename() {
+        // The class text is what identifies the class; moving the same text to
+        // another file must not invalidate the cached compile result.
+        let first = resolved_tree_for("before_rename.mo", FINGERPRINT_MODEL);
+        let second = resolved_tree_for("after/rename.mo", FINGERPRINT_MODEL);
+        let first_class = first.definitions.classes.get("M").expect("class M");
+        let second_class = second.definitions.classes.get("M").expect("class M");
+        assert_ne!(
+            first_class.location.source, second_class.location.source,
+            "the two files must have distinct source identities"
+        );
+
+        let mut cache = HashMap::new();
+        assert_eq!(
+            class_source_fingerprint(&first, first_class, "M", &mut cache),
+            class_source_fingerprint(&second, second_class, "M", &mut cache)
+        );
+    }
+
+    #[test]
+    fn class_source_fingerprint_keeps_unregistered_sources_apart() {
+        // Without registered source text the fallback has no bytes to hash. It
+        // must still separate identical classes that live in different files,
+        // otherwise one stale entry is served for the other file's compile.
+        let mut first = resolved_tree_for("unregistered/a.mo", FINGERPRINT_MODEL);
+        let mut second = resolved_tree_for("unregistered/b.mo", FINGERPRINT_MODEL);
+        first.source_map = rumoca_core::SourceMap::new();
+        second.source_map = rumoca_core::SourceMap::new();
+        let first_class = first.definitions.classes.get("M").expect("class M").clone();
+        let second_class = second
+            .definitions
+            .classes
+            .get("M")
+            .expect("class M")
+            .clone();
+        assert_eq!(first_class.location.start, second_class.location.start);
+        assert_eq!(first_class.location.end, second_class.location.end);
+        assert_ne!(first_class.location.source, second_class.location.source);
+
+        let mut cache = HashMap::new();
+        let first_fingerprint = class_source_fingerprint(&first, &first_class, "M", &mut cache);
+        let second_fingerprint = class_source_fingerprint(&second, &second_class, "M", &mut cache);
+        assert_ne!(
+            first_fingerprint, second_fingerprint,
+            "classes from different files must not share a fingerprint"
+        );
+        assert_eq!(
+            first_fingerprint,
+            class_source_fingerprint(&first, &first_class, "M", &mut cache),
+            "the fallback must stay deterministic"
+        );
+        assert!(
+            !cache.contains_key(""),
+            "an unregistered source must never be read as the empty path"
         );
     }
 }

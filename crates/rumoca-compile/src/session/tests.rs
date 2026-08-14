@@ -19,6 +19,7 @@ mod instantiation_query_tests;
 mod model_closure_tests;
 mod package_def_map_tests;
 mod persisted_summary_tests;
+mod record_forwarding_tests;
 mod semantic_diagnostics_tests;
 mod source_root_tests;
 mod typed_model_query_tests;
@@ -35,6 +36,11 @@ pub(crate) fn session_stats_test_guard() -> MutexGuard<'static, ()> {
 
 fn parse_definition(source: &str, file_name: &str) -> ast::StoredDefinition {
     rumoca_phase_parse::parse_to_ast(source, file_name).expect("test definition should parse")
+}
+
+fn parse_source_document(source: &str, file_name: &str) -> ParsedSourceDocument {
+    ParsedSourceDocument::parse(file_name.to_string(), source.to_string())
+        .expect("test source document should parse")
 }
 
 fn source_set_record<'a>(session: &'a Session, source_set_id: &str) -> &'a SourceSetRecord {
@@ -321,67 +327,40 @@ fn source_root_read_prewarm_is_disabled_for_workspace_only_sessions() {
     assert!(!snapshot.needs_source_root_read_prewarm());
 }
 
-fn partitioned_source_root_family_definitions_v1() -> Vec<(String, ast::StoredDefinition)> {
+fn partitioned_source_root_family_definitions_v1() -> Vec<ParsedSourceDocument> {
     vec![
-        (
-            "NewFolder/package.mo".to_string(),
-            parse_definition(
-                "within ;\npackage NewFolder\nend NewFolder;\n",
-                "NewFolder/package.mo",
-            ),
+        parse_source_document(
+            "within ;\npackage NewFolder\nend NewFolder;\n",
+            "NewFolder/package.mo",
         ),
-        (
-            "NewFolder/Test.mo".to_string(),
-            parse_definition(
-                "within NewFolder;\nmodel Test\nend Test;\n",
-                "NewFolder/Test.mo",
-            ),
+        parse_source_document(
+            "within NewFolder;\nmodel Test\nend Test;\n",
+            "NewFolder/Test.mo",
         ),
-        (
-            "NewFolder/Sub/package.mo".to_string(),
-            parse_definition(
-                "within NewFolder;\npackage Sub\nend Sub;\n",
-                "NewFolder/Sub/package.mo",
-            ),
+        parse_source_document(
+            "within NewFolder;\npackage Sub\nend Sub;\n",
+            "NewFolder/Sub/package.mo",
         ),
-        (
-            "NewFolder/Sub/Nested.mo".to_string(),
-            parse_definition(
-                "within NewFolder.Sub;\nmodel Nested\nend Nested;\n",
-                "NewFolder/Sub/Nested.mo",
-            ),
+        parse_source_document(
+            "within NewFolder.Sub;\nmodel Nested\nend Nested;\n",
+            "NewFolder/Sub/Nested.mo",
         ),
-        (
-            "Loose.mo".to_string(),
-            parse_definition("model Loose\nend Loose;\n", "Loose.mo"),
-        ),
-        (
-            "Other/package.mo".to_string(),
-            parse_definition("within ;\npackage Other\nend Other;\n", "Other/package.mo"),
-        ),
+        parse_source_document("model Loose\nend Loose;\n", "Loose.mo"),
+        parse_source_document("within ;\npackage Other\nend Other;\n", "Other/package.mo"),
     ]
 }
 
-fn partitioned_source_root_family_definitions_v2() -> Vec<(String, ast::StoredDefinition)> {
+fn partitioned_source_root_family_definitions_v2() -> Vec<ParsedSourceDocument> {
     vec![
-        (
-            "NewFolder/package.mo".to_string(),
-            parse_definition(
-                "within ;\npackage NewFolder\nend NewFolder;\n",
-                "NewFolder/package.mo",
-            ),
+        parse_source_document(
+            "within ;\npackage NewFolder\nend NewFolder;\n",
+            "NewFolder/package.mo",
         ),
-        (
-            "NewFolder/Test.mo".to_string(),
-            parse_definition(
-                "within NewFolder;\nmodel Test\n  Real x;\nend Test;\n",
-                "NewFolder/Test.mo",
-            ),
+        parse_source_document(
+            "within NewFolder;\nmodel Test\n  Real x;\nend Test;\n",
+            "NewFolder/Test.mo",
         ),
-        (
-            "Loose.mo".to_string(),
-            parse_definition("model Loose\n  Real y;\nend Loose;\n", "Loose.mo"),
-        ),
+        parse_source_document("model Loose\n  Real y;\nend Loose;\n", "Loose.mo"),
     ]
 }
 
@@ -1256,85 +1235,6 @@ fn test_typecheck_error_code_preserves_et004() {
 }
 
 #[test]
-fn test_record_forwarding_rebinds_dependent_record_fields() {
-    let mut session = Session::default();
-    session
-        .add_document(
-            "test.mo",
-            r#"
-                package P
-                  record R
-                    parameter Real a = 2;
-                    final parameter Real b = a;
-                  end R;
-
-                  model Inner
-                    parameter R r;
-                    parameter Real x = r.b;
-                  end Inner;
-
-                  model Mid
-                    parameter R r;
-                    Inner i(r = r);
-                  end Mid;
-
-                  model Top
-                    parameter R r(a = 5);
-                    Mid mid(r = r);
-                  end Top;
-                end P;
-                "#,
-        )
-        .unwrap();
-
-    let result = session.compile_model("P.Top").unwrap();
-    let mid_rb = result
-        .dae
-        .variables
-        .parameters
-        .get(&rumoca_core::VarName::new("mid.r.b"))
-        .expect("mid.r.b must exist in DAE parameters");
-    let mid_irb = result
-        .dae
-        .variables
-        .parameters
-        .get(&rumoca_core::VarName::new("mid.i.r.b"))
-        .expect("mid.i.r.b must exist in DAE parameters");
-
-    let mid_rb_start = mid_rb.start.as_ref().expect("mid.r.b start expected");
-    let mid_irb_start = mid_irb.start.as_ref().expect("mid.i.r.b start expected");
-
-    match mid_rb_start {
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(5),
-            ..
-        } => {}
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(v),
-            ..
-        } if (v - 5.0).abs() <= f64::EPSILON => {}
-        other => panic!(
-            "record forwarding must propagate dependent field b via overridden a, got {:?}",
-            other
-        ),
-    }
-    match mid_irb_start {
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(5),
-            ..
-        } => {}
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(v),
-            ..
-        } if (v - 5.0).abs() <= f64::EPSILON => {}
-        other => panic!(
-            "nested forwarding must preserve dependent record field values, got {:?}",
-            other
-        ),
-    }
-}
-
-#[test]
 fn test_compile_model_rejects_unresolved_reference_before_todae() {
     let mut session = Session::default();
     session
@@ -1555,7 +1455,7 @@ end P;
         .resolved_for_semantic_navigation("P.Root")
         .expect("navigation tree should build");
     assert!(
-        first.0.get_class_by_qualified_name("P.Root").is_some(),
+        first.get_class_by_qualified_name("P.Root").is_some(),
         "navigation tree should include the active target"
     );
     let cached = session
@@ -1564,19 +1464,19 @@ end P;
         .semantic_navigation
         .get_mut("P.Root")
         .expect("navigation artifact should be cached");
-    cached.resolved = Arc::new(ast::ResolvedTree::new(ast::ClassTree::new()));
+    cached.tree = Arc::new(ast::ClassTree::new());
 
     let second = session
         .resolved_for_semantic_navigation("P.Root")
         .expect("navigation tree should reuse cache");
     assert!(
-        second.0.definitions.classes.is_empty(),
+        second.definitions.classes.is_empty(),
         "second navigation lookup must reuse the cached artifact"
     );
 }
 
 #[test]
-fn strict_recovery_resolved_cache_reuses_tree_and_diagnostics() {
+fn strict_recovery_planning_cache_reuses_tree_and_diagnostics() {
     let source = r#"package P
   model Root
     Missing dep;
@@ -1591,8 +1491,8 @@ end P;
         .add_document("test.mo", source)
         .expect("document should parse");
 
-    let (_first_resolved, first_diags) = session
-        .build_resolved_for_strict_compile_with_diagnostics()
+    let (_first_plan, first_diags) = session
+        .build_resolution_plan_for_strict_compile()
         .expect("strict recovery resolve should succeed");
     assert!(
         session
@@ -1601,11 +1501,15 @@ end P;
             .builds
             .strict_compile_recovery
             .is_some(),
-        "first strict recovery lookup should cache the resolved tree"
+        "first strict recovery lookup should cache the planning tree"
     );
     assert!(
         !first_diags.is_empty(),
         "strict recovery resolve should preserve diagnostics"
+    );
+    assert!(
+        !session.has_resolved_cached(),
+        "an incomplete planning tree must not masquerade as a Resolve proof"
     );
 
     let cached = session
@@ -1615,13 +1519,13 @@ end P;
         .strict_compile_recovery
         .as_mut()
         .expect("strict recovery tree should be cached");
-    *cached = Arc::new(ast::ResolvedTree::new(ast::ClassTree::new()));
+    cached.tree = ResolutionPlanningTree::Incomplete(Arc::new(ast::ClassTree::new()));
 
-    let (second_resolved, second_diags) = session
-        .build_resolved_for_strict_compile_with_diagnostics()
+    let (second_plan, second_diags) = session
+        .build_resolution_plan_for_strict_compile()
         .expect("warm strict recovery resolve should reuse cache");
     assert!(
-        second_resolved.0.definitions.classes.is_empty(),
+        second_plan.tree().definitions.classes.is_empty(),
         "warm strict recovery resolve must reuse the cached tree"
     );
     let first_messages: Vec<_> = first_diags
@@ -1672,7 +1576,7 @@ end P;
         .semantic_navigation
         .get_mut("P.Root")
         .expect("navigation artifact should be cached");
-    cached.resolved = Arc::new(ast::ResolvedTree::new(ast::ClassTree::new()));
+    cached.tree = Arc::new(ast::ClassTree::new());
 
     let parse_err = session.update_document("other.mo", "model Other\n  Real z = 1;\nend Other;\n");
     assert!(parse_err.is_none(), "unrelated edit should remain valid");
@@ -1685,7 +1589,7 @@ end P;
         .resolved_for_semantic_navigation("P.Root")
         .expect("navigation tree should still reuse cache");
     assert!(
-        second.0.definitions.classes.is_empty(),
+        second.definitions.classes.is_empty(),
         "unrelated edits must preserve the cached navigation artifact"
     );
 }
@@ -1735,7 +1639,7 @@ end P;
         .semantic_navigation
         .get_mut("P.Root")
         .expect("navigation artifact should be cached")
-        .resolved = Arc::new(ast::ResolvedTree::new(ast::ClassTree::new()));
+        .tree = Arc::new(ast::ClassTree::new());
 
     let parse_err = session.update_document("test.mo", updated);
     assert!(parse_err.is_none(), "edited document should remain valid");
@@ -1744,11 +1648,11 @@ end P;
         .resolved_for_semantic_navigation("P.Root")
         .expect("navigation tree should rebuild");
     assert!(
-        rebuilt.0.get_class_by_qualified_name("P.Root").is_some(),
+        rebuilt.get_class_by_qualified_name("P.Root").is_some(),
         "rebuilt navigation tree should include the active target"
     );
     assert!(
-        !rebuilt.0.definitions.classes.is_empty(),
+        !rebuilt.definitions.classes.is_empty(),
         "edited document must rebuild semantic navigation instead of reusing stale cache"
     );
 }
@@ -1791,7 +1695,7 @@ end Child;
         .resolved_for_semantic_navigation("Child")
         .expect("navigation tree should build");
     assert!(
-        first.0.get_class_by_qualified_name("Child").is_some(),
+        first.get_class_by_qualified_name("Child").is_some(),
         "navigation tree should include Child"
     );
     session
@@ -1800,14 +1704,14 @@ end Child;
         .semantic_navigation
         .get_mut("Child")
         .expect("navigation artifact should be cached")
-        .resolved = Arc::new(ast::ResolvedTree::new(ast::ClassTree::new()));
+        .tree = Arc::new(ast::ClassTree::new());
 
     session.update_document("other.mo", other_v2);
     let second = session
         .resolved_for_semantic_navigation("Child")
         .expect("unrelated edit should keep cached navigation artifact");
     assert!(
-        second.0.definitions.classes.is_empty(),
+        second.definitions.classes.is_empty(),
         "unrelated edits should not evict Child semantic navigation cache"
     );
 
@@ -1816,11 +1720,11 @@ end Child;
         .resolved_for_semantic_navigation("Child")
         .expect("dependency edit should rebuild navigation artifact");
     assert!(
-        third.0.get_class_by_qualified_name("Child").is_some(),
+        third.get_class_by_qualified_name("Child").is_some(),
         "dependency edits must rebuild semantic navigation instead of reusing stale cache"
     );
     assert!(
-        !third.0.definitions.classes.is_empty(),
+        !third.definitions.classes.is_empty(),
         "rebuilt navigation tree must not reuse the sentinel cache entry"
     );
 }

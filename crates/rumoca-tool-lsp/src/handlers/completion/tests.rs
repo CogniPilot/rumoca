@@ -556,3 +556,43 @@ end Lib;
         "source-root completion should not rebuild the full resolved session"
     );
 }
+
+#[test]
+fn dot_completion_member_prefix_survives_non_ascii_prefix_on_line() {
+    // The dot-completion finder compares the client's UTF-16 column against the
+    // lexer's character columns and then slices the line by them. On a line
+    // holding an astral character all three column systems disagree, so the old
+    // byte-indexed slice returned the wrong prefix (and could split a code
+    // point outright).
+    let source = "model M\n  String tag = \"𝔸\";\n  Real y = bus.va;\nend M;\n";
+    let ast = parse_ast(source);
+    let line_index = 2u32;
+    let line = source
+        .lines()
+        .nth(line_index as usize)
+        .expect("member line");
+    let cursor_byte = line.find("va").expect("member token") + "va".len();
+    let character = crate::text_position::byte_offset_to_position(line, cursor_byte).character;
+
+    let target = ast_dot_completion_target(source, &ast, line_index, character)
+        .expect("dot completion target on the member line");
+    assert_eq!(target.base_segments, vec!["bus".to_string()]);
+    assert_eq!(target.member_partial, "va");
+}
+
+#[test]
+fn dot_completion_member_prefix_is_partial_mid_token() {
+    let source = "model M\n  String tag = \"温度\";\n  Real y = bus.value;\nend M;\n";
+    let ast = parse_ast(source);
+    let line_index = 2u32;
+    let line = source
+        .lines()
+        .nth(line_index as usize)
+        .expect("member line");
+    let cursor_byte = line.find("value").expect("member token") + "val".len();
+    let character = crate::text_position::byte_offset_to_position(line, cursor_byte).character;
+
+    let target = ast_dot_completion_target(source, &ast, line_index, character)
+        .expect("dot completion target on the member line");
+    assert_eq!(target.member_partial, "val");
+}

@@ -37,18 +37,16 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use rumoca_compile::analysis as dae_analysis;
 use rumoca_compile::codegen::{
-    CodegenError, SolveTemplateRenderer, dae_for_fmi_implementation_context,
-    dae_for_fmi_native_implementation_context, dae_for_solve_template_context,
-    dae_to_template_json, fmi3_native_projection_available, render_ast_template_with_name,
-    render_dae_template_with_json, render_dae_template_with_json_and_name,
-    render_flat_template_with_name,
+    CodegenError, SolveTemplateRenderer, render_ast_template_with_name, render_dae_template,
+    render_dae_template_with_name, render_flat_template_with_name,
 };
 use rumoca_compile::compile::{
-    Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, ResolvedTree,
-    Session, SessionConfig, SourceRootKind,
+    Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, Session, SessionConfig,
+    SourceRootKind, VariableRole, core::DiagnosticSeverity,
 };
 use rumoca_compile::parsing::collect_compile_unit_source_files;
 use rumoca_compile::source_roots::{
@@ -56,8 +54,8 @@ use rumoca_compile::source_roots::{
     referenced_unloaded_source_root_paths, render_source_root_status_message,
     resolve_source_root_cache_dir, source_root_source_set_key,
 };
+use rumoca_phase_resolve::ResolvedTree;
 use rumoca_sim::{lower_solve_artifacts, lower_solve_problem};
-use serde_json::{Map, Value};
 
 use crate::error::CompilerError;
 
@@ -65,7 +63,7 @@ use crate::error::CompilerError;
 #[derive(Debug)]
 pub struct CompilationResult {
     /// The DAE representation.
-    pub dae: Dae,
+    pub dae: Arc<Dae>,
     /// Detailed continuous balance inputs validated during DAE construction.
     pub balance_detail: dae_analysis::BalanceDetail,
     /// The flat model (intermediate).
@@ -80,16 +78,43 @@ pub struct CompilationResult {
     /// Cached solve-template renderer for targets that never read the `dae`
     /// template entry.
     solve_template_renderer_without_dae: std::sync::OnceLock<SolveTemplateRenderer>,
-    /// Separate XML and implementation renderers built together: FMI metadata
-    /// folding and numerical Solve IR lowering run concurrently, while each
-    /// renderer retains its own lazy symbol/materialization state.
-    fmi_template_renderers: std::sync::OnceLock<FmiTemplateRenderers>,
 }
 
-#[derive(Debug)]
-struct FmiTemplateRenderers {
-    model_description: SolveTemplateRenderer,
-    implementation: SolveTemplateRenderer,
+#[derive(Clone, Copy)]
+struct DaeCounts {
+    states: usize,
+    algebraics: usize,
+    parameters: usize,
+    constants: usize,
+    inputs: usize,
+    outputs: usize,
+    continuous_equations: usize,
+}
+
+fn dae_counts(model: &Dae) -> DaeCounts {
+    model.inspect(|view| {
+        let mut counts = DaeCounts {
+            states: 0,
+            algebraics: 0,
+            parameters: 0,
+            constants: 0,
+            inputs: 0,
+            outputs: 0,
+            continuous_equations: view.continuous_equation_count(),
+        };
+        for (_, variable) in view.variables() {
+            match variable.role() {
+                VariableRole::State => counts.states += 1,
+                VariableRole::Algebraic => counts.algebraics += 1,
+                VariableRole::Parameter => counts.parameters += 1,
+                VariableRole::Constant => counts.constants += 1,
+                VariableRole::Input => counts.inputs += 1,
+                VariableRole::Output => counts.outputs += 1,
+                VariableRole::DiscreteReal | VariableRole::DiscreteValue => {}
+            }
+        }
+        counts
+    })
 }
 
 /// Lean result of a successful DAE-only compilation.
@@ -108,8 +133,7 @@ fn build_solve_template_renderer(dae_model: &Dae) -> Result<SolveTemplateRendere
         .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
     let artifacts = lower_solve_artifacts(&problem)
         .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
-    let template_dae = dae_for_solve_template_context(dae_model)?;
-    SolveTemplateRenderer::new_owned_with_dae(problem, artifacts, template_dae)
+    SolveTemplateRenderer::new_owned_with_dae(problem, artifacts, dae_model)
         .map_err(CompilerError::TemplateError)
 }
 
@@ -122,52 +146,9 @@ fn build_solve_template_renderer_without_dae(
     SolveTemplateRenderer::new(&problem, &artifacts, "").map_err(CompilerError::TemplateError)
 }
 
-fn build_fmi_template_renderers(dae_model: &Dae) -> Result<FmiTemplateRenderers, CompilerError> {
-    let (metadata, numerical) = rayon::join(
-        || {
-            dae_for_fmi_native_implementation_context(dae_model)
-                .map(std::sync::Arc::new)
-                .map_err(CompilerError::TemplateError)
-        },
-        || {
-            let problem = lower_solve_problem(dae_model).map_err(|err| {
-                CompilerError::TemplateError(CodegenError::template(err.to_string()))
-            })?;
-            let artifacts = lower_solve_artifacts(&problem).map_err(|err| {
-                CompilerError::TemplateError(CodegenError::template(err.to_string()))
-            })?;
-            let native_projection = (dae_model.variables.algebraics.is_empty()
-                && dae_model.variables.outputs.is_empty())
-                || fmi3_native_projection_available(&problem)
-                    .map_err(CompilerError::TemplateError)?;
-            Ok::<_, CompilerError>((problem, artifacts, native_projection))
-        },
-    );
-    let metadata = metadata?;
-    let (problem, artifacts, native_projection) = numerical?;
-    let model_description = SolveTemplateRenderer::new_owned_with_shared_dae(
-        rumoca_ir_solve::SolveProblem::default(),
-        rumoca_ir_solve::SolveArtifacts::default(),
-        metadata.clone(),
-    )
-    .map_err(CompilerError::TemplateError)?;
-    let implementation = if native_projection {
-        SolveTemplateRenderer::new_owned_with_shared_dae(problem, artifacts, metadata)
-            .map_err(CompilerError::TemplateError)?
-    } else {
-        let template_dae = dae_for_fmi_implementation_context(dae_model)?;
-        SolveTemplateRenderer::new_owned_with_dae(problem, artifacts, template_dae)
-            .map_err(CompilerError::TemplateError)?
-    };
-    Ok(FmiTemplateRenderers {
-        model_description,
-        implementation,
-    })
-}
-
 impl CompilationResult {
     pub fn new(
-        dae: Dae,
+        dae: Arc<Dae>,
         balance_detail: dae_analysis::BalanceDetail,
         flat: FlatModel,
         resolved: ResolvedTree,
@@ -179,183 +160,7 @@ impl CompilationResult {
             resolved,
             solve_template_renderer: std::sync::OnceLock::new(),
             solve_template_renderer_without_dae: std::sync::OnceLock::new(),
-            fmi_template_renderers: std::sync::OnceLock::new(),
         }
-    }
-
-    fn template_json_dae_only(&self) -> Result<Value, CompilerError> {
-        dae_to_template_json(&self.dae).map_err(CompilerError::TemplateError)
-    }
-
-    fn is_prunable_child(child: &Value) -> bool {
-        match child {
-            Value::Null => true,
-            Value::Object(map) => map.is_empty(),
-            Value::Array(items) => items.is_empty(),
-            _ => false,
-        }
-    }
-
-    fn prune_json_object(object: &mut Map<String, Value>) {
-        let keys: Vec<String> = object.keys().cloned().collect();
-        let mut to_remove = Vec::new();
-        for key in keys {
-            let Some(child) = object.get_mut(&key) else {
-                continue;
-            };
-            Self::prune_json_value(child);
-            if Self::is_prunable_child(child) {
-                to_remove.push(key);
-            }
-        }
-        for key in to_remove {
-            object.remove(&key);
-        }
-    }
-
-    fn prune_json_array(items: &mut Vec<Value>) {
-        for child in items.iter_mut() {
-            Self::prune_json_value(child);
-        }
-        items.retain(|child| !matches!(child, Value::Null));
-    }
-
-    fn strip_scalar_count_default(object: &mut Map<String, Value>) {
-        let scalar_count_is_one = object
-            .get("scalar_count")
-            .and_then(Value::as_u64)
-            .is_some_and(|count| count == 1);
-        if scalar_count_is_one {
-            object.remove("scalar_count");
-        }
-    }
-
-    fn strip_empty_origin(object: &mut Map<String, Value>) {
-        let origin_is_empty = object
-            .get("origin")
-            .and_then(Value::as_str)
-            .is_some_and(str::is_empty);
-        if origin_is_empty {
-            object.remove("origin");
-        }
-    }
-
-    fn strip_common_defaults(object: &mut Map<String, Value>) {
-        Self::strip_scalar_count_default(object);
-        Self::strip_empty_origin(object);
-    }
-
-    fn move_rhs_field(object: &mut Map<String, Value>, field_name: &str) {
-        let Some(rhs) = object.remove("rhs") else {
-            return;
-        };
-        object.insert(field_name.to_string(), rhs);
-    }
-
-    fn normalize_residual_row(object: &mut Map<String, Value>) {
-        object.remove("lhs");
-        Self::move_rhs_field(object, "residual");
-        Self::strip_common_defaults(object);
-    }
-
-    fn normalize_assignment_row(object: &mut Map<String, Value>) {
-        if object.get("lhs").is_some_and(Value::is_null) {
-            object.remove("lhs");
-        }
-        Self::strip_common_defaults(object);
-    }
-
-    fn normalize_initial_row(object: &mut Map<String, Value>) {
-        let lhs = object.remove("lhs");
-        let Some(rhs) = object.remove("rhs") else {
-            Self::strip_common_defaults(object);
-            return;
-        };
-        let has_lhs = lhs.as_ref().is_some_and(|value| !value.is_null());
-        let kind = if has_lhs { "assignment" } else { "residual" };
-        object.insert("kind".to_string(), Value::String(kind.to_string()));
-        if let Some(lhs) = lhs
-            && !lhs.is_null()
-        {
-            object.insert("lhs".to_string(), lhs);
-        }
-        object.insert("expr".to_string(), rhs);
-        Self::strip_common_defaults(object);
-    }
-
-    fn prune_json_value(value: &mut Value) {
-        match value {
-            Value::Object(object) => Self::prune_json_object(object),
-            Value::Array(items) => Self::prune_json_array(items),
-            _ => {}
-        }
-    }
-
-    fn push_nonempty<T: serde::Serialize>(
-        out: &mut Map<String, Value>,
-        key: &str,
-        value: &T,
-    ) -> Result<(), CompilerError> {
-        let mut json =
-            serde_json::to_value(value).map_err(|e| CompilerError::JsonError(e.to_string()))?;
-        Self::prune_json_value(&mut json);
-        let is_empty = match &json {
-            Value::Array(values) => values.is_empty(),
-            Value::Object(values) => values.is_empty(),
-            _ => false,
-        };
-        if !is_empty {
-            out.insert(key.to_string(), json);
-        }
-        Ok(())
-    }
-
-    fn residuals_to_minimal_json<T: serde::Serialize>(
-        residuals: &[T],
-    ) -> Result<Vec<Value>, CompilerError> {
-        residuals
-            .iter()
-            .map(|residual| {
-                let mut value = serde_json::to_value(residual)
-                    .map_err(|e| CompilerError::JsonError(e.to_string()))?;
-                if let Value::Object(object) = &mut value {
-                    Self::normalize_residual_row(object);
-                }
-                Ok(value)
-            })
-            .collect()
-    }
-
-    fn assignments_to_minimal_json<T: serde::Serialize>(
-        assignments: &[T],
-    ) -> Result<Vec<Value>, CompilerError> {
-        assignments
-            .iter()
-            .map(|assignment| {
-                let mut value = serde_json::to_value(assignment)
-                    .map_err(|e| CompilerError::JsonError(e.to_string()))?;
-                if let Value::Object(object) = &mut value {
-                    Self::normalize_assignment_row(object);
-                }
-                Ok(value)
-            })
-            .collect()
-    }
-
-    fn initial_to_minimal_json<T: serde::Serialize>(
-        initial_rows: &[T],
-    ) -> Result<Vec<Value>, CompilerError> {
-        initial_rows
-            .iter()
-            .map(|row| {
-                let mut value = serde_json::to_value(row)
-                    .map_err(|e| CompilerError::JsonError(e.to_string()))?;
-                if let Value::Object(object) = &mut value {
-                    Self::normalize_initial_row(object);
-                }
-                Ok(value)
-            })
-            .collect()
     }
 
     /// Render the DAE using a template file.
@@ -368,8 +173,7 @@ impl CompilationResult {
 
     /// Render the DAE using a template string.
     pub fn render_template_str(&self, template: &str) -> Result<String, CompilerError> {
-        let dae_json = self.template_json_dae_only()?;
-        render_dae_template_with_json(&dae_json, template).map_err(CompilerError::TemplateError)
+        render_dae_template(&self.dae, template).map_err(CompilerError::TemplateError)
     }
 
     /// Render the DAE using a template string with an explicit model name.
@@ -380,8 +184,7 @@ impl CompilationResult {
         template: &str,
         model_name: &str,
     ) -> Result<String, CompilerError> {
-        let dae_json = self.template_json_dae_only()?;
-        render_dae_template_with_json_and_name(&dae_json, template, model_name)
+        render_dae_template_with_name(&self.dae, template, model_name)
             .map_err(CompilerError::TemplateError)
     }
 
@@ -444,46 +247,6 @@ impl CompilationResult {
             .map_err(CompilerError::TemplateError)
     }
 
-    pub fn render_fmi_model_description_template_str_with_name(
-        &self,
-        template: &str,
-        model_name: &str,
-    ) -> Result<String, CompilerError> {
-        if self.fmi_template_renderers.get().is_none() {
-            let renderers = build_fmi_template_renderers(&self.dae)?;
-            let _ = self.fmi_template_renderers.set(renderers);
-        }
-        let renderers = self.fmi_template_renderers.get().ok_or_else(|| {
-            CompilerError::TemplateError(CodegenError::template(
-                "FMI template renderers were not initialized after build",
-            ))
-        })?;
-        renderers
-            .model_description
-            .render_with_name(template, model_name)
-            .map_err(CompilerError::TemplateError)
-    }
-
-    pub fn render_fmi_implementation_template_str_with_name(
-        &self,
-        template: &str,
-        model_name: &str,
-    ) -> Result<String, CompilerError> {
-        if self.fmi_template_renderers.get().is_none() {
-            let renderers = build_fmi_template_renderers(&self.dae)?;
-            let _ = self.fmi_template_renderers.set(renderers);
-        }
-        let renderers = self.fmi_template_renderers.get().ok_or_else(|| {
-            CompilerError::TemplateError(CodegenError::template(
-                "FMI template renderers were not initialized after build",
-            ))
-        })?;
-        renderers
-            .implementation
-            .render_with_name(template, model_name)
-            .map_err(CompilerError::TemplateError)
-    }
-
     pub fn to_ir_json(&self, ir: TemplateIr) -> Result<String, CompilerError> {
         match ir {
             TemplateIr::Dae => self.to_json(),
@@ -512,44 +275,7 @@ impl CompilationResult {
 
     /// Convert the DAE to JSON.
     pub fn to_json(&self) -> Result<String, CompilerError> {
-        let mut p = self.dae.variables.parameters.clone();
-        // MLS Appendix B groups parameters and constants together in p.
-        for (name, var) in &self.dae.variables.constants {
-            p.entry(name.clone()).or_insert_with(|| var.clone());
-        }
-
-        let f_x = Self::residuals_to_minimal_json(&self.dae.continuous.equations)?;
-        let f_z = Self::assignments_to_minimal_json(&self.dae.discrete.real_updates)?;
-        let f_m = Self::assignments_to_minimal_json(&self.dae.discrete.valued_updates)?;
-        let f_c = Self::assignments_to_minimal_json(&self.dae.conditions.equations)?;
-        let initial = Self::initial_to_minimal_json(&self.dae.initialization.equations)?;
-
-        let mut canonical = Map::new();
-        Self::push_nonempty(&mut canonical, "p", &p)?;
-        Self::push_nonempty(&mut canonical, "x", &self.dae.variables.states)?;
-        Self::push_nonempty(&mut canonical, "y", &self.dae.variables.algebraics)?;
-        Self::push_nonempty(&mut canonical, "z", &self.dae.variables.discrete_reals)?;
-        Self::push_nonempty(&mut canonical, "m", &self.dae.variables.discrete_valued)?;
-        Self::push_nonempty(&mut canonical, "f_x", &f_x)?;
-        Self::push_nonempty(
-            &mut canonical,
-            "structured_equations",
-            &self.dae.continuous.structured_equations,
-        )?;
-        Self::push_nonempty(&mut canonical, "f_z", &f_z)?;
-        Self::push_nonempty(&mut canonical, "f_m", &f_m)?;
-        Self::push_nonempty(&mut canonical, "f_c", &f_c)?;
-        Self::push_nonempty(&mut canonical, "relation", &self.dae.conditions.relations)?;
-        Self::push_nonempty(&mut canonical, "initial", &initial)?;
-        Self::push_nonempty(
-            &mut canonical,
-            "initial_structured_equations",
-            &self.dae.initialization.structured_equations,
-        )?;
-        Self::push_nonempty(&mut canonical, "functions", &self.dae.symbols.functions)?;
-
-        serde_json::to_string_pretty(&Value::Object(canonical))
-            .map_err(|e| CompilerError::JsonError(e.to_string()))
+        serde_json::to_string_pretty(&self.dae).map_err(|e| CompilerError::JsonError(e.to_string()))
     }
 }
 
@@ -819,52 +545,25 @@ impl Compiler {
             );
         }
 
-        let mut report = session.compile_model_strict_reachable_with_recovery(model_name);
-        let failure_summary = report.failure_summary(usize::MAX);
-        let result = match report.requested_result.take() {
-            Some(PhaseResult::Success(result)) => {
-                if !report.failures.is_empty() {
-                    return Err(CompilerError::CompileDiagnosticsError {
-                        summary: failure_summary,
-                        failures: report.failures,
-                        source_map: report.source_map.map(Box::new),
-                    });
-                }
-                *result
+        let compilation = session.compile_model_strict(model_name).map_err(|report| {
+            CompilerError::CompileDiagnosticsError {
+                summary: report.failure_summary(usize::MAX),
+                failures: report.failures,
+                source_map: report.source_map.map(Box::new),
             }
-            // Phase failures carry spanned diagnostics through
-            // `report.failures`; render them like any other compile
-            // diagnostics instead of flattening to a string.
-            Some(PhaseResult::NeedsInner { .. }) | Some(PhaseResult::Failed { .. }) | None => {
-                return Err(CompilerError::CompileDiagnosticsError {
-                    summary: failure_summary,
-                    failures: report.failures,
-                    source_map: report.source_map.map(Box::new),
-                });
-            }
-        };
-
-        // Get the resolved tree for successful compilations.
-        let resolved = session.resolved_cached().ok_or_else(|| {
-            CompilerError::ResolveError(
-                "strict compile produced no cached resolved tree".to_string(),
-            )
         })?;
+        let (result, resolved) = compilation.into_parts();
+        report_compile_warnings(&mut session, model_name);
 
         if self.verbose {
             eprintln!("[rumoca] Compilation complete.");
-            eprintln!("[rumoca]   States: {}", result.dae.variables.states.len());
-            eprintln!(
-                "[rumoca]   Algebraics: {}",
-                result.dae.variables.algebraics.len()
-            );
-            eprintln!(
-                "[rumoca]   Parameters: {}",
-                result.dae.variables.parameters.len()
-            );
+            let counts = dae_counts(&result.dae);
+            eprintln!("[rumoca]   States: {}", counts.states);
+            eprintln!("[rumoca]   Algebraics: {}", counts.algebraics);
+            eprintln!("[rumoca]   Parameters: {}", counts.parameters);
             eprintln!(
                 "[rumoca]   Continuous equations (f_x): {}",
-                result.dae.continuous.equations.len()
+                counts.continuous_equations
             );
             eprintln!("[rumoca]   Balance: {}", result.balance_detail.balance());
         }
@@ -916,9 +615,11 @@ impl Compiler {
         let mut session = Session::new(SessionConfig::default());
         self.load_required_source_roots(&mut session, source)?;
         self.load_local_compile_unit(&mut session, source, file_name)?;
-        session
+        let flat = session
             .compile_model_flat_strict_reachable_uncached_with_recovery(model_name)
-            .map_err(CompilerError::FlattenError)
+            .map_err(CompilerError::FlattenError)?;
+        report_compile_warnings(&mut session, model_name);
+        Ok(flat)
     }
 
     /// Compile Modelica source code through DAE only.
@@ -968,20 +669,17 @@ impl Compiler {
                 }
             };
 
+        report_compile_warnings(&mut session, model_name);
+
         if self.verbose {
             eprintln!("[rumoca] DAE compilation complete.");
-            eprintln!("[rumoca]   States: {}", result.dae.variables.states.len());
-            eprintln!(
-                "[rumoca]   Algebraics: {}",
-                result.dae.variables.algebraics.len()
-            );
-            eprintln!(
-                "[rumoca]   Parameters: {}",
-                result.dae.variables.parameters.len()
-            );
+            let counts = dae_counts(&result.dae);
+            eprintln!("[rumoca]   States: {}", counts.states);
+            eprintln!("[rumoca]   Algebraics: {}", counts.algebraics);
+            eprintln!("[rumoca]   Parameters: {}", counts.parameters);
             eprintln!(
                 "[rumoca]   Continuous equations (f_x): {}",
-                result.dae.continuous.equations.len()
+                counts.continuous_equations
             );
             eprintln!("[rumoca]   Balance: {}", result.balance_detail.balance());
         }
@@ -990,11 +688,59 @@ impl Compiler {
     }
 }
 
+/// Print every warning-severity diagnostic the compiled model carries.
+///
+/// A compile that succeeds still has things the language requires a tool to
+/// say — MLS 3.7 §12.3 deprecates an external function that declares no
+/// purity, and MLS 3.6 §12.3 stated the report as a requirement. Those
+/// diagnostics exist in the session, but until they are printed the only
+/// consumers are the editor and the API, so a `rumoca compile` run reports
+/// nothing and the deprecation reaches nobody. Warnings never change the exit
+/// status: they are reports, not rejections.
+///
+/// Cost, measured and not yet paid down: this asks the session for the model's
+/// diagnostics, and that query re-walks the interface, body, and model stages
+/// behind their own caches, which the compile above did not fill in the same
+/// shape. On one MSL model (`…OpAmps.OpAmpCircuits.Add`, three runs each, same
+/// binary) the report adds 0.64 s to a plain compile (11.81 → 12.45 s), 0.52 s
+/// to `--emit flat-json` (11.90 → 12.42 s), and 2.10 s to `--emit dae-json`
+/// (11.48 → 13.58 s). Paying nothing needs either a stage-limited diagnostics
+/// query or warnings carried out of the compile that already ran, both of which
+/// are new session plumbing in `rumoca-compile`; that is filed rather than
+/// hidden here.
+fn report_compile_warnings(session: &mut Session, model_name: &str) {
+    let diagnostics = session.compile_model_diagnostics(model_name);
+    let source_map = diagnostics.source_map;
+    for diagnostic in diagnostics
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| matches!(diagnostic.severity, DiagnosticSeverity::Warning))
+    {
+        let code = diagnostic.code.as_deref().unwrap_or("warning");
+        match source_map
+            .as_ref()
+            .zip(diagnostic.labels.first())
+            .and_then(|(map, label)| rumoca_compile::compile::source_span_location(map, label.span))
+        {
+            // `TextPosition` is the editor-protocol form: zero-based line and
+            // zero-based UTF-16 column. A terminal `file:line:col` is one-based
+            // everywhere else this compiler prints one, so both fields are
+            // shifted here rather than reported in an editor's coordinates.
+            Some(location) => eprintln!(
+                "[rumoca] warning[{code}]: {} ({}:{}:{})",
+                diagnostic.message,
+                location.file_name,
+                location.start.line + 1,
+                location.start.character + 1
+            ),
+            None => eprintln!("[rumoca] warning[{code}]: {}", diagnostic.message),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quick_xml::Reader;
-    use quick_xml::events::{BytesStart, Event};
     use tempfile::tempdir;
 
     #[test]
@@ -1011,7 +757,14 @@ mod tests {
 
         assert!(result.is_ok(), "Compilation failed: {:?}", result.err());
         let result = result.unwrap();
-        assert_eq!(result.dae.variables.states.len(), 1);
+        assert_eq!(
+            result.dae.inspect(|view| {
+                view.variables()
+                    .filter(|(_, variable)| variable.role() == VariableRole::State)
+                    .count()
+            }),
+            1
+        );
     }
 
     #[test]
@@ -1029,132 +782,15 @@ mod tests {
             .compile_str_dae(source, "test.mo")
             .expect("DAE-only compile should succeed");
 
-        assert_eq!(result.dae.variables.states.len(), 1);
+        assert_eq!(
+            result.dae.inspect(|view| {
+                view.variables()
+                    .filter(|(_, variable)| variable.role() == VariableRole::State)
+                    .count()
+            }),
+            1
+        );
         assert_eq!(result.balance_detail.state_unknowns, 1);
-    }
-
-    fn fmi_start_expression_source() -> &'static str {
-        r#"
-            model FmiStartExpressions
-                parameter Real p = 2.0;
-                parameter Real q = 3.0;
-                parameter Real r = p + q;
-                Real x(start=p + q, fixed=true);
-                Real y(start=r, fixed=true);
-            equation
-                der(x) = -x;
-                der(y) = -y;
-            end FmiStartExpressions;
-        "#
-    }
-
-    fn render_fmi_model_description(target: &str) -> String {
-        let compiled = Compiler::new()
-            .model("FmiStartExpressions")
-            .compile_str(fmi_start_expression_source(), "FmiStartExpressions.mo")
-            .expect("compile FMI start-expression fixture");
-        let template = rumoca_compile::codegen::templates::builtin_template_source(
-            target,
-            "modelDescription.xml.jinja",
-        )
-        .expect("built-in FMI modelDescription template");
-        compiled
-            .render_fmi_model_description_template_str_with_name(template, "FmiStartExpressions")
-            .expect("render FMI modelDescription")
-    }
-
-    fn xml_attribute(element: &BytesStart<'_>, name: &str) -> Option<String> {
-        element
-            .attributes()
-            .map(|attribute| attribute.expect("well-formed XML attribute"))
-            .find(|attribute| attribute.key.as_ref() == name.as_bytes())
-            .map(|attribute| {
-                attribute
-                    .unescape_value()
-                    .expect("unescapable XML attribute")
-                    .into_owned()
-            })
-    }
-
-    fn fmi2_real_start(xml: &str, variable_name: &str) -> Option<String> {
-        let mut reader = Reader::from_str(xml);
-        let mut inside_variable = false;
-        loop {
-            match reader.read_event() {
-                Ok(Event::Eof) => return None,
-                Ok(Event::Start(element)) if element.name().as_ref() == b"ScalarVariable" => {
-                    inside_variable =
-                        xml_attribute(&element, "name").as_deref() == Some(variable_name);
-                }
-                Ok(Event::Start(element) | Event::Empty(element))
-                    if inside_variable && element.name().as_ref() == b"Real" =>
-                {
-                    return xml_attribute(&element, "start");
-                }
-                Ok(Event::End(element)) if element.name().as_ref() == b"ScalarVariable" => {
-                    inside_variable = false;
-                }
-                Ok(_) => {}
-                Err(err) => panic!("not well-formed FMI2 XML: {err}\n{xml}"),
-            }
-        }
-    }
-
-    fn fmi3_float64_start(xml: &str, variable_name: &str) -> Option<String> {
-        let mut reader = Reader::from_str(xml);
-        loop {
-            match reader.read_event() {
-                Ok(Event::Eof) => return None,
-                Ok(Event::Start(element) | Event::Empty(element))
-                    if element.name().as_ref() == b"Float64"
-                        && xml_attribute(&element, "name").as_deref() == Some(variable_name) =>
-                {
-                    return xml_attribute(&element, "start");
-                }
-                Ok(_) => {}
-                Err(err) => panic!("not well-formed FMI3 XML: {err}\n{xml}"),
-            }
-        }
-    }
-
-    #[test]
-    fn test_fmi2_model_description_serializes_start_expressions_as_literals_issue_289() {
-        let xml = render_fmi_model_description("fmi2");
-
-        assert_eq!(
-            fmi2_real_start(&xml, "x").as_deref(),
-            Some("5.0"),
-            "FMI2 x.start should be the folded default literal:\n{xml}"
-        );
-        assert_eq!(
-            fmi2_real_start(&xml, "y").as_deref(),
-            Some("5.0"),
-            "FMI2 y.start should fold a bare parameter reference:\n{xml}"
-        );
-        assert!(
-            !xml.contains("p + q") && !xml.contains(r#"start="r""#),
-            "FMI2 modelDescription must not serialize Modelica start expressions:\n{xml}"
-        );
-    }
-
-    #[test]
-    fn test_fmi3_model_description_serializes_start_expressions_as_literals_issue_289() {
-        let xml = render_fmi_model_description("fmi3");
-
-        assert_eq!(
-            fmi3_float64_start(&xml, "x").as_deref(),
-            Some("5.0"),
-            "FMI3 x.start should be the folded default literal:\n{xml}"
-        );
-        assert_eq!(
-            fmi3_float64_start(&xml, "y").as_deref(),
-            Some("5.0"),
-            "FMI3 y.start should fold a bare parameter reference:\n{xml}"
-        );
-        assert!(
-            !xml.contains("p + q") && !xml.contains(r#"start="r""#),
-            "FMI3 modelDescription must not serialize Modelica start expressions:\n{xml}"
-        );
     }
 
     #[test]
@@ -1391,12 +1027,20 @@ mod tests {
 
         let result = Compiler::new()
             .model("Root")
-            .compile_file(&root.to_string_lossy());
-
+            .compile_file(&root.to_string_lossy())
+            .expect("strict target compile must ignore unrelated sibling parse errors");
+        let index = rumoca_ir_ast::ClassDefIndex::from_tree(result.resolved.inner());
         assert!(
-            result.is_ok(),
-            "strict target compile must ignore unrelated sibling parse errors: {:?}",
-            result.err()
+            index.get_by_qualified_name("Root").is_some(),
+            "the compilation must carry the requested model's Resolve proof"
+        );
+        assert!(
+            index.get_by_qualified_name("Helper").is_some(),
+            "the Resolve proof must contain the requested dependency"
+        );
+        assert!(
+            index.get_by_qualified_name("Broken").is_none(),
+            "the Resolve proof must be the exact target closure, not the recovered global plan"
         );
     }
 
@@ -1529,47 +1173,42 @@ mod tests {
         assert!(json.is_ok());
         let value: serde_json::Value = serde_json::from_str(&json.unwrap()).unwrap();
         let obj = value.as_object().expect("DAE JSON should be an object");
-        assert!(obj.contains_key("x"));
-        assert!(obj.contains_key("f_x"));
-        assert!(!obj.contains_key("y"));
-        assert!(!obj.contains_key("p"));
-        assert!(!obj.contains_key("z"));
-        assert!(!obj.contains_key("m"));
-        assert!(!obj.contains_key("f_z"));
-        assert!(!obj.contains_key("f_m"));
-        assert!(!obj.contains_key("f_c"));
-        assert!(!obj.contains_key("relation"));
-        assert!(!obj.contains_key("initial_equations"));
-        assert!(!obj.contains_key("initial"));
-        assert!(!obj.contains_key("functions"));
-        let f_x = obj
-            .get("f_x")
-            .and_then(serde_json::Value::as_array)
-            .expect("f_x should be an array");
-        let first = f_x
-            .first()
+        assert_eq!(
+            obj.get("schema_version")
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::from(rumoca_ir_dae::DAE_SCHEMA_VERSION))
+        );
+        assert!(obj.contains_key("source_map"));
+        let storage = obj
+            .get("storage")
             .and_then(serde_json::Value::as_object)
-            .expect("f_x entries should be objects");
-        assert!(
-            !first.contains_key("lhs"),
-            "residual f_x equation must omit lhs"
+            .expect("wire-v11 DAE must contain private storage records");
+        assert_eq!(
+            storage
+                .get("variables")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(1)
         );
         assert!(
-            first.contains_key("residual"),
-            "residual f_x entry must include residual expression"
+            storage
+                .get("continuous_equation_operations")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|operations| {
+                    operations.len() == 1 && operations[0].get("residual").is_some()
+                }),
+            "checked continuous ownership must survive the wire projection"
         );
         assert!(
-            first.contains_key("origin"),
-            "json should preserve origin traceability"
+            storage
+                .get("expressions")
+                .and_then(|expressions| expressions.get("provenance"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|provenance| !provenance.is_empty()),
+            "every checked expression must retain provenance in wire-v11"
         );
-        assert!(
-            first.contains_key("span"),
-            "json should preserve source span traceability"
-        );
-        assert!(!obj.contains_key("states"));
-        assert!(!obj.contains_key("when_clauses"));
-        assert!(!obj.contains_key("algorithms"));
-        assert!(!obj.contains_key("initial_algorithms"));
+        assert!(!obj.contains_key("x"));
+        assert!(!obj.contains_key("f_x"));
     }
 
     #[test]
@@ -1597,15 +1236,50 @@ mod tests {
             .unwrap();
 
         let value: serde_json::Value = serde_json::from_str(&result.to_json().unwrap()).unwrap();
-        let obj = value.as_object().expect("DAE JSON should be an object");
-        for key in [
-            "p", "x", "z", "m", "f_x", "f_z", "f_m", "f_c", "relation", "initial",
-        ] {
-            assert!(
-                obj.contains_key(key),
-                "hybrid runtime JSON should contain key `{key}`"
-            );
-        }
+        let storage = value
+            .get("storage")
+            .and_then(serde_json::Value::as_object)
+            .expect("checked wire-v11 storage");
+        assert_eq!(
+            storage
+                .get("variables")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(4)
+        );
+        assert!(
+            storage
+                .get("conditions")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|conditions| !conditions.is_empty())
+        );
+        assert!(
+            storage
+                .get("discrete_real_equations")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|equations| equations.len() == 1),
+            "the discrete Real when-assignment must remain in B.1b"
+        );
+        assert!(
+            storage
+                .get("discrete_value_owners")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|owners| owners.len() == 1),
+            "the Integer when-assignment must remain in B.1c"
+        );
+        assert!(
+            storage
+                .get("event_actions")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(Vec::is_empty),
+            "ordinary when-assignments must not become flow event actions"
+        );
+        assert!(
+            storage
+                .get("initialization_equation_operations")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|operations| !operations.is_empty())
+        );
     }
 
     #[test]
@@ -1689,7 +1363,9 @@ mod tests {
             .compile_str(source, "orbit.mo")
             .expect("compilation should succeed");
         let rendered = result
-            .render_template_str("{% for name, comp in dae.y | items %}{{ name }}\n{% endfor %}")
+            .render_template_str(
+                "{% for variable in dae.variables %}{% if variable.role == \"algebraic\" %}{{ variable.name }}\n{% endif %}{% endfor %}",
+            )
             .expect("template render should succeed");
 
         for expected in [
@@ -1727,7 +1403,7 @@ mod tests {
             .expect("compilation should succeed");
         let rendered = result
             .render_template_str_with_name_and_ir(
-                "{{ dae.f_x | length }} {{ dae.x.x.dims | join(\",\") }}",
+                "{{ dae.systems.continuous.owners | length }} {% for variable in dae.variables %}{% if variable.role == \"state\" %}{{ variable.value_type.dimensions | join(\",\") }}{% endif %}{% endfor %}",
                 "DaeOnlyTemplate",
                 TemplateIr::Dae,
             )
@@ -1737,7 +1413,36 @@ mod tests {
     }
 
     #[test]
-    fn test_solve_template_dae_context_scalarizes_array_equations() {
+    fn non_materialized_family_is_exposed_only_as_a_structured_owner() {
+        let source = r#"
+            model CascadedDaeTemplate
+              constant Integer N = 8;
+              Real x[N](each start = 1.0);
+            equation
+              der(x[1]) = 1.0 - x[1];
+              for i in 2:N loop
+                der(x[i]) = x[i - 1] - x[i];
+              end for;
+            end CascadedDaeTemplate;
+        "#;
+        let result = Compiler::new()
+            .model("CascadedDaeTemplate")
+            .compile_str(source, "CascadedDaeTemplate.mo")
+            .expect("cascaded family should compile");
+
+        let rendered = result
+            .render_template_str(
+                "{% for owner in dae.systems.continuous.owners %}{% if owner.kind == \"structured\" %}structured:{{ owner.scalar_rows }}:{{ owner.bodies | length }}{% else %}residual:1:0{% endif %}\n{% endfor %}",
+            )
+            .expect("checked DAE projection must expose canonical semantic owners");
+        assert!(
+            rendered.lines().any(|line| line == "structured:7:1"),
+            "the compact 2:8 family must remain one seven-row owner:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_solve_template_dae_context_preserves_array_equation_ownership() {
         let source = r#"
             model SolveTemplateDaeContext
               parameter Integer N = 2;
@@ -1753,16 +1458,16 @@ mod tests {
             .expect("compilation should succeed");
         let rendered = result
             .render_template_str_with_name_and_ir(
-                "{% for eq in dae.f_x %}{{ eq.scalar_count }} {% endfor %}",
+                "{% for owner in dae.systems.continuous.owners %}{% if owner.kind == \"structured\" %}structured:{{ owner.scalar_rows }}{% else %}residual:1{% endif %} {% endfor %}",
                 "SolveTemplateDaeContext",
                 TemplateIr::Solve,
             )
-            .expect("Solve template should expose scalarized DAE equations");
+            .expect("Solve template should expose the checked DAE projection");
 
         assert_eq!(
             rendered.trim(),
-            "1 1",
-            "Solve templates should receive scalar DAE rows, while Solve IR still lowers from native DAE"
+            "structured:2",
+            "Solve templates must not receive a scalarized compatibility DAE"
         );
     }
 

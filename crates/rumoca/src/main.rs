@@ -9,7 +9,7 @@
 //! rumoca compile model.mo --model MyModel --emit solve-json
 //!
 //! # Compile and render a target.toml codegen target
-//! rumoca compile model.mo --model MyModel --target sympy --output out
+//! rumoca compile model.mo --model MyModel --target c-ode --output out
 //!
 //! # Verbose output
 //! rumoca compile model.mo --model MyModel --emit dae-mo --verbose

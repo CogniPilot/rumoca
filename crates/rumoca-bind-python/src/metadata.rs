@@ -7,34 +7,36 @@
 
 use pyo3::exceptions::{PyIndexError, PyKeyError};
 use pyo3::prelude::*;
-use rumoca_core::{Expression, Literal, OpUnary};
-use rumoca_ir_dae::Variable;
+use rumoca_ir_dae::{
+    DaeLiteral, DaeView, ExprId, ExpressionOperation, UnaryOperator, VariableView,
+};
 
 /// Reduce a constant expression (the common parameter/start/min/max/nominal
 /// case) to an `f64`. Returns `None` for non-constant or non-numeric bindings
 /// rather than guessing — callers surface that as "unknown", never a silent 0.
-fn literal_f64(expr: &Expression) -> Option<f64> {
-    match expr {
-        Expression::Literal { value, .. } => match value {
-            Literal::Real(v) => Some(*v),
-            Literal::Integer(v) => Some(*v as f64),
-            Literal::Boolean(v) => Some(if *v { 1.0 } else { 0.0 }),
-            Literal::String(_) => None,
+fn literal_f64<'dae>(view: DaeView<'dae>, expression: ExprId<'dae>) -> Option<f64> {
+    match view.expression(expression)?.operation() {
+        ExpressionOperation::Literal(value) => match value {
+            DaeLiteral::Real(value) => Some(*value),
+            DaeLiteral::Integer(value) => Some(*value as f64),
+            DaeLiteral::Enumeration(value) => Some(*value as f64),
+            DaeLiteral::Boolean(value) => Some(if *value { 1.0 } else { 0.0 }),
+            DaeLiteral::String(_) => None,
         },
-        Expression::Unary { op, rhs, .. } => {
-            let inner = literal_f64(rhs)?;
-            match op {
-                OpUnary::Minus | OpUnary::DotMinus => Some(-inner),
-                OpUnary::Plus | OpUnary::DotPlus => Some(inner),
-                OpUnary::Not | OpUnary::Empty => None,
+        ExpressionOperation::Unary { operator, operand } => {
+            let inner = literal_f64(view, operand)?;
+            match operator {
+                UnaryOperator::Negate => Some(-inner),
+                UnaryOperator::Plus => Some(inner),
+                UnaryOperator::Not => None,
             }
         }
         _ => None,
     }
 }
 
-fn opt_literal(expr: &Option<Expression>) -> Option<f64> {
-    expr.as_ref().and_then(literal_f64)
+fn opt_literal<'dae>(view: DaeView<'dae>, expression: Option<ExprId<'dae>>) -> Option<f64> {
+    expression.and_then(|expression| literal_f64(view, expression))
 }
 
 /// Classification of a parameter's effect on the compiled artifact.
@@ -84,18 +86,23 @@ pub struct VariableInfo {
 }
 
 impl VariableInfo {
-    pub(crate) fn from_variable(name: &str, var: &Variable) -> Self {
+    pub(crate) fn from_variable<'dae>(view: DaeView<'dae>, variable: VariableView<'dae>) -> Self {
         Self {
-            name: name.to_string(),
-            unit: var.unit.clone(),
+            name: variable.name().to_string(),
+            unit: variable.unit().map(str::to_string),
             // quantity is not yet carried to the DAE boundary (roadmap §5.1).
             quantity: None,
-            min: opt_literal(&var.min),
-            max: opt_literal(&var.max),
-            nominal: opt_literal(&var.nominal),
-            fixed: var.fixed.unwrap_or(false),
-            description: var.description.clone(),
-            dims: var.dims.clone(),
+            min: opt_literal(view, variable.minimum()),
+            max: opt_literal(view, variable.maximum()),
+            nominal: opt_literal(view, variable.nominal()),
+            fixed: variable.fixed().unwrap_or(false),
+            description: variable.description().map(str::to_string),
+            dims: variable
+                .value_type()
+                .dimensions()
+                .iter()
+                .map(|extent| i64::from(*extent))
+                .collect(),
         }
     }
 }
@@ -146,19 +153,24 @@ pub struct ParameterInfo {
 }
 
 impl ParameterInfo {
-    pub(crate) fn from_variable(name: &str, var: &Variable) -> Self {
+    pub(crate) fn from_variable<'dae>(view: DaeView<'dae>, variable: VariableView<'dae>) -> Self {
         Self {
-            name: name.to_string(),
-            unit: var.unit.clone(),
+            name: variable.name().to_string(),
+            unit: variable.unit().map(str::to_string),
             quantity: None,
-            min: opt_literal(&var.min),
-            max: opt_literal(&var.max),
-            nominal: opt_literal(&var.nominal),
-            fixed: var.fixed.unwrap_or(false),
-            description: var.description.clone(),
-            dims: var.dims.clone(),
-            value: opt_literal(&var.start),
-            kind: param_kind(var.is_tunable),
+            min: opt_literal(view, variable.minimum()),
+            max: opt_literal(view, variable.maximum()),
+            nominal: opt_literal(view, variable.nominal()),
+            fixed: variable.fixed().unwrap_or(false),
+            description: variable.description().map(str::to_string),
+            dims: variable
+                .value_type()
+                .dimensions()
+                .iter()
+                .map(|extent| i64::from(*extent))
+                .collect(),
+            value: opt_literal(view, variable.binding().or_else(|| variable.start())),
+            kind: param_kind(variable.is_tunable()),
         }
     }
 }

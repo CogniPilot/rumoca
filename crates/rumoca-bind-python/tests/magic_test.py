@@ -30,7 +30,7 @@ def test_core_sim_returns_result() -> None:
 
 def test_core_export_returns_codegen() -> None:
     # A non-symbolic target returns generated files (no optional deps needed);
-    # `export casadi|jax|sympy` instead return live objects (see export_test).
+    # `export casadi|jax` instead returns a checked Solve object (see export_test).
     ns: dict = {}
     out = run_modelica_cell(ns, "export dae-modelica -m Ball", BALL)
     assert isinstance(out, rm.CodegenResult)

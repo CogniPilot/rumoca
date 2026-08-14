@@ -1,0 +1,17 @@
+[package]
+name = "rumoca-phase-fmi"
+description = "Checked DAE and Solve lowering into the tensor-native FMI component IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-fmi = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+rumoca-phase-dae = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
