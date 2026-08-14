@@ -644,29 +644,29 @@ fn function_array_updates_preserve_nested_writes_without_replaying_prior_definit
     });
 }
 
-/// GAP, recorded rather than asserted as correct: a write whose VALUE reads the
-/// chain's root aggregate is replayed against storage the earlier writes have
-/// already changed.
+/// A write whose VALUE reads the chain's root aggregate must not be replayed
+/// against storage an earlier write of the same chain has already changed.
 ///
 /// `dependent` builds `q := {30, 40, 50, 60}` and then, in ONE definition,
 /// `q[1] := 1.0` followed by `q[2] := <the root's element 1>`. The root is the
-/// target's own value, so the chain replays in place — and the emitted
-/// `q[2] := q[1]` reads 1.0, where the DAE it was given says 30.0.
+/// target's own value, so the root guard alone admits an in-place replay — and
+/// the `q[2] := q[1]` that replay emits reads 1.0, where the DAE value it came
+/// from names the root's element 1, which is 30.0.
 ///
-/// The root guard proves the ROOT is a value the element sequence may run
-/// against; it does not prove that no write VALUE reads that root at a
-/// position where storage no longer holds it. The two are different questions
-/// and only the first is answered today.
+/// Proving the ROOT is a value the element sequence may run against is not the
+/// same as proving no write VALUE reads that root where storage no longer holds
+/// it. The second question is now asked too: element 1 is written before it is
+/// read, so the chain is handed to the aggregate path, which materializes the
+/// root separately from the updates and lowers as one whole-target loop.
 ///
-/// Not reachable from Modelica as far as probing has established: the natural
-/// spelling (`t := y[1]; y[1] := u; y[2] := t;`) keeps `t` as its own function
-/// local, so the value read is the local and not the aggregate, and the emitted
-/// code is right. This test therefore pins WHAT THE LOWERING DOES, so the day
-/// the guard learns the second question the change is visible here rather than
-/// silent. When that happens the expectation becomes the diverted whole-target
-/// loop — do not simply update the numbers.
+/// The shape is not reachable from Modelica as far as probing has established —
+/// the natural spelling (`t := y[1]; y[1] := u; y[2] := t;`) keeps `t` as its
+/// own function local, so the value read is the local and not the aggregate.
+/// It is asserted here as correctness rather than as a recorded gap because the
+/// divert path it now takes is executed and proven, so the assertion says what
+/// the lowering must do and not merely what it happens to do.
 #[test]
-fn a_write_reading_the_chain_root_replays_against_updated_storage() {
+fn a_write_reading_the_chain_root_diverts_instead_of_replaying_in_place() {
     let mut sources = SourceMap::new();
     let source = sources.add("reaching-definition-update.mo", "root-reading update");
     let provenance = dae::DaeProvenance::source(Span::from_offsets(source, 0, 19)).unwrap();
@@ -692,27 +692,14 @@ fn a_write_reading_the_chain_root_replays_against_updated_storage() {
             .statements;
         assert_eq!(
             indexed_q_assignments(statements),
-            [1, 2],
-            "the root is the target's own value, so the guard replays the \
-             chain in place"
+            [] as [i64; 0],
+            "the second write reads element 1 after the first write stored it, \
+             so no part of the chain may replay in place:\n{statements:#?}"
         );
-        let Some(gast::Spanned {
-            node: gast::Statement::Assignment { value, .. },
-            ..
-        }) = statements.last()
-        else {
-            panic!("the replay ends with the second element write:\n{statements:#?}")
-        };
         assert!(
-            matches!(
-                value,
-                gast::Expression::Ref(gast::Reference::Local(source))
-                    if source.name.lexeme() == "q"
-            ),
-            "the second write reads `q` back out of storage — the gap this \
-             test records. A literal 30.0 here means the root read is now \
-             resolved against the definition it names, and the expectation \
-             above must be re-derived:\n{value:#?}"
+            is_whole_target_loop(statements.last(), 4),
+            "the diverted chain materializes root and updates together, as one \
+             complete four-element loop:\n{statements:#?}"
         );
     });
 }

@@ -91,6 +91,228 @@ fn writes_may_run_in_place<'dae>(
     )
 }
 
+/// The elements the in-place replay has already stored, in the order it stores
+/// them.
+///
+/// A write whose subscripts are all integer literals names exactly one element,
+/// which is what makes a later read provably a different one. A write with a
+/// computed subscript names an element this cannot identify, so from that point
+/// on nothing can be shown to have missed the replay.
+#[derive(Default)]
+struct WrittenElements {
+    /// One literal coordinate tuple per proven write, full-rank because peeling
+    /// accepts only full-rank all-index updates.
+    written: Vec<Vec<i64>>,
+    /// A write landed somewhere this cannot name.
+    unproven: bool,
+}
+
+impl WrittenElements {
+    /// Whether the replay has stored anything yet.
+    ///
+    /// Before the first write, storage still holds exactly the root, so every
+    /// read of it is the value the DAE names and no proof is owed.
+    fn touched_anything(&self) -> bool {
+        self.unproven || !self.written.is_empty()
+    }
+
+    /// Whether the replay may already have overwritten an element the read
+    /// whose literal leading coordinates are `prefix` would see.
+    ///
+    /// A read that names fewer coordinates than the target's rank covers the
+    /// whole sub-array under them — `q[1]` on a matrix is all of row 1 — so it
+    /// sees a write exactly when the written tuple starts with those
+    /// coordinates. For a full-rank read that degenerates to equality.
+    fn may_hold(&self, prefix: &[i64]) -> bool {
+        self.unproven
+            || self
+                .written
+                .iter()
+                .any(|written| written.starts_with(prefix))
+    }
+
+    fn record(&mut self, coordinates: Option<Vec<i64>>) {
+        match coordinates {
+            Some(coordinates) => self.written.push(coordinates),
+            None => self.unproven = true,
+        }
+    }
+}
+
+/// The literal coordinates a subscript list names, when every one is a literal.
+fn literal_coordinates<'dae>(
+    view: dae::DaeView<'dae>,
+    subscripts: dae::SubscriptsView<'dae>,
+) -> Option<Vec<i64>> {
+    subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            dae::SubscriptView::Index { expression, .. } => literal_integer(view, expression),
+            dae::SubscriptView::Slice { .. } | dae::SubscriptView::Whole { .. } => None,
+        })
+        .collect()
+}
+
+/// Prove that no write in the chain reads an element an earlier write of the
+/// same chain has already stored.
+///
+/// [`writes_may_run_in_place`] proves the chain's *root* is a value the element
+/// sequence may run against. That is not the same question as whether the
+/// sequence's own values still see that root once it starts mutating storage,
+/// and only the first was answered. A chain that writes one element and then
+/// reads a *different* element of the root is fine — storage there is still the
+/// root. A chain that reads an element it has already written is not: the
+/// emitted `q[2] := q[1]` reads what this replay just stored, where the DAE
+/// value it came from names the root's element 1.
+///
+/// Reads are checked in replay order — the order the emitted statements change
+/// storage — and every read that cannot be placed against the writes so far is
+/// treated as one that may collide. Refusing hands the chain to the aggregate
+/// path, which materializes the root separately from the updates and so is
+/// correct for every shape; the cost of refusing is a whole-target loop rather
+/// than an element sequence.
+fn writes_read_only_untouched_elements<'dae>(
+    view: dae::DaeView<'dae>,
+    target: dae::FunctionValueView<'dae>,
+    chain: &IndexedUpdateChain<'dae>,
+) -> bool {
+    let mut written = WrittenElements::default();
+    // `writes` runs outermost first, so reversing walks them in the order the
+    // emitted statements execute — which is the order storage changes in.
+    for (value, subscripts) in chain.writes.iter().rev() {
+        if written.touched_anything() {
+            if reads_replayed_storage(view, target, chain.root, *value, &written) {
+                return false;
+            }
+            // A computed subscript is evaluated against the same storage the
+            // values are, so it owes the same proof.
+            for subscript in subscripts.iter() {
+                let dae::SubscriptView::Index { expression, .. } = subscript else {
+                    return false;
+                };
+                if reads_replayed_storage(view, target, chain.root, expression, &written) {
+                    return false;
+                }
+            }
+        }
+        written.record(literal_coordinates(view, *subscripts));
+    }
+    true
+}
+
+/// Whether `expression` reads the aggregate the replay is mutating at a place
+/// the replay has already changed, or reads it in a way that cannot be placed.
+///
+/// The aggregate is named two ways: the chain's own root node, and any other
+/// node denoting the same function value — a second read of the target mints a
+/// distinct expression identity for the same storage, so identity alone would
+/// miss it.
+fn reads_replayed_storage<'dae>(
+    view: dae::DaeView<'dae>,
+    target: dae::FunctionValueView<'dae>,
+    root: dae::ExprId<'dae>,
+    expression: dae::ExprId<'dae>,
+    written: &WrittenElements,
+) -> bool {
+    if expression == root {
+        // A whole-value read sees every element, so any store already made is
+        // visible in it.
+        return true;
+    }
+    let Some(node) = view.expression(expression) else {
+        return true;
+    };
+    if preserves_function_target(view, target, expression) {
+        return true;
+    }
+    let mut children = Vec::new();
+    match node.operation() {
+        // An element read of the aggregate is the case worth being exact
+        // about: it is proven safe exactly when no write so far landed under
+        // the coordinates it names.
+        dae::ExpressionOperation::Index { base, subscripts }
+            if base == root || preserves_function_target(view, target, base) =>
+        {
+            let Some(prefix) = literal_coordinates(view, subscripts) else {
+                return true;
+            };
+            return written.may_hold(&prefix);
+        }
+        dae::ExpressionOperation::Literal(_)
+        | dae::ExpressionOperation::Coordinate(_)
+        | dae::ExpressionOperation::FunctionValue { .. }
+        | dae::ExpressionOperation::FunctionFoldParameter { .. }
+        | dae::ExpressionOperation::FunctionFoldOutput { .. } => {}
+        dae::ExpressionOperation::Unary { operand, .. } => children.push(operand),
+        dae::ExpressionOperation::Binary { lhs, rhs, .. } => children.extend([lhs, rhs]),
+        dae::ExpressionOperation::Conditional(operands)
+        | dae::ExpressionOperation::Array(operands)
+        | dae::ExpressionOperation::Record(operands)
+        | dae::ExpressionOperation::Builtin {
+            arguments: operands,
+            ..
+        } => children.extend(operands.iter()),
+        dae::ExpressionOperation::Call {
+            owner, arguments, ..
+        } => {
+            children.push(owner);
+            children.extend(arguments.iter());
+        }
+        dae::ExpressionOperation::Field { base, .. } => children.push(base),
+        // MLS §10.4.1 builds a comprehension's domain from extents rather than
+        // expressions, so the body is the whole of what it can read.
+        dae::ExpressionOperation::Comprehension { body, .. } => children.push(body),
+        dae::ExpressionOperation::Range(range) => {
+            children.push(range.start().expression());
+            if let Some(step) = range.explicit_step() {
+                children.push(step.expression());
+            }
+            children.push(range.stop().expression());
+        }
+        dae::ExpressionOperation::Index { base, subscripts } => {
+            children.push(base);
+            children.extend(subscript_expressions(subscripts));
+        }
+        dae::ExpressionOperation::ArrayUpdate {
+            base,
+            value,
+            subscripts,
+        } => {
+            children.extend([base, value]);
+            children.extend(subscript_expressions(subscripts));
+        }
+        dae::ExpressionOperation::StringConversion { value, format, .. } => {
+            children.push(value);
+            match format {
+                dae::StringConversionFormatView::Options {
+                    minimum_length,
+                    left_justified,
+                    significant_digits,
+                } => children.extend(
+                    [minimum_length, left_justified, significant_digits]
+                        .into_iter()
+                        .flatten(),
+                ),
+                dae::StringConversionFormatView::Format { value } => children.push(value),
+            }
+        }
+        dae::ExpressionOperation::ClockTransfer { source, .. } => children.push(source),
+    }
+    children
+        .into_iter()
+        .any(|child| reads_replayed_storage(view, target, root, child, written))
+}
+
+fn subscript_expressions<'dae>(
+    subscripts: dae::SubscriptsView<'dae>,
+) -> impl Iterator<Item = dae::ExprId<'dae>> {
+    subscripts.iter().filter_map(|subscript| match subscript {
+        dae::SubscriptView::Index { expression, .. }
+        | dae::SubscriptView::Slice { expression, .. } => Some(expression),
+        dae::SubscriptView::Whole { .. } => None,
+    })
+}
+
 pub(super) fn lower_indexed_function_update<'a, 'dae>(
     view: dae::DaeView<'dae>,
     target: dae::FunctionValueView<'dae>,
@@ -271,7 +493,10 @@ fn lower_indexed_function_update_expression<'a, 'dae>(
     span: Span,
 ) -> Result<Option<Vec<gast::Spanned<gast::Statement>>>, GalecTargetError> {
     let chain = peel_indexed_updates(view, target_type, expression);
-    if chain.writes.is_empty() || !writes_may_run_in_place(view, target, chain.root) {
+    if chain.writes.is_empty()
+        || !writes_may_run_in_place(view, target, chain.root)
+        || !writes_read_only_untouched_elements(view, target, &chain)
+    {
         return Ok(None);
     }
     let scalar_type = scalar_type(
