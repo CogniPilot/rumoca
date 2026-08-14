@@ -10,10 +10,7 @@ homepage.workspace = true
 [dependencies]
 rumoca-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
-indexmap = { workspace = true }
-blake3 = { workspace = true }
-tracing = { workspace = true }
-rustc-hash = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true
