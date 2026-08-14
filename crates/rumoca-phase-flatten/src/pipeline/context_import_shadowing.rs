@@ -1,25 +1,44 @@
 use super::*;
 
+pub(super) struct EffectiveExpressionContext<'a> {
+    pub prefix: &'a QualifiedName,
+    pub imports: &'a qualify::ImportMap,
+    pub options: qualify::QualifyOptions,
+    pub instance_name: Option<&'a str>,
+    pub locals: Option<&'a std::collections::HashSet<String>>,
+    pub predefined_string_declaration: Option<rumoca_core::DefId>,
+    pub predefined_intrinsics: crate::ast_lower::PredefinedIntrinsicIds,
+}
+
 pub(super) fn qualify_expression_with_effective_imports(
     expr: &ast::Expression,
-    prefix: &QualifiedName,
-    imports: &qualify::ImportMap,
-    def_map: Option<&crate::ResolveDefMap>,
-    opts: qualify::QualifyOptions,
-    instance_name: Option<&str>,
-    locals: Option<&std::collections::HashSet<String>>,
+    context: EffectiveExpressionContext<'_>,
 ) -> Result<rumoca_core::Expression, FlattenError> {
-    let qualified = locals.map_or_else(
-        || qualify::qualify_expression_with_imports(expr, prefix, opts, imports),
+    let qualified = context.locals.map_or_else(
+        || {
+            qualify::qualify_expression_with_imports(
+                expr,
+                context.prefix,
+                context.options,
+                context.imports,
+            )
+        },
         |locals| {
-            qualify::qualify_expression_with_imports_and_locals(expr, prefix, opts, locals, imports)
+            qualify::qualify_expression_with_imports_and_locals(
+                expr,
+                context.prefix,
+                context.options,
+                locals,
+                context.imports,
+            )
         },
     );
     crate::ast_lower::expression_from_ast_with_context(
         &qualified,
         crate::ast_lower::LoweringContext {
-            def_map,
-            instance_name,
+            instance_name: context.instance_name,
+            predefined_string_declaration: context.predefined_string_declaration,
+            predefined_intrinsics: context.predefined_intrinsics,
         },
     )
 }
@@ -157,7 +176,7 @@ fn collect_component_shadowed_import_alias(
     let Some(imported_path) = imports.get(alias) else {
         return;
     };
-    let Some(resolved_path) = cr.def_id.and_then(|def_id| def_map.get(&def_id)) else {
+    let Some(resolved_path) = cr.root_def_id().and_then(|def_id| def_map.get(&def_id)) else {
         return;
     };
     if !super::context_and_tests::resolved_path_has_import_alias(resolved_path, alias) {

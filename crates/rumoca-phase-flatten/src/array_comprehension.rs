@@ -74,7 +74,6 @@ pub(crate) fn expand_array_comprehension_bindings(
     class_index: &ast::ClassDefIndex<'_>,
     component_override_map: &ComponentOverrideMap,
 ) -> Result<bool, FlattenError> {
-    let def_map = &tree.def_map;
     let scope_index = OverlayScopeIndex::new(overlay);
     let mut import_cache = ImportCaches::default();
     let mut changed_binding = false;
@@ -154,7 +153,7 @@ pub(crate) fn expand_array_comprehension_bindings(
             &expanded_array,
             &prefix,
             binding_imports,
-            def_map,
+            ast_lower::PredefinedIntrinsicIds::from_tree(tree),
         )?;
 
         flat_var.binding = Some(flat_binding.clone());
@@ -232,11 +231,11 @@ fn lower_expanded_comprehension_binding(
     expanded_array: &ast::Expression,
     prefix: &ast::QualifiedName,
     imports: &ImportMap,
-    def_map: &crate::ResolveDefMap,
+    predefined_intrinsics: ast_lower::PredefinedIntrinsicIds,
 ) -> Result<rumoca_core::Expression, FlattenError> {
     let opts = QualifyOptions::default();
     let qualified = qualify_expression_with_imports(expanded_array, prefix, opts, imports);
-    ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
+    ast_lower::expression_from_ast_with_intrinsics(&qualified, predefined_intrinsics)
 }
 
 #[cfg(test)]
@@ -256,7 +255,7 @@ mod tests {
 
     fn cref(name: &str) -> ast::Expression {
         let mut parts = Vec::new();
-        for seg in crate::path_utils::segments(name) {
+        for (index, seg) in crate::path_utils::segments(name).into_iter().enumerate() {
             parts.push(ComponentRefPart {
                 ident: Token {
                     text: Arc::from(seg),
@@ -265,13 +264,14 @@ mod tests {
                     token_type: 0,
                 },
                 subs: None,
+                def_id: Some(rumoca_core::DefId::new(10_001 + index as u32)),
             });
         }
         ast::Expression::ComponentReference(ComponentReference {
             local: false,
             parts,
-            def_id: None,
             span: test_span(),
+            qualified_display_name: None,
         })
     }
 
@@ -326,11 +326,13 @@ mod tests {
         let prefix = ast::QualifiedName::from_dotted("machine.spacePhasorS");
         let mut imports = ImportMap::default();
         imports.insert("pi".to_string(), "Modelica.Constants.pi".to_string());
-        let def_map = crate::ResolveDefMap::default();
-
-        let lowered =
-            lower_expanded_comprehension_binding(&expanded_array, &prefix, &imports, &def_map)
-                .unwrap();
+        let lowered = lower_expanded_comprehension_binding(
+            &expanded_array,
+            &prefix,
+            &imports,
+            ast_lower::PredefinedIntrinsicIds::default(),
+        )
+        .unwrap();
 
         let rumoca_core::Expression::Array { elements, .. } = lowered else {
             panic!("expected lowered array");
