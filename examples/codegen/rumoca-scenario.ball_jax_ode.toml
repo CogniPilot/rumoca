@@ -7,5 +7,5 @@ file = "../models/Ball.mo"
 name = "Ball"
 
 [codegen]
-target = "jax"
+target = "jax-ode"
 output_dir = "gen/ball_jax"

@@ -15,14 +15,14 @@ name = "rumoca-traversal-policy-check"
 path = "src/bin/rumoca-traversal-policy-check.rs"
 
 # xtask carries NO `rumoca-*` workspace dependency: it parses args, moves files,
-# and shells out. Heavy, compiler-linked work runs on demand via `cargo run -p
-# <crate>` (rumoca-test-msl for MSL tooling, rumoca-tool-docs for the docs cache).
-# The CI arch check (ci.yml) enforces this — keep this list free of rumoca-*.
+# and shells out. Compiler-linked work runs on demand through commands in the
+# owning package. The CI arch check enforces this boundary.
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 mimalloc = { workspace = true }
+num_cpus = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 blake3 = { workspace = true }

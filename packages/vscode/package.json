@@ -107,7 +107,7 @@
         "rumoca.galecServerPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the rumoca-galec-lsp executable (GALEC .alg language server). If empty, uses the bundled binary, then searches PATH."
+          "description": "Path to the rumoca-lsp-galec executable (GALEC .alg language server). If empty, uses the bundled binary, then searches PATH."
         },
         "rumoca.trace.server": {
           "type": "string",

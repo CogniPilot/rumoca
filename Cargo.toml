@@ -1,23 +1,34 @@
 [workspace]
 resolver = "2"
+# `fuzz/` is a standalone cargo-fuzz crate with its own workspace: it needs the
+# nightly-only `-Z sanitizer` machinery and must never be built by the normal
+# workspace commands.
+exclude = ["fuzz"]
 members = [
     "crates/rumoca",
     "crates/rumoca-worker",
     "crates/rumoca-test-msl",
     "crates/rumoca-core",
     "crates/rumoca-contracts",
+    # Executable reference semantics (SPEC_0037 verification track)
+    "crates/rumoca-reference",
     "crates/rumoca-ir-dae",
+    "crates/rumoca-ir-fmi",
     "crates/rumoca-ir-solve",
     "crates/rumoca-eval-ast",
     "crates/rumoca-eval-flat",
     "crates/rumoca-eval-dae",
+    "crates/rumoca-eval-galec",
     "crates/rumoca-eval-solve",
     "crates/rumoca-ir-ast",
     "crates/rumoca-ir-flat",
     "crates/rumoca-phase-codegen",
+    "crates/rumoca-phase-fmi",
+    "crates/rumoca-phase-galec",
     "crates/rumoca-phase-flatten",
     "crates/rumoca-phase-instantiate",
     "crates/rumoca-phase-parse",
+    "crates/rumoca-phase-parse-galec",
     "crates/rumoca-phase-resolve",
     "crates/rumoca-phase-dae",
     "crates/rumoca-phase-structural",
@@ -39,15 +50,12 @@ members = [
     "crates/rumoca-phase-typecheck",
     # GALEC / eFMI export
     "crates/rumoca-ir-galec",
-    "crates/rumoca-galec-codegen",
     # Compile pipeline and tools
     "crates/rumoca-compile",
     "crates/rumoca-tool-lint",
     "crates/rumoca-tool-fmt",
     "crates/rumoca-tool-lsp",
-    "crates/rumoca-tool-galec-lsp",
-    "crates/rumoca-tool-docs",
-    "crates/rumoca-lsp-position",
+    "crates/rumoca-tool-lsp-galec",
     "crates/xtask",
     # Bindings
     "crates/rumoca-bind-wasm",
@@ -82,22 +90,28 @@ rumoca = { path = "crates/rumoca", default-features = false }
 rumoca-worker = { path = "crates/rumoca-worker" }
 rumoca-core = { path = "crates/rumoca-core" }
 rumoca-contracts = { path = "crates/rumoca-contracts" }
+rumoca-reference = { path = "crates/rumoca-reference" }
 rumoca-ir-dae = { path = "crates/rumoca-ir-dae" }
+rumoca-ir-fmi = { path = "crates/rumoca-ir-fmi" }
 rumoca-ir-solve = { path = "crates/rumoca-ir-solve" }
 rumoca-eval-ast = { path = "crates/rumoca-eval-ast" }
 rumoca-eval-flat = { path = "crates/rumoca-eval-flat" }
 rumoca-eval-dae = { path = "crates/rumoca-eval-dae" }
+rumoca-eval-galec = { path = "crates/rumoca-eval-galec" }
 rumoca-eval-solve = { path = "crates/rumoca-eval-solve" }
 rumoca-ir-ast = { path = "crates/rumoca-ir-ast" }
 rumoca-ir-flat = { path = "crates/rumoca-ir-flat" }
 rumoca-phase-flatten = { path = "crates/rumoca-phase-flatten" }
 rumoca-phase-instantiate = { path = "crates/rumoca-phase-instantiate" }
 rumoca-phase-parse = { path = "crates/rumoca-phase-parse" }
+rumoca-phase-parse-galec = { path = "crates/rumoca-phase-parse-galec" }
 rumoca-phase-resolve = { path = "crates/rumoca-phase-resolve" }
 rumoca-phase-dae = { path = "crates/rumoca-phase-dae" }
 rumoca-phase-structural = { path = "crates/rumoca-phase-structural" }
 rumoca-phase-solve = { path = "crates/rumoca-phase-solve", default-features = false }
 rumoca-phase-codegen = { path = "crates/rumoca-phase-codegen" }
+rumoca-phase-fmi = { path = "crates/rumoca-phase-fmi" }
+rumoca-phase-galec = { path = "crates/rumoca-phase-galec" }
 rumoca-signal-frame = { path = "crates/rumoca-signal-frame" }
 rumoca-codec = { path = "crates/rumoca-codec" }
 rumoca-codec-flatbuffers = { path = "crates/rumoca-codec-flatbuffers" }
@@ -115,15 +129,13 @@ rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
 rumoca-compile = { path = "crates/rumoca-compile" }
 rumoca-ir-galec = { path = "crates/rumoca-ir-galec" }
-rumoca-galec-codegen = { path = "crates/rumoca-galec-codegen" }
 rumoca-exec-cranelift = { path = "crates/rumoca-exec-cranelift" }
 rumoca-exec-mlir = { path = "crates/rumoca-exec-mlir" }
 rumoca-exec-wasm = { path = "crates/rumoca-exec-wasm" }
 rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }
 rumoca-tool-fmt = { path = "crates/rumoca-tool-fmt" }
 rumoca-tool-lsp = { path = "crates/rumoca-tool-lsp", default-features = false }
-rumoca-tool-galec-lsp = { path = "crates/rumoca-tool-galec-lsp", default-features = false }
-rumoca-lsp-position = { path = "crates/rumoca-lsp-position" }
+rumoca-tool-lsp-galec = { path = "crates/rumoca-tool-lsp-galec", default-features = false }
 rumoca-bind-wasm = { path = "crates/rumoca-bind-wasm" }
 rumoca-bind-python = { path = "crates/rumoca-bind-python" }
 rumoca-test-msl = { path = "crates/rumoca-test-msl" }
@@ -131,17 +143,21 @@ rumoca-test-msl = { path = "crates/rumoca-test-msl" }
 # External dependencies
 anyhow = "1.0"
 mimalloc = "0.1"
+num_cpus = "1.17"
 blake3 = "1.5"
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
 core_affinity = "0.8"
 dirs = "6.0"
 flate2 = "1.0"
+faer = { version = "0.24.4", default-features = false, features = ["std", "sparse-linalg"] }
 indexmap = { version = "2.7", features = ["serde"] }
 miette = { version = "7.4", features = ["fancy"] }
 minijinja = { version = "2.5", features = ["debug", "preserve_order"] }
 parol = "=4.2.2"
 parol_runtime = "=4.2.0"
+# Property-based testing (dev-dependency only)
+proptest = "1"
 quick-xml = "0.37"
 rayon = "1.10"
 rustc-hash = "2.0"
@@ -179,6 +195,11 @@ console_error_panic_hook = "0.1"
 pyo3 = { version = "0.22", features = ["extension-module"] }
 
 [workspace.lints.rust]
+# `cfg(kani)` is set only by the Kani verifier in the dedicated `.#kani` shell
+# (see CONTRIBUTING.md). Declaring it here keeps the bounded-verification
+# harnesses warning-free without a blanket `allow`, so a *typo* in any other
+# cfg name still warns.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 unsafe_code = "deny"
 unreachable_pub = "deny"
 unnameable_types = "deny"
@@ -210,6 +231,20 @@ missing_enforced_import_renames = "deny"
 # For faster builds
 [profile.dev]
 opt-level = 1
+# Full DWARF (`debug = 2`, Cargo's default for dev) is what makes the ~60
+# integration-test binaries ~800 MB each and drives rust-lld to multi-GB peak
+# RSS while linking them in parallel. Line tables alone keep panic backtraces,
+# `perf`/flamegraph symbolication and `file:line` attribution intact; only
+# variable/type inspection in a debugger is lost. The `test` profile inherits
+# this, so it applies to every unit- and integration-test binary.
+debug = "line-tables-only"
+# Leave the remaining line tables in the per-CU `.dwo` files instead of copying
+# them into every linked artifact. Each test binary then shares one pool of
+# debuginfo rather than carrying its own, which is what halves link-time peak
+# RSS again. The tradeoff is that a dev/test binary is no longer self-contained:
+# it resolves `file:line` only while its `target/debug/deps/*.dwo` files are
+# still in place, so never ship or archive a dev binary on its own.
+split-debuginfo = "unpacked"
 
 # `build-override` applies to build scripts and proc-macro crates only.
 # It speeds up codegen-heavy macro/build tooling without forcing all dev crates
@@ -224,6 +259,16 @@ opt-level = 3
 # default so CI can use parallel codegen.
 [profile.release]
 lto = "thin"
+
+# Fast edit/test profile for the local full-MSL campaign. Keep release-level
+# runtime optimization, but avoid ThinLTO and retain incremental artifacts so
+# compiler/runtime changes do not make every parity sweep pay a release link.
+# Official release builds continue to use `[profile.release]` above.
+[profile.msl-fast]
+inherits = "release"
+lto = false
+incremental = true
+codegen-units = 16
 
 # Speed up parser-heavy runtime in normal debug builds.
 [profile.dev.package.rumoca-phase-parse]

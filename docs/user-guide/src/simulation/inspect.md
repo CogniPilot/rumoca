@@ -10,7 +10,7 @@ pipeline. All of these work with both `rumoca compile` and `rumoca sim`.
 
 | Stage | What you see |
 |---|---|
-| `ast-mo` / `ast-json` | The parsed, resolved syntax tree |
+| `ast-json` | The parsed, resolved semantic tree (no lossy Modelica reconstruction) |
 | `flat-mo` / `flat-json` | The flattened model: hierarchy and `connect`s expanded |
 | `dae-mo` / `dae-json` | The DAE system: equations partitioned, ready for analysis |
 | `solve-json` | The solver IR: sorted, torn, scheduled for execution |
@@ -78,7 +78,7 @@ rumoca cache status                  # compilation cache usage
 ## Verbose Compilation
 
 ```bash
-rumoca compile Model.mo --target sympy -o out -v
+rumoca compile Model.mo --target c-ode -o out -v
 ```
 
 `-v` prints friendly `[rumoca] Phase ...` progress lines, which localizes

@@ -1,0 +1,893 @@
+name: Nightly
+
+# Long-budget lanes that must not sit on the PR critical path:
+#   * the full MSL/OMC root-example sweep (566 models), built once and fanned
+#     out over N shards before one merged quality reading (`msl-sweep-*`);
+#   * the event/friction cohort, which needs minutes-per-model budgets rather
+#     than the 10s PR budget (these models time out, they do not fail);
+#   * the cross-backend MSL suites (`msl-external-tests`), which exercise
+#     generated Solve targets outside the pull-request critical path;
+#   * a real fuzzing budget for the parser.
+#
+# Every job here is diagnostic. None of them gates a merge, and none of them
+# writes to the committed quality baseline.
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+    inputs:
+      msl_shard_count:
+        description: 'MSL sweep fan-out width (integer, 1..16)'
+        required: false
+        default: '4'
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ==========================================================================
+  # Full MSL/OMC root-example sweep (566 models), sharded.
+  #
+  # `msl-sweep-build` builds the harness ONCE (Nix `.#msl-artifacts`: the
+  # `msl_tests` libtest binary plus `rumoca-worker`, `rumoca-sim-worker` and
+  # `rumoca-msl-tools`) and republishes it as a Nix closure artifact.
+  # `msl-sweep-shards` fans that single build out over N stripes of the
+  # slowest-first model order (`verify msl-parity --shard m/n`), so no shard
+  # recompiles the workspace and the timeout tail spreads evenly.
+  # `msl-sweep-merge` fans back in (`verify msl-parity --merge-shards`), which
+  # concatenates the stripes and runs the quality ratchet exactly ONCE on the
+  # merged full set.
+  #
+  # The ratchet is RECORDED, NOT ENFORCED here: the checked-in baseline is
+  # pre-cutover, so a ratchet miss is the expected, informative state and the
+  # run still uploads every artifact. The *fan-in* is enforced, so "the sweep
+  # was incomplete" can never be misread as "the sweep completed and got worse".
+  #
+  # Acceptance contract for the two rejections this lane adds (SPEC_0008,
+  # "Acceptance Contract Before Rejection"):
+  #   * `Plan shard fan-out` rejects an `msl_shard_count` dispatch input that is
+  #     not an integer in 1..16. It accepts every integer in that range, and an
+  #     absent input (every scheduled run), which means 4.
+  #     Owner: this workflow.
+  #   * `Verify every shard reported` / `Verify the fan-in is complete` reject a
+  #     merge whose `shard-*/` directory count differs from the fanned-out shard
+  #     count, whose shard payloads are missing/empty, or that wrote no merged
+  #     `msl_results.json`, OMC reference, trace comparison, or quality
+  #     snapshot. They accept a complete fan-in whose quality ratchet FAILED —
+  #     that outcome is annotated in the run summary and every artifact is still
+  #     uploaded. Owner: this workflow; the `shard-*/msl_results.json` layout it
+  #     guards is `list_shard_dirs` in
+  #     crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_merge.rs.
+  #   * `Verify the merged sweep measured parity` rejects a merged OMC reference
+  #     whose `trace_comparison.models_compared` is zero — files that exist but
+  #     contain no comparison. It accepts any nonzero count, whatever the bands
+  #     say: a bad parity number is a finding, a missing one is a broken run.
+  #     Owner: this workflow; the reading it guards is `MslParityMeasurement` in
+  #     crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_quality_gate/parity_measurement.rs.
+  #
+  # OMC references are cached across nights (`Restore OMC parity reference
+  # cache`), keyed on the OpenModelica flake revision, the MSL release, and the
+  # shard index. The harness re-keys every individual entry on the model set,
+  # MSL version, OMC version, batch timeout, and experiment stop-time policy,
+  # so a coarse cache hit never yields a reference for the wrong experiment —
+  # it only avoids regenerating one that already matches.
+  #
+  # Deliberately NOT on the PR path: `.github/workflows/ci.yml` owns the
+  # PR-facing sharded lane (baseline promotion, PR comment); this one is the
+  # diagnostic full-sweep recorder and never vetoes a merge.
+  # ==========================================================================
+  msl-sweep-build:
+    name: MSL Sweep (build the harness once)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      shard-count: ${{ steps.plan.outputs.count }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+
+      # Fail before the (long) Nix build rather than after it: a typo in the
+      # dispatch input must not cost an hour of runner time.
+      - name: Plan shard fan-out
+        id: plan
+        shell: bash
+        env:
+          SHARD_COUNT: ${{ github.event.inputs.msl_shard_count || '4' }}
+        run: |
+          set -euo pipefail
+          count="$SHARD_COUNT"
+          if [[ ! "$count" =~ ^[1-9][0-9]*$ ]] || (( count > 16 )); then
+            echo "::error title=Bad MSL shard fan-out::msl_shard_count must be an integer in 1..16, got '$count'"
+            exit 1
+          fi
+          {
+            echo "shards=[$(seq 1 "$count" | paste -sd, -)]"
+            echo "count=$count"
+          } >> "$GITHUB_OUTPUT"
+          echo "Fanning the MSL sweep out over $count shards."
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: Install closure archive tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd
+
+      # Same closure cache keys as ci.yml's `nix-build-msl`, so the nightly
+      # sweep warm-starts from whatever the last main-branch CI run built
+      # instead of rebuilding OpenModelica from source.
+      - name: Derive Nix closure cache keys
+        id: nix-cache-keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+
+          with open("flake.lock", encoding="utf-8") as lock_file:
+              locked = json.load(lock_file)["nodes"]["openmodelica"]["locked"]
+          identity = f'{locked["rev"]}\0{locked["narHash"]}'.encode()
+          digest = hashlib.sha256(identity).hexdigest()[:16]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f'openmodelica={locked["rev"]}-{digest}\n')
+          PY
+
+      - name: Restore OpenModelica closure cache
+        uses: actions/cache@v5
+        with:
+          path: target/nix-cache/openmodelica-cli-closure.nar.zst
+          key: openmodelica-cli-closure-v1-${{ runner.os }}-${{ steps.nix-cache-keys.outputs.openmodelica }}
+          restore-keys: |
+            openmodelica-cli-closure-v1-${{ runner.os }}-
+
+      - name: Restore MSL artifacts closure cache
+        uses: actions/cache@v5
+        with:
+          path: target/nix-cache/msl-artifacts-closure.nar.zst
+          key: msl-artifacts-closure-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            msl-artifacts-closure-v1-${{ runner.os }}-
+
+      - name: Import cached Nix closures
+        shell: bash
+        run: |
+          set -euo pipefail
+          for archive in \
+            target/nix-cache/openmodelica-cli-closure.nar.zst \
+            target/nix-cache/msl-artifacts-closure.nar.zst
+          do
+            if [[ -s "$archive" ]]; then
+              zstd --decompress --stdout "$archive" | nix-store --import
+            else
+              echo "No prior closure cache at $archive"
+            fi
+          done
+
+      - name: Build shared MSL and OpenModelica artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix build --print-build-logs .#msl-artifacts \
+            --out-link result-msl-artifacts
+          nix build --print-build-logs .#openmodelica-cli \
+            --out-link result-openmodelica
+
+      - name: Export shared Nix closures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/nix-cache
+          export_closure() {
+            local output_link=$1
+            local archive=$2
+            local -a closure_paths=()
+            mapfile -t closure_paths < <(
+              nix-store -qR "$output_link" | sort -u
+            )
+            nix-store --export "${closure_paths[@]}" |
+              zstd -T0 -3 -f -o "$archive"
+          }
+          export_closure \
+            result-openmodelica \
+            target/nix-cache/openmodelica-cli-closure.nar.zst
+          export_closure \
+            result-msl-artifacts \
+            target/nix-cache/msl-artifacts-closure.nar.zst
+
+      - name: Upload OpenModelica closure
+        uses: actions/upload-artifact@v6
+        with:
+          name: openmodelica-cli-nix-closure
+          path: target/nix-cache/openmodelica-cli-closure.nar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload MSL artifacts closure
+        uses: actions/upload-artifact@v6
+        with:
+          name: msl-artifacts-nix-closure
+          path: target/nix-cache/msl-artifacts-closure.nar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  msl-sweep-shards:
+    name: MSL Sweep (shard ${{ matrix.shard }}/${{ needs.msl-sweep-build.outputs.shard-count }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    needs: msl-sweep-build
+    strategy:
+      # One slow stripe must not cancel the others: a partial sweep is still
+      # forensically useful, and the merge job refuses to report it as a full
+      # one anyway.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.msl-sweep-build.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev zstd
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # Read-only: the nightly lane never writes the shared `msl-gate` cache
+      # that the PR lane depends on.
+      - name: Rust cache (msl-gate)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msl-gate
+          cache-targets: false
+          save-if: false
+
+      - name: Cache MSL
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: target/msl/ModelicaStandardLibrary-4.1.0
+          key: msl-v4.1.0-release-zip-layout-v2
+
+      - name: Ensure MSL
+        shell: bash
+        run: |
+          set -euo pipefail
+          msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+            echo "MSL cache is valid at $msl_dir"
+            exit 0
+          fi
+          rm -rf "$msl_dir"
+          mkdir -p "$msl_dir"
+          curl -L -o target/msl/msl-v4.1.0.zip \
+            https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip
+          unzip -q target/msl/msl-v4.1.0.zip -d "$msl_dir"
+          rm target/msl/msl-v4.1.0.zip
+          test -f "$msl_dir/Complex.mo"
+          test -f "$msl_dir/Modelica 4.1.0/package.mo"
+
+      # NOT `rm -rf target/msl/results`: that also deletes `omc_parity_cache/`,
+      # the keyed OMC reference cache restored below. Everything else goes.
+      - name: Clean stale MSL results
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -d target/msl/results ]]; then
+            find target/msl/results -mindepth 1 -maxdepth 1 \
+              ! -name omc_parity_cache -exec rm -rf {} +
+          fi
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      # OMC references are the expensive half of this lane: `omc simulate()`
+      # generates C and invokes gcc per model. The harness already keys each
+      # cached reference on (model set, MSL version, OMC version, batch timeout,
+      # experiment stop-time policy) and regenerates on any mismatch, so this
+      # coarse key only has to change when the OMC build or the MSL release
+      # does — a stale entry can never be reused as a fresh one, it just misses.
+      - name: Derive OMC parity cache key
+        id: omc-parity-cache-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+
+          with open("flake.lock", encoding="utf-8") as lock_file:
+              locked = json.load(lock_file)["nodes"]["openmodelica"]["locked"]
+          identity = f'{locked["rev"]}\0{locked["narHash"]}'.encode()
+          digest = hashlib.sha256(identity).hexdigest()[:16]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"omc={digest}\n")
+          PY
+
+      - name: Restore OMC parity reference cache
+        uses: actions/cache@v5
+        with:
+          path: target/msl/results/omc_parity_cache
+          key: >-
+            omc-parity-cache-v1-${{ runner.os }}-msl4.1.0-${{
+            steps.omc-parity-cache-key.outputs.omc }}-shard${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: |
+            omc-parity-cache-v1-${{ runner.os }}-msl4.1.0-${{ steps.omc-parity-cache-key.outputs.omc }}-shard${{ matrix.shard }}-
+            omc-parity-cache-v1-${{ runner.os }}-msl4.1.0-${{ steps.omc-parity-cache-key.outputs.omc }}-
+
+      - name: Download shared Nix closures
+        uses: actions/download-artifact@v8
+        with:
+          pattern: '*-nix-closure'
+          path: target/nix-cache
+          merge-multiple: true
+
+      - name: Import shared Nix closures
+        shell: bash
+        run: |
+          set -euo pipefail
+          for archive in \
+            target/nix-cache/openmodelica-cli-closure.nar.zst \
+            target/nix-cache/msl-artifacts-closure.nar.zst
+          do
+            zstd --decompress --stdout "$archive" | nix-store --import
+          done
+          nix build .#openmodelica-cli --out-link result-openmodelica
+          nix build .#msl-artifacts --out-link result-msl-artifacts
+          echo "$PWD/result-openmodelica/bin" >> "$GITHUB_PATH"
+          result-openmodelica/bin/omc --version
+
+      # `--no-remote-quality-baseline` pins every job in this lane to the
+      # checked-in baseline, so a nightly reading never silently changes meaning
+      # because the promoted release asset moved under it.
+      - name: Run MSL sweep shard ${{ matrix.shard }}
+        shell: bash
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+          SHARD_COUNT: ${{ needs.msl-sweep-build.outputs.shard-count }}
+        run: |
+          set -euo pipefail
+          cargo xtask verify msl-parity \
+            --shard "${SHARD_INDEX}/${SHARD_COUNT}" \
+            --no-remote-quality-baseline \
+            --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
+            --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
+            --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \
+            --stage-parallelism 3 \
+            --sim-parallelism 3 \
+            --sim-worker-memory-mb 2048 \
+            --sim-total-memory-mb 6144 \
+            --monitor-interval-secs 30
+
+      # The `shard-<n>` artifact name is load-bearing: `download-artifact`
+      # materialises each artifact under a directory of its own name, and the
+      # fan-in enumerates `<merge-dir>/shard-*/msl_results.json`. `warn` here is
+      # safe because the merge job hard-fails on any shard directory that is
+      # missing or empty.
+      - name: Upload shard ${{ matrix.shard }} results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: shard-${{ matrix.shard }}
+          path: |
+            target/msl/results/msl_results.json
+            target/msl/results/omc_simulation_reference.json
+            target/msl/results/sim_trace_comparison.json
+            target/msl/results/msl_band_table.json
+          if-no-files-found: warn
+
+  msl-sweep-merge:
+    name: MSL Sweep (merge + record the ratchet)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    needs: [msl-sweep-build, msl-sweep-shards]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev zstd
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Rust cache (msl-gate)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msl-gate
+          cache-targets: false
+          save-if: false
+
+      - name: Download shard results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: shard-*
+          path: target/msl/shards
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: Download shared Nix closure
+        uses: actions/download-artifact@v8
+        with:
+          name: msl-artifacts-nix-closure
+          path: target/nix-cache
+
+      - name: Import shared Nix closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          zstd --decompress --stdout \
+            target/nix-cache/msl-artifacts-closure.nar.zst |
+            nix-store --import
+          nix build .#msl-artifacts --out-link result-msl-artifacts
+
+      # Rejection 1 of the acceptance contract above. `list_shard_dirs` merges
+      # whatever `shard-*/` directories it finds, so a lost artifact would
+      # otherwise silently produce a smaller, better-looking "full" sweep.
+      - name: Verify every shard reported
+        shell: bash
+        env:
+          EXPECTED_SHARDS: ${{ needs.msl-sweep-build.outputs.shard-count }}
+        run: |
+          set -euo pipefail
+          found="$(find target/msl/shards -mindepth 1 -maxdepth 1 -type d -name 'shard-*' | wc -l)"
+          if [[ "$found" -ne "$EXPECTED_SHARDS" ]]; then
+            echo "::error title=Incomplete MSL fan-in::expected $EXPECTED_SHARDS shard-*/ directories under target/msl/shards, found $found"
+            exit 1
+          fi
+          for dir in target/msl/shards/shard-*; do
+            for file in msl_results.json omc_simulation_reference.json sim_trace_comparison.json msl_band_table.json; do
+              if [[ ! -s "$dir/$file" ]]; then
+                echo "::error title=Incomplete MSL fan-in::$dir/$file is missing or empty"
+                exit 1
+              fi
+            done
+          done
+          echo "All $EXPECTED_SHARDS shards reported."
+
+      # `continue-on-error` covers exactly one accepted outcome: the merged set
+      # did not clear the pre-cutover ratchet. Everything else the command can
+      # get wrong (a stripe that will not merge, a summary it refuses to write)
+      # is caught by the next step, which is not forgiving.
+      - name: Merge shards + run the quality ratchet
+        id: merge-gate
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo xtask verify msl-parity \
+            --merge-shards target/msl/shards \
+            --no-remote-quality-baseline \
+            --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests"
+
+      # Rejection 2 of the acceptance contract above. The ratchet runs last in
+      # the merge test, after every artifact is written, so a ratchet miss still
+      # leaves all four files behind; a missing file means the merge itself
+      # broke and the run has nothing honest to report.
+      - name: Verify the fan-in is complete
+        id: fanin
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for file in \
+            msl_results.json \
+            omc_simulation_reference.json \
+            sim_trace_comparison.json \
+            msl_quality_current.json \
+            msl_band_table.json
+          do
+            if [[ ! -s "target/msl/results/$file" ]]; then
+              echo "::error title=MSL merge produced no $file::target/msl/results/$file is missing or empty"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      # Rejection 3 of the acceptance contract above. Present-but-empty bands
+      # are the shape that let `sim_ok` masquerade as parity: the files existed,
+      # nothing had been compared. A merged reference that compared zero models
+      # is "parity unmeasured", and this lane says so instead of reporting the
+      # sweep's `sim_ok` as if it were a parity number. Accepts any merged
+      # reference with `models_compared > 0`, whatever the bands say.
+      - name: Verify the merged sweep measured parity
+        id: parity-measured
+        shell: bash
+        run: |
+          set -euo pipefail
+          reference="target/msl/results/omc_simulation_reference.json"
+          if [[ ! -s "$reference" ]]; then
+            echo "::error title=parity unmeasured: comparator did not run::$reference is missing or empty; this sweep has no parity number, only sim_ok (which is completion, never parity)"
+            exit 1
+          fi
+          compared="$(jq -r '.trace_comparison.models_compared // 0' "$reference")"
+          if [[ "$compared" -le 0 ]]; then
+            echo "::error title=parity unmeasured: comparator did not run::$reference reports models_compared=$compared; this sweep has no parity number, only sim_ok (which is completion, never parity)"
+            exit 1
+          fi
+          echo "The merged sweep compared $compared model(s) against OMC."
+
+      # Rejection 4. `continue-on-error` on the merge step accepts exactly one
+      # outcome: the ratchet was missed. A run whose gate reported "parity
+      # unmeasured" — no comparable per-model band table, or a table that
+      # disagrees with the reference — is not a ratchet miss, and must not pass
+      # through that forgiveness. The gate writes its own verdict into the
+      # snapshot, so this reads the verdict rather than re-deriving it.
+      - name: Verify the merged sweep pinned its cohort
+        id: cohort-pinned
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot="target/msl/results/msl_quality_current.json"
+          measured="$(jq -r '.parity_measured // false' "$snapshot")"
+          if [[ "$measured" != "true" ]]; then
+            reason="$(jq -r '.parity_unmeasured_reason // "no reason recorded"' "$snapshot")"
+            echo "::error title=parity unmeasured: comparator did not run::$reason; sim_ok is completion, never parity"
+            exit 1
+          fi
+          table="target/msl/results/msl_band_table.json"
+          cohort="$(jq -r '.counts.cohort_models // 0' "$table")"
+          table_compared="$(jq -r '.counts.compared_models // 0' "$table")"
+          reference_compared="$(jq -r '.trace_comparison.models_compared // 0' "target/msl/results/omc_simulation_reference.json")"
+          if [[ "$table_compared" -ne "$reference_compared" ]]; then
+            echo "::error title=Band table disagrees with the reference::the per-model table compares $table_compared model(s), the reference reports $reference_compared; one artifact is stale and neither may be quoted"
+            exit 1
+          fi
+          echo "Cohort pinned: $cohort model rows, $table_compared compared."
+
+      - name: Typed-bucket triage report
+        if: ${{ always() && steps.fanin.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./result-msl-artifacts/bin/rumoca-msl-tools triage \
+            --results-dir target/msl/results \
+            --output-json target/msl/results/msl_triage.json \
+            --output-md target/msl/results/msl_triage.md \
+            --top 40
+
+      - name: Record the sweep in the run summary
+        if: always()
+        shell: bash
+        env:
+          GATE_OUTCOME: ${{ steps.merge-gate.outcome }}
+          SHARD_COUNT: ${{ needs.msl-sweep-build.outputs.shard-count }}
+        run: |
+          set -euo pipefail
+          results="target/msl/results/msl_results.json"
+          reference="target/msl/results/omc_simulation_reference.json"
+          triage="target/msl/results/msl_triage.json"
+          {
+            echo "## MSL/OMC sweep — ${SHARD_COUNT} shards, merged once"
+            echo
+            # The parity reading comes FIRST and comes from the comparator.
+            # `sim_ok` is listed below it as completion, explicitly labelled so
+            # it cannot be lifted out of this summary as a parity number.
+            echo "### Parity (OMC trace comparator)"
+            echo
+            targets=0
+            if [[ -s "$results" ]]; then
+              targets="$(jq -r '(.sim_target_models // []) | length' "$results")"
+            fi
+            if [[ -s "$reference" ]] && \
+               [[ "$(jq -r '.trace_comparison.models_compared // 0' "$reference")" -gt 0 ]] && \
+               [[ "$targets" -gt 0 ]]; then
+              jq -r --argjson targets "$targets" '
+                .trace_comparison as $t
+                | def pct($n): (($n * 1000 / $targets) | floor) / 10;
+                  "| band | models | % of \($targets) cohort targets |",
+                  "|---|---|---|",
+                  "| strict-high (the parity number) | \($t.agreement_high) | \(pct($t.agreement_high)) |",
+                  "| minor | \($t.agreement_minor) | \(pct($t.agreement_minor)) |",
+                  "| deviation | \($t.agreement_deviation) | \(pct($t.agreement_deviation)) |",
+                  "| models compared | \($t.models_compared) | |"
+              ' "$reference"
+            else
+              echo "**parity unmeasured: comparator did not run.** This sweep has no"
+              echo "parity number. \`sim_ok\` below is completion, never parity."
+            fi
+            echo
+            echo "### Completion (reported, never a parity claim)"
+            echo
+            if [[ -s "$results" ]]; then
+              jq -r '
+                "| metric | value |",
+                "|---|---|",
+                "| models discovered | \(.total_models) |",
+                "| compiled | \(.compiled_models) |",
+                "| balanced | \(.balanced_models) |",
+                "| sim attempted | \(.sim_attempted) |",
+                "| sim_ok (completion, not parity) | \(.sim_ok) |"
+              ' "$results"
+            else
+              echo "The fan-in did not complete: no merged msl_results.json was produced."
+            fi
+            echo
+            echo "Quality ratchet outcome: **${GATE_OUTCOME}** (recorded, not enforced)."
+            echo
+            echo "This lane reads the sweep against the checked-in, pre-cutover baseline"
+            echo "and reports the honest number instead of vetoing. ci.yml owns the"
+            echo "enforcing lane."
+            if [[ -s "$triage" ]]; then
+              echo
+              jq -r '
+                (.failure_bucket_counts // {}) as $typed
+                | (if ($typed | length) > 0 then $typed else (.reason_counts // {}) end) as $counts
+                | (if ($typed | length) > 0
+                     then "typed failure buckets"
+                     else "taxonomy reasons (this report carries no typed buckets)"
+                   end) as $label
+                | "### Top \($label)",
+                  "",
+                  "| bucket | models |",
+                  "|---|---|",
+                  ($counts | to_entries | sort_by(-.value) | .[0:10] | .[] | "| \(.key) | \(.value) |"),
+                  "",
+                  "Taxonomy coverage: \(.taxonomy_coverage.classified_percent)% classified, typed-source \(.taxonomy_coverage.typed_percent // "n/a")%."
+              ' "$triage"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$GATE_OUTCOME" in
+            success) ;;
+            failure)
+              echo "::warning title=MSL quality ratchet not met::the merged sweep did not clear the checked-in pre-cutover baseline; see the run summary for the recorded numbers"
+              ;;
+            *)
+              echo "::warning title=MSL quality ratchet not read::the merge step never ran (outcome: ${GATE_OUTCOME}), so this run has no ratchet reading"
+              ;;
+          esac
+
+      - name: Upload merged MSL sweep results
+        if: ${{ always() && steps.fanin.outcome == 'success' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: msl-sweep-results
+          path: |
+            target/msl/results/msl_results.json
+            target/msl/results/msl_triage.json
+            target/msl/results/msl_triage.md
+          if-no-files-found: error
+
+      - name: Upload MSL sweep supporting reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: msl-sweep-reports
+          path: |
+            target/msl/results/msl_quality_current.json
+            target/msl/results/omc_simulation_reference.json
+            target/msl/results/sim_trace_comparison.json
+            target/msl/results/msl_band_table.json
+            target/msl/results/msl_package_pass_rates.md
+            target/msl/results/msl_package_trace_accuracy.md
+            target/msl/results/mls_contract_coverage.md
+            target/msl/results/msl_cargo_setup_timing.md
+          if-no-files-found: warn
+
+  event-cohort-parity:
+    name: Event Cohort Parity (long budget)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev zstd
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Rust cache (nightly-event-cohort)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msl-gate
+          cache-on-failure: true
+          cache-targets: false
+          save-if: false
+
+      - name: Cache MSL
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: target/msl/ModelicaStandardLibrary-4.1.0
+          key: msl-v4.1.0-release-zip-layout-v2
+
+      - name: Ensure MSL
+        shell: bash
+        run: |
+          set -euo pipefail
+          msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+            echo "MSL cache is valid at $msl_dir"
+            exit 0
+          fi
+          rm -rf "$msl_dir"
+          mkdir -p "$msl_dir"
+          curl -L -o target/msl/msl-v4.1.0.zip \
+            https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip
+          unzip -q target/msl/msl-v4.1.0.zip -d "$msl_dir"
+          rm target/msl/msl-v4.1.0.zip
+          test -f "$msl_dir/Complex.mo"
+          test -f "$msl_dir/Modelica 4.1.0/package.mo"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: Build OpenModelica
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix build .#openmodelica-cli --out-link result-openmodelica
+          echo "$PWD/result-openmodelica/bin" >> "$GITHUB_PATH"
+          result-openmodelica/bin/omc --version
+
+      # No `--require-selected-targets-success`: the whole point of this lane is
+      # that the cohort does not pass yet. Passing an explicit target file also
+      # skips the baseline-relative quality gate, so the run is purely
+      # diagnostic. `--all-omc-targets` is required because these models are not
+      # `sim_ok`, and the default OMC selection would produce no reference to
+      # compare against.
+      - name: Run event-cohort parity with long budgets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/msl/event-cohort
+          cargo xtask verify msl-parity \
+            --results-dir target/msl/event-cohort \
+            --sim-targets-file crates/rumoca-test-msl/tests/msl_tests/event_cohort_targets_nightly.json \
+            --sim-set full \
+            --sim-timeout-secs 300 \
+            --ir-solve-timeout-secs 60 \
+            --model-attempt-timeout-secs 420 \
+            --all-omc-targets
+
+      # `triage` takes a results *directory* plus explicit output paths; the
+      # former `--results`/`--out` spelling has never been a valid flag pair, so
+      # this step could only ever fail its argument parse — silently, because it
+      # was also `continue-on-error`. Both are fixed: real flags, and a failure
+      # that shows up.
+      - name: Triage event-cohort results
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --release -p rumoca-test-msl --bin rumoca-msl-tools -- triage \
+            --results-dir target/msl/event-cohort \
+            --output-json target/msl/event-cohort/msl_triage.json \
+            --output-md target/msl/event-cohort/msl_triage.md
+
+      - name: Upload event-cohort artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: nightly-event-cohort
+          path: |
+            target/msl/event-cohort/msl_results.json
+            target/msl/event-cohort/msl_triage.json
+            target/msl/event-cohort/msl_triage.md
+            target/msl/event-cohort/sim_traces
+          if-no-files-found: warn
+
+  cross-backend-msl:
+    name: Cross-backend MSL suites
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: Cache MSL
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: target/msl/ModelicaStandardLibrary-4.1.0
+          key: msl-v4.1.0-release-zip-layout-v2
+
+      - name: Ensure MSL
+        shell: bash
+        run: |
+          set -euo pipefail
+          msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+            exit 0
+          fi
+          rm -rf "$msl_dir"
+          mkdir -p "$msl_dir"
+          curl -L -o target/msl/msl-v4.1.0.zip \
+            https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip
+          unzip -q target/msl/msl-v4.1.0.zip -d "$msl_dir"
+          rm target/msl/msl-v4.1.0.zip
+
+      # These are diagnostic MSL corpus cross-checks, not the required template
+      # runtime gates. The flake's dev shell supplies the C toolchain and the
+      # CasADi Python package. Target-list discovery remains a manual maintenance
+      # command because it writes proposed fixture files rather than asserting a
+      # fixed correctness threshold.
+      - name: C Solve MSL suite
+        continue-on-error: true
+        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test c_ode_msl_test -- --nocapture
+
+      - name: CasADi MSL suite
+        continue-on-error: true
+        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test casadi_msl_test -- --nocapture
+
+  parser-fuzz:
+    name: Parser fuzzing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+
+      - name: Install Rust nightly (cargo-fuzz needs the sanitizer flags)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz the Modelica parser
+        run: cargo xtask verify fuzz --max-total-secs 900
+
+      - name: Upload fuzz reproducers
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: nightly-fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore

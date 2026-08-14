@@ -1,6 +1,9 @@
 //! Operator record contract tests - MLS §14
 
-use rumoca_contracts::test_support::{expect_resolve_failure_with_code, expect_success};
+use rumoca_compile::compile::FailedPhase;
+use rumoca_contracts::test_support::{
+    expect_failure_in_phase_with_code, expect_resolve_failure_with_code, expect_success,
+};
 
 #[test]
 fn oprec_operator_record_structure_allows_record_fields_and_operator_declarations() {
@@ -11,6 +14,7 @@ fn oprec_operator_record_structure_allows_record_fields_and_operator_declaration
             Real im;
 
             encapsulated operator '+'
+                import Complex;
                 function add
                     input Complex a;
                     input Complex b;
@@ -45,6 +49,7 @@ fn oprec_001_encapsulated_operator_ok() {
             Real im;
 
             encapsulated operator '+'
+                import Complex;
                 function add
                     input Complex a;
                     input Complex b;
@@ -74,6 +79,7 @@ fn oprec_001_unencapsulated_operator_rejected() {
             Real im;
 
             operator '+'
+                import Complex;
                 function add
                     input Complex a;
                     input Complex b;
@@ -109,6 +115,7 @@ fn oprec_002_single_output_ok() {
             Real im;
 
             encapsulated operator '+'
+                import Complex;
                 function add
                     input Complex a;
                     input Complex b;
@@ -138,6 +145,7 @@ fn oprec_002_multiple_outputs_rejected() {
             Real im;
 
             encapsulated operator '+'
+                import Complex;
                 function add
                     input Complex a;
                     input Complex b;
@@ -175,6 +183,7 @@ fn oprec_003_record_input_ok() {
             Real im;
 
             encapsulated operator '+'
+                import Complex;
                 function add
                     input Complex a;
                     input Complex b;
@@ -204,6 +213,7 @@ fn oprec_003_missing_record_input_rejected() {
             Real im;
 
             encapsulated operator '+'
+                import Complex;
                 function add
                     input Real a;
                     input Real b;
@@ -239,6 +249,7 @@ fn oprec_004_constructor_output_ok() {
             Real im;
 
             encapsulated operator 'constructor'
+                import Complex;
                 function from_real
                     input Real x;
                     output Complex c;
@@ -267,6 +278,7 @@ fn oprec_004_constructor_output_rejected() {
             Real im;
 
             encapsulated operator 'constructor'
+                import Complex;
                 function from_real
                     input Real x;
                     output Real y;
@@ -301,6 +313,7 @@ fn oprec_008_zero_operator_single_zero_input_ok() {
             Real im;
 
             encapsulated operator '0'
+                import Complex;
                 function zero
                     output Complex c;
                 algorithm
@@ -328,6 +341,7 @@ fn oprec_008_zero_operator_multiple_functions_rejected() {
             Real im;
 
             encapsulated operator '0'
+                import Complex;
                 function zero
                     output Complex c;
                 algorithm
@@ -362,6 +376,7 @@ fn oprec_008_zero_operator_with_input_rejected() {
             Real im;
 
             encapsulated operator '0'
+                import Complex;
                 function zero
                     input Complex a;
                     output Complex c;
@@ -396,6 +411,7 @@ fn oprec_010_string_output_ok() {
             Real im;
 
             encapsulated operator 'String'
+                import Complex;
                 function to_string
                     input Complex a;
                     output String s;
@@ -424,6 +440,7 @@ fn oprec_010_non_string_output_rejected() {
             Real im;
 
             encapsulated operator 'String'
+                import Complex;
                 function to_string
                     input Complex a;
                     output Real y;
@@ -600,7 +617,7 @@ fn oprec_009_cross_constructor_pair_rejected() {
 
 #[test]
 fn oprec_011_zero_inner_dimension_product_rejected() {
-    rumoca_contracts::test_support::expect_resolve_failure_with_code(
+    expect_failure_in_phase_with_code(
         r#"
         package P
             operator record OR
@@ -614,8 +631,32 @@ fn oprec_011_zero_inner_dimension_product_rejected() {
                 c = a * b;
             end M;
         end P;
+        "#,
+        "P.M",
+        FailedPhase::Typecheck,
+        "ET011",
+    );
+}
+
+#[test]
+fn oprec_011_unused_zero_sized_array_is_legal() {
+    expect_success(
+        r#"
+        package P
+            operator record OR
+                Real re;
+            end OR;
+            model Unused
+                parameter Integer n = 0;
+                OR values[n];
+            end Unused;
+            model M
+                Real x;
+            equation
+                x = 1;
+            end M;
+        end P;
     "#,
         "P.M",
-        "ER129",
     );
 }
