@@ -18,7 +18,6 @@ pub(crate) fn build_component_modifier_member_types(
     tree: &ClassTree,
     type_table: &TypeTable,
     type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    type_suffix_index: &HashMap<String, Option<TypeId>>,
     source_map: &SourceMap,
 ) -> TypeCheckResult<HashMap<DefId, HashMap<String, TypeId>>> {
     let mut cache = HashMap::new();
@@ -27,7 +26,6 @@ pub(crate) fn build_component_modifier_member_types(
         tree,
         type_table,
         type_ids_by_def_id,
-        type_suffix_index,
         source_map,
     };
     for def_id in tree.def_map.keys().copied() {
@@ -40,7 +38,6 @@ pub(crate) fn build_component_modifier_member_types_for_def_ids<I>(
     tree: &ClassTree,
     type_table: &TypeTable,
     type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    type_suffix_index: &HashMap<String, Option<TypeId>>,
     source_map: &SourceMap,
     root_def_ids: I,
 ) -> TypeCheckResult<HashMap<DefId, HashMap<String, TypeId>>>
@@ -53,7 +50,6 @@ where
         tree,
         type_table,
         type_ids_by_def_id,
-        type_suffix_index,
         source_map,
     };
     for def_id in root_def_ids {
@@ -106,7 +102,6 @@ struct ComponentModifierMemberTypeContext<'a> {
     tree: &'a ClassTree,
     type_table: &'a TypeTable,
     type_ids_by_def_id: &'a HashMap<DefId, TypeId>,
-    type_suffix_index: &'a HashMap<String, Option<TypeId>>,
     source_map: &'a SourceMap,
 }
 
@@ -147,10 +142,11 @@ fn collect_component_modifier_member_types(
             member_comp,
             ctx.type_table,
             ctx.type_ids_by_def_id,
-            ctx.type_suffix_index,
             ctx.source_map,
         )?;
-        member_types.insert(member_name.clone(), member_type_id);
+        if let Some(member_type_id) = member_type_id {
+            member_types.insert(member_name.clone(), member_type_id);
+        }
     }
 
     visiting.remove(&def_id);
@@ -162,20 +158,25 @@ fn resolve_component_type_for_modifier_members(
     component: &Component,
     type_table: &TypeTable,
     type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    type_suffix_index: &HashMap<String, Option<TypeId>>,
     source_map: &SourceMap,
-) -> TypeCheckResult<TypeId> {
+) -> TypeCheckResult<Option<TypeId>> {
     if let Some(type_def_id) = component.type_def_id
         && let Some(type_id) = type_ids_by_def_id.get(&type_def_id)
     {
-        return Ok(*type_id);
+        return Ok(Some(*type_id));
+    }
+    if component.type_def_id.is_none()
+        && component.type_name.name.len() > 1
+        && component.type_name.def_id.is_some()
+    {
+        return Ok(None);
     }
 
     let type_name = component.type_name.to_string();
     let span = name_span(source_map, &component.type_name)?;
     type_table
         .lookup(&type_name)
-        .or_else(|| type_suffix_index.get(&type_name).copied().flatten())
+        .map(Some)
         .ok_or_else(|| Box::new(TypeCheckError::undefined_type(type_name, span)))
 }
 
@@ -189,18 +190,21 @@ fn name_span(
         )));
     };
     let last = name.name.last().unwrap_or(first);
-    let file_name = if !first.location.file_name.is_empty() {
-        first.location.file_name.as_str()
+    let source = if first.location.source != rumoca_core::SourceId::DUMMY {
+        first.location.source
     } else {
-        last.location.file_name.as_str()
+        last.location.source
     };
     source_map
-        .try_location_to_span(
-            file_name,
+        .try_span(
+            source,
             first.location.start as usize,
             last.location.end as usize,
         )
         .ok_or_else(|| {
+            let file_name = source_map
+                .name(source)
+                .unwrap_or(crate::UNKNOWN_SOURCE_DISPLAY_NAME);
             Box::new(TypeCheckError::missing_source_context(format!(
                 "source file `{file_name}` for component modifier member type name was not found"
             )))

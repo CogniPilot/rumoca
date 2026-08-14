@@ -11,6 +11,7 @@ pub(super) const ER119_EVENT_CLOCK_RESAMPLING: &str = "ER119";
 pub(super) const ER126_CLOCK_PARTITION_CONFLICT: &str = "ER126";
 pub(super) const ER127_CLOCKED_VAR_CONTINUOUS_ACCESS: &str = "ER127";
 pub(super) const ER128_CLOCK_SUBSCRIPT_EVALUABLE: &str = "ER128";
+pub(super) const ER131_CLOCKED_WHEN_ELSEWHEN: &str = "ER131";
 
 pub(super) fn check_clock_restrictions(
     class: &ClassDef,
@@ -18,6 +19,7 @@ pub(super) fn check_clock_restrictions(
     diags: &mut Vec<Diagnostic>,
 ) {
     check_clocked_when_in_algorithms(class, def, diags);
+    check_clocked_when_has_one_branch(class, def, diags);
     check_event_clock_resampling(class, diags);
     check_clock_partitions(class, def, diags);
     for (name, comp) in &class.components {
@@ -64,6 +66,81 @@ pub(super) fn check_clock_restrictions(
             Variability::Continuous(_) | Variability::Empty => {}
         }
     }
+}
+
+/// MLS §16.6 / CLK-014: a clocked when-equation has no elsewhen parts.
+fn check_clocked_when_has_one_branch(
+    class: &ClassDef,
+    def: &StoredDefinition,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for equation in class.equations.iter().chain(class.initial_equations.iter()) {
+        check_clocked_when_equation_tree(equation, class, def, diags);
+    }
+}
+
+fn check_clocked_when_equation_tree(
+    equation: &Equation,
+    class: &ClassDef,
+    def: &StoredDefinition,
+    diags: &mut Vec<Diagnostic>,
+) {
+    match equation {
+        Equation::When(blocks) => {
+            if let Some((first, elsewhen_blocks)) = blocks.split_first()
+                && clock_condition_token(&first.cond, class, def).is_some()
+            {
+                for block in elsewhen_blocks {
+                    report_clocked_elsewhen(&block.cond, diags);
+                }
+            }
+            for block in blocks {
+                for nested in &block.eqs {
+                    check_clocked_when_equation_tree(nested, class, def, diags);
+                }
+            }
+        }
+        Equation::If {
+            cond_blocks,
+            else_block,
+        } => {
+            for block in cond_blocks {
+                for nested in &block.eqs {
+                    check_clocked_when_equation_tree(nested, class, def, diags);
+                }
+            }
+            if let Some(else_block) = else_block {
+                for nested in else_block {
+                    check_clocked_when_equation_tree(nested, class, def, diags);
+                }
+            }
+        }
+        Equation::For { equations, .. } => {
+            for nested in equations {
+                check_clocked_when_equation_tree(nested, class, def, diags);
+            }
+        }
+        Equation::Empty
+        | Equation::Simple { .. }
+        | Equation::Connect { .. }
+        | Equation::FunctionCall { .. }
+        | Equation::Assert { .. } => {}
+    }
+}
+
+fn report_clocked_elsewhen(condition: &Expression, diags: &mut Vec<Diagnostic>) {
+    let Some(label) = label_from_expression(
+        condition,
+        "check_clock_restrictions/clocked_when_elsewhen",
+        "elsewhen is not allowed on a clocked when-equation",
+    ) else {
+        return;
+    };
+    diags.push(semantic_error(
+        ER131_CLOCKED_WHEN_ELSEWHEN,
+        "clocked when-equations cannot contain elsewhen branches (MLS §16.6)",
+        label,
+    ));
 }
 
 fn clock_prefix_error(

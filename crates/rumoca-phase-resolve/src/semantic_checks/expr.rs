@@ -617,7 +617,7 @@ impl ast::Visitor for ExprTypeIssuesVisitor<'_> {
             Expression::ComponentReference(cref) if cref.parts.len() == 1 => {
                 let name = &*cref.parts[0].ident.text;
                 let refers_to_class = cref
-                    .def_id
+                    .root_def_id()
                     .and_then(|def_id| find_class_by_def_id(self.def, def_id))
                     .is_some()
                     || bare_name_resolves_to_local_or_top_level_class(self.class, self.def, name);
