@@ -161,6 +161,14 @@ fn trainable_discovery_uses_independent_dae_parameters() {
     ));
 }
 
+/// Array parameters expose one trainable slot per scalar, and the `Integer`
+/// dimension parameter `n` stays out of the trainable set.
+///
+/// `n` reaches the lowered parameter vector like every other declared
+/// parameter, so trainable discovery has to reject it on its value type: MLS
+/// §3.8.3 makes `Integer` parameters discrete-valued, a gradient with respect to
+/// `n` is undefined, and `n` is additionally the dimension the model was
+/// lowered with.
 #[test]
 fn trainable_discovery_exposes_array_parameter_scalars() {
     let result = Compiler::new()
@@ -177,6 +185,17 @@ fn trainable_discovery_exposes_array_parameter_scalars() {
         .collect::<Vec<_>>();
 
     assert_eq!(names, ["k[1]", "k[2]"]);
+    assert!(
+        !names.contains(&"n"),
+        "the Integer dimension parameter is not trainable: {names:?}"
+    );
+    assert!(
+        matches!(
+            TrainableSet::by_names(&model, &["n"]),
+            Err(OptError::UnknownTrainable { .. })
+        ),
+        "requesting the Integer dimension parameter as a trainable must fail"
+    );
     let trainables =
         TrainableSet::by_names(&model, &["k[1]", "k[2]"]).expect("array scalar trainables");
     assert_eq!(trainables.len(), 2);

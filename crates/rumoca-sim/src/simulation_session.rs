@@ -244,7 +244,33 @@ fn new_auto_session(
     opts: rumoca_solver::SimOptions,
 ) -> Result<SimulationSession, SimulationDiagnosticError> {
     let solve_model = lower_for_simulation_session(dae_model, &opts)?;
-    #[cfg(feature = "solver-diffsol")]
+    #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+    {
+        match rumoca_solver_diffsol::assess_bdf_capability(&solve_model, &opts)
+            .map_err(|error| SimulationDiagnosticError::Solver(error.to_string()))?
+        {
+            rumoca_solver_diffsol::BdfCapability::Eligible => {
+                crate::diffsol::SimulationSession::from_solve_model(solve_model, opts).map(
+                    |session| SimulationSession {
+                        inner: SimulationSessionInner::Diffsol(Box::new(session)),
+                    },
+                )
+            }
+            rumoca_solver_diffsol::BdfCapability::InitialLinearizationUnavailable { reason } => {
+                tracing::debug!(
+                    target: "rumoca_sim::solver_selection",
+                    %reason,
+                    "auto selected rk-like because the initial BDF linearization is unavailable"
+                );
+                crate::rk45::SimulationSession::from_solve_model(solve_model, opts).map(|session| {
+                    SimulationSession {
+                        inner: SimulationSessionInner::RkLike(Box::new(session)),
+                    }
+                })
+            }
+        }
+    }
+    #[cfg(all(feature = "solver-diffsol", not(feature = "solver-rk45")))]
     {
         crate::diffsol::SimulationSession::from_solve_model(solve_model, opts).map(|session| {
             SimulationSession {

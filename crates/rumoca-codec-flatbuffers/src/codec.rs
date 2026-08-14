@@ -695,21 +695,16 @@ fn split_field_path(field_path: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     fn load_test_schema() -> Option<SchemaSet> {
         let mut ss = SchemaSet::new();
-        let topics = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs",
-        );
-        let sil = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs",
-        );
-        if !topics.exists() || !sil.exists() {
+        let topics = crate::bfbs::cerebri_bfbs_fixture(crate::bfbs::CEREBRI_TOPICS_BFBS);
+        let sil = crate::bfbs::cerebri_bfbs_fixture(crate::bfbs::CEREBRI_SIL_BFBS);
+        let (Some(topics), Some(sil)) = (topics, sil) else {
             return None;
-        }
-        ss.load_bfbs(topics).unwrap();
-        ss.load_bfbs(sil).unwrap();
+        };
+        ss.load_bfbs(&topics).unwrap();
+        ss.load_bfbs(&sil).unwrap();
         Some(ss)
     }
 
@@ -1120,7 +1115,6 @@ mod integration_tests {
     use super::*;
     use crate::bfbs;
     use std::net::UdpSocket;
-    use std::path::Path;
     use std::time::Duration;
 
     /// Simulate the full cerebri ↔ rumoca loop locally.
@@ -1130,18 +1124,13 @@ mod integration_tests {
     #[allow(clippy::too_many_lines)]
     fn full_loop_simulation() {
         let mut ss = bfbs::SchemaSet::new();
-        let topics = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs",
-        );
-        let sil = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs",
-        );
-        if !topics.exists() || !sil.exists() {
-            eprintln!("skipping: bfbs files not found");
+        let topics = bfbs::cerebri_bfbs_fixture(bfbs::CEREBRI_TOPICS_BFBS);
+        let sil = bfbs::cerebri_bfbs_fixture(bfbs::CEREBRI_SIL_BFBS);
+        let (Some(topics), Some(sil)) = (topics, sil) else {
             return;
-        }
-        ss.load_bfbs(topics).unwrap();
-        ss.load_bfbs(sil).unwrap();
+        };
+        ss.load_bfbs(&topics).unwrap();
+        ss.load_bfbs(&sil).unwrap();
 
         // Build a MotorOutput packet the way cerebri does (48 bytes)
         // Using the pack codec to build a valid MotorOutput

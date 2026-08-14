@@ -183,11 +183,12 @@ pub fn run(args: ScheduledSimArgs) -> std::result::Result<(), ScheduledSimError>
         "Failed to compile Modelica model",
     )?;
 
+    validate_solver_label(&args.solver_label)?;
     let mut sim_options = SimOptions {
         t_end: args.config.sim.t_end,
         dt: Some(args.config.sim.dt),
         solver_mode: args.solver_mode,
-        diffsol_method: diffsol_method_for_solver_label(&args.solver_label),
+        diffsol_method: DiffsolMethod::Bdf,
         pacing_mode: args.config.effective_pacing_mode(),
         ..Default::default()
     };
@@ -246,8 +247,16 @@ pub fn run(args: ScheduledSimArgs) -> std::result::Result<(), ScheduledSimError>
     )?)
 }
 
-fn diffsol_method_for_solver_label(solver_label: &str) -> DiffsolMethod {
-    DiffsolMethod::from_external_name(solver_label).unwrap_or_default()
+/// Check that the scheduled run's solver label names a solver this tree runs.
+///
+/// The label comes from the scenario config as free text, so a name we cannot
+/// run is reported here instead of being dropped in favour of whatever solver
+/// was already in effect — which is what this site used to do via
+/// `unwrap_or_default()`.
+fn validate_solver_label(solver_label: &str) -> anyhow::Result<()> {
+    rumoca_core::canonical_solver_name(solver_label)
+        .map(|_| ())
+        .map_err(anyhow::Error::from)
 }
 
 fn solver_mode_label(mode: SimSolverMode) -> &'static str {

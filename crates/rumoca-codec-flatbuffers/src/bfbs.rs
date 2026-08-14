@@ -7,6 +7,26 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+#[cfg(test)]
+pub(crate) const CEREBRI_TOPICS_BFBS: &str = "cerebri2_topics.bfbs";
+#[cfg(test)]
+pub(crate) const CEREBRI_SIL_BFBS: &str = "cerebri2_sil.bfbs";
+
+#[cfg(test)]
+pub(crate) fn cerebri_bfbs_fixture(file_name: &str) -> Option<std::path::PathBuf> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/cerebri2")
+        .join(file_name);
+    if path.is_file() {
+        return Some(path);
+    }
+    eprintln!(
+        "skipping external BFBS fixture test: expected {}",
+        path.display()
+    );
+    None
+}
+
 // ── BaseType enum (from reflection.fbs) ──────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -445,13 +465,9 @@ mod tests {
 
     #[test]
     fn parse_cerebri2_topics() {
-        let path = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs",
-        );
-        if !path.exists() {
-            eprintln!("skipping test: bfbs not found");
+        let Some(path) = cerebri_bfbs_fixture(CEREBRI_TOPICS_BFBS) else {
             return;
-        }
+        };
         let data = std::fs::read(path).unwrap();
         let schema = parse_bfbs(&data).unwrap();
 
@@ -487,13 +503,9 @@ mod tests {
 
     #[test]
     fn parse_cerebri2_sil() {
-        let path = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs",
-        );
-        if !path.exists() {
-            eprintln!("skipping test: bfbs not found");
+        let Some(path) = cerebri_bfbs_fixture(CEREBRI_SIL_BFBS) else {
             return;
-        }
+        };
         let data = std::fs::read(path).unwrap();
         let schema = parse_bfbs(&data).unwrap();
 
