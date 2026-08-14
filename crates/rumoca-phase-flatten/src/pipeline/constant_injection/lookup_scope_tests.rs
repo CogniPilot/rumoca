@@ -6,11 +6,12 @@ use super::{
     try_eval_const_integer_with_scope, try_eval_structural_equation,
 };
 use crate::Context;
+use rumoca_core::InstanceId;
 use rumoca_core::{ClassType, DefId, Literal, OpBinary, Token, Variability};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::{
     ClassDef, ClassDefIndex, Component, ComponentRefPart, ComponentReference, InstanceData,
-    InstanceId, InstanceOverlay, QualifiedName,
+    InstanceOverlay, QualifiedName,
 };
 
 #[test]
@@ -47,6 +48,13 @@ fn test_span() -> rumoca_core::Span {
     )
 }
 
+fn fixture_def_id(name: &str) -> DefId {
+    let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
+    DefId::new(hash.max(1))
+}
+
 fn int_expr(value: i64) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
@@ -71,10 +79,11 @@ fn comp_ref(path: &str) -> ComponentReference {
             .map(|part| ComponentRefPart {
                 ident: token(part),
                 subs: None,
+                def_id: Some(fixture_def_id(part)),
             })
             .collect(),
-        def_id: None,
         span: test_span(),
+        qualified_display_name: None,
     }
 }
 
@@ -82,6 +91,7 @@ fn call_expr(name: &str, args: Vec<ast::Expression>) -> ast::Expression {
     ast::Expression::FunctionCall {
         comp: comp_ref(name),
         args,
+        is_partial_application: false,
         span: test_span(),
     }
 }
@@ -90,7 +100,8 @@ fn field_access_expr(base: &str, field: &str) -> ast::Expression {
     ast::Expression::FieldAccess {
         base: Arc::new(ast::Expression::ComponentReference(comp_ref(base))),
         field: field.to_string(),
-        span: rumoca_core::Span::DUMMY,
+        field_def_id: Some(fixture_def_id(field)),
+        span: test_span(),
     }
 }
 
@@ -263,7 +274,7 @@ fn const_field_access_resolves_package_constant_value() {
         try_eval_const_flat_expr_with_scope(&expr, &ctx, ""),
         Some(rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(2.0e-16),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         })
     );
 }
@@ -295,17 +306,49 @@ fn component_binding_collection_uses_only_structural_components() {
 
 #[test]
 fn const_flat_expr_accepts_enum_literal_component_ref() {
-    let expr = ast::Expression::ComponentReference(comp_ref(
-        "Modelica.Electrical.Digital.Interfaces.Logic.'U'",
-    ));
+    let path = "Modelica.Electrical.Digital.Interfaces.Logic.'U'";
+    let component_ref = comp_ref(path);
+    let expected_reference = rumoca_core::Reference::with_component_reference(
+        path,
+        super::core_component_reference_from_ast(&component_ref)
+            .expect("the fixture gives every path segment a declaration identity"),
+    );
+    let expr = ast::Expression::ComponentReference(component_ref.clone());
 
+    let evaluated = try_eval_const_flat_expr_with_scope(&expr, &Context::new(), "");
     assert_eq!(
-        try_eval_const_flat_expr_with_scope(&expr, &Context::new(), ""),
+        evaluated,
         Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new("Modelica.Electrical.Digital.Interfaces.Logic.'U'"),
+            name: expected_reference,
             subscripts: vec![],
             span: test_span(),
         })
+    );
+    let Some(rumoca_core::Expression::VarRef { name, .. }) = evaluated else {
+        panic!("enum literal remains a source reference");
+    };
+    assert!(!name.is_generated());
+    assert_eq!(
+        name.component_ref()
+            .expect("source enum literal retains its structured identity")
+            .target_def_id(),
+        component_ref
+            .target_def_id()
+            .expect("resolved fixture enum literal has an exact target")
+    );
+}
+
+#[test]
+fn unresolved_enum_literal_is_not_fabricated_during_constant_folding() {
+    let path = "Modelica.Electrical.Digital.Interfaces.Logic.'U'";
+    let mut component_ref = comp_ref(path);
+    component_ref.parts[1].def_id = None;
+    let expr = ast::Expression::ComponentReference(component_ref);
+
+    assert_eq!(
+        try_eval_const_flat_expr_with_scope(&expr, &Context::new(), ""),
+        None,
+        "constant folding must defer an unresolved reference to the semantic pipeline"
     );
 }
 

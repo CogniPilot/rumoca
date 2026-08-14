@@ -3,9 +3,11 @@ use crate::record_constant_arrays::try_extract_record_array_constructor_constant
 use crate::source_spans::required_location_span;
 
 mod component_binding_values;
+mod context;
 mod function_resolution;
 
 pub(crate) use component_binding_values::collect_component_binding_values;
+pub(crate) use context::{ConstantOccurrenceId, Context};
 pub(crate) use function_resolution::resolve_function_name;
 
 const NAMED_CONSTRUCTOR_ARG_PREFIX: &str = "__rumoca_named_arg__.";
@@ -322,6 +324,16 @@ pub(crate) fn resolve_extends_base_qname(
 
 /// Multi-pass extraction of integer constants and array dimensions from ancestor classes
 /// (MLS §4.5, §7.1).
+///
+/// Each ancestor contributes its inherited constants under its *own* scope, not
+/// only under the base class that declared them. MLS §7.2.5 makes an extends
+/// modification part of the inheriting class's environment, so a base binding
+/// that reads another inherited constant (`constant Integer nX = nS;` with
+/// `extends PartialMedium(nS = 2)`) has to be re-evaluated there: the derived
+/// class sees `nX = 2` while the base class still sees `nX = 1`. Recording only
+/// the base-scope value leaves every dependent constant — the whole
+/// `substanceNames`/`nS`/`nX`/`nXi` chain that sizes the Media arrays — at the
+/// unmodified default.
 pub(crate) fn extract_ancestor_constants_multi_pass(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
@@ -340,7 +352,7 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
         for ancestor in ancestors {
             let ancestor_scope = class_scope_name(tree, ancestor)?;
             for ext in &ancestor.extends {
-                extract_extends_modification_constants(
+                apply_extends_constants_for_scope(
                     tree,
                     class_index,
                     &ancestor_scope,
@@ -395,15 +407,13 @@ pub(crate) fn extract_constants_from_class(class_def: &ClassDef, ctx: &mut Conte
         ) {
             continue;
         }
-        let binding =
-            comp.binding
-                .as_ref()
-                .or(if !matches!(comp.start, ast::Expression::Empty { .. }) {
-                    Some(&comp.start)
-                } else {
-                    None
-                });
-        let Some(expr) = binding else { continue };
+        // MLS §4.4.4: a constant/parameter's value is its declaration binding.
+        // `start` is an initial guess (MLS §4.9) that the parser seeds with the
+        // declared type's default, so an unbound declaration contributes no
+        // constant here rather than an invented `0`/`0.0`/`false` (SPEC_0008).
+        let Some(expr) = comp.binding.as_ref() else {
+            continue;
+        };
         let type_name = comp.type_name.to_string();
         if !ctx.constant_values.contains_key(name)
             && let Some(val) = try_extract_record_array_constructor_constant(expr, ctx, "", name)
@@ -444,6 +454,19 @@ pub(crate) fn extract_constants_from_class(class_def: &ClassDef, ctx: &mut Conte
             && let Some(dims) = infer_dims_from_expr(expr, ctx, "")
         {
             ctx.array_dimensions.insert(name.clone(), dims);
+        }
+        if let Some(def_id) = comp.def_id {
+            let value = ctx.constant_values.get(name).cloned().or_else(|| {
+                ctx.parameter_values
+                    .get(name)
+                    .map(|value| rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Integer(*value),
+                        span: expr.span(),
+                    })
+            });
+            if let Some(value) = value {
+                ctx.constant_values_by_def_id.insert(def_id, value);
+            }
         }
     }
 }
@@ -638,7 +661,7 @@ pub(crate) fn eval_const_real_function_with_scope(
         "abs" if args.len() == 1 => eval(&args[0]).map(f64::abs),
         "sign" if args.len() == 1 => eval(&args[0]).map(f64::signum),
         "sqrt" if args.len() == 1 => eval(&args[0]).map(f64::sqrt),
-        "integer" if args.len() == 1 => Some(eval(&args[0])?.trunc()),
+        "integer" if args.len() == 1 => Some(rumoca_core::modelica_integer_value(eval(&args[0])?)),
         _ => None,
     }
 }
@@ -715,7 +738,12 @@ pub(crate) fn try_eval_const_flat_expr_with_scope(
         ast::Expression::FunctionCall { comp, args, .. } => {
             try_eval_const_function_call_expr(comp, args, expr.span(), ctx, scope)
         }
-        ast::Expression::FieldAccess { base, field, .. } => {
+        ast::Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            ..
+        } => {
             if let Some(value) =
                 try_eval_const_field_access_expr(base, field, expr.span(), ctx, scope)
             {
@@ -724,6 +752,7 @@ pub(crate) fn try_eval_const_flat_expr_with_scope(
             Some(rumoca_core::Expression::FieldAccess {
                 base: Box::new(try_eval_const_flat_expr_with_scope(base, ctx, scope)?),
                 field: field.clone(),
+                field_def_id: (*field_def_id)?,
                 span: expr.span(),
             })
         }
@@ -778,7 +807,7 @@ fn try_eval_const_field_access_expr(
     if let Some(value) = lookup_with_qualified_scope(&name, &scope_path, &ctx.enum_parameter_values)
     {
         return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(value),
+            name: rumoca_core::Reference::generated(value),
             subscripts: vec![],
             span,
         });
@@ -854,7 +883,9 @@ fn named_record_constructor_arg(
         .span()
         .or_else(|| (!owner_span.is_dummy()).then_some(owner_span))?;
     Some(rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new(format!("{NAMED_CONSTRUCTOR_ARG_PREFIX}{field_name}")),
+        name: rumoca_core::Reference::generated(format!(
+            "{NAMED_CONSTRUCTOR_ARG_PREFIX}{field_name}"
+        )),
         args: vec![value],
         is_constructor: true,
         span,
@@ -872,7 +903,7 @@ fn extract_named_record_constructor_fields(
             let ctor_name = QualifiedName::from_component_reference(comp).to_flat_string();
             let constructor = rumoca_core::Reference::with_component_reference(
                 ctor_name,
-                core_component_reference_from_ast(comp),
+                core_component_reference_from_ast(comp)?,
             );
             let mut named_fields = Vec::new();
             for arg in args {
@@ -894,7 +925,7 @@ fn extract_named_record_constructor_fields(
             let ctor_name = target.to_string();
             let constructor = rumoca_core::Reference::with_component_reference(
                 ctor_name,
-                core_component_reference_from_ast(target),
+                core_component_reference_from_ast(target)?,
             );
             let mut named_fields = Vec::new();
             for modification in modifications {
@@ -999,9 +1030,13 @@ pub(crate) fn try_eval_const_component_ref_expr(
             .as_ref()
             .is_some_and(|subscripts| !subscripts.is_empty())
     }) {
-        let Ok(lowered) =
-            crate::ast_lower::expression_from_ast(&ast::Expression::ComponentReference(cr.clone()))
-        else {
+        let Ok(lowered) = crate::ast_lower::expression_from_ast_with_context(
+            &ast::Expression::ComponentReference(cr.clone()),
+            crate::ast_lower::LoweringContext {
+                predefined_intrinsics: ctx.predefined_intrinsics,
+                ..crate::ast_lower::LoweringContext::default()
+            },
+        ) else {
             return None;
         };
         let Ok(substituted) = crate::postprocess::substitute_known_constants_expr(
@@ -1054,18 +1089,22 @@ pub(crate) fn try_eval_const_component_ref_expr(
     if let Some(enum_name) =
         lookup_with_qualified_scope(&name, &scope_path, &ctx.enum_parameter_values)
     {
+        let component = core_component_reference_from_ast(cr)?;
         return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(enum_name),
+            name: rumoca_core::Reference::with_component_reference(enum_name, component),
             subscripts: vec![],
             span: owner_span,
         });
     }
-    let resolved =
-        resolve_component_ref_through_constant_aliases(&name, ctx, scope).unwrap_or(name);
-    let resolved_text = resolved.to_flat_string();
+    let resolved = resolve_component_ref_through_constant_aliases(&name, ctx, scope);
+    let resolved_text = resolved.as_ref().unwrap_or(&name).to_flat_string();
     try_eval_resolved_const_ref(&resolved_text, ctx, owner_span).or_else(|| {
-        looks_like_enum_literal_path(&resolved_text).then(|| rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(resolved_text),
+        if !looks_like_enum_literal_path(&resolved_text) {
+            return None;
+        }
+        let component = core_component_reference_from_ast(cr)?;
+        Some(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(&resolved_text, component),
             subscripts: vec![],
             span: owner_span,
         })
@@ -1108,7 +1147,7 @@ fn try_eval_resolved_const_ref(
     }
     lookup_with_scope(name, "", &ctx.enum_parameter_values).map(|enum_name| {
         rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(enum_name),
+            name: rumoca_core::Reference::generated(enum_name),
             subscripts: vec![],
             span: owner_span,
         }
@@ -1235,7 +1274,7 @@ fn try_eval_const_function_call_expr(
     Some(rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::with_component_reference(
             textual_name,
-            core_component_reference_from_ast(comp),
+            core_component_reference_from_ast(comp)?,
         ),
         args: evaluated_args,
         is_constructor: false,
@@ -1245,21 +1284,20 @@ fn try_eval_const_function_call_expr(
 
 fn core_component_reference_from_ast(
     comp: &rumoca_ir_ast::ComponentReference,
-) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: comp.local,
-        span: comp.span,
-        parts: comp
-            .parts
-            .iter()
-            .map(|part| rumoca_core::ComponentRefPart {
+) -> Option<rumoca_core::ComponentReference> {
+    let parts = comp
+        .parts
+        .iter()
+        .map(|part| {
+            Some(rumoca_core::ComponentRefPart {
                 ident: part.ident.text.to_string(),
                 span: comp.span,
                 subs: Vec::new(),
+                def_id: part.def_id?,
             })
-            .collect(),
-        def_id: comp.def_id,
-    }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    rumoca_core::ComponentReference::construct(comp.local, comp.span, parts).ok()
 }
 
 pub(crate) fn try_eval_const_array_expr(
@@ -1569,13 +1607,16 @@ pub(crate) fn eval_size_call_with_scope(
     if dim < 1 {
         return None;
     }
-    let arr_name = match array_expr {
+    let dims = match array_expr {
         ast::Expression::ComponentReference(cr) => {
-            QualifiedName::from_component_reference(cr).to_flat_string()
+            let arr_name = QualifiedName::from_component_reference(cr).to_flat_string();
+            lookup_size_array_dims_with_scope(&arr_name, scope, ctx)
         }
-        _ => return None,
-    };
-    let dims = lookup_size_array_dims_with_scope(&arr_name, scope, ctx)?;
+        // MLS §10.3.1: size() depends on the argument's type shape, not its
+        // element values. In particular, string/Boolean/enum matrix literals
+        // must not be evaluated merely to answer size(A, i).
+        _ => infer_dims_from_expr(array_expr, ctx, scope),
+    }?;
     dims.get((dim - 1) as usize).copied()
 }
 
@@ -1617,13 +1658,8 @@ pub(crate) fn infer_dims_from_expr(
     scope: &str,
 ) -> Option<Vec<i64>> {
     match expr {
-        ast::Expression::Array { elements, .. } => Some(vec![elements.len() as i64]),
-        ast::Expression::Range { .. } => {
-            infer_dims_via_eval_ast(expr, ctx, scope).and_then(|dims| {
-                dims.into_iter()
-                    .map(|dim| i64::try_from(dim).ok())
-                    .collect::<Option<Vec<_>>>()
-            })
+        ast::Expression::Array { .. } | ast::Expression::Range { .. } => {
+            infer_dims_via_eval_ast_i64(expr, ctx, scope)
         }
         ast::Expression::FunctionCall { comp, args, .. } => {
             let fn_name = comp
@@ -1632,17 +1668,31 @@ pub(crate) fn infer_dims_from_expr(
                 .map(|p| p.ident.text.as_ref())
                 .unwrap_or("");
             if fn_name == "fill" && args.len() >= 2 {
-                let dims: Option<Vec<i64>> = args[1..]
+                let mut dims: Vec<i64> = args[1..]
                     .iter()
                     .map(|a| try_eval_const_integer_with_scope(a, ctx, scope))
-                    .collect();
-                dims
+                    .collect::<Option<Vec<_>>>()?;
+                let mut seed_dims = infer_dims_via_eval_ast_i64(&args[0], ctx, scope)?;
+                dims.append(&mut seed_dims);
+                Some(dims)
             } else {
                 None
             }
         }
         _ => None,
     }
+}
+
+fn infer_dims_via_eval_ast_i64(
+    expr: &ast::Expression,
+    ctx: &Context,
+    scope: &str,
+) -> Option<Vec<i64>> {
+    infer_dims_via_eval_ast(expr, ctx, scope).and_then(|dims| {
+        dims.into_iter()
+            .map(|dim| i64::try_from(dim).ok())
+            .collect::<Option<Vec<_>>>()
+    })
 }
 
 fn infer_dims_via_eval_ast(
@@ -1833,17 +1883,22 @@ pub(crate) fn collect_function_calls_from_equation(
             // Component references in connect don't contain function calls
             let _ = (lhs, rhs);
         }
-        ast::Equation::FunctionCall { comp, args } => {
+        ast::Equation::FunctionCall { comp, args, .. } => {
             calls.insert(resolve_function_request(comp, tree, class_index));
             for arg in args {
                 collect_function_calls_from_expression(arg, calls, tree, class_index);
             }
         }
         ast::Equation::Assert {
-            condition, message, ..
+            condition,
+            message,
+            level,
         } => {
             collect_function_calls_from_expression(condition, calls, tree, class_index);
             collect_function_calls_from_expression(message, calls, tree, class_index);
+            if let Some(level) = level {
+                collect_function_calls_from_expression(level, calls, tree, class_index);
+            }
         }
         ast::Equation::Empty => {}
     }
@@ -1895,85 +1950,6 @@ pub(crate) fn collect_function_calls_from_expression(
         class_index,
     };
     let _ = collector.visit_expression(expr);
-}
-
-/// Context for flattening.
-pub(crate) struct Context {
-    /// Parameter values for evaluating for-equation ranges (name -> integer value).
-    pub parameter_values: rustc_hash::FxHashMap<String, i64>,
-    /// Real parameter values for evaluating function arguments (name -> real value).
-    pub real_parameter_values: rustc_hash::FxHashMap<String, f64>,
-    /// Boolean parameter values for evaluating if-equation conditions.
-    pub boolean_parameter_values: rustc_hash::FxHashMap<String, bool>,
-    /// Enumeration parameter values (name -> qualified enum literal string).
-    pub enum_parameter_values: rustc_hash::FxHashMap<String, String>,
-    /// General constant expression values (scalars/arrays) extracted from
-    /// class/package constants and redeclare/extends modifications.
-    pub constant_values: rustc_hash::FxHashMap<String, rumoca_core::Expression>,
-    /// Qualified declaration names keyed by semantic target DefId.
-    pub target_def_names: rustc_hash::FxHashMap<rumoca_core::DefId, String>,
-    /// Fully qualified constant names explicitly modified by extends clauses.
-    /// These must not be overwritten by inherited declaration defaults.
-    pub(crate) modified_constant_keys: rustc_hash::FxHashSet<String>,
-    /// Parameter/constant variable keys materialized from the instantiated flat model.
-    /// Injected class defaults must not overwrite these effective instance values.
-    pub flat_parameter_constant_keys: rustc_hash::FxHashSet<String>,
-    /// Array dimensions for evaluating size() calls (name -> dims).
-    pub array_dimensions: rustc_hash::FxHashMap<String, Vec<i64>>,
-    /// Parameters marked with annotation(Evaluate=true) or declared final (MLS §18.3).
-    /// Only these structural parameters can be used for compile-time branch selection.
-    pub structural_params: std::collections::HashSet<String>,
-    /// Parameters explicitly declared with `fixed = false` and without
-    /// `Evaluate=true`. These must not be folded for structural branch
-    /// selection, even when a provisional value is available.
-    pub non_structural_params: std::collections::HashSet<String>,
-    /// User-defined function definitions for compile-time evaluation (MLS §12.3).
-    /// Functions are looked up by qualified name during constant expression evaluation.
-    pub functions: rustc_hash::FxHashMap<String, Function>,
-    /// Record aliases for resolving field access through record parameter bindings.
-    /// Maps record parameter component path -> alias target component path (MLS §7.2.3).
-    /// Example: "battery2.cellData" -> "cellData2" allows resolving
-    /// "battery2.cellData.nRC" to "cellData2.nRC".
-    pub record_aliases:
-        rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
-    /// Direct instance members keyed by their parent instance scope.
-    ///
-    /// Flatten qualification uses this to apply MLS §5.3 direct-member lookup
-    /// before imports without recovering hierarchy from rendered flat names.
-    pub(crate) component_members: super::component_member_scope::ComponentMemberScopes,
-    /// VCG isRoot results: path -> true if this node is the root of its component (MLS §9.4).
-    pub vcg_is_root: rustc_hash::FxHashMap<String, bool>,
-    /// VCG rooted results: path -> true if this node is on the "rooted" side (MLS §9.4).
-    pub vcg_rooted: rustc_hash::FxHashMap<String, bool>,
-    /// Cardinality counts: connector path -> number of connect() statements referencing it (MLS §3.7.2.3).
-    pub cardinality_counts: rustc_hash::FxHashMap<String, i64>,
-    /// Lazy base evaluator for flatten expression fallback evaluation.
-    /// This is built once per flatten context after structural lookup stabilizes.
-    pub(crate) eval_fallback_context: std::cell::OnceCell<rumoca_eval_flat::constant::EvalContext>,
-    /// Current import map for the class instance being processed (MLS §13.2).
-    /// Set before processing each class instance's equations, cleared after.
-    pub current_imports: crate::qualify::ImportMap,
-    /// Set of DefIds that correspond to class definitions in the current tree.
-    /// Used by qualification to distinguish class/type references from components.
-    pub class_def_ids: std::sync::Arc<rustc_hash::FxHashSet<rumoca_core::DefId>>,
-    /// Canonical class scope path for the class instance currently being flattened.
-    /// Derived from `def_map` via the owning class DefId.
-    pub current_class_scope_path: Option<String>,
-    /// Unqualified name of the simulated root model/block for MLS getInstanceName().
-    pub simulated_root_name: Option<String>,
-    /// Mirror of `FlattenOptions::materialize_structured_families`. When false, a
-    /// regular elementwise for-family materializes only its corner cells (base + one
-    /// neighbor per binder) with full bodies; interior cells get a cheap placeholder
-    /// body and the family is marked `interiors_materialized = false` so downstream
-    /// phases reconstruct interior incidence/strides from the corners.
-    pub materialize_structured_families: bool,
-    /// Array base-names assigned by parameter-variability for-equation families: a
-    /// family every reference of which resolves (transitively) to a parameter/constant
-    /// or another such family. Their per-cell values are time-invariant, so flatten may
-    /// cheapen their interior cells (the DAE promotes them array-natively from the
-    /// captured comprehension template). Computed once before equation expansion in
-    /// `prepare_context_for_equation_flattening`.
-    pub param_variability_family_bases: rustc_hash::FxHashSet<String>,
 }
 
 #[cfg(test)]

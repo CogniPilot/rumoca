@@ -267,9 +267,9 @@ fn test_specialize_static_function_param_from_explicit_call_arg() {
     let mut apply = flat::Function::new("Pkg.applyOp", Span::DUMMY);
     apply
         .inputs
-        .push(flat::FunctionParam::new("f", "Pkg.partialScalarFunction", test_span()));
-    apply.inputs.push(flat::FunctionParam::new("x", "Real", test_span()));
-    apply.outputs.push(flat::FunctionParam::new("y", "Real", test_span()));
+        .push(crate::test_support::aggregate_param("f", "Pkg.partialScalarFunction", Vec::new(), test_span()));
+    apply.inputs.push(crate::test_support::real_param("x", Vec::new(), test_span()));
+    apply.outputs.push(crate::test_support::real_param("y", Vec::new(), test_span()));
     apply.body.push(flat::Statement::Assignment {
         comp: flat::ComponentReference {
             local: false,
@@ -338,16 +338,16 @@ fn test_specialize_static_function_param_from_default_arg() {
     let mut flat = flat::Model::new();
 
     let mut apply = flat::Function::new("Pkg.applyDefault", Span::DUMMY);
-    apply.inputs.push(flat::FunctionParam::new("x", "Real", test_span()));
+    apply.inputs.push(crate::test_support::real_param("x", Vec::new(), test_span()));
     apply.inputs.push(
-        flat::FunctionParam::new("f", "Pkg.partialScalarFunction", test_span()).with_default(
+        crate::test_support::aggregate_param("f", "Pkg.partialScalarFunction", Vec::new(), test_span()).with_default(
             flat::Expression::VarRef {
                 name: flat::VarName::new("Pkg.square"),
                 subscripts: vec![],
             },
         ),
     );
-    apply.outputs.push(flat::FunctionParam::new("y", "Real", test_span()));
+    apply.outputs.push(crate::test_support::real_param("y", Vec::new(), test_span()));
     apply.body.push(flat::Statement::Assignment {
         comp: flat::ComponentReference {
             local: false,

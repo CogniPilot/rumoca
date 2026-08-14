@@ -10,23 +10,13 @@ impl ExpressionTransformer for QualifyReplaceableFunctionModifier<'_> {
         mut cr: rumoca_ir_ast::ComponentReference,
     ) -> rumoca_ir_ast::ComponentReference {
         if cr.parts.len() == 1 && !cr.local && !self.receiver_alias.is_root() {
-            let location = cr.parts[0].ident.location.clone();
-            let mut prefixed_parts: Vec<_> = self
+            let display_name = self
                 .receiver_alias
-                .parts()
-                .iter()
-                .map(|part| rumoca_ir_ast::ComponentRefPart {
-                    ident: Token {
-                        text: std::sync::Arc::from(part.as_str()),
-                        location: location.clone(),
-                        token_number: 0,
-                        token_type: 0,
-                    },
-                    subs: None,
-                })
-                .collect();
-            prefixed_parts.extend(cr.parts);
-            cr.parts = prefixed_parts;
+                .join(&ComponentPath::from_parts([cr.parts[0]
+                    .ident
+                    .text
+                    .as_ref()]));
+            cr.set_qualified_display_name(display_name.to_flat_string());
         }
         for part in &mut cr.parts {
             if let Some(subscripts) = &mut part.subs {
@@ -43,6 +33,7 @@ impl ExpressionTransformer for QualifyReplaceableFunctionModifier<'_> {
         &mut self,
         comp: rumoca_ir_ast::ComponentReference,
         args: Vec<rumoca_ir_ast::Expression>,
+        is_partial_application: bool,
         span: rumoca_core::Span,
     ) -> rumoca_ir_ast::Expression {
         rumoca_ir_ast::Expression::FunctionCall {
@@ -51,6 +42,7 @@ impl ExpressionTransformer for QualifyReplaceableFunctionModifier<'_> {
                 .into_iter()
                 .map(|arg| self.transform_expression(arg))
                 .collect(),
+            is_partial_application,
             span,
         }
     }
@@ -158,13 +150,14 @@ pub(super) fn mark_member_function_calls_in_equation(
                 )
             }),
         },
-        rumoca_ir_ast::Equation::FunctionCall { comp, args } => {
+        rumoca_ir_ast::Equation::FunctionCall { comp, args, span } => {
             rumoca_ir_ast::Equation::FunctionCall {
                 comp: marker.mark_component_function_call(comp),
                 args: args
                     .into_iter()
                     .map(|arg| marker.transform_expression(arg))
                     .collect(),
+                span,
             }
         }
         rumoca_ir_ast::Equation::Assert {
@@ -389,7 +382,7 @@ impl MemberFunctionCallMarker<'_> {
         mut comp: rumoca_ir_ast::ComponentReference,
     ) -> rumoca_ir_ast::ComponentReference {
         if let Some(def_id) = self.resolve_member_function_def_id(&comp) {
-            comp.def_id = Some(def_id);
+            comp.set_target_def_id(Some(def_id));
         }
         comp
     }
@@ -417,6 +410,7 @@ impl ExpressionTransformer for MemberFunctionCallMarker<'_> {
         &mut self,
         comp: rumoca_ir_ast::ComponentReference,
         args: Vec<rumoca_ir_ast::Expression>,
+        is_partial_application: bool,
         span: rumoca_core::Span,
     ) -> rumoca_ir_ast::Expression {
         let comp = self.transform_component_ref_inner(comp);
@@ -427,6 +421,7 @@ impl ExpressionTransformer for MemberFunctionCallMarker<'_> {
                 .into_iter()
                 .map(|arg| self.transform_expression(arg))
                 .collect(),
+            is_partial_application,
             span,
         }
     }
