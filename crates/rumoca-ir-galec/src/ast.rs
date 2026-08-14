@@ -43,11 +43,12 @@
 // crate's symbols via `pub use`, so downstream crates import `rumoca_core::Span`
 // directly rather than through `rumoca_ir_galec::ast::Span`.
 use rumoca_core::Span;
+use serde::Serialize;
 
 /// A node paired with its source [`Span`] — the span carrier for enums (whose
 /// variants cannot each hold a field ergonomically) and for statement lists.
 /// Structs instead carry an inline `span` field.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
@@ -71,7 +72,7 @@ impl<T> Spanned<T> {
 
 /// A plain GALEC identifier (ASCII-letter-first; legality checked by the
 /// validator, trap T13).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Identifier(pub String);
 
 impl Identifier {
@@ -90,11 +91,11 @@ impl Identifier {
 /// A GALEC name: a plain identifier or a quoted identifier such as
 /// `'a.b[2].c'` or `'previous(x)'` (traceability device, trap T13).
 ///
-/// The quoted variant stores the content *between* the quotes; the printer
-/// adds the surrounding `'` characters. Well-formedness of the quoted content
-/// (scalarized-reference structure, no whitespace) is a validator concern;
-/// the printer only rejects content that cannot be a single lexeme at all.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// The quoted variant stores the content *between* the quotes; target templates
+/// add the surrounding `'` characters. Whole-block construction checks the
+/// quoted content (scalarized-reference structure and no whitespace).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Name {
     /// Plain identifier, e.g. `firstTick`, with its source span (D11).
     Ident(Identifier, Span),
@@ -139,7 +140,8 @@ impl Name {
 }
 
 /// GALEC primitive types (§3.1: there is no String type).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ScalarType {
     Real,
     Integer,
@@ -160,7 +162,8 @@ impl ScalarType {
 
 /// Declared type of a variable: a primitive or a state-compartment (record)
 /// reference (S-2.7).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum TypeRef {
     Primitive(ScalarType),
     /// Component type: the name of a `record` state compartment.
@@ -168,7 +171,8 @@ pub enum TypeRef {
 }
 
 /// One declared dimension of a multi-dimensional variable.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Dimension {
     /// Derived dimension `:` — legal only for function *input* parameters
     /// (S-2.14); enforced by the validator.
@@ -179,7 +183,7 @@ pub enum Dimension {
 
 /// Modelica-style `(min = …, max = …)` declaration attributes (Beta-1 grammar
 /// gap adopted per SPEC_0034 D7; semantics: saturation ranges, trap T3).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub struct RangeAttributes {
     pub min: Option<Expression>,
     pub max: Option<Expression>,
@@ -194,7 +198,7 @@ impl RangeAttributes {
 }
 
 /// A variable declaration: type, name, dimensions, range attributes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct VariableDeclaration {
     pub ty: TypeRef,
     pub name: Name,
@@ -219,7 +223,8 @@ impl VariableDeclaration {
 }
 
 /// Causality of a block-interface variable declared before `protected` (D7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum InterfaceKind {
     /// `input Real u;` — control-input, read-only inside the block.
     Input,
@@ -230,7 +235,8 @@ pub enum InterfaceKind {
 }
 
 /// Kind of a block-internal state entity declared after `protected`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ProtectedKind {
     /// `parameter` after `protected` — dependent parameter, recomputed in
     /// `Recalibrate`.
@@ -242,7 +248,7 @@ pub enum ProtectedKind {
 }
 
 /// A block-interface variable (before `protected`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct InterfaceVariable {
     pub kind: InterfaceKind,
     pub decl: VariableDeclaration,
@@ -250,12 +256,12 @@ pub struct InterfaceVariable {
     /// (GAL-020). Row-major for arrays. Not part of `.alg` concrete syntax
     /// and not read by this crate's validator; the start-mirrors-Startup
     /// cross-check (GAL-017/GAL-020) is owned by the projection and
-    /// manifest layers (`rumoca-galec-codegen`).
+    /// manifest layers (`rumoca-phase-codegen::galec`).
     pub start: Option<Expression>,
 }
 
 /// A block-internal state entity (after `protected`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProtectedEntity {
     pub kind: ProtectedKind,
     pub decl: VariableDeclaration,
@@ -268,7 +274,7 @@ pub struct ProtectedEntity {
 /// `constant`/`parameter` prefixes on compartment entities as on block-level
 /// state entities, and manifest generation needs `start` for every state
 /// variable including compartment members (GAL-020).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StateCompartment {
     pub name: Name,
     pub entities: Vec<ProtectedEntity>,
@@ -278,7 +284,8 @@ pub struct StateCompartment {
 
 /// The six predefined error signals with their normative 32-bit encoding
 /// positions (§3.2.5 §1.6). Block-interface methods may expose only these.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum PredefinedSignal {
     InvalidArgument,
     Overflow,
@@ -328,7 +335,8 @@ impl PredefinedSignal {
 }
 
 /// The three mandatory block-interface method kinds (§3.1.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum BlockMethodKind {
     Startup,
     Recalibrate,
@@ -350,7 +358,7 @@ impl BlockMethodKind {
 /// A block-interface method body. Parameter-free by construction (trap T1);
 /// its name is fixed by its position in [`Block`]. Exposable signals are
 /// restricted to the six predefined ones by construction (§3.2.5 §1.3).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BlockMethod {
     /// `signals …;` clause; must equal the computed escape set (validator).
     pub signals: Vec<PredefinedSignal>,
@@ -373,7 +381,8 @@ impl Default for BlockMethod {
 }
 
 /// `function` (stateless) vs `method` (stateful), S-2.3.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum FunctionKind {
     /// `function` — must not write state nor call stateful functions.
     Stateless,
@@ -393,7 +402,8 @@ impl FunctionKind {
 }
 
 /// `input` / `output` data-flow direction of a function parameter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Direction {
     Input,
     Output,
@@ -411,7 +421,7 @@ impl Direction {
 }
 
 /// A function parameter declaration.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Parameter {
     pub direction: Direction,
     pub decl: VariableDeclaration,
@@ -419,7 +429,7 @@ pub struct Parameter {
 
 /// A user-defined function (everything except the three block methods).
 /// Must be transitively called from `DoStep` (S-2.11; validator).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct UserFunction {
     pub kind: FunctionKind,
     pub name: Name,
@@ -437,7 +447,7 @@ pub struct UserFunction {
 /// Section order follows G-2.1: interface variables, `protected`,
 /// compartments, protected entities, error signals, protected functions,
 /// `public`, `Startup`/`Recalibrate`/`DoStep` plus other public functions.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Block {
     pub name: Name,
     /// Interface variables before `protected` (inputs, then outputs, then
@@ -484,7 +494,7 @@ impl Block {
 }
 
 /// One dotted part of a reference: name plus optional subscripts.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RefPart {
     pub name: Name,
     /// `computed-dimensions`: constant-scalar-integer-expressions (S-3.1).
@@ -508,7 +518,8 @@ impl RefPart {
 /// A reference. Local references are a single part (grammar `local-reference`);
 /// state references are `self.` followed by one or more parts — the split is
 /// structural so an illegal dotted local reference cannot be represented.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Reference {
     /// `name[subs]` — function parameter, local variable, or loop iterator.
     Local(RefPart),
@@ -529,7 +540,8 @@ impl Reference {
 }
 
 /// Binary operators with the normative precedence classes (S-3.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum BinaryOp {
     Pow,
     Mul,
@@ -548,7 +560,8 @@ pub enum BinaryOp {
 
 /// Normative operator precedence classes, highest first (S-3.3). Any
 /// cross-class mix must be explicitly parenthesized (trap T6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum PrecedenceClass {
     Power,
     Multiplicative,
@@ -560,7 +573,8 @@ pub enum PrecedenceClass {
 }
 
 /// Associativity of a precedence class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Associativity {
     Left,
     Right,
@@ -614,31 +628,203 @@ impl PrecedenceClass {
 }
 
 /// An if-expression: self-parenthesized with mandatory `else` (trap T12).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IfExpression {
     /// `(condition, value)` pairs: the `if` branch followed by any `elseif`
-    /// branches; must be non-empty (checked by the printer).
+    /// branches; must be non-empty (checked at whole-block construction).
     pub branches: Vec<(Expression, Expression)>,
     /// Mandatory `else` value — unrepresentable without one.
     pub else_value: Box<Expression>,
+    /// Stronger target-neutral operation whose GALEC legalization is exactly
+    /// `branches` plus `else_value` (SPEC_0034 GAL-033).
+    correlation: Option<Box<BoundedSelection>>,
+}
+
+/// A checked bounded tensor selection retained beside its conforming GALEC
+/// expansion. The reference contains the original runtime subscripts.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BoundedSelection {
+    reference: Reference,
+    extents: Vec<u32>,
+}
+
+/// Failure to construct a bounded selection and its equivalent GALEC form.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BoundedSelectionError {
+    #[error("bounded selection requires one array reference part")]
+    ReferenceShape,
+    #[error("bounded selection requires one non-empty extent per subscript")]
+    DimensionShape,
+    #[error("bounded selection has no runtime subscript")]
+    StaticSelection,
+    #[error("bounded selection domain is too large")]
+    DomainOverflow,
+}
+
+impl IfExpression {
+    /// Construct an ordinary GALEC if-expression without a stronger
+    /// target-neutral correlation.
+    #[must_use]
+    pub fn new(branches: Vec<(Expression, Expression)>, else_value: Expression) -> Self {
+        Self {
+            branches,
+            else_value: Box::new(else_value),
+            correlation: None,
+        }
+    }
+
+    /// Construct a bounded selection together with its exhaustive,
+    /// static-subscript GALEC legalization.
+    pub fn bounded_selection(
+        reference: Reference,
+        extents: Vec<u32>,
+    ) -> Result<Self, BoundedSelectionError> {
+        let part =
+            single_reference_part(&reference).ok_or(BoundedSelectionError::ReferenceShape)?;
+        if extents.is_empty() || extents.len() != part.subscripts.len() || extents.contains(&0) {
+            return Err(BoundedSelectionError::DimensionShape);
+        }
+        if part
+            .subscripts
+            .iter()
+            .all(|index| matches!(index, Expression::Integer(_)))
+        {
+            return Err(BoundedSelectionError::StaticSelection);
+        }
+        let candidates = bounded_selection_indices(&extents)?
+            .into_iter()
+            .filter(|candidate| {
+                part.subscripts
+                    .iter()
+                    .zip(candidate)
+                    .all(|(index, candidate)| {
+                        !matches!(index, Expression::Integer(found) if *found != i64::from(*candidate))
+                    })
+            })
+            .collect::<Vec<_>>();
+        let (fallback, branches) = candidates
+            .split_last()
+            .ok_or(BoundedSelectionError::DimensionShape)?;
+        let branches = branches
+            .iter()
+            .map(|candidate| {
+                let condition = part
+                    .subscripts
+                    .iter()
+                    .zip(candidate)
+                    .filter(|(index, _)| !matches!(index, Expression::Integer(_)))
+                    .map(|(index, candidate)| {
+                        Expression::binary(
+                            BinaryOp::Eq,
+                            index.clone(),
+                            Expression::Integer(i64::from(*candidate)),
+                        )
+                    })
+                    .reduce(|lhs, rhs| Expression::binary(BinaryOp::And, lhs, rhs))
+                    .expect("bounded selection has a runtime subscript");
+                (
+                    condition,
+                    Expression::Ref(reference_with_subscripts(&reference, candidate)),
+                )
+            })
+            .collect();
+        Ok(Self {
+            branches,
+            else_value: Box::new(Expression::Ref(reference_with_subscripts(
+                &reference, fallback,
+            ))),
+            correlation: Some(Box::new(BoundedSelection { reference, extents })),
+        })
+    }
+
+    #[must_use]
+    pub fn bounded_selection_correlation(&self) -> Option<&BoundedSelection> {
+        self.correlation.as_deref()
+    }
+
+    pub(crate) fn correlation_is_exact(&self) -> bool {
+        let Some(selection) = &self.correlation else {
+            return true;
+        };
+        Self::bounded_selection(selection.reference.clone(), selection.extents.clone()).is_ok_and(
+            |expected| self.branches == expected.branches && self.else_value == expected.else_value,
+        )
+    }
+}
+
+impl BoundedSelection {
+    #[must_use]
+    pub const fn reference(&self) -> &Reference {
+        &self.reference
+    }
+
+    #[must_use]
+    pub fn extents(&self) -> &[u32] {
+        &self.extents
+    }
+}
+
+fn single_reference_part(reference: &Reference) -> Option<&RefPart> {
+    match reference {
+        Reference::Local(part) => Some(part),
+        Reference::State(parts) if parts.len() == 1 => parts.first(),
+        Reference::State(_) => None,
+    }
+}
+
+fn reference_with_subscripts(reference: &Reference, indices: &[u32]) -> Reference {
+    let mut result = reference.clone();
+    let part = match &mut result {
+        Reference::Local(part) => part,
+        Reference::State(parts) => &mut parts[0],
+    };
+    part.subscripts = indices
+        .iter()
+        .map(|index| Expression::Integer(i64::from(*index)))
+        .collect();
+    result
+}
+
+fn bounded_selection_indices(extents: &[u32]) -> Result<Vec<Vec<u32>>, BoundedSelectionError> {
+    const MAX_POINTS: usize = 1_000_000;
+    let count = extents
+        .iter()
+        .try_fold(1_usize, |count, extent| count.checked_mul(*extent as usize));
+    let count = count
+        .filter(|count| *count <= MAX_POINTS)
+        .ok_or(BoundedSelectionError::DomainOverflow)?;
+    let mut result = Vec::with_capacity(count);
+    let mut current = vec![1; extents.len()];
+    loop {
+        result.push(current.clone());
+        let Some(axis) = (0..extents.len())
+            .rev()
+            .find(|axis| current[*axis] < extents[*axis])
+        else {
+            return Ok(result);
+        };
+        current[axis] += 1;
+        current[axis + 1..].fill(1);
+    }
 }
 
 /// A function call `name(args)`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FunctionCall {
     pub function: Name,
     pub arguments: Vec<Expression>,
 }
 
 /// GALEC expressions (G-3.1).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Expression {
     /// Boolean literal.
     Bool(bool),
     /// Integer literal.
     Integer(i64),
-    /// Real literal; printed with mandatory decimal places and signed
-    /// exponent (trap T7). Must be finite (printer rejects NaN/±inf).
+    /// Real literal; templates emit mandatory decimal places and a signed
+    /// exponent (trap T7). Whole-block construction rejects NaN/±inf.
     Real(f64),
     /// Local or state reference.
     Ref(Reference),
@@ -654,11 +840,11 @@ pub enum Expression {
     /// If-expression.
     If(IfExpression),
     /// Multi-dimension constructor `{…}`; nested constructors for matrices,
-    /// row-major. Must be non-empty (checked by the printer).
+    /// row-major. Must be non-empty (checked at whole-block construction).
     Array(Vec<Expression>),
     /// Unary minus — grammar-limited to references (trap T4).
     Neg(Reference),
-    /// `not (…)`; the printer always parenthesizes the argument (trap T12).
+    /// `not (…)`; target templates always parenthesize the argument (trap T12).
     Not(Box<Expression>),
     /// Binary operation; the AST shape is the normative evaluation order
     /// (no re-association, trap T6).
@@ -714,24 +900,25 @@ impl Expression {
 
 /// Branch condition of an if-statement: Boolean expression or error-signal
 /// check (§3.2.5 §1.4).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Condition {
     Expression(Expression),
     SignalCheck(SignalCheck),
 }
 
 /// The listed part of a signal check: `[not] in s1, s2, …`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SignalTest {
     /// `not in …` — test the in-reachable set MINUS the listed signals.
     pub negated: bool,
-    /// Listed signal names; must be non-empty (checked by the printer).
+    /// Listed signal names; must be non-empty (checked at construction).
     pub signals: Vec<Identifier>,
 }
 
 /// Error-signal check `signal [closure] [[not] in s1, …] [or expr]`.
 /// Checking is catching: satisfied checks unset their test set (trap T10).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SignalCheck {
     /// Optional signal-closure variable capturing the caught signals.
     pub closure: Option<Identifier>,
@@ -742,7 +929,7 @@ pub struct SignalCheck {
 }
 
 /// One `if`/`elseif` branch of an if-statement.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IfBranch {
     pub condition: Condition,
     pub body: Vec<Spanned<Statement>>,
@@ -754,9 +941,9 @@ pub struct IfBranch {
 }
 
 /// `if … then … [elseif … then …]* [else …] end if;`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IfStatement {
-    /// `if` branch plus `elseif` branches; must be non-empty (printer).
+    /// `if` branch plus `elseif` branches; must be non-empty (construction).
     pub branches: Vec<IfBranch>,
     /// Optional `else` branch (statements may be empty).
     pub else_body: Option<Vec<Spanned<Statement>>>,
@@ -764,7 +951,7 @@ pub struct IfStatement {
 
 /// `for i in start[:step]:stop loop … end for;` with statically-evaluated
 /// integer bounds (trap T11).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ForLoop {
     /// Optional loop-iterator declaration (optional per the grammar).
     pub iterator: Option<Name>,
@@ -775,7 +962,8 @@ pub struct ForLoop {
 }
 
 /// Target of a `limit` statement.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum LimitTarget {
     /// `limit self;` — limit all ranged state variables.
     SelfState,
@@ -786,7 +974,8 @@ pub enum LimitTarget {
 /// GALEC statements, including the error-signal statement (a 7th statement
 /// kind per SPEC_0034 D7 — Beta-1 defines it in §3.2.5 but omits it from the
 /// `statement` alternatives).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Statement {
     /// `reference := expression;`
     Assignment {
@@ -805,10 +994,62 @@ pub enum Statement {
     If(IfStatement),
     /// Bounded for loop.
     For(ForLoop),
-    /// `limit t1, t2, …;` — saturate ranged entities (trap T3). Must list at
-    /// least one target (checked by the printer).
+    /// `limit t1, t2, …;` — saturate ranged entities (trap T3). Whole-block
+    /// construction requires at least one target.
     Limit(Vec<LimitTarget>),
     /// Error-signal statement `signal s1, s2, …;` — sets signals and/or
-    /// re-raises closures. Must list at least one identifier (printer).
+    /// re-raises closures. Whole-block construction requires at least one
+    /// identifier.
     Signal(Vec<Identifier>),
+}
+
+#[cfg(test)]
+mod bounded_selection_tests {
+    use super::*;
+
+    fn dynamic_reference() -> Reference {
+        Reference::Local(RefPart {
+            name: Name::ident("samples"),
+            subscripts: vec![Expression::Ref(Reference::local(Name::ident("index")))],
+            span: Span::DUMMY,
+        })
+    }
+
+    #[test]
+    fn bounded_selection_owns_exact_static_expansion() {
+        let mut selection = IfExpression::bounded_selection(dynamic_reference(), vec![3])
+            .expect("valid bounded selection");
+        assert_eq!(selection.branches.len(), 2);
+        assert_eq!(
+            selection.else_value,
+            Box::new(Expression::Ref(Reference::Local(RefPart {
+                name: Name::ident("samples"),
+                subscripts: vec![Expression::Integer(3)],
+                span: Span::DUMMY,
+            })))
+        );
+        assert!(selection.correlation_is_exact());
+
+        *selection.else_value = Expression::Integer(0);
+        assert!(!selection.correlation_is_exact());
+    }
+
+    #[test]
+    fn malformed_bounded_selections_are_unconstructable() {
+        assert_eq!(
+            IfExpression::bounded_selection(dynamic_reference(), vec![]),
+            Err(BoundedSelectionError::DimensionShape)
+        );
+        assert_eq!(
+            IfExpression::bounded_selection(
+                Reference::Local(RefPart {
+                    name: Name::ident("samples"),
+                    subscripts: vec![Expression::Integer(1)],
+                    span: Span::DUMMY,
+                }),
+                vec![3],
+            ),
+            Err(BoundedSelectionError::StaticSelection)
+        );
+    }
 }
