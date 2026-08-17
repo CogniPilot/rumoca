@@ -12,15 +12,30 @@ const MAX_FUNCTION_LOOP_ITERATIONS: usize = 4096;
 enum LocalValue {
     Integer(i64),
     Bool(bool),
+    Real(f64),
+    /// A rank-1 Real vector. Higher ranks and non-Real element types stay
+    /// outside this interpreter and fail closed.
+    Reals(Vec<f64>),
 }
 
 #[derive(Default)]
 struct MixedLocals {
     ints: FxHashMap<String, i64>,
     bools: FxHashMap<String, bool>,
+    reals: FxHashMap<String, f64>,
+    real_arrays: FxHashMap<String, Vec<f64>>,
 }
 
-#[derive(Copy, Clone)]
+impl MixedLocals {
+    fn contains(&self, name: &str) -> bool {
+        self.ints.contains_key(name)
+            || self.bools.contains_key(name)
+            || self.reals.contains_key(name)
+            || self.real_arrays.contains_key(name)
+    }
+}
+
+#[derive(Copy, Clone, Default)]
 struct MixedCallerLocals<'a> {
     ints: Option<&'a FxHashMap<String, i64>>,
     bools: Option<&'a FxHashMap<String, bool>>,
@@ -145,9 +160,7 @@ fn bind_mixed_function_inputs(
                 .iter()
                 .find(|(input_name, _)| input_name.as_str() == name.text.as_ref())
                 .copied()?;
-            if locals.ints.contains_key(param_name.as_str())
-                || locals.bools.contains_key(param_name.as_str())
-            {
+            if locals.contains(param_name.as_str()) {
                 return None;
             }
             let input_value =
@@ -157,9 +170,7 @@ fn bind_mixed_function_inputs(
     }
 
     for (input_name, input_component) in inputs {
-        if locals.ints.contains_key(input_name.as_str())
-            || locals.bools.contains_key(input_name.as_str())
-        {
+        if locals.contains(input_name.as_str()) {
             continue;
         }
         if assign_component_default(input_name, input_component, env, depth, locals) {
@@ -178,7 +189,7 @@ fn initialize_mixed_function_locals(
     locals: &mut MixedLocals,
 ) {
     for (name, component) in &function_def.components {
-        if locals.ints.contains_key(name.as_str()) || locals.bools.contains_key(name.as_str()) {
+        if locals.contains(name.as_str()) {
             continue;
         }
         assign_component_default(name, component, env, depth, locals);
@@ -204,9 +215,9 @@ fn assign_component_default(
     let Some(binding) = component.binding.as_ref() else {
         return false;
     };
-    let Some(value) =
-        eval_mixed_local_value(binding, env, depth, Some(&locals.ints), Some(&locals.bools))
-    else {
+    // The binding runs in the callee frame: MLS §12.4.4 lets a protected
+    // `Integer n = size(v1, 1)` read the already-bound inputs.
+    let Some(value) = eval_function_expr(binding, env, depth, locals) else {
         return false;
     };
     insert_local_value(name, value, locals);
@@ -231,20 +242,268 @@ fn eval_mixed_local_value(
     ) {
         return Some(LocalValue::Integer(value));
     }
-    try_eval_bool_expr_with_local_values(expr, env, depth + 1, local_ints, local_bools)
-        .map(LocalValue::Bool)
+    if let Some(value) =
+        try_eval_bool_expr_with_local_values(expr, env, depth + 1, local_ints, local_bools)
+    {
+        return Some(LocalValue::Bool(value));
+    }
+    // Real scalars and rank-1 Real vector literals. Call arguments cannot
+    // read the callee's locals, so the empty typed frame is the correct
+    // scope; only Real-typed results are accepted from it, the scalar paths
+    // above having already answered for int/bool.
+    let empty = MixedLocals::default();
+    match eval_function_expr(expr, env, depth + 1, &empty) {
+        Some(value @ (LocalValue::Real(_) | LocalValue::Reals(_))) => Some(value),
+        _ => None,
+    }
 }
 
 fn insert_local_value(name: &str, value: LocalValue, locals: &mut MixedLocals) {
+    locals.ints.remove(name);
+    locals.bools.remove(name);
+    locals.reals.remove(name);
+    locals.real_arrays.remove(name);
     match value {
         LocalValue::Integer(value) => {
-            locals.bools.remove(name);
             locals.ints.insert(name.to_string(), value);
         }
         LocalValue::Bool(value) => {
-            locals.ints.remove(name);
             locals.bools.insert(name.to_string(), value);
         }
+        LocalValue::Real(value) => {
+            locals.reals.insert(name.to_string(), value);
+        }
+        LocalValue::Reals(values) => {
+            locals.real_arrays.insert(name.to_string(), values);
+        }
+    }
+}
+
+/// Evaluate a function-body expression over the typed local frame.
+///
+/// This carries the value forms ordinary pure AST function interpretation
+/// needs beyond the scalar int/bool paths: Real literals and arithmetic,
+/// rank-1 Real vector literals, references to typed locals (including a
+/// one-subscript indexed read of a local vector), `size` of a local vector,
+/// `abs`, mixed-type comparisons, and if-expressions. The existing scalar
+/// evaluators answer first; every unsupported form fails closed.
+fn eval_function_expr(
+    expr: &ast::Expression,
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    locals: &MixedLocals,
+) -> Option<LocalValue> {
+    if depth > MAX_EXPR_EVAL_DEPTH {
+        return None;
+    }
+    if let Some(value) = try_eval_integer_expr_with_depth_and_locals(
+        expr,
+        env.mod_env,
+        env.effective_components,
+        env.tree,
+        env.resolve_class_components,
+        depth + 1,
+        Some(&locals.ints),
+    ) {
+        return Some(LocalValue::Integer(value));
+    }
+    if let Some(value) = try_eval_bool_expr_with_local_values(
+        expr,
+        env,
+        depth + 1,
+        Some(&locals.ints),
+        Some(&locals.bools),
+    ) {
+        return Some(LocalValue::Bool(value));
+    }
+    match expr {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedReal,
+            token,
+            ..
+        } => token.text.parse::<f64>().ok().map(LocalValue::Real),
+        ast::Expression::Array {
+            elements,
+            is_matrix: false,
+            ..
+        } => {
+            let mut values = Vec::with_capacity(elements.len());
+            for element in elements {
+                values.push(function_expr_real(element, env, depth + 1, locals)?);
+            }
+            Some(LocalValue::Reals(values))
+        }
+        ast::Expression::ComponentReference(reference) => {
+            local_reference_value(reference, env, depth, locals)
+        }
+        ast::Expression::Unary { op, rhs, .. } => {
+            let value = function_expr_real(rhs, env, depth + 1, locals)?;
+            match op {
+                rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => {
+                    Some(LocalValue::Real(-value))
+                }
+                rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => {
+                    Some(LocalValue::Real(value))
+                }
+                _ => None,
+            }
+        }
+        ast::Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = function_expr_real(lhs, env, depth + 1, locals)?;
+            let rhs = function_expr_real(rhs, env, depth + 1, locals)?;
+            eval_real_binary(op, lhs, rhs)
+        }
+        ast::Expression::FunctionCall {
+            comp,
+            args,
+            is_partial_application: false,
+            ..
+        } => eval_function_builtin_call(comp, args, env, depth, locals),
+        ast::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, value) in branches {
+                match eval_function_expr(condition, env, depth + 1, locals)? {
+                    LocalValue::Bool(true) => {
+                        return eval_function_expr(value, env, depth + 1, locals);
+                    }
+                    LocalValue::Bool(false) => {}
+                    _ => return None,
+                }
+            }
+            eval_function_expr(else_branch, env, depth + 1, locals)
+        }
+        _ => None,
+    }
+}
+
+/// A function-body condition through the typed frame: the scalar bool path
+/// answers first inside `eval_function_expr`; a non-Bool result fails closed.
+fn eval_function_condition(
+    expr: &ast::Expression,
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    locals: &MixedLocals,
+) -> Option<bool> {
+    match eval_function_expr(expr, env, depth, locals)? {
+        LocalValue::Bool(value) => Some(value),
+        _ => None,
+    }
+}
+
+fn function_expr_real(
+    expr: &ast::Expression,
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    locals: &MixedLocals,
+) -> Option<f64> {
+    match eval_function_expr(expr, env, depth, locals)? {
+        LocalValue::Real(value) => Some(value),
+        // MLS §10.6.2: Integer operands promote in a Real expression.
+        LocalValue::Integer(value) => Some(value as f64),
+        _ => None,
+    }
+}
+
+fn eval_real_binary(op: &rumoca_core::OpBinary, lhs: f64, rhs: f64) -> Option<LocalValue> {
+    use rumoca_core::OpBinary;
+    Some(match op {
+        OpBinary::Add | OpBinary::AddElem => LocalValue::Real(lhs + rhs),
+        OpBinary::Sub | OpBinary::SubElem => LocalValue::Real(lhs - rhs),
+        OpBinary::Mul | OpBinary::MulElem => LocalValue::Real(lhs * rhs),
+        OpBinary::Div | OpBinary::DivElem => LocalValue::Real(lhs / rhs),
+        OpBinary::Lt => LocalValue::Bool(lhs < rhs),
+        OpBinary::Le => LocalValue::Bool(lhs <= rhs),
+        OpBinary::Gt => LocalValue::Bool(lhs > rhs),
+        OpBinary::Ge => LocalValue::Bool(lhs >= rhs),
+        // Real equality inside a function body is legal MLS §8.5; both
+        // operands are exact evaluated values here.
+        OpBinary::Eq => LocalValue::Bool(lhs == rhs),
+        OpBinary::Neq => LocalValue::Bool(lhs != rhs),
+        _ => return None,
+    })
+}
+
+fn local_reference_value(
+    reference: &ast::ComponentReference,
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    locals: &MixedLocals,
+) -> Option<LocalValue> {
+    let [part] = reference.parts.as_slice() else {
+        return None;
+    };
+    let name = part.ident.text.as_ref();
+    let subs = part.subs.as_deref().unwrap_or(&[]);
+    match subs {
+        [] => {
+            if let Some(value) = locals.reals.get(name) {
+                return Some(LocalValue::Real(*value));
+            }
+            locals
+                .real_arrays
+                .get(name)
+                .map(|values| LocalValue::Reals(values.clone()))
+        }
+        [ast::Subscript::Expression(index_expr)] => {
+            let values = locals.real_arrays.get(name)?;
+            let LocalValue::Integer(index) =
+                eval_function_expr(index_expr, env, depth + 1, locals)?
+            else {
+                return None;
+            };
+            let index = usize::try_from(index).ok()?.checked_sub(1)?;
+            values.get(index).copied().map(LocalValue::Real)
+        }
+        _ => None,
+    }
+}
+
+fn eval_function_builtin_call(
+    comp: &ast::ComponentReference,
+    args: &[ast::Expression],
+    env: IntegerEvalEnv<'_>,
+    depth: usize,
+    locals: &MixedLocals,
+) -> Option<LocalValue> {
+    let [part] = comp.parts.as_slice() else {
+        return None;
+    };
+    if part.subs.as_ref().is_some_and(|subs| !subs.is_empty()) {
+        return None;
+    }
+    match part.ident.text.as_ref() {
+        "size" => {
+            let [ast::Expression::ComponentReference(array_ref), dimension] = args else {
+                return None;
+            };
+            let [array_part] = array_ref.parts.as_slice() else {
+                return None;
+            };
+            if array_part
+                .subs
+                .as_ref()
+                .is_some_and(|subs| !subs.is_empty())
+            {
+                return None;
+            }
+            let values = locals.real_arrays.get(array_part.ident.text.as_ref())?;
+            let LocalValue::Integer(1) = eval_function_expr(dimension, env, depth + 1, locals)?
+            else {
+                return None;
+            };
+            i64::try_from(values.len()).ok().map(LocalValue::Integer)
+        }
+        "abs" => {
+            let [argument] = args else {
+                return None;
+            };
+            function_expr_real(argument, env, depth + 1, locals)
+                .map(|value| LocalValue::Real(value.abs()))
+        }
+        _ => None,
     }
 }
 
@@ -275,13 +534,7 @@ fn interpret_function_statement(
 
     match statement {
         ast::Statement::Assignment { comp, value } => {
-            let evaluated = eval_mixed_local_value(
-                value,
-                env,
-                depth + 1,
-                Some(&locals.ints),
-                Some(&locals.bools),
-            )?;
+            let evaluated = eval_function_expr(value, env, depth + 1, locals)?;
             insert_local_value(&comp.to_string(), evaluated, locals);
             Some(FunctionStmtFlow::Continue)
         }
@@ -339,13 +592,7 @@ fn interpret_function_if(
     locals: &mut MixedLocals,
 ) -> Option<FunctionStmtFlow> {
     for block in cond_blocks {
-        if try_eval_bool_expr_with_local_values(
-            &block.cond,
-            env,
-            depth + 1,
-            Some(&locals.ints),
-            Some(&locals.bools),
-        )? {
+        if eval_function_condition(&block.cond, env, depth + 1, locals)? {
             return interpret_function_statements(&block.stmts, env, depth + 1, locals);
         }
     }
@@ -393,13 +640,7 @@ fn interpret_function_while(
     locals: &mut MixedLocals,
 ) -> Option<FunctionStmtFlow> {
     for _ in 0..MAX_FUNCTION_LOOP_ITERATIONS {
-        if !try_eval_bool_expr_with_local_values(
-            &block.cond,
-            env,
-            depth + 1,
-            Some(&locals.ints),
-            Some(&locals.bools),
-        )? {
+        if !eval_function_condition(&block.cond, env, depth + 1, locals)? {
             return Some(FunctionStmtFlow::Continue);
         }
         match interpret_function_statements(&block.stmts, env, depth + 1, locals)? {
