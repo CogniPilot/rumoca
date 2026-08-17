@@ -77,6 +77,50 @@ fn extend_class_dependencies(
     );
 }
 
+/// Retain the declaration set that owns typed operator selection for an
+/// operator record (MLS §14.3).
+///
+/// A source call `C(...)` resolves to the operator-record declaration `C`;
+/// overload/default selection against its operator members is deliberately
+/// owned by later typed phases. Strict source-closure pruning must therefore
+/// keep every direct operator declaration and function, plus the functions
+/// nested in an operator declaration. The resolved child `DefId`s are the only
+/// dependency identities carried from the planning tree; no rendered callable
+/// name is reconstructed downstream.
+fn extend_operator_member_dependencies(
+    dependencies: &mut IndexSet<String>,
+    class_index: &ast::ClassDefIndex<'_>,
+    owner: &ast::ClassDef,
+) {
+    if !owner.operator_record {
+        return;
+    }
+    let operator_members = owner.classes.values().filter(|member| {
+        matches!(
+            member.class_type,
+            rumoca_core::ClassType::Function | rumoca_core::ClassType::Operator
+        )
+    });
+    for member in operator_members {
+        debug_assert!(
+            member.def_id.is_some(),
+            "resolved operator-record member must have a declaration identity"
+        );
+        debug_assert!(
+            member.classes.values().all(|child| child.def_id.is_some()),
+            "resolved nested operator function must have a declaration identity"
+        );
+        extend_class_dependencies(
+            dependencies,
+            class_index,
+            member
+                .def_id
+                .into_iter()
+                .chain(member.classes.values().filter_map(|child| child.def_id)),
+        );
+    }
+}
+
 impl DependencyFingerprintCache {
     pub(crate) fn from_tree(tree: &ast::ClassTree) -> Self {
         let mut cache = Self::default();
@@ -130,6 +174,7 @@ impl DependencyFingerprintCache {
                     );
                 }
             }
+            extend_operator_member_dependencies(dependencies, &class_index, class);
         }
 
         for (qualified_name, &def_id) in &tree.name_map {

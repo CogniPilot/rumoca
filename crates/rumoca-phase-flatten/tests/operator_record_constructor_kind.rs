@@ -11,8 +11,8 @@ use rumoca_ir_ast as ast;
 const SOURCE_NAME: &str = "<operator_record_constructor_kind>";
 const SOURCE: &str = r#"
 operator record C
-  Real re;
-  Real im;
+  replaceable Real re;
+  replaceable Real im;
 
   encapsulated operator 'constructor'
     function fromReal
