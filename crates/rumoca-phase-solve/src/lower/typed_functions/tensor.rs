@@ -299,6 +299,16 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             let register = self.builder.binary(operator, lhs, rhs, at)?;
             return Ok(LoweredValue::scalar(value_type, register));
         }
+        // MLS 3.7 §3.7.2 makes function bodies event-free, so the exact
+        // arithmetic composition in `quotient` is the whole semantics — no
+        // event surface exists to own, unlike the model-level quotient.
+        if matches!(
+            builtin,
+            dae::PureBuiltin::Div | dae::PureBuiltin::Mod | dae::PureBuiltin::Rem
+        ) && arguments.len() == 2
+        {
+            return self.quotient(value_type, builtin, arguments, at);
+        }
         if builtin == dae::PureBuiltin::Integer {
             let argument = arguments.get(0).ok_or(
                 solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
@@ -397,6 +407,74 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             }
             _ => Err(solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at }),
         }?;
+        Ok(LoweredValue::scalar(value_type, register))
+    }
+
+    /// Lower one MLS 3.7 §3.7.2 Operator 3.4/3.5/3.6 quotient with a checked
+    /// Real result: `ratio = lhs / rhs`, floored (`mod`) or truncated
+    /// (`div`/`rem`), then `lhs - quotient * rhs` for the remainder forms —
+    /// the same composition the model-level scalar lowering uses. A checked
+    /// Integer result keeps the typed rejection: exact integer quotients
+    /// cannot ride Binary64, and no typed integer quotient operation exists
+    /// yet. Mixed Integer operands promote through `IntegerToReal`, exactly
+    /// like the binary arithmetic promotion above.
+    fn quotient(
+        &mut self,
+        value_type: dae::ValueTypeId<'dae>,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'dae>,
+        at: rumoca_core::Span,
+    ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
+        let result_scalar = self
+            .view
+            .value_type(value_type)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+            .scalar_type();
+        if result_scalar != dae::ScalarType::Real {
+            return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
+                provenance: at,
+            });
+        }
+        let mut operand = |argument: dae::ExprId<'dae>| {
+            let value = self.expression(argument)?;
+            let scalar_type = self
+                .view
+                .value_type(value.value_type)
+                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+                .scalar_type();
+            let register = value.only_register(at)?;
+            if scalar_type == dae::ScalarType::Integer {
+                return self.builder.convert(
+                    solve::SolveConversionOperator::IntegerToReal,
+                    register,
+                    at,
+                );
+            }
+            Ok(register)
+        };
+        let lhs = operand(arguments.get(0).expect("checked quotient dividend"))?;
+        let rhs = operand(arguments.get(1).expect("checked quotient divisor"))?;
+        let ratio = self
+            .builder
+            .binary(solve::SolveBinaryOperator::Divide, lhs, rhs, at)?;
+        let quotient = self.builder.unary(
+            if builtin == dae::PureBuiltin::Mod {
+                solve::SolveUnaryOperator::Floor
+            } else {
+                solve::SolveUnaryOperator::Truncate
+            },
+            ratio,
+            at,
+        )?;
+        if builtin == dae::PureBuiltin::Div {
+            return Ok(LoweredValue::scalar(value_type, quotient));
+        }
+        let multiple =
+            self.builder
+                .binary(solve::SolveBinaryOperator::Multiply, quotient, rhs, at)?;
+        let register =
+            self.builder
+                .binary(solve::SolveBinaryOperator::Subtract, lhs, multiple, at)?;
         Ok(LoweredValue::scalar(value_type, register))
     }
 }

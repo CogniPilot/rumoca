@@ -85,6 +85,8 @@ mod function_output_shadow_state_test;
 mod function_projection_array_shape_test;
 #[path = "function_proven_branch_test.rs"]
 mod function_proven_branch_test;
+#[path = "function_quotient_sim.rs"]
+mod function_quotient_sim;
 #[path = "function_record_array_test.rs"]
 mod function_record_array_test;
 #[path = "function_return_checked.rs"]
