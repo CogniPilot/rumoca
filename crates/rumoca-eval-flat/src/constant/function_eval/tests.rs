@@ -1108,7 +1108,6 @@ fn registered_external_body_fails_closed() {
     let mut ctx = EvalContext::new();
     ctx.add_function(func);
     assert!(ctx.functions.contains_key("isEqual"));
-    assert!(ctx.functions.contains_key("isEqual"));
     assert!(ctx.functions.contains_key("Modelica.Math.Vectors.isEqual"));
 
     let limits = EvalLimits::default();
