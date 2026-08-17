@@ -372,6 +372,123 @@ fn test_generated_parser_contract_is_pinned_and_documented() {
 }
 
 #[test]
+fn test_ci_upload_artifacts_have_explicit_policy_retention() {
+    let root = workspace_root();
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let artifacts = ci_upload_artifacts(&ci);
+
+    assert_eq!(
+        artifacts.len(),
+        13,
+        "CI must retain policy coverage for every standard upload-artifact step"
+    );
+
+    for (name, retention_days) in artifacts {
+        let expected_days = if name.starts_with("msl-nix-closure-") {
+            2
+        } else if name.starts_with("shard-") {
+            3
+        } else {
+            7
+        };
+        assert_eq!(
+            retention_days,
+            Some(expected_days),
+            "upload-artifact `{name}` must retain artifacts for {expected_days} days"
+        );
+    }
+}
+
+#[test]
+fn test_ci_upload_artifact_scanner_accepts_inline_any_version_and_with_only() {
+    let artifacts = ci_upload_artifacts(
+        "jobs:\n  fixture:\n    steps:\n      - uses: actions/upload-artifact@v5\n        with:\n          name: inline-upload\n          retention-days: 7\n      - uses: actions/upload-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093\n        retention-days: 7\n        with:\n          name: retention-must-be-in-with\n",
+    );
+
+    assert_eq!(
+        artifacts,
+        vec![
+            ("inline-upload".to_string(), Some(7)),
+            ("retention-must-be-in-with".to_string(), None),
+        ],
+        "standard upload-artifact steps must be recognized at any version and read retention only from with"
+    );
+}
+
+fn ci_upload_artifacts(ci: &str) -> Vec<(String, Option<u8>)> {
+    let mut artifacts = Vec::new();
+    let mut lines = ci.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        let Some(step_indentation) = standard_upload_artifact_step_indentation(line) else {
+            continue;
+        };
+        let mut name = None;
+        let mut retention_days = None;
+        let mut with_indentation = None;
+
+        while let Some(next_line) = lines.peek() {
+            let indentation = leading_whitespace(next_line);
+            let trimmed = next_line.trim();
+            if !trimmed.is_empty() && indentation <= step_indentation {
+                break;
+            }
+
+            let next_line = lines.next().expect("peeked workflow line");
+            if next_line.trim() == "with:" {
+                with_indentation = Some(indentation);
+                continue;
+            }
+            if with_indentation.is_none_or(|with_indentation| indentation <= with_indentation) {
+                continue;
+            }
+
+            let trimmed = next_line.trim();
+            if let Some(value) = trimmed.strip_prefix("name: ") {
+                name = Some(value.to_string());
+            }
+            if let Some(value) = trimmed.strip_prefix("retention-days: ") {
+                retention_days = Some(
+                    value
+                        .parse::<u8>()
+                        .expect("artifact retention-days must be an integer"),
+                );
+            }
+        }
+
+        artifacts.push((
+            name.expect("upload-artifact step must declare a name in with"),
+            retention_days,
+        ));
+    }
+
+    artifacts
+}
+
+fn standard_upload_artifact_step_indentation(line: &str) -> Option<usize> {
+    let indentation = leading_whitespace(line);
+    let action = line.trim_start();
+    let action_uses = action
+        .strip_prefix("- uses: ")
+        .map(|action| (action, indentation))
+        .or_else(|| {
+            action
+                .strip_prefix("uses: ")
+                .map(|action| (action, indentation.saturating_sub(2)))
+        });
+
+    action_uses.and_then(|(action, step_indentation)| {
+        action
+            .starts_with("actions/upload-artifact@")
+            .then_some(step_indentation)
+    })
+}
+
+fn leading_whitespace(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+#[test]
 fn test_eval_crates_follow_ir_layer_mapping() {
     let root = workspace_root();
 
