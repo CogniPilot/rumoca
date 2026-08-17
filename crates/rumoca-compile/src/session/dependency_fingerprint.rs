@@ -121,6 +121,29 @@ fn extend_operator_member_dependencies(
     }
 }
 
+/// Retain the declaration that makes a record overdetermined (MLS §9.4.1).
+///
+/// `equalityConstraint` is selected implicitly from the record type rather
+/// than by an ordinary source call. Strict source-closure pruning must keep
+/// that exact child so Instantiate can classify every record occurrence and
+/// later phases can validate the required function prototype. Name and owner
+/// identity establish reachability here. A same-name non-function remains
+/// inert because Instantiate only classifies functions; a function with an
+/// invalid prototype remains visible to Resolve and is rejected with ER117.
+fn extend_overconstrained_equality_dependency(
+    dependencies: &mut IndexSet<String>,
+    class_index: &ast::ClassDefIndex<'_>,
+    owner: &ast::ClassDef,
+) {
+    if owner.class_type != rumoca_core::ClassType::Record {
+        return;
+    }
+    let Some(equality_constraint) = owner.classes.get("equalityConstraint") else {
+        return;
+    };
+    extend_class_dependencies(dependencies, class_index, equality_constraint.def_id);
+}
+
 impl DependencyFingerprintCache {
     pub(crate) fn from_tree(tree: &ast::ClassTree) -> Self {
         let mut cache = Self::default();
@@ -175,6 +198,7 @@ impl DependencyFingerprintCache {
                 }
             }
             extend_operator_member_dependencies(dependencies, &class_index, class);
+            extend_overconstrained_equality_dependency(dependencies, &class_index, class);
         }
 
         for (qualified_name, &def_id) in &tree.name_map {
@@ -476,6 +500,38 @@ mod tests {
         assert!(
             deps.iter().any(|dep| dep == "P.Dep"),
             "import dependency should be included in class dependency graph"
+        );
+    }
+
+    #[test]
+    fn from_tree_retains_implicit_overconstrained_equality_dependency() {
+        let source = r#"
+            package P
+              record Reference
+                Real gamma;
+                function equalityConstraint
+                  input Reference left;
+                  input Reference right;
+                  output Real residue[0];
+                algorithm
+                end equalityConstraint;
+              end Reference;
+
+              model Root
+                Reference reference;
+              end Root;
+            end P;
+        "#;
+
+        let tree = resolved_tree_for("overconstrained_dependency.mo", source);
+        let cache = DependencyFingerprintCache::from_tree(&tree);
+
+        assert_eq!(
+            cache.class_dependencies().get("P.Reference"),
+            Some(&IndexSet::from([
+                "P.Reference.equalityConstraint".to_string()
+            ])),
+            "an overdetermined record implicitly owns its exact equalityConstraint dependency"
         );
     }
 
