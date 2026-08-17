@@ -3,6 +3,7 @@ mod functions;
 mod initial_pins;
 mod initial_values;
 mod invariant_balances;
+mod reduction_observation;
 mod runtime_quotients;
 
 use rumoca_core::{SourceMap, Span, TypeId, VarName};

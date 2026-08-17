@@ -124,7 +124,7 @@ pub(super) fn transferred_initial_values(
 /// coordinate a runtime happens to integrate. An index reduction may therefore
 /// move a stated value onto another coordinate of the same quantity, and may
 /// not drop it. This reports which values a given system still states, so the
-/// demotion in [`super::demote_direct_state`] can read the set before a rebuild
+/// demotion in [`super::demote_direct_state_with_observer`] can read the set before a rebuild
 /// and again after it and refuse any rebuild that lost one: a checked
 /// postcondition rather than an assumption about what a demotion preserves.
 ///

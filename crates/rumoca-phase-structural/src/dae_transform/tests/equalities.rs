@@ -330,7 +330,9 @@ const INDEPENDENT_HOLONOMIC_EQUATIONS: &[&str] = &[
     "acc3 = 1",
 ];
 
-fn independent_holonomic_model() -> dae::Dae {
+/// `pub(super)`: reused by the sibling `reduction_observation` module for the
+/// permanent regression's 4-2-0 accumulated holonomic chain.
+pub(super) fn independent_holonomic_model() -> dae::Dae {
     connector_fixture(
         INDEPENDENT_HOLONOMIC_TEXT,
         INDEPENDENT_HOLONOMIC_NAMES,
