@@ -24,6 +24,12 @@ pub fn eval_integer_div_builtin(lhs: i64, rhs: i64) -> Option<i64> {
 /// Floored modulo takes the sign of the divisor: `mod(-7, 3) == 2`,
 /// `mod(7, -3) == -2`. This differs from Rust's `%`, which truncates.
 pub fn eval_integer_mod_builtin(lhs: i64, rhs: i64) -> Option<i64> {
+    // x mod -1 is 0 for every x. Rust's checked_rem refuses (i64::MIN, -1)
+    // because the internal quotient overflows, but the modulo itself is
+    // representable; answer it directly instead of inheriting that refusal.
+    if rhs == -1 {
+        return Some(0);
+    }
     let rem = lhs.checked_rem(rhs)?;
     // A truncated remainder already has the divisor's sign (or is zero)
     // exactly when it equals the floored result; only the disagreeing case
@@ -40,6 +46,10 @@ pub fn eval_integer_mod_builtin(lhs: i64, rhs: i64) -> Option<i64> {
 ///
 /// Truncated remainder takes the sign of the dividend: `rem(-7, 3) == -1`.
 pub fn eval_integer_rem_builtin(lhs: i64, rhs: i64) -> Option<i64> {
+    // rem(x, -1) is 0 for every x; see eval_integer_mod_builtin.
+    if rhs == -1 {
+        return Some(0);
+    }
     lhs.checked_rem(rhs)
 }
 
@@ -85,9 +95,18 @@ mod tests {
     }
 
     #[test]
-    fn builtin_mod_rejects_invalid_division() {
+    fn builtin_mod_rejects_zero_divisor() {
         assert_eq!(eval_integer_mod_builtin(1, 0), None);
-        assert_eq!(eval_integer_mod_builtin(i64::MIN, -1), None);
+        assert_eq!(eval_integer_mod_builtin(i64::MIN, 0), None);
+    }
+
+    #[test]
+    fn builtin_mod_by_negative_one_is_zero_everywhere() {
+        assert_eq!(eval_integer_mod_builtin(i64::MIN, -1), Some(0));
+        assert_eq!(eval_integer_mod_builtin(i64::MAX, -1), Some(0));
+        assert_eq!(eval_integer_mod_builtin(7, -1), Some(0));
+        assert_eq!(eval_integer_mod_builtin(-7, -1), Some(0));
+        assert_eq!(eval_integer_mod_builtin(0, -1), Some(0));
     }
 
     #[test]
@@ -115,8 +134,16 @@ mod tests {
     }
 
     #[test]
-    fn builtin_rem_rejects_invalid_division() {
+    fn builtin_rem_rejects_zero_divisor() {
         assert_eq!(eval_integer_rem_builtin(1, 0), None);
-        assert_eq!(eval_integer_rem_builtin(i64::MIN, -1), None);
+        assert_eq!(eval_integer_rem_builtin(i64::MIN, 0), None);
+    }
+
+    #[test]
+    fn builtin_rem_by_negative_one_is_zero_everywhere() {
+        assert_eq!(eval_integer_rem_builtin(i64::MIN, -1), Some(0));
+        assert_eq!(eval_integer_rem_builtin(i64::MAX, -1), Some(0));
+        assert_eq!(eval_integer_rem_builtin(-7, -1), Some(0));
+        assert_eq!(eval_integer_rem_builtin(0, -1), Some(0));
     }
 }
