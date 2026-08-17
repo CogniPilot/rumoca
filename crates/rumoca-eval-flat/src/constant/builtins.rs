@@ -379,13 +379,10 @@ fn select_min_max_integer(acc: i64, value: i64, is_min: bool) -> i64 {
 fn eval_mod(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 2, span)?;
     if let (Value::Integer(x), Value::Integer(y)) = (&args[0], &args[1]) {
-        let quotient = checked_floor_div(*x, *y, span)?;
-        return x
-            .checked_sub(
-                quotient
-                    .checked_mul(*y)
-                    .ok_or_else(|| integer_overflow_error("mod(...)", span))?,
-            )
+        if *y == 0 {
+            return Err(EvalError::DivisionByZero { span });
+        }
+        return rumoca_core::eval_integer_mod_builtin(*x, *y)
             .map(Value::Integer)
             .ok_or_else(|| integer_overflow_error("mod(...)", span));
     }
@@ -406,8 +403,7 @@ fn eval_rem(args: &[Value], span: Span) -> Result<Value, EvalError> {
         if *y == 0 {
             return Err(EvalError::DivisionByZero { span });
         }
-        return x
-            .checked_rem(*y)
+        return rumoca_core::eval_integer_rem_builtin(*x, *y)
             .map(Value::Integer)
             .ok_or_else(|| integer_overflow_error("rem(...)", span));
     }
@@ -429,7 +425,7 @@ fn eval_div(args: &[Value], span: Span) -> Result<Value, EvalError> {
             if *y == 0 {
                 return Err(EvalError::DivisionByZero { span });
             }
-            x.checked_div(*y)
+            rumoca_core::eval_integer_div_builtin(*x, *y)
                 .map(Value::Integer)
                 .ok_or_else(|| integer_overflow_error("div(...)", span))
         }
@@ -449,25 +445,6 @@ fn eval_div(args: &[Value], span: Span) -> Result<Value, EvalError> {
                 ))
             }
         }
-    }
-}
-
-fn checked_floor_div(lhs: i64, rhs: i64, span: Span) -> Result<i64, EvalError> {
-    if rhs == 0 {
-        return Err(EvalError::DivisionByZero { span });
-    }
-    let quotient = lhs
-        .checked_div(rhs)
-        .ok_or_else(|| integer_overflow_error("mod(...)", span))?;
-    let remainder = lhs
-        .checked_rem(rhs)
-        .ok_or_else(|| integer_overflow_error("mod(...)", span))?;
-    if remainder != 0 && (remainder < 0) != (rhs < 0) {
-        quotient
-            .checked_sub(1)
-            .ok_or_else(|| integer_overflow_error("mod(...)", span))
-    } else {
-        Ok(quotient)
     }
 }
 

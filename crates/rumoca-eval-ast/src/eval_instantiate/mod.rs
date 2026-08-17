@@ -1663,11 +1663,7 @@ fn eval_integer_function_call(
             // MLS §3.7.2: mod(x, y) = x - floor(x/y)*y
             let x = recurse(args.first()?)?;
             let y = recurse(args.get(1)?)?;
-            return if y != 0 {
-                Some(((x % y) + y) % y)
-            } else {
-                None
-            };
+            return rumoca_core::eval_integer_mod_builtin(x, y);
         }
         "div" => {
             // MLS §3.7.2: div(x, y) = truncate(x/y)

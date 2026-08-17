@@ -171,7 +171,10 @@ pub use enum_compare::enum_values_equal;
 pub mod integer_binary;
 pub use integer_binary::{IntegerBinaryOperator, eval_ast_integer_binary, eval_integer_binary};
 pub mod integer_division;
-pub use integer_division::{eval_integer_div_builtin, eval_integer_slash};
+pub use integer_division::{
+    eval_integer_div_builtin, eval_integer_mod_builtin, eval_integer_rem_builtin,
+    eval_integer_slash,
+};
 pub mod timing;
 pub use timing::{
     OptionalTimer, maybe_elapsed_duration, maybe_elapsed_ms, maybe_elapsed_seconds,

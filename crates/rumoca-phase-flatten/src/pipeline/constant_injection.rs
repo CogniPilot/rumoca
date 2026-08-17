@@ -1424,15 +1424,11 @@ pub(crate) fn eval_const_integer_function_with_scope(
         }
         "mod" if args.len() == 2 => {
             let (x, y) = (eval(&args[0])?, eval(&args[1])?);
-            if y != 0 {
-                Some(((x % y) + y) % y)
-            } else {
-                None
-            }
+            rumoca_core::eval_integer_mod_builtin(x, y)
         }
         "rem" if args.len() == 2 => {
             let (x, y) = (eval(&args[0])?, eval(&args[1])?);
-            if y != 0 { Some(x % y) } else { None }
+            rumoca_core::eval_integer_rem_builtin(x, y)
         }
         _ => None,
     }

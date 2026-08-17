@@ -375,7 +375,7 @@ fn eval_builtin_integer_func_with_scope(
         "mod" if args.len() == 2 => {
             let a = eval_integer_with_scope(&args[0], ctx, scope)?;
             let b = eval_integer_with_scope(&args[1], ctx, scope)?;
-            (b != 0).then(|| a % b)
+            rumoca_core::eval_integer_mod_builtin(a, b)
         }
         "floor" if args.len() == 1 => eval_real_with_scope(&args[0], ctx, scope)
             .and_then(|r| checked_real_to_i64(r.floor(), ctx, call_span, "floor(...)")),
@@ -407,7 +407,7 @@ fn eval_builtin_integer_func_with_scope(
         "rem" if args.len() == 2 => {
             let a = eval_integer_with_scope(&args[0], ctx, scope)?;
             let b = eval_integer_with_scope(&args[1], ctx, scope)?;
-            (b != 0).then(|| a % b)
+            rumoca_core::eval_integer_rem_builtin(a, b)
         }
         "sign" if args.len() == 1 => {
             eval_integer_with_scope(&args[0], ctx, scope).map(|v| v.signum())
