@@ -147,16 +147,16 @@ fn bind_mixed_function_inputs(
         if matches!(arg, ast::Expression::NamedArgument { .. }) {
             continue;
         }
-        let (name, _) = inputs.get(positional_idx)?;
+        let (name, component) = inputs.get(positional_idx)?;
         let value =
             eval_mixed_local_value(arg, env, depth, caller_locals.ints, caller_locals.bools)?;
-        insert_local_value(name, value, locals);
+        insert_checked_local_value(name, component, value, env, locals)?;
         positional_idx += 1;
     }
 
     for arg in args {
         if let ast::Expression::NamedArgument { name, value, .. } = arg {
-            let (param_name, _) = inputs
+            let (param_name, param_component) = inputs
                 .iter()
                 .find(|(input_name, _)| input_name.as_str() == name.text.as_ref())
                 .copied()?;
@@ -165,7 +165,7 @@ fn bind_mixed_function_inputs(
             }
             let input_value =
                 eval_mixed_local_value(value, env, depth, caller_locals.ints, caller_locals.bools)?;
-            insert_local_value(param_name, input_value, locals);
+            insert_checked_local_value(param_name, param_component, input_value, env, locals)?;
         }
     }
 
@@ -220,8 +220,98 @@ fn assign_component_default(
     let Some(value) = eval_function_expr(binding, env, depth, locals) else {
         return false;
     };
+    insert_checked_local_value(name, component, value, env, locals).is_some()
+}
+
+/// Insert a value into the typed frame only when it satisfies the formal's
+/// checked declaration contract.
+///
+/// The scalar Integer/Bool lanes keep their long-standing behavior. The new
+/// Real lanes are validated against the declaration before binding:
+/// a Real scalar needs a declared-scalar, provably Real formal; a rank-1
+/// Real vector needs a declared rank-1, provably Real formal whose extent —
+/// when the declaration states one statically — matches the value's length
+/// (a declared `[:]` accepts any length). Real-ness is proven by the type
+/// name's resolved identity against the tree's predefined `Real`; a
+/// declaration whose type identity is absent falls back to the literal
+/// predefined spelling, and everything unproved — derived aliases included —
+/// fails closed rather than binding a value the declaration never admitted.
+fn insert_checked_local_value(
+    name: &str,
+    component: &ast::Component,
+    value: LocalValue,
+    env: IntegerEvalEnv<'_>,
+    locals: &mut MixedLocals,
+) -> Option<()> {
+    match &value {
+        LocalValue::Integer(_) | LocalValue::Bool(_) => {}
+        LocalValue::Real(_) => {
+            if !component_is_predefined_real(component, env) || declared_rank(component) != 0 {
+                return None;
+            }
+        }
+        LocalValue::Reals(values) => {
+            if !component_is_predefined_real(component, env) || declared_rank(component) != 1 {
+                return None;
+            }
+            match declared_vector_extent(component) {
+                DeclaredExtent::Any => {}
+                DeclaredExtent::Fixed(extent) if extent == values.len() => {}
+                DeclaredExtent::Fixed(_) | DeclaredExtent::Unproved => return None,
+            }
+        }
+    }
     insert_local_value(name, value, locals);
-    true
+    Some(())
+}
+
+fn component_is_predefined_real(component: &ast::Component, env: IntegerEvalEnv<'_>) -> bool {
+    // Identity only, never spelling: the declared type must carry the exact
+    // DefId the tree registered for predefined `Real`. Absent identity on
+    // either side fails closed — an unresolved or user-owned declaration
+    // spelled `Real` must not acquire predefined semantics. Derived Real
+    // aliases are a stated fail-closed coverage boundary of this slice.
+    let predefined_real = env
+        .tree
+        .scope_tree
+        .predefined_member(&rumoca_core::ComponentPath::from_flat_path("Real"));
+    match (component.type_name.def_id, predefined_real) {
+        (Some(declared), Some(real)) => declared == real,
+        _ => false,
+    }
+}
+
+fn declared_rank(component: &ast::Component) -> usize {
+    component.shape.len().max(component.shape_expr.len())
+}
+
+enum DeclaredExtent {
+    Any,
+    Fixed(usize),
+    Unproved,
+}
+
+fn declared_vector_extent(component: &ast::Component) -> DeclaredExtent {
+    if let [extent] = component.shape.as_slice() {
+        return DeclaredExtent::Fixed(*extent);
+    }
+    match component.shape_expr.as_slice() {
+        // `[:]` parses as the colon Range subscript; Empty is the
+        // no-subscript placeholder synthetic declarations carry. Both state
+        // an unknown extent that any length satisfies (MLS §12.4.5).
+        [ast::Subscript::Empty] | [ast::Subscript::Range { .. }] => DeclaredExtent::Any,
+        [
+            ast::Subscript::Expression(ast::Expression::Terminal {
+                terminal_type: ast::TerminalType::UnsignedInteger,
+                token,
+                ..
+            }),
+        ] => token
+            .text
+            .parse::<usize>()
+            .map_or(DeclaredExtent::Unproved, DeclaredExtent::Fixed),
+        _ => DeclaredExtent::Unproved,
+    }
 }
 
 fn eval_mixed_local_value(
@@ -296,13 +386,17 @@ fn eval_function_expr(
     if depth > MAX_EXPR_EVAL_DEPTH {
         return None;
     }
+    // The scalar paths receive `depth` unincremented: this dispatcher is not
+    // a semantic recursion level, and adding one here shortened the shared
+    // MAX_EXPR_EVAL_DEPTH budget enough to break recursive-function folds
+    // that fit before it existed. Structural descent below still increments.
     if let Some(value) = try_eval_integer_expr_with_depth_and_locals(
         expr,
         env.mod_env,
         env.effective_components,
         env.tree,
         env.resolve_class_components,
-        depth + 1,
+        depth,
         Some(&locals.ints),
     ) {
         return Some(LocalValue::Integer(value));
@@ -310,7 +404,7 @@ fn eval_function_expr(
     if let Some(value) = try_eval_bool_expr_with_local_values(
         expr,
         env,
-        depth + 1,
+        depth,
         Some(&locals.ints),
         Some(&locals.bools),
     ) {
@@ -321,7 +415,12 @@ fn eval_function_expr(
             terminal_type: ast::TerminalType::UnsignedReal,
             token,
             ..
-        } => token.text.parse::<f64>().ok().map(LocalValue::Real),
+        } => token
+            .text
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .map(LocalValue::Real),
         ast::Expression::Array {
             elements,
             is_matrix: false,
@@ -409,21 +508,32 @@ fn function_expr_real(
 
 fn eval_real_binary(op: &rumoca_core::OpBinary, lhs: f64, rhs: f64) -> Option<LocalValue> {
     use rumoca_core::OpBinary;
-    Some(match op {
-        OpBinary::Add | OpBinary::AddElem => LocalValue::Real(lhs + rhs),
-        OpBinary::Sub | OpBinary::SubElem => LocalValue::Real(lhs - rhs),
-        OpBinary::Mul | OpBinary::MulElem => LocalValue::Real(lhs * rhs),
-        OpBinary::Div | OpBinary::DivElem => LocalValue::Real(lhs / rhs),
-        OpBinary::Lt => LocalValue::Bool(lhs < rhs),
-        OpBinary::Le => LocalValue::Bool(lhs <= rhs),
-        OpBinary::Gt => LocalValue::Bool(lhs > rhs),
-        OpBinary::Ge => LocalValue::Bool(lhs >= rhs),
+    // A structural fold must never manufacture a value from an undefined
+    // operation: a zero divisor is rejected before dividing, and any
+    // non-finite arithmetic result (overflow, 0/0) refuses to fold instead
+    // of flowing into a comparison as Inf/NaN — the same fail-closed
+    // posture as the checked DAE numeric owner.
+    let checked_real = |value: f64| value.is_finite().then_some(LocalValue::Real(value));
+    match op {
+        OpBinary::Add | OpBinary::AddElem => checked_real(lhs + rhs),
+        OpBinary::Sub | OpBinary::SubElem => checked_real(lhs - rhs),
+        OpBinary::Mul | OpBinary::MulElem => checked_real(lhs * rhs),
+        OpBinary::Div | OpBinary::DivElem => {
+            if rhs == 0.0 {
+                return None;
+            }
+            checked_real(lhs / rhs)
+        }
+        OpBinary::Lt => Some(LocalValue::Bool(lhs < rhs)),
+        OpBinary::Le => Some(LocalValue::Bool(lhs <= rhs)),
+        OpBinary::Gt => Some(LocalValue::Bool(lhs > rhs)),
+        OpBinary::Ge => Some(LocalValue::Bool(lhs >= rhs)),
         // Real equality inside a function body is legal MLS §8.5; both
         // operands are exact evaluated values here.
-        OpBinary::Eq => LocalValue::Bool(lhs == rhs),
-        OpBinary::Neq => LocalValue::Bool(lhs != rhs),
-        _ => return None,
-    })
+        OpBinary::Eq => Some(LocalValue::Bool(lhs == rhs)),
+        OpBinary::Neq => Some(LocalValue::Bool(lhs != rhs)),
+        _ => None,
+    }
 }
 
 fn local_reference_value(
@@ -473,6 +583,22 @@ fn eval_function_builtin_call(
     };
     if part.subs.as_ref().is_some_and(|subs| !subs.is_empty()) {
         return None;
+    }
+    // The predefined operation may answer only a call whose identity is the
+    // tree's own checked predefined member for this spelling (or an
+    // identity-free synthetic spelling). A resolved identity pointing at any
+    // other declaration selected a user function, and its body must never
+    // be replaced by the predefined operation.
+    if let Some(selected) = part.def_id {
+        let predefined =
+            env.tree
+                .scope_tree
+                .predefined_member(&rumoca_core::ComponentPath::from_flat_path(
+                    part.ident.text.as_ref(),
+                ));
+        if predefined != Some(selected) {
+            return None;
+        }
     }
     match part.ident.text.as_ref() {
         "size" => {

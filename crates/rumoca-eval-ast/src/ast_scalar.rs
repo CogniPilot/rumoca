@@ -117,6 +117,10 @@ pub(crate) fn eval_real<C: AstScalarContext>(
         Expression::Binary { op, lhs, rhs, .. } => {
             let lhs = recurse(lhs)?;
             let rhs = recurse(rhs)?;
+            // A structural fold must never manufacture a value from an
+            // undefined operation: a non-finite result (overflow, 0-divisor
+            // already rejected) refuses to fold rather than flowing onward
+            // as Inf/NaN into a comparison.
             match op {
                 OpBinary::Add | OpBinary::AddElem => Some(lhs + rhs),
                 OpBinary::Sub | OpBinary::SubElem => Some(lhs - rhs),
@@ -125,6 +129,7 @@ pub(crate) fn eval_real<C: AstScalarContext>(
                 OpBinary::Exp | OpBinary::ExpElem => Some(lhs.powf(rhs)),
                 _ => None,
             }
+            .filter(|value| value.is_finite())
         }
         Expression::Parenthesized { inner, .. } => recurse(inner),
         Expression::FunctionCall {
