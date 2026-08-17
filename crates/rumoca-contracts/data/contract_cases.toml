@@ -1907,6 +1907,48 @@ outcome = 'Accept'
 
 [[cases]]
 contract_id = 'STRM-003'
+case_id = 'strm_003_replaceable_medium_interface_real_alias_ok'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'STRM-003'
+case_id = 'strm_003_replaceable_interface_member_constraint_real_ok'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'STRM-003'
+case_id = 'strm_003_replaceable_medium_interface_integer_rejected'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'STRM-003'
+case_id = 'strm_003_replaceable_medium_missing_interface_member_rejected'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'STRM-003'
+case_id = 'strm_003_replaceable_medium_ambiguous_interface_member_rejected'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'STRM-003'
+case_id = 'strm_003_explicit_medium_constraint_controls_interface_rejected'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'STRM-003'
 case_id = 'strm_003_stream_connector_flow_must_be_real_rejected'
 test_file = 'tests/strm_contracts.rs'
 kind = 'Compile'
