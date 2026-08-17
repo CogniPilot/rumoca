@@ -15,14 +15,18 @@
     compiler build alone -- not on the date, the model, or the machine. -#}
 {#- No `block conformance` here, deliberately — see kernels.c.jinja: with no
     block to override, an extending target structurally cannot make its
-    kernel bytes differ from the base render, which is what keeps
-    RUMOCA_GALEC_KERNELS_VERSION's "same constant ⇔ same bytes" claim true
-    across targets. -#}
+    kernel bytes differ from the base render, which is what keeps one
+    RUMOCA_GALEC_KERNELS_VERSION value meaning one base render across
+    targets (same bytes ⇒ same constant; the 32-bit digest makes the
+    converse a tripwire, not a certificate). -#}
 /* rumoca GALEC array kernels
  * Target-agnostic translation unit: every rumoca C target emits this file
- * with byte-identical content, and RUMOCA_GALEC_KERNELS_VERSION is that
- * content's identity. Conformance claims live in the model artifacts emitted
- * beside it, not here.
+ * with byte-identical content. RUMOCA_GALEC_KERNELS_VERSION is a 32-bit
+ * FNV-1a digest of the templates that produced the pair: a version mismatch
+ * proves the sources come from different builds, while a match does not
+ * prove byte identity (a 32-bit digest can collide) — content-hash the
+ * files themselves where identity must be certified. Conformance claims
+ * live in the model artifacts emitted beside it, not here.
  * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
  * MISRA compliance and DO-178C compliance are not claimed. */
 
@@ -39,11 +43,15 @@
  * carries exactly one copy: the files dedup by content, and a toolchain that
  * places functions in their own sections drops the kernels nothing calls.
  *
- * RUMOCA_GALEC_KERNELS_VERSION identifies the library CONTENT, not the build
- * time -- it is a hash of the templates that produced these two files. Every
- * generated model source checks it, so mixing this header with a
- * `rumoca_galec_kernels.c` or a model `.c` from a different rumoca build is a
- * compile-time error rather than a silent link.
+ * RUMOCA_GALEC_KERNELS_VERSION tracks the library CONTENT, not the build
+ * time -- it is a 32-bit hash of the templates that produced these two
+ * files. Every generated model source checks it, so compiling a model `.c`
+ * or `rumoca_galec_kernels.c` against this header from a different rumoca
+ * build fails at compile time rather than linking silently. The check only
+ * sees sources compiled against this header: prebuilt objects that were
+ * each consistent with their own header are not detected here (linking two
+ * kernel objects still fails on duplicate definitions, but a model object
+ * paired with a foreign kernel object is out of this check's reach).
  *
  * Contracts common to every kernel below:
  *   - `count` is the number of elements in the run and must be >= 0; a

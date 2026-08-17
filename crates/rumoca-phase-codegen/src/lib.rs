@@ -207,13 +207,17 @@ pub mod templates {
     /// source.
     ///
     /// It is a hash of the *templates*, not of a build timestamp or a version
-    /// string someone has to remember to bump. Two rumoca builds therefore
-    /// agree on it exactly when they emit byte-identical kernels, which is the
-    /// property the `#error` in the generated sources needs: mixing a model
-    /// `.c` with kernel sources from a build whose kernels differ fails to
-    /// compile, and mixing it with a build whose kernels are identical — the
-    /// case an integrator relies on when deduplicating the library across
-    /// several eFMUs — does not.
+    /// string someone has to remember to bump. Byte-identical kernel
+    /// templates therefore always produce the same value, so two builds that
+    /// disagree on it provably emit different kernels — the direction the
+    /// `#error` in the generated sources relies on: mixing a model `.c` with
+    /// kernel sources from a build whose kernels differ fails to compile,
+    /// while a build with identical kernels — the case an integrator relies
+    /// on when deduplicating the library across several eFMUs — compiles.
+    /// The converse is a 32-bit tripwire, not a certificate: agreeing values
+    /// make identical kernels overwhelmingly likely but do not prove them,
+    /// so certification-grade identity must content-hash the emitted files
+    /// (as the ProductionCode manifest checks do), never this constant.
     ///
     /// Hashing the templates rather than the rendered files avoids a
     /// circularity: the rendered files contain this value. It loses nothing,

@@ -9,18 +9,20 @@
     a rank > 1 operand could not have been const-correct without a cast this
     target prohibits. Taking rows instead is what keeps both properties. -#}
 {#- No `block conformance` here, deliberately. The version constant hashes
-    the two BASE kernel templates, so its equality claim ("same constant ⇔
-    same bytes") holds only if no extending target can change the rendered
-    bytes. With no block to override, a child template structurally cannot:
-    per-target banners on this pair would be per-target bytes under one
-    constant, which is the silent-`#error`, multiple-definition-at-link
-    failure the constant exists to prevent. Conformance claims belong to the
+    the two BASE kernel templates, so "same bytes ⇒ same constant" (and its
+    useful contrapositive: a constant mismatch proves different bytes) holds
+    only if no extending target can change the rendered bytes. With no block
+    to override, a child template structurally cannot: per-target banners on
+    this pair would be per-target bytes under one constant, defeating the
+    mismatch tripwire and inviting the multiple-definition-at-link failure
+    the constant exists to surface early. Conformance claims belong to the
     model artifacts beside this file. -#}
 /* rumoca GALEC array kernels
  * Target-agnostic translation unit: every rumoca C target emits this file
- * with byte-identical content, and RUMOCA_GALEC_KERNELS_VERSION is that
- * content's identity. Conformance claims live in the model artifacts emitted
- * beside it, not here.
+ * with byte-identical content. RUMOCA_GALEC_KERNELS_VERSION is a 32-bit
+ * digest of the producing templates — a mismatch tripwire, not an identity
+ * certificate; see rumoca_galec_kernels.h. Conformance claims live in the
+ * model artifacts emitted beside it, not here.
  * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
  * MISRA compliance and DO-178C compliance are not claimed. */
 
