@@ -178,8 +178,8 @@ pub(super) fn reconstruct<'dae>(
             )?;
         }
     }
-    while ids.expressions.len() < wire.expressions.nodes.len() {
-        let expression = wire_expression(wire, ids.expressions.len())?;
+    while ids.next_wire_expression < wire.expressions.nodes.len() {
+        let expression = wire_expression(wire, ids.next_wire_expression)?;
         match expression.node {
             ExprNodeWire::FunctionValue { .. }
             | ExprNodeWire::FunctionFoldParameter { .. }
@@ -284,7 +284,7 @@ fn replay_component<'group, 'dae>(
 ) -> Result<(), DaeConstructionError> {
     let mut functions = begin_functions(wire, dae, reservations)?;
     while ids.expressions.len() < expression_end {
-        let expression = wire_expression(wire, ids.expressions.len())?;
+        let expression = wire_expression(wire, ids.next_wire_expression)?;
         match expression.node {
             ExprNodeWire::FunctionValue {
                 function,
@@ -302,6 +302,20 @@ fn replay_component<'group, 'dae>(
             }
             ExprNodeWire::FunctionFoldOutput { function } => {
                 replay_loop_exit(wire, dae, ids, &mut functions, *function)?;
+            }
+            ExprNodeWire::RuntimeQuotientOwner {
+                kind: QuotientOwnerKindWire::Function { function },
+                builtin,
+                lhs,
+                rhs,
+            } => {
+                replay_function_quotient(
+                    dae,
+                    ids,
+                    &mut functions,
+                    (*function, *builtin, *lhs, *rhs),
+                    expression.provenance,
+                )?;
             }
             _ => {
                 if !super::reconstruct_next_expression(wire, dae, ids)? {
@@ -534,6 +548,36 @@ fn assertion(statement: &FunctionStatementInput) -> Result<AssertionInput, DaeCo
     }
 }
 
+/// Replay one function-owned dynamic quotient through the exact open body.
+///
+/// The record carries only the semantic inputs; the body-capability
+/// constructor re-runs operand prevalidation and admission, records the
+/// owner, and produces exactly the one quotient node — no token and no
+/// stream markers exist for the event-free kind.
+fn replay_function_quotient<'dae>(
+    dae: &mut DaeConstruction<'dae>,
+    ids: &mut WireIds<'dae>,
+    functions: &mut [FunctionReplay<'_, '_, 'dae>],
+    record: (u32, PureBuiltin, u32, u32),
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let (function_raw, builtin, lhs, rhs) = record;
+    let lhs = mapped(&ids.expressions, lhs, "expression", provenance)?;
+    let rhs = mapped(&ids.expressions, rhs, "expression", provenance)?;
+    let state = function_state_mut(functions, function_raw, provenance)?;
+    let Some(ReplayCapability::Body(body)) = state.capability.as_ref() else {
+        return Err(malformed("expressions.nodes.function_quotient_owner"));
+    };
+    let quotient = dae.function_runtime_quotient(body, builtin, [lhs, rhs], provenance)?;
+    if quotient.index() as usize != ids.expressions.len() {
+        return Err(malformed("expressions.nodes.function_quotient_owner"));
+    }
+    ids.expressions.push(quotient);
+    ids.next_wire_expression += 1;
+    ids.owner_operand_extra += 2;
+    Ok(())
+}
+
 fn replay_read<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
@@ -542,7 +586,7 @@ fn replay_read<'dae>(
     identity: (u32, u32, u32),
 ) -> Result<(), DaeConstructionError> {
     let (function_raw, value_raw, definition_ordinal) = identity;
-    let expression = wire_expression(wire, ids.expressions.len())?;
+    let expression = wire_expression(wire, ids.next_wire_expression)?;
     let provenance = expression.provenance;
     let state = function_state_mut(functions, function_raw, provenance)?;
     expect_function_value(wire, state.function_index, value_raw, provenance)?;
@@ -877,7 +921,7 @@ fn replay_loop_entry<'dae>(
     functions: &mut [FunctionReplay<'_, '_, 'dae>],
     function_raw: u32,
 ) -> Result<(), DaeConstructionError> {
-    let provenance = wire_expression(wire, ids.expressions.len())?.provenance;
+    let provenance = wire_expression(wire, ids.next_wire_expression)?.provenance;
     let state = function_state_mut(functions, function_raw, provenance)?;
     apply_ready_operations(wire, dae, ids, state)?;
     let pending_fold = dae.storage.functions[state.function_index].folds.len();
@@ -944,7 +988,7 @@ fn replay_loop_exit<'dae>(
     functions: &mut [FunctionReplay<'_, '_, 'dae>],
     function_raw: u32,
 ) -> Result<(), DaeConstructionError> {
-    let provenance = wire_expression(wire, ids.expressions.len())?.provenance;
+    let provenance = wire_expression(wire, ids.next_wire_expression)?.provenance;
     let state = function_state_mut(functions, function_raw, provenance)?;
     apply_ready_operations(wire, dae, ids, state)?;
     let open_fold = dae.storage.functions[state.function_index]
@@ -1138,7 +1182,9 @@ fn record_generated_group<'dae>(
         return Err(malformed("functions.statements"));
     }
     for raw in replay.expression_start..expected_expression_end {
-        let expression = wire_expression(wire, raw)?;
+        // Fold-generated nodes keep one wire record per node, so the
+        // emitted-record cursor tracks the source ordinal one-for-one here.
+        let expression = wire_expression(wire, ids.next_wire_expression)?;
         expect_generated_node(expression.node, replay.function, replay.group)?;
         let raw = u32::try_from(raw).map_err(|_| malformed("expressions.nodes"))?;
         record_expression(dae, ids, ExprId::from_raw(raw), expression.provenance)?;
@@ -1194,6 +1240,7 @@ fn record_expression<'dae>(
         });
     }
     ids.expressions.push(rebuilt);
+    ids.next_wire_expression += 1;
     Ok(())
 }
 

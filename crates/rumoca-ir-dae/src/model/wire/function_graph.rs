@@ -68,23 +68,33 @@ pub(super) fn function_components(
 struct ExpressionChildren {
     operand_starts: Vec<usize>,
     subscript_starts: Vec<usize>,
+    /// Source ordinal each emitted record occupies; a model quotient owner
+    /// record spans seven source ordinals, everything else one.
+    source_starts: Vec<u32>,
+    source_count: usize,
 }
 
 impl ExpressionChildren {
     fn new(arena: &ExpressionArenaWire) -> Result<Self, DaeConstructionError> {
         let mut operand_starts = Vec::with_capacity(arena.nodes.len());
         let mut subscript_starts = Vec::with_capacity(arena.nodes.len());
+        let mut source_starts = Vec::with_capacity(arena.nodes.len());
         let mut operand = 0_usize;
         let mut subscript = 0_usize;
+        let mut source = 0_usize;
         for node in &arena.nodes {
             operand_starts.push(operand);
             subscript_starts.push(subscript);
+            source_starts.push(u32::try_from(source).map_err(|_| malformed("expressions.nodes"))?);
             operand = operand
                 .checked_add(operand_count(node) as usize)
                 .ok_or_else(|| malformed("expressions.operands"))?;
             subscript = subscript
                 .checked_add(subscript_count(node) as usize)
                 .ok_or_else(|| malformed("expressions.subscripts"))?;
+            source = source
+                .checked_add(source_width(node) as usize)
+                .ok_or_else(|| malformed("expressions.nodes"))?;
         }
         if operand != arena.operands.len() || subscript != arena.subscripts.len() {
             return Err(malformed("expressions.packed_buffers"));
@@ -92,7 +102,20 @@ impl ExpressionChildren {
         Ok(Self {
             operand_starts,
             subscript_starts,
+            source_starts,
+            source_count: source,
         })
+    }
+
+    /// The emitted record occupying one exact source ordinal.
+    ///
+    /// A reference into the interior of an owner batch names an
+    /// operation-produced identity the wire never carries; walking it is a
+    /// malformed wire, not a lookup miss.
+    fn record_of_source(&self, source: u32) -> Result<usize, DaeConstructionError> {
+        self.source_starts
+            .binary_search(&source)
+            .map_err(|_| malformed("expressions.nodes.dependency_order"))
     }
 
     fn push(
@@ -109,7 +132,8 @@ impl ExpressionChildren {
             ExprNodeWire::Unary { operand, .. }
             | ExprNodeWire::Field { base: operand, .. }
             | ExprNodeWire::Comprehension { body: operand, .. } => pending.push(*operand),
-            ExprNodeWire::Binary { lhs, rhs, .. } => pending.extend([*lhs, *rhs]),
+            ExprNodeWire::Binary { lhs, rhs, .. }
+            | ExprNodeWire::RuntimeQuotientOwner { lhs, rhs, .. } => pending.extend([*lhs, *rhs]),
             ExprNodeWire::Index { base, .. } => pending.push(*base),
             ExprNodeWire::ArrayUpdate { base, value, .. } => pending.extend([*base, *value]),
             _ => {}
@@ -142,6 +166,16 @@ fn operand_count(node: &ExprNodeWire) -> u32 {
     }
 }
 
+fn source_width(node: &ExprNodeWire) -> u32 {
+    match node {
+        ExprNodeWire::RuntimeQuotientOwner {
+            kind: QuotientOwnerKindWire::Model { .. },
+            ..
+        } => 7,
+        _ => 1,
+    }
+}
+
 fn subscript_count(node: &ExprNodeWire) -> u32 {
     match node {
         ExprNodeWire::Index {
@@ -170,7 +204,7 @@ fn function_dependencies(
             }
         }
     }
-    let mut seen = vec![false; wire.expressions.nodes.len()];
+    let mut seen = vec![false; children.source_count];
     let mut dependencies = Vec::new();
     let mut expression_end = 0;
     while let Some(raw) = pending.pop() {
@@ -182,9 +216,10 @@ fn function_dependencies(
         if std::mem::replace(visited, true) {
             continue;
         }
+        let record = children.record_of_source(raw)?;
         if let ExprNodeWire::Call {
             function: callee, ..
-        } = wire.expressions.nodes[expression]
+        } = wire.expressions.nodes[record]
         {
             let callee = callee as usize;
             if callee >= wire.functions.len() {
@@ -194,17 +229,22 @@ fn function_dependencies(
                 dependencies.push(callee);
             }
         }
-        children.push(&wire.expressions, expression, &mut pending)?;
+        children.push(&wire.expressions, record, &mut pending)?;
     }
     dependencies.sort_unstable();
     Ok((dependencies, expression_end))
 }
 
+/// Function scope per SOURCE expression ordinal.
+///
+/// Owner records widen the source stream: a model owner contributes seven
+/// model-scope ordinals and requires model-scope operands; a function owner
+/// contributes one ordinal in exactly its recorded function scope.
 fn expression_scopes(
     arena: &ExpressionArenaWire,
     children: &ExpressionChildren,
 ) -> Result<Vec<Option<usize>>, DaeConstructionError> {
-    let mut scopes = Vec::with_capacity(arena.nodes.len());
+    let mut scopes = Vec::with_capacity(children.source_count);
     for (index, node) in arena.nodes.iter().enumerate() {
         let leaf = match node {
             ExprNodeWire::Coordinate(CoordinateWire::FunctionParameter { function, .. })
@@ -218,7 +258,7 @@ fn expression_scopes(
         children.push(arena, index, &mut operands)?;
         for operand in operands {
             let operand = operand as usize;
-            if operand >= index {
+            if operand >= scopes.len() {
                 return Err(malformed("expressions.nodes.dependency_order"));
             }
             let child = scopes[operand];
@@ -231,7 +271,28 @@ fn expression_scopes(
                 }
             };
         }
-        scopes.push(scope);
+        match node {
+            ExprNodeWire::RuntimeQuotientOwner {
+                kind: QuotientOwnerKindWire::Model { .. },
+                ..
+            } => {
+                if scope.is_some() {
+                    return Err(malformed("expressions.nodes.function_scope"));
+                }
+                scopes.extend([None; 7]);
+            }
+            ExprNodeWire::RuntimeQuotientOwner {
+                kind: QuotientOwnerKindWire::Function { function },
+                ..
+            } => {
+                let function = *function as usize;
+                if scope.is_some_and(|found| found != function) {
+                    return Err(malformed("expressions.nodes.function_scope"));
+                }
+                scopes.push(Some(function));
+            }
+            _ => scopes.push(scope),
+        }
     }
     Ok(scopes)
 }

@@ -1,13 +1,15 @@
-// SPEC_0021 file-size exception - split plan: extract wire record decoding (Deserialize impls and rehydration) into model/wire/decode.rs, leaving serialization and the module facade here; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
-
 mod equation_systems;
 mod expression_wire;
 mod function_graph;
 mod function_replay;
 mod helpers;
+mod quotient_projection;
+mod records;
 
-use serde::ser::SerializeStruct;
+use serde::ser::{SerializeStruct, SerializeStructVariant};
 use serde::{Deserialize, Serialize};
+
+use crate::expression::OperandRange;
 
 use super::*;
 use crate::expression::Subscript;
@@ -21,6 +23,8 @@ use expression_wire::*;
 use helpers::{
     expect_ordinal, map_expression_operands, map_many, mapped, take_packed, wire_operands,
 };
+use quotient_projection::*;
+use records::*;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,6 +67,7 @@ impl Serialize for FrozenStorage {
     where
         S: serde::Serializer,
     {
+        let projection = verify_owner_projection(self).map_err(serde::ser::Error::custom)?;
         let mut state = serializer.serialize_struct("DaeStorage", 25)?;
         state.serialize_field(
             "predefined_string_declaration",
@@ -77,7 +82,13 @@ impl Serialize for FrozenStorage {
             &function_replay::FunctionArenaOutput::new(&self.functions, &self.function_folds),
         )?;
         state.serialize_field("domains", &self.domains)?;
-        state.serialize_field("expressions", &self.expressions)?;
+        state.serialize_field(
+            "expressions",
+            &ExpressionArenaOutput {
+                arena: &self.expressions,
+                projection: &projection,
+            },
+        )?;
         state.serialize_field(
             "continuous_equation_operations",
             &equation_systems::EquationOperationsOutput::new(
@@ -100,9 +111,27 @@ impl Serialize for FrozenStorage {
         state.serialize_field("discrete_real_equations", &self.discrete_real_equations)?;
         state.serialize_field("discrete_value_owners", &discrete_value_owner_output(self))?;
         state.serialize_field("model_event_transactions", &self.model_event_transactions)?;
-        state.serialize_field("relations", &self.relations)?;
-        state.serialize_field("conditions", &self.conditions)?;
-        state.serialize_field("roots", &self.roots)?;
+        state.serialize_field(
+            "relations",
+            &RelationsOutput {
+                relations: &self.relations,
+                markers: &projection.relation_markers,
+            },
+        )?;
+        state.serialize_field(
+            "conditions",
+            &ConditionsOutput {
+                conditions: &self.conditions,
+                markers: &projection.activation_markers,
+            },
+        )?;
+        state.serialize_field(
+            "roots",
+            &RootsOutput {
+                roots: &self.roots,
+                markers: &projection.root_markers,
+            },
+        )?;
         state.serialize_field("structured_roots", &self.structured_roots)?;
         state.serialize_field("time_events", &self.time_events)?;
         state.serialize_field("event_actions", &self.event_actions)?;
@@ -168,541 +197,6 @@ where
     Option::<rumoca_core::DefId>::deserialize(deserializer)
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ValueTypeWire {
-    scalar: ScalarType,
-    dimensions: Box<[u32]>,
-    record_name: Option<rumoca_core::VarName>,
-    record_fields: Box<[RecordFieldTypeWire]>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RecordFieldTypeWire {
-    name: rumoca_core::VarName,
-    value_type: u32,
-}
-
-impl ValueTypeWire {
-    fn as_primitive_value_type(&self) -> Result<ValueType, DaeConstructionError> {
-        if self.scalar == ScalarType::Record
-            || self.record_name.is_some()
-            || !self.record_fields.is_empty()
-        {
-            return Err(DaeConstructionError::MalformedWire {
-                column: "value_types",
-            });
-        }
-        Ok(ValueType::array(self.scalar, self.dimensions.clone()))
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct VariableEntryWire {
-    name: rumoca_core::VarName,
-    role: VariableRole,
-    variability: ExpressionVariability,
-    value_type: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    declaration: DaeProvenance,
-    attributes: Option<VariableAttributesInput>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct VariableAttributesInput {
-    component_ref: Option<rumoca_core::ComponentReference>,
-    binding: Option<u32>,
-    start: Option<u32>,
-    fixed: Option<bool>,
-    min: Option<u32>,
-    max: Option<u32>,
-    nominal: Option<u32>,
-    unit: Option<String>,
-    state_select: rumoca_core::StateSelect,
-    description: Option<String>,
-    causality: VariableCausality,
-    is_tunable: bool,
-    is_held: bool,
-    origin: VariableOrigin,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionEntryWire<Name = rumoca_core::VarName> {
-    name: Name,
-    parameters: Vec<FunctionNamedValueWire<Name>>,
-    outputs: Vec<FunctionNamedValueWire<Name>>,
-    locals: Vec<FunctionNamedValueWire<Name>>,
-    statements: Vec<FunctionStatementInput>,
-    /// MLS §12.9 external interface; mutually exclusive with `statements`.
-    external: Option<ExternalBodyInput<Name>>,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    declaration: DaeProvenance,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExternalBodyInput<Name = rumoca_core::VarName> {
-    purity: FunctionPurity,
-    language: ExternalLanguage,
-    symbol: Name,
-    arguments: Vec<ExternalArgumentEntry>,
-    result: Option<u32>,
-    linkage: ExternalLinkage,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionNamedValueWire<Name = rumoca_core::VarName> {
-    name: Name,
-    value_type: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    declaration: DaeProvenance,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum FunctionStatementInput {
-    Assignment {
-        target: u32,
-        rhs: u32,
-        #[serde(deserialize_with = "deserialize_provenance")]
-        provenance: DaeProvenance,
-    },
-    AssignmentGroup {
-        assignments: Vec<FunctionAssignmentInput>,
-        conditional: Option<FunctionConditionalInput>,
-    },
-    Assertion {
-        condition: u32,
-        message: u32,
-        #[serde(deserialize_with = "deserialize_provenance")]
-        provenance: DaeProvenance,
-    },
-    For {
-        domain: u32,
-        targets: Vec<u32>,
-        statements: Vec<FunctionStatementInput>,
-        #[serde(deserialize_with = "deserialize_provenance")]
-        begin_provenance: DaeProvenance,
-        #[serde(deserialize_with = "deserialize_provenance")]
-        finish_provenance: DaeProvenance,
-    },
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionConditionalInput {
-    conditions: Vec<u32>,
-    branches: Vec<Vec<u32>>,
-    fallback: Vec<u32>,
-}
-
-#[derive(Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionAssignmentInput {
-    target: u32,
-    rhs: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DomainEntryWire {
-    parent: Option<u32>,
-    domain: rumoca_core::StructuredIndexDomain,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DiscreteRealEquationWire {
-    residual: u32,
-    activation: DiscreteRealActivationWire,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "variable")]
-enum ModelEventTargetWire {
-    DiscreteReal(u32),
-    DiscreteValue(u32),
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ModelEventDefinitionWire {
-    target: ModelEventTargetWire,
-    value: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ModelEventStepWire {
-    trigger: u32,
-    guard: u32,
-    clock: Option<u32>,
-    definitions: Vec<ModelEventDefinitionWire>,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ModelEventTransactionWire {
-    targets: Vec<ModelEventTargetWire>,
-    steps: Vec<ModelEventStepWire>,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InitialDiscreteValueWire {
-    target: u32,
-    value: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum DiscreteRealActivationWire {
-    Always,
-    When { trigger: u32, guard: u32 },
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum EquationOperationInput {
-    Residual {
-        residual: u32,
-        #[serde(deserialize_with = "deserialize_provenance")]
-        provenance: DaeProvenance,
-    },
-    Structured {
-        domain: u32,
-        scalar_view: rumoca_core::ComprehensionScalarView,
-        bodies: Vec<u32>,
-        #[serde(deserialize_with = "deserialize_provenance")]
-        provenance: DaeProvenance,
-    },
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DiscreteValueOwnerWire<Targets = Vec<u32>> {
-    targets: Targets,
-    branches: Vec<DiscreteValueBranchWire>,
-    structure: Option<StructuredDiscreteValueWire>,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy)]
-#[serde(deny_unknown_fields)]
-struct StructuredDiscreteValueWire {
-    domain: u32,
-    scalar_view: rumoca_core::ComprehensionScalarView,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DiscreteValueBranchWire {
-    activation: DiscreteBranchActivationWire,
-    values: Vec<DiscreteValueActionWire>,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum DiscreteBranchActivationWire {
-    Always,
-    When { trigger: u32, guard: u32 },
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DiscreteValueActionWire {
-    value: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-fn discrete_value_owner_output(storage: &FrozenStorage) -> Vec<DiscreteValueOwnerWire<&[u32]>> {
-    storage
-        .discrete_value_owners
-        .iter()
-        .map(|owner| {
-            let targets = &storage.discrete_value_targets[owner.targets.indices()];
-            let branches = storage.discrete_value_branches[owner.branches.indices()]
-                .iter()
-                .map(|branch| {
-                    let values = branch
-                        .values
-                        .indices()
-                        .map(|index| DiscreteValueActionWire {
-                            value: storage.discrete_value_branch_values[index],
-                            provenance: storage.discrete_value_branch_value_provenance[index],
-                        })
-                        .collect();
-                    let activation = match branch.activation {
-                        DiscreteBranchActivationEntry::Always => {
-                            DiscreteBranchActivationWire::Always
-                        }
-                        DiscreteBranchActivationEntry::When { trigger, guard } => {
-                            DiscreteBranchActivationWire::When { trigger, guard }
-                        }
-                    };
-                    DiscreteValueBranchWire {
-                        activation,
-                        values,
-                        provenance: branch.provenance,
-                    }
-                })
-                .collect();
-            DiscreteValueOwnerWire {
-                targets,
-                branches,
-                structure: owner
-                    .structure
-                    .map(|structure| StructuredDiscreteValueWire {
-                        domain: structure.domain,
-                        scalar_view: structure.scalar_view,
-                    }),
-                provenance: owner.provenance,
-            }
-        })
-        .collect()
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum ConditionNodeWire {
-    Initial,
-    Always,
-    Relation(u32),
-    Discrete(u32),
-    Clock(u32),
-    Not(u32),
-    And { lhs: u32, rhs: u32 },
-    Or { lhs: u32, rhs: u32 },
-    AnyRise { lhs: u32, rhs: u32 },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RelationEntryWire {
-    expression: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ConditionEntryWire {
-    node: Option<ConditionNodeWire>,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RootEntryWire {
-    relation: u32,
-    activation: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StructuredRootEntryWire {
-    domain: u32,
-    expression: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TimeEventEntryWire {
-    instant: Option<ClockRationalWire>,
-    deadline: Option<u32>,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum EventActionKindWire {
-    Assert { message: u32, level: Option<u32> },
-    Terminate { message: u32 },
-    Reinitialize { state: u32, value: u32 },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EventActionEntryWire {
-    trigger: u32,
-    guard: u32,
-    kind: EventActionKindWire,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum ClockKindWire {
-    Periodic(PeriodicClockScheduleWire),
-    Triggered(u32),
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(deny_unknown_fields)]
-struct ClockRationalWire {
-    num: i128,
-    den: i128,
-}
-
-impl ClockRationalWire {
-    fn checked(
-        self,
-        at: DaeProvenance,
-    ) -> Result<rumoca_core::ClockRational, DaeConstructionError> {
-        rumoca_core::ClockRational::new(self.num, self.den).map_err(|source| {
-            DaeConstructionError::InvalidClockLattice {
-                source,
-                span: at.span(),
-            }
-        })
-    }
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(deny_unknown_fields)]
-struct ClockLatticeWire {
-    period: ClockRationalWire,
-    phase: ClockRationalWire,
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
-enum ClockPhaseAnchorWire {
-    Absolute,
-    SimulationStart,
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(deny_unknown_fields)]
-struct PeriodicClockScheduleWire {
-    lattice: ClockLatticeWire,
-    anchor: ClockPhaseAnchorWire,
-}
-
-impl PeriodicClockScheduleWire {
-    fn checked(
-        self,
-        at: DaeProvenance,
-    ) -> Result<rumoca_core::PeriodicClockSchedule, DaeConstructionError> {
-        let lattice = self.lattice.checked(at)?;
-        let result = match self.anchor {
-            ClockPhaseAnchorWire::Absolute => rumoca_core::PeriodicClockSchedule::absolute(lattice),
-            ClockPhaseAnchorWire::SimulationStart => {
-                rumoca_core::PeriodicClockSchedule::simulation_start_relative(lattice)
-            }
-        };
-        result.map_err(|source| DaeConstructionError::InvalidClockLattice {
-            source,
-            span: at.span(),
-        })
-    }
-}
-
-impl ClockLatticeWire {
-    fn checked(self, at: DaeProvenance) -> Result<rumoca_core::ClockLattice, DaeConstructionError> {
-        rumoca_core::ClockLattice::new(self.period.checked(at)?, self.phase.checked(at)?).map_err(
-            |source| DaeConstructionError::InvalidClockLattice {
-                source,
-                span: at.span(),
-            },
-        )
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ClockEntryWire {
-    kind: ClockKindWire,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ClockOwnershipEntryWire {
-    variable: u32,
-    clock: u32,
-    sampled: bool,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PreviousEntryWire {
-    variable: u32,
-    clock: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TerminalEntryWire {
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PositiveParameterWire {
-    expression: u32,
-    value: f64,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum DelayKindWire {
-    ParameterDelay {
-        delay_time: PositiveParameterWire,
-    },
-    BoundedDelay {
-        delay_time: u32,
-        delay_max: PositiveParameterWire,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DelayEntryWire {
-    source: u32,
-    kind: DelayKindWire,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
 impl<'de> Deserialize<'de> for Dae {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -758,6 +252,25 @@ struct WireIds<'dae> {
     expressions: Vec<ExprId<'dae>>,
     next_operand: usize,
     next_subscript: usize,
+    /// Emitted-record cursor over `wire.expressions.nodes`. It trails
+    /// `expressions.len()` (the source-ordinal cursor) by six for every
+    /// replayed model owner.
+    next_wire_expression: usize,
+    /// In-flight owner replays, in owner-record (= quotient) order. Each
+    /// entry's token is consumed by its three stream markers and finished
+    /// after root reconstruction.
+    quotient_replays: Vec<PendingQuotientReplay<'dae>>,
+    /// Extra target expression nodes produced by owner replays (six per
+    /// model owner).
+    owner_expression_extra: usize,
+    /// Extra target packed operands produced by owner replays (three per
+    /// model owner, two per function owner).
+    owner_operand_extra: usize,
+}
+
+struct PendingQuotientReplay<'dae> {
+    token: Option<QuotientReplayToken<'dae>>,
+    activation: u32,
 }
 
 fn mapped_expression<'dae>(
@@ -793,14 +306,19 @@ fn reconstruct<'dae>(
         expressions: Vec::with_capacity(wire.expressions.nodes.len()),
         next_operand: 0,
         next_subscript: 0,
+        next_wire_expression: 0,
+        quotient_replays: Vec::new(),
+        owner_expression_extra: 0,
+        owner_operand_extra: 0,
     };
     reconstruct_clocks(wire, dae, &mut ids)?;
     reconstruct_temporal(wire, dae, &mut ids)?;
     function_replay::reconstruct(wire, dae, &mut ids)?;
     reconstruct_relations(wire, dae, &mut ids)?;
     define_variables(wire, dae, &ids, variable_reservations)?;
-    define_conditions(wire, dae, &ids)?;
-    reconstruct_roots(wire, dae, &ids)?;
+    define_conditions(wire, dae, &mut ids)?;
+    reconstruct_roots(wire, dae, &mut ids)?;
+    finish_quotient_replays(dae, &mut ids)?;
     reconstruct_structured_roots(wire, dae, &ids)?;
     reconstruct_events(wire, dae, &ids)?;
     reconstruct_equation_systems(wire, dae, &ids)?;
@@ -1157,9 +675,8 @@ fn reconstruct_next_expression<'dae>(
     dae: &mut DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
 ) -> Result<bool, DaeConstructionError> {
-    let index = ids.expressions.len();
-    let raw = index as u32;
-    let expression = wire_expression(wire, index)?;
+    let raw = ids.expressions.len() as u32;
+    let expression = wire_expression(wire, ids.next_wire_expression)?;
     let provenance = expression.provenance;
     let node = expression.node;
     let id = match node {
@@ -1171,6 +688,29 @@ fn reconstruct_next_expression<'dae>(
         | ExprNodeWire::FunctionFoldOutput { .. } => {
             return Ok(false);
         }
+        ExprNodeWire::RuntimeQuotientOwner {
+            kind: QuotientOwnerKindWire::Model { activation },
+            builtin,
+            lhs,
+            rhs,
+        } => {
+            return replay_model_quotient_owner(
+                dae,
+                ids,
+                (*builtin, *lhs, *rhs, *activation),
+                provenance,
+            )
+            .map(|()| true);
+        }
+        ExprNodeWire::RuntimeQuotientOwner {
+            kind: QuotientOwnerKindWire::Function { .. },
+            ..
+        } => {
+            // A function-owned quotient replays only inside its open body;
+            // reaching the generic path means the wire placed it outside
+            // every function component.
+            return Err(malformed("expressions.nodes.function_quotient_owner"));
+        }
         _ => dae.expressions(|expressions| {
             rebuild_node(wire, ids, expressions.at(provenance), node, provenance)
         })?,
@@ -1181,7 +721,69 @@ fn reconstruct_next_expression<'dae>(
         });
     }
     ids.expressions.push(id);
+    ids.next_wire_expression += 1;
     Ok(true)
+}
+
+/// Replay one model quotient owner record: regenerate the seven-node batch
+/// atomically, fill all seven source-ordinal mappings, and stage the token
+/// for its three stream markers.
+fn replay_model_quotient_owner<'dae>(
+    dae: &mut DaeConstruction<'dae>,
+    ids: &mut WireIds<'dae>,
+    record: (PureBuiltin, u32, u32, u32),
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let (builtin, lhs, rhs, activation) = record;
+    let lhs = mapped(&ids.expressions, lhs, "expression", provenance)?;
+    let rhs = mapped(&ids.expressions, rhs, "expression", provenance)?;
+    // The reservation ordinal is semantic input; its definition is consumed
+    // later by this owner's activation marker.
+    if activation as usize >= ids.conditions.len() {
+        return Err(malformed("expressions.nodes.quotient_owner_activation"));
+    }
+    let token = dae.begin_quotient_replay(builtin, [lhs, rhs], provenance)?;
+    for id in std::iter::once(token.quotient()).chain(token.generated()) {
+        if id.index() as usize != ids.expressions.len() {
+            return Err(malformed("expressions.nodes.quotient_owner_batch"));
+        }
+        ids.expressions.push(id);
+    }
+    ids.owner_expression_extra += 6;
+    ids.owner_operand_extra += 3;
+    ids.quotient_replays.push(PendingQuotientReplay {
+        token: Some(token),
+        activation,
+    });
+    ids.next_wire_expression += 1;
+    Ok(())
+}
+
+fn pending_quotient_replay<'ids, 'dae>(
+    ids: &'ids mut WireIds<'dae>,
+    owner: u32,
+) -> Result<&'ids mut QuotientReplayToken<'dae>, DaeConstructionError> {
+    ids.quotient_replays
+        .get_mut(owner as usize)
+        .and_then(|pending| pending.token.as_mut())
+        .ok_or_else(|| malformed("quotient_owner marker"))
+}
+
+/// After root reconstruction every staged token must be fully consumed:
+/// exactly one relation, activation, and root marker each. Finishing records
+/// the regenerated owner; an unconsumed stage is the typed replay rejection.
+fn finish_quotient_replays<'dae>(
+    dae: &mut DaeConstruction<'dae>,
+    ids: &mut WireIds<'dae>,
+) -> Result<(), DaeConstructionError> {
+    for pending in &mut ids.quotient_replays {
+        let token = pending
+            .token
+            .take()
+            .expect("stream markers only borrow staged tokens");
+        dae.finish_quotient_replay(token)?;
+    }
+    Ok(())
 }
 
 fn expect_expression_arena_consumed(
@@ -1190,12 +792,18 @@ fn expect_expression_arena_consumed(
     ids: &WireIds<'_>,
 ) -> Result<(), DaeConstructionError> {
     let count = wire.expressions.nodes.len();
+    // Owner replay widens the target arena past the emitted records by the
+    // exact owner widths: six extra nodes/provenance and three packed
+    // operands per model owner, two packed operands per function owner.
     if wire.expressions.provenance.len() != count
+        || ids.next_wire_expression != count
         || ids.next_operand != wire.expressions.operands.len()
         || ids.next_subscript != wire.expressions.subscripts.len()
         || ids.delays.len() != wire.delays.len()
-        || dae.storage.expressions.nodes.len() != count
-        || dae.storage.expressions.operands.len() != wire.expressions.operands.len()
+        || ids.expressions.len() != count + ids.owner_expression_extra
+        || dae.storage.expressions.nodes.len() != count + ids.owner_expression_extra
+        || dae.storage.expressions.operands.len()
+            != wire.expressions.operands.len() + ids.owner_operand_extra
         || dae.storage.expressions.subscripts.len() != wire.expressions.subscripts.len()
     {
         return Err(malformed("expressions"));
@@ -1380,6 +988,11 @@ fn rebuild_node<'dae>(
         }
         node @ ExprNodeWire::ClockTransfer { .. } => {
             rebuild_clock_transfer(ids, at, node, provenance)
+        }
+        // Owner records replay through the staged token machinery before the
+        // generic rebuild; one reaching here is out of place.
+        ExprNodeWire::RuntimeQuotientOwner { .. } => {
+            Err(malformed("expressions.nodes.quotient_owner"))
         }
     }
 }
@@ -1732,12 +1345,28 @@ fn define_variables<'dae>(
 fn define_conditions<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
+    ids: &mut WireIds<'dae>,
 ) -> Result<(), DaeConstructionError> {
-    for (index, condition) in wire.conditions.iter().enumerate() {
+    for index in 0..wire.conditions.len() {
+        let condition = &wire.conditions[index];
         let Some(node) = condition.node else {
             return Err(incomplete("condition", index, condition.provenance));
         };
+        if let ConditionNodeWire::QuotientOwner(owner) = node {
+            // The marker must sit at exactly the reservation ordinal the
+            // owner record named as its semantic input.
+            let activation = ids.conditions[index];
+            let owner_activation = ids
+                .quotient_replays
+                .get(owner as usize)
+                .map(|pending| pending.activation);
+            if owner_activation != Some(index as u32) {
+                return Err(malformed("conditions.quotient_owner"));
+            }
+            let token = pending_quotient_replay(ids, owner)?;
+            dae.replay_quotient_activation(token, activation)?;
+            continue;
+        }
         let input = rebuild_condition_input(ids, node, condition.provenance)?;
         dae.conditions(|conditions| {
             conditions.define(ids.conditions[index], input, condition.provenance)
@@ -1751,16 +1380,26 @@ fn reconstruct_relations<'dae>(
     dae: &mut DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
 ) -> Result<(), DaeConstructionError> {
-    for (index, relation) in wire.relations.iter().enumerate() {
-        let expression = mapped(
-            &ids.expressions,
-            relation.expression,
-            "expression",
-            relation.provenance,
-        )?;
-        let id =
-            dae.conditions(|conditions| conditions.relation(expression, relation.provenance))?;
-        expect_ordinal("relation", index, id.index(), relation.provenance)?;
+    for index in 0..wire.relations.len() {
+        let id = match &wire.relations[index] {
+            RelationEntryWire::Relation {
+                expression,
+                provenance,
+            } => {
+                let expression = mapped(&ids.expressions, *expression, "expression", *provenance)?;
+                let id =
+                    dae.conditions(|conditions| conditions.relation(expression, *provenance))?;
+                expect_ordinal("relation", index, id.index(), *provenance)?;
+                id
+            }
+            RelationEntryWire::QuotientOwner { owner } => {
+                let token = pending_quotient_replay(ids, *owner)?;
+                let at = token.provenance();
+                let id = dae.replay_quotient_relation(token)?;
+                expect_ordinal("relation", index, id.index(), at)?;
+                id
+            }
+        };
         ids.relations.push(id);
     }
     Ok(())
@@ -1798,25 +1437,39 @@ fn rebuild_condition_input<'dae>(
             mapped(&ids.conditions, lhs, "condition", at)?,
             mapped(&ids.conditions, rhs, "condition", at)?,
         ),
+        // Owner markers are consumed by `define_conditions` before any
+        // generic rebuild; one reaching here is out of place.
+        ConditionNodeWire::QuotientOwner(_) => {
+            return Err(malformed("conditions.quotient_owner"));
+        }
     })
 }
 
 fn reconstruct_roots<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
+    ids: &mut WireIds<'dae>,
 ) -> Result<(), DaeConstructionError> {
-    for (index, root) in wire.roots.iter().enumerate() {
-        let relation = mapped(&ids.relations, root.relation, "relation", root.provenance)?;
-        let activation = mapped(
-            &ids.conditions,
-            root.activation,
-            "condition",
-            root.provenance,
-        )?;
-        let id =
-            dae.conditions(|conditions| conditions.root(relation, activation, root.provenance))?;
-        expect_ordinal("root", index, id.index(), root.provenance)?;
+    for index in 0..wire.roots.len() {
+        match &wire.roots[index] {
+            RootEntryWire::Root {
+                relation,
+                activation,
+                provenance,
+            } => {
+                let relation = mapped(&ids.relations, *relation, "relation", *provenance)?;
+                let activation = mapped(&ids.conditions, *activation, "condition", *provenance)?;
+                let id = dae
+                    .conditions(|conditions| conditions.root(relation, activation, *provenance))?;
+                expect_ordinal("root", index, id.index(), *provenance)?;
+            }
+            RootEntryWire::QuotientOwner { owner } => {
+                let token = pending_quotient_replay(ids, *owner)?;
+                let at = token.provenance();
+                let id = dae.replay_quotient_root(token)?;
+                expect_ordinal("root", index, id.index(), at)?;
+            }
+        }
     }
     Ok(())
 }

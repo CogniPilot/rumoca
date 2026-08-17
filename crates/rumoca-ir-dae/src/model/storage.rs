@@ -67,6 +67,7 @@ impl Storage {
             relations: self.relations.into_boxed_slice(),
             conditions: self.conditions.into_boxed_slice(),
             roots: self.roots.into_boxed_slice(),
+            runtime_quotient_owners: self.runtime_quotient_owners.into_boxed_slice(),
             structured_roots: self.structured_roots.into_boxed_slice(),
             time_events: self.time_events.into_boxed_slice(),
             event_actions: self.event_actions.into_boxed_slice(),
@@ -736,6 +737,11 @@ impl Storage {
         }
         if self.unfilled_conditions != 0 {
             return Err(self.incomplete_arena("condition", &self.conditions));
+        }
+        if let Some(&pending) = self.pending_quotient_replays.first() {
+            return Err(DaeConstructionError::UnconsumedQuotientReplay {
+                span: pending.span(),
+            });
         }
         if self.required_discrete_value_count != 0 && !self.discrete_value_topology_complete {
             let (index, declaration) = self

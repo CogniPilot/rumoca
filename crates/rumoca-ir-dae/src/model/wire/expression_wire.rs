@@ -35,30 +35,145 @@ pub(super) fn wire_expression(
     })
 }
 
-impl Serialize for FrozenExpressionArenaStorage {
+/// The serializer-side projection of one dynamic-quotient owner.
+///
+/// `verify_owner_batches` proves every registry entry owns exactly its
+/// canonical node/provenance/operand ranges before anything is omitted; a
+/// registry that does not own what it claims fails serialization.
+pub(super) struct OwnerNodeProjection {
+    pub(super) kind: OwnerNodeKind,
+    pub(super) builtin: PureBuiltin,
+    pub(super) lhs: u32,
+    pub(super) rhs: u32,
+}
+
+pub(super) enum OwnerNodeKind {
+    Model { activation: u32 },
+    Function { function: u32 },
+}
+
+/// Per-arena omission plan, computed once from the verified registry.
+pub(super) struct OwnerProjection {
+    /// Quotient node index → owner record to emit in its place.
+    pub(super) replace: rustc_hash::FxHashMap<u32, OwnerNodeProjection>,
+    /// Generated node indices omitted from the wire entirely.
+    pub(super) skip_nodes: rustc_hash::FxHashSet<u32>,
+    /// Packed operand positions omitted from the wire entirely.
+    pub(super) skip_operands: rustc_hash::FxHashSet<usize>,
+    /// Relation ordinal → owner ordinal marker.
+    pub(super) relation_markers: rustc_hash::FxHashMap<u32, u32>,
+    /// Activation condition ordinal → owner ordinal marker.
+    pub(super) activation_markers: rustc_hash::FxHashMap<u32, u32>,
+    /// Root ordinal → owner ordinal marker.
+    pub(super) root_markers: rustc_hash::FxHashMap<u32, u32>,
+}
+
+pub(super) struct ExpressionArenaOutput<'storage> {
+    pub(super) arena: &'storage FrozenExpressionArenaStorage,
+    pub(super) projection: &'storage OwnerProjection,
+}
+
+impl Serialize for ExpressionArenaOutput<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         let mut state = serializer.serialize_struct("ExpressionArena", 4)?;
-        state.serialize_field("nodes", &ExpressionNodesOutput(self))?;
-        state.serialize_field("provenance", &self.provenance)?;
-        state.serialize_field("operands", &self.operands)?;
-        state.serialize_field("subscripts", &self.subscripts)?;
+        state.serialize_field(
+            "nodes",
+            &ExpressionNodesOutput {
+                arena: self.arena,
+                projection: self.projection,
+            },
+        )?;
+        state.serialize_field(
+            "provenance",
+            &FilteredSeqOutput {
+                values: &self.arena.provenance,
+                skip: &self.projection.skip_nodes,
+            },
+        )?;
+        state.serialize_field(
+            "operands",
+            &FilteredOperandsOutput {
+                values: &self.arena.operands,
+                skip: &self.projection.skip_operands,
+            },
+        )?;
+        state.serialize_field("subscripts", &self.arena.subscripts)?;
         state.end()
     }
 }
 
-struct ExpressionNodesOutput<'storage>(&'storage FrozenExpressionArenaStorage);
+struct FilteredSeqOutput<'storage, T> {
+    values: &'storage [T],
+    skip: &'storage rustc_hash::FxHashSet<u32>,
+}
+
+impl<T: Serialize> Serialize for FilteredSeqOutput<'_, T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.values.len() - self.skip.len()))?;
+        for (index, value) in self.values.iter().enumerate() {
+            if self.skip.contains(&(index as u32)) {
+                continue;
+            }
+            sequence.serialize_element(value)?;
+        }
+        sequence.end()
+    }
+}
+
+struct FilteredOperandsOutput<'storage> {
+    values: &'storage [u32],
+    skip: &'storage rustc_hash::FxHashSet<usize>,
+}
+
+impl Serialize for FilteredOperandsOutput<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.values.len() - self.skip.len()))?;
+        for (index, value) in self.values.iter().enumerate() {
+            if self.skip.contains(&index) {
+                continue;
+            }
+            sequence.serialize_element(value)?;
+        }
+        sequence.end()
+    }
+}
+
+struct ExpressionNodesOutput<'storage> {
+    arena: &'storage FrozenExpressionArenaStorage,
+    projection: &'storage OwnerProjection,
+}
 
 impl Serialize for ExpressionNodesOutput<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let mut sequence = serializer.serialize_seq(Some(self.0.nodes.len()))?;
-        for (index, (node, value_type)) in self.0.nodes.iter().zip(&self.0.value_types).enumerate()
+        let count = self.arena.nodes.len() - self.projection.skip_nodes.len();
+        let mut sequence = serializer.serialize_seq(Some(count))?;
+        for (index, (node, value_type)) in self
+            .arena
+            .nodes
+            .iter()
+            .zip(&self.arena.value_types)
+            .enumerate()
         {
+            let raw = index as u32;
+            if self.projection.skip_nodes.contains(&raw) {
+                continue;
+            }
+            if let Some(owner) = self.projection.replace.get(&raw) {
+                sequence.serialize_element(&OwnerRecordOutput(owner))?;
+                continue;
+            }
             sequence.serialize_element(&ExpressionNodeOutput {
                 index,
                 node,
@@ -66,6 +181,55 @@ impl Serialize for ExpressionNodesOutput<'_> {
             })?;
         }
         sequence.end()
+    }
+}
+
+struct OwnerRecordOutput<'storage>(&'storage OwnerNodeProjection);
+
+impl Serialize for OwnerRecordOutput<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct_variant(
+            "ExprNode",
+            RUNTIME_QUOTIENT_OWNER_VARIANT,
+            "runtime_quotient_owner",
+            4,
+        )?;
+        state.serialize_field("kind", &QuotientOwnerKindOutput(&self.0.kind))?;
+        state.serialize_field("builtin", &self.0.builtin)?;
+        state.serialize_field("lhs", &self.0.lhs)?;
+        state.serialize_field("rhs", &self.0.rhs)?;
+        state.end()
+    }
+}
+
+struct QuotientOwnerKindOutput<'storage>(&'storage OwnerNodeKind);
+
+impl Serialize for QuotientOwnerKindOutput<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.0 {
+            OwnerNodeKind::Model { activation } => {
+                let mut state =
+                    serializer.serialize_struct_variant("QuotientOwnerKindWire", 0, "model", 1)?;
+                state.serialize_field("activation", activation)?;
+                state.end()
+            }
+            OwnerNodeKind::Function { function } => {
+                let mut state = serializer.serialize_struct_variant(
+                    "QuotientOwnerKindWire",
+                    1,
+                    "function",
+                    1,
+                )?;
+                state.serialize_field("function", function)?;
+                state.end()
+            }
+        }
     }
 }
 
@@ -82,6 +246,7 @@ const RECORD_VARIANT: u32 = 6;
 const CALL_VARIANT: u32 = 13;
 const FUNCTION_FOLD_PARAMETER_VARIANT: u32 = 16;
 const FUNCTION_FOLD_OUTPUT_VARIANT: u32 = 17;
+const RUNTIME_QUOTIENT_OWNER_VARIANT: u32 = 19;
 
 /// One arena node projected onto the operation that built it.
 ///
@@ -249,6 +414,32 @@ pub(super) enum ExprNodeWire {
         source: u32,
         source_clock: u32,
         target_clock: u32,
+    },
+    /// One owner-marked dynamic quotient operation.
+    ///
+    /// The record carries only semantic inputs; every owner-produced
+    /// identity — the model kind's six generated indicator nodes, relation,
+    /// activation definition, and root — is absent from the wire and
+    /// regenerated by the staged replay. A model record advances the source
+    /// expression ordinal by seven; a function record by one.
+    RuntimeQuotientOwner {
+        kind: QuotientOwnerKindWire,
+        builtin: PureBuiltin,
+        lhs: u32,
+        rhs: u32,
+    },
+}
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum QuotientOwnerKindWire {
+    /// `activation` is the owner's pre-reserved condition ordinal — an
+    /// input-side reservation identity, not an operation output.
+    Model {
+        activation: u32,
+    },
+    Function {
+        function: u32,
     },
 }
 

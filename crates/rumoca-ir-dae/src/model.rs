@@ -134,7 +134,15 @@ pub(crate) use construction_checks::{
 /// ordered algorithm activation across its mixed discrete Real and discrete
 /// value projections, so wire replay cannot split one source execution into
 /// independently executable output programs.
-pub const DAE_SCHEMA_VERSION: u16 = 31;
+///
+/// 32 gives every dynamic quotient one construction-recorded runtime owner.
+/// A model owner's generated indicator batch, relation, activation
+/// definition, and root are absent from the wire: an owner-marked quotient
+/// operation and three positional stream markers carry only semantic inputs,
+/// and replay regenerates every produced identity through the staged token,
+/// verifying source-ordinal density with the exact owner widths (expression
+/// nodes 7, packed operands 3; function owners 1 and 2).
+pub const DAE_SCHEMA_VERSION: u16 = 32;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -148,6 +156,7 @@ pub(crate) use function_reads::{
     FunctionReadFact, FunctionReadMergeError, FunctionReadSet, FunctionReadSets,
 };
 pub use function_scopes::{FunctionScopeRelation, FunctionScopeView};
+pub use runtime_quotients::QuotientReplayToken;
 pub use value_types::ValueTypes;
 use variable_types::VariableTypeCapability;
 
@@ -157,8 +166,9 @@ pub use view::{
     FunctionConditionalView, FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView,
     FunctionParameterView, FunctionStatementView, FunctionStatements, FunctionValueView,
     FunctionView, InitializationOwnerView, RangeBoundView, RangeView, RecordFieldLayout,
-    ResidualEquationView, StringConversionFormatView, StructuredFamilyView, SubscriptView,
-    SubscriptsView, ValueTypeOperands, VariableIdentity, VariableView,
+    ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
+    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
+    ValueTypeOperands, VariableIdentity, VariableView,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -482,6 +492,9 @@ pub(crate) struct Storage {
     pub(crate) conditions: Vec<ConditionEntry>,
     pub(crate) condition_owner_clocks: Vec<Option<u32>>,
     pub(crate) roots: Vec<RootEntry>,
+    pub(crate) runtime_quotient_owners: Vec<runtime_quotients::RuntimeQuotientOwnerEntry>,
+    pub(crate) runtime_quotient_owner_by_expression: rustc_hash::FxHashMap<u32, u32>,
+    pub(crate) pending_quotient_replays: Vec<DaeProvenance>,
     pub(crate) structured_roots: Vec<StructuredRootEntry>,
     pub(crate) time_events: Vec<TimeEventEntry>,
     pub(crate) event_actions: Vec<EventActionEntry>,
@@ -531,6 +544,7 @@ struct FrozenStorage {
     relations: Box<[RelationEntry]>,
     conditions: Box<[ConditionEntry]>,
     roots: Box<[RootEntry]>,
+    runtime_quotient_owners: Box<[runtime_quotients::RuntimeQuotientOwnerEntry]>,
     structured_roots: Box<[StructuredRootEntry]>,
     time_events: Box<[TimeEventEntry]>,
     event_actions: Box<[EventActionEntry]>,

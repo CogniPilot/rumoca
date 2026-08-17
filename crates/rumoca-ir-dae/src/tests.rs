@@ -9,6 +9,7 @@ mod function_wire;
 mod model_event_transactions;
 mod provenance;
 mod range_wire;
+mod runtime_owner_replay;
 mod runtime_owners;
 mod string_conversion;
 mod temporal_wire;

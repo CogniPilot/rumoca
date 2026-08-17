@@ -100,6 +100,12 @@ pub enum DaeConstructionError {
     MissingFunctionCallCertificate { function: VarName, span: Span },
     #[error("function result projection does not match its issued call owner")]
     InvalidCallProjectionOwner { span: Span },
+    #[error("dynamic quotient expression {expression} already has a runtime owner")]
+    DuplicateRuntimeQuotientOwner { expression: u32, span: Span },
+    #[error("runtime quotient replay stage `{stage}` violates the owner protocol")]
+    InvalidQuotientReplayStage { stage: &'static str, span: Span },
+    #[error("a begun runtime quotient replay was never completed")]
+    UnconsumedQuotientReplay { span: Span },
     #[error("expected a scalar expression")]
     ExpectedScalar { span: Span },
     #[error("expected a numeric expression, found {found:?}")]
@@ -329,6 +335,9 @@ impl DaeConstructionError {
             | Self::ShapeMismatch { span }
             | Self::MissingFunctionCallCertificate { span, .. }
             | Self::InvalidCallProjectionOwner { span }
+            | Self::DuplicateRuntimeQuotientOwner { span, .. }
+            | Self::InvalidQuotientReplayStage { span, .. }
+            | Self::UnconsumedQuotientReplay { span }
             | Self::ExpectedScalar { span }
             | Self::ExpectedNumeric { span, .. }
             | Self::ExpectedPrimitiveRelation { span }

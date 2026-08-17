@@ -1,3 +1,6 @@
+mod quotient_owners;
+pub use quotient_owners::{RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView};
+
 use super::*;
 
 #[derive(Clone, Copy)]
