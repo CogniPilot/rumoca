@@ -8,8 +8,7 @@ mod runtime_quotients;
 
 use rumoca_core::{SourceMap, Span, TypeId, VarName};
 
-use super::reconstruction::construction_failure;
-use super::*;
+use super::{reconstruction::construction_failure, *};
 use functions::{FixtureFunctionConfig, fixture_function_declarations, insert_fixture_functions};
 use runtime_quotients as rq;
 
