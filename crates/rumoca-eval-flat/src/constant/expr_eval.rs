@@ -246,7 +246,7 @@ fn eval_fn_call(
     ctx: &EvalContext,
     span: Span,
 ) -> Result<Value, EvalError> {
-    if is_builtin(name) && !ctx.user_shadows_msl_intrinsic(name) {
+    if is_builtin(name) {
         let arg_values: Vec<Value> = args
             .iter()
             .map(|a| eval_expr_with_span(a, ctx, span))
@@ -269,18 +269,8 @@ fn eval_user_function(
     ctx: &EvalContext,
     span: Span,
 ) -> Result<Value, EvalError> {
-    if !func.pure {
-        return Err(EvalError::not_constant(
-            format!("impure function: {}", func.name),
-            span,
-        ));
-    }
-    if func.external.is_some() {
-        return Err(EvalError::not_constant(
-            format!("external function: {}", func.name),
-            span,
-        ));
-    }
+    // Impure/external refusal lives in eval_function_with_call_args, the one
+    // entrance every call path shares.
     let mut call_args = Vec::with_capacity(args.len());
     for arg in args {
         if let Some((name, value)) = named_function_call_arg(arg) {

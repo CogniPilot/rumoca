@@ -52,11 +52,6 @@ pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, Eva
         // String functions
         "String" => eval_string_convert(args, span),
 
-        // Array comparison functions (MLS library functions used for structural parameters)
-        "isEqual" | "Modelica.Math.Vectors.isEqual" | "Modelica.Math.Matrices.isEqual" => {
-            eval_is_equal(args, span)
-        }
-
         _ => Err(EvalError::unknown_function(name, span)),
     }
 }
@@ -76,7 +71,7 @@ pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, Eva
 /// (event-triggering `floor`/`ceil`/`integer`) are vectorized here, because
 /// those are exactly the builtins whose formal parameter is a scalar — an array
 /// actual can only be a foreach argument. `size`, `ndims`, `sum`, `product`,
-/// `fill`, `cat`, `linspace`, `isEqual` and the reduction forms of `min`/`max`
+/// `fill`, `cat`, `linspace` and the reduction forms of `min`/`max`
 /// declare array formals, so an array actual there is the ordinary call and
 /// vectorizing it would change what the model means.
 fn eval_vectorized_call(
@@ -143,32 +138,6 @@ fn eval_scalar_math_builtin(
     })())
 }
 
-/// Bare-name MSL library functions emulated as builtins for
-/// structural-parameter evaluation.
-///
-/// Unlike MLS builtins these names are legal user function names, so call
-/// dispatch must let a user definition in scope win over the emulation. The
-/// qualified `Modelica.Math.*` spellings cannot collide and stay
-/// unconditional.
-pub fn is_shadowable_msl_intrinsic(name: &str) -> bool {
-    name == "isEqual"
-}
-
-/// The qualified MSL functions a shadowable bare spelling emulates.
-///
-/// A bare-name catalog entry stands for the intrinsic only when its recorded
-/// alias provenance is one of these spellings; the spellings themselves are
-/// not user-definable names and stay dispatched unconditionally.
-pub fn emulated_msl_spellings(name: &str) -> &'static [&'static str] {
-    match name {
-        "isEqual" => &[
-            "Modelica.Math.Vectors.isEqual",
-            "Modelica.Math.Matrices.isEqual",
-        ],
-        _ => &[],
-    }
-}
-
 /// Check if a function name is a known built-in.
 pub fn is_builtin(name: &str) -> bool {
     matches!(
@@ -207,9 +176,6 @@ pub fn is_builtin(name: &str) -> bool {
             | "integer"
             | "div"
             | "String"
-            | "isEqual"
-            | "Modelica.Math.Vectors.isEqual"
-            | "Modelica.Math.Matrices.isEqual"
     )
 }
 
@@ -255,16 +221,7 @@ fn eval_abs(args: &[Value], span: Span) -> Result<Value, EvalError> {
 fn eval_sign(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 1, span)?;
     match &args[0] {
-        Value::Real(x) => {
-            let s = if *x > 0.0 {
-                1.0
-            } else if *x < 0.0 {
-                -1.0
-            } else {
-                0.0
-            };
-            Ok(Value::Real(s))
-        }
+        Value::Real(x) => Ok(Value::Real(rumoca_core::modelica_sign(*x))),
         Value::Integer(x) => {
             let s = if *x > 0 {
                 1
@@ -771,68 +728,6 @@ fn eval_string_convert(args: &[Value], span: Span) -> Result<Value, EvalError> {
     };
     Ok(Value::String(value))
 }
-
-/// isEqual: Compare two arrays/matrices for numerical equality.
-///
-/// MLS library function: Modelica.Math.{Vectors,Matrices}.isEqual
-/// Signature: isEqual(v1, v2, eps=0) -> Boolean
-///
-/// Returns true if:
-/// - Both arrays have the same shape (dimensions)
-/// - All corresponding elements differ by at most `eps`
-fn eval_is_equal(args: &[Value], span: Span) -> Result<Value, EvalError> {
-    if args.len() < 2 || args.len() > 3 {
-        return Err(EvalError::WrongArgCount {
-            expected: 2,
-            actual: args.len(),
-            span,
-        });
-    }
-
-    let eps = if args.len() == 3 {
-        to_real(&args[2], span)?
-    } else {
-        0.0
-    };
-
-    Ok(Value::Bool(values_equal(&args[0], &args[1], eps)))
-}
-
-/// Recursively compare two values for equality within tolerance.
-fn values_equal(v1: &Value, v2: &Value, eps: f64) -> bool {
-    match (v1, v2) {
-        // Array comparison: must have same length and all elements equal
-        (Value::Array(arr1), Value::Array(arr2)) => {
-            if arr1.len() != arr2.len() {
-                return false;
-            }
-            arr1.iter()
-                .zip(arr2.iter())
-                .all(|(a, b)| values_equal(a, b, eps))
-        }
-        // Real comparison with tolerance
-        (Value::Real(r1), Value::Real(r2)) => (r1 - r2).abs() <= eps,
-        // Integer comparison (exact, or convert to real if eps > 0)
-        (Value::Integer(i1), Value::Integer(i2)) => {
-            if eps == 0.0 {
-                i1 == i2
-            } else {
-                ((*i1 as f64) - (*i2 as f64)).abs() <= eps
-            }
-        }
-        // Mixed Integer/Real comparison
-        (Value::Integer(i), Value::Real(r)) | (Value::Real(r), Value::Integer(i)) => {
-            ((*i as f64) - r).abs() <= eps
-        }
-        // Boolean comparison (exact)
-        (Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
-        // String comparison (exact)
-        (Value::String(s1), Value::String(s2)) => s1 == s2,
-        // Different types are not equal
-        _ => false,
-    }
-}
-
 // Helper: check argument count
 fn check_arg_count(args: &[Value], expected: usize, span: Span) -> Result<(), EvalError> {
     if args.len() != expected {
@@ -1115,71 +1010,19 @@ mod tests {
     }
 
     #[test]
-    fn test_is_equal_vectors() {
-        // Equal vectors
-        let v1 = Value::Array(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)]);
-        let v2 = Value::Array(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)]);
-        let result = eval_builtin("isEqual", &[v1, v2], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(true));
-
-        // Different vectors
-        let v1 = Value::Array(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)]);
-        let v2 = Value::Array(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
-        let result = eval_builtin("isEqual", &[v1, v2], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(false));
-
-        // Different lengths
-        let v1 = Value::Array(vec![Value::Real(0.0), Value::Real(1.0)]);
-        let v2 = Value::Array(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)]);
-        let result = eval_builtin("isEqual", &[v1, v2], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(false));
-    }
-
-    #[test]
-    fn test_is_equal_with_tolerance() {
-        let v1 = Value::Array(vec![Value::Real(1.0), Value::Real(2.0)]);
-        let v2 = Value::Array(vec![Value::Real(1.001), Value::Real(2.001)]);
-
-        // Without tolerance: not equal
-        let result = eval_builtin("isEqual", &[v1.clone(), v2.clone()], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(false));
-
-        // With tolerance: equal
-        let result = eval_builtin("isEqual", &[v1, v2, Value::Real(0.01)], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(true));
-    }
-
-    #[test]
-    fn test_is_equal_matrices() {
-        // 2x2 matrix comparison (nested arrays)
-        let m1 = Value::Array(vec![
-            Value::Array(vec![Value::Real(1.0), Value::Real(2.0)]),
-            Value::Array(vec![Value::Real(3.0), Value::Real(4.0)]),
-        ]);
-        let m2 = Value::Array(vec![
-            Value::Array(vec![Value::Real(1.0), Value::Real(2.0)]),
-            Value::Array(vec![Value::Real(3.0), Value::Real(4.0)]),
-        ]);
-        let result = eval_builtin("isEqual", &[m1, m2], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(true));
-    }
-
-    #[test]
-    fn test_is_equal_qualified_name() {
-        // Test with qualified function names (as used in MSL)
-        let v1 = Value::Array(vec![Value::Integer(0), Value::Integer(1)]);
-        let v2 = Value::Array(vec![Value::Integer(0), Value::Integer(1)]);
-
-        let result = eval_builtin(
+    fn is_equal_spellings_are_not_builtins() {
+        // isEqual is an MSL library function, not an MLS predefined builtin
+        // (§3.7). Dispatch must reach it only through a registered function
+        // body; an unregistered call is an unknown function, never an
+        // emulation keyed on the name's shape.
+        for spelling in [
+            "isEqual",
             "Modelica.Math.Vectors.isEqual",
-            &[v1.clone(), v2.clone()],
-            Span::DUMMY,
-        )
-        .unwrap();
-        assert_eq!(result.as_bool(), Some(true));
-
-        let result =
-            eval_builtin("Modelica.Math.Matrices.isEqual", &[v1, v2], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(true));
+            "Modelica.Math.Matrices.isEqual",
+        ] {
+            assert!(!is_builtin(spelling));
+            let v = Value::Array(vec![Value::Real(1.0)]);
+            assert!(eval_builtin(spelling, &[v.clone(), v], Span::DUMMY).is_err());
+        }
     }
 }

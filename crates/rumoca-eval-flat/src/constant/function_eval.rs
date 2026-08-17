@@ -179,6 +179,41 @@ impl rumoca_core::ExpressionVisitor for ReferenceCollector {
     }
 }
 
+/// The structured root of one variable read: its resolved declaration
+/// identity when the reference carries one, and its leading declared segment.
+struct ReadRoot {
+    def_id: Option<rumoca_core::DefId>,
+    segment: String,
+}
+
+/// Structured roots of every read in `param`'s default and extents.
+fn default_read_roots(param: &rumoca_core::FunctionParam) -> Vec<ReadRoot> {
+    #[derive(Default)]
+    struct ReadRootCollector {
+        roots: Vec<ReadRoot>,
+    }
+    impl rumoca_core::ExpressionVisitor for ReadRootCollector {
+        fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
+            self.roots.push(ReadRoot {
+                def_id: name.root_def_id(),
+                segment: name
+                    .segments()
+                    .first()
+                    .map_or_else(|| name.as_str().to_string(), ToString::to_string),
+            });
+            self.walk_var_ref(name, subscripts);
+        }
+    }
+    let mut reads = ReadRootCollector::default();
+    if let Some(default) = &param.default {
+        reads.visit_expression(default);
+    }
+    for subscript in &param.shape_expr {
+        reads.visit_subscript(subscript);
+    }
+    reads.roots
+}
+
 /// Function execution environment with mutable variable bindings.
 struct FunctionEnv {
     /// Input parameters (bound from arguments).
@@ -221,8 +256,96 @@ impl FunctionEnv {
             outputs: IndexMap::new(),
             locals: IndexMap::new(),
         };
+        env.bind_omitted_input_defaults(func, eval)?;
         env.declare_all(func, eval)?;
         Ok(env)
+    }
+
+    /// Bind every omitted input formal to its declared default (MLS §12.4.1).
+    ///
+    /// A default is an expression over the function's other formals, and MLS
+    /// §12.4.4's ordering rule applies: the defaults run in an order where no
+    /// formal is read before its binding, an error being reported only when
+    /// no such order exists.
+    ///
+    /// The order is established by dependency proof, never by trying an
+    /// evaluation: every name a function declares shadows the outer scope
+    /// for the whole body (MLS §12.2), including while its own binding is
+    /// still pending, so evaluating a default whose reads are unproven could
+    /// fall through a pending formal to a same-named context value and bind
+    /// a value the program never selected. A default is evaluated only once
+    /// every declared-name root it reads is bound in this environment;
+    /// reads of undeclared names legitimately consult the enclosing
+    /// context. When no pending default is provably ready, the cycle is
+    /// reported. An evaluation error fails the call closed — a type zero is
+    /// never substituted for a declared default.
+    fn bind_omitted_input_defaults(
+        &mut self,
+        func: &Function,
+        eval: &EvalState<'_>,
+    ) -> Result<(), EvalError> {
+        let mut pending: Vec<&rumoca_core::FunctionParam> = func
+            .inputs
+            .iter()
+            .filter(|param| !self.inputs.contains_key(&param.name))
+            .collect();
+        while !pending.is_empty() {
+            let ready = pending
+                .iter()
+                .position(|param| self.default_dependencies_bound(param, func));
+            let Some(ready) = ready else {
+                return Err(EvalError::CircularDependency {
+                    path: pending[0].name.clone(),
+                    span: eval.span,
+                });
+            };
+            let param = pending.remove(ready);
+            let default = param
+                .default
+                .as_ref()
+                .expect("bind_inputs proved every unbound formal has a default");
+            let value = eval_expr_in_function(default, self, eval)?;
+            self.inputs.insert(param.name.clone(), value);
+        }
+        Ok(())
+    }
+
+    /// Whether every declared entity `param`'s default reads is already bound
+    /// in this environment.
+    ///
+    /// The relation is built from each read's structured root: its resolved
+    /// declaration `DefId` matched against `FunctionParam.def_id` where both
+    /// carry identity, and its leading `Reference::segments()` entry only for
+    /// identity-absent synthetic fixtures. A root that selects no declared
+    /// entity is an enclosing-scope name and may consult the context — but in
+    /// a function whose formals carry identity, an identity-absent root
+    /// proves nothing and fails closed as unready.
+    fn default_dependencies_bound(
+        &self,
+        param: &rumoca_core::FunctionParam,
+        func: &Function,
+    ) -> bool {
+        let declared = || {
+            func.inputs
+                .iter()
+                .chain(func.outputs.iter())
+                .chain(func.locals.iter())
+        };
+        let function_carries_identity = declared().any(|entry| entry.def_id.is_some());
+        default_read_roots(param).iter().all(|root| {
+            let selected = declared().find(|entry| match (root.def_id, entry.def_id) {
+                (Some(read), Some(declared)) => read == declared,
+                // Name selection exists solely for wholly identity-absent
+                // synthetic fixtures; a mixed pair proves nothing and never
+                // selects.
+                (None, None) => !function_carries_identity && entry.name == root.segment,
+                _ => false,
+            });
+            match selected {
+                Some(entry) => self.inputs.contains_key(&entry.name),
+                None => root.def_id.is_some() || !function_carries_identity,
+            }
+        })
     }
 
     /// Bind input arguments to parameters.
@@ -256,17 +379,11 @@ impl FunctionEnv {
         }
 
         for param in &func.inputs {
-            if inputs.contains_key(&param.name) {
+            if inputs.contains_key(&param.name) || param.default.is_some() {
+                // An omitted formal with a declared default is bound by
+                // bind_omitted_input_defaults once the explicit actuals are
+                // in place.
                 continue;
-            }
-            if param.default.is_some() {
-                return Err(EvalError::function_error(
-                    format!(
-                        "missing argument {} for function {} (defaults not yet supported)",
-                        param.name, func.name
-                    ),
-                    span,
-                ));
             }
             return Err(EvalError::function_error(
                 format!(
@@ -550,6 +667,21 @@ pub fn eval_function_with_call_args(
                 "recursion depth exceeded ({}) in function {}",
                 limits.recursion_depth, func.name
             ),
+            span,
+        ));
+    }
+    // Refused before any environment or result construction: a body the
+    // evaluator cannot execute must never yield the zero-valued outputs an
+    // empty environment would produce.
+    if !func.pure {
+        return Err(EvalError::not_constant(
+            format!("impure function: {}", func.name),
+            span,
+        ));
+    }
+    if func.external.is_some() {
+        return Err(EvalError::not_constant(
+            format!("external function: {}", func.name),
             span,
         ));
     }
@@ -1330,22 +1462,12 @@ fn eval_comprehension_recursive(
 
 /// Call a function (builtin or user-defined).
 fn call_function(name: &str, args: Vec<Value>, eval: &EvalState<'_>) -> Result<Value, EvalError> {
-    if super::is_builtin(name) && !eval.ctx.user_shadows_msl_intrinsic(name) {
+    if super::is_builtin(name) {
         return super::eval_builtin(name, &args, eval.span);
     }
     if let Some(func) = eval.ctx.functions.get(name) {
-        if !func.pure {
-            return Err(EvalError::not_constant(
-                format!("impure function: {}", name),
-                eval.span,
-            ));
-        }
-        if func.external.is_some() {
-            return Err(EvalError::not_constant(
-                format!("external function: {}", name),
-                eval.span,
-            ));
-        }
+        // Impure/external refusal lives in eval_function_with_call_args, the
+        // one entrance every call path shares.
         return eval_function(func, args, eval.ctx, eval.limits, eval.depth + 1, eval.span);
     }
     Err(EvalError::not_constant(

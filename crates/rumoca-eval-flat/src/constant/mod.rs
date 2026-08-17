@@ -23,7 +23,7 @@ mod range_eval;
 #[cfg(test)]
 mod tests;
 
-pub use builtins::{eval_builtin, emulated_msl_spellings, is_builtin, is_shadowable_msl_intrinsic};
+pub use builtins::{eval_builtin, is_builtin};
 pub use context::EvalContext;
 pub use errors::{DeferredParameterSource, EvalError, RuntimeDependentReason};
 pub use expr_eval::{

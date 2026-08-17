@@ -62,6 +62,38 @@ fn exact_reference(name: &str, def_id: rumoca_core::DefId) -> rumoca_core::Refer
     )
 }
 
+/// A two-part qualified reference `root.member` with structured identity on
+/// both parts and the rendered cache `root.member`.
+fn qualified_reference(
+    root: &str,
+    root_id: rumoca_core::DefId,
+    member: &str,
+    member_id: rumoca_core::DefId,
+) -> rumoca_core::Reference {
+    rumoca_core::Reference::with_component_reference(
+        format!("{root}.{member}"),
+        rumoca_core::ComponentReference::construct(
+            false,
+            test_span(),
+            vec![
+                rumoca_core::ComponentRefPart {
+                    ident: root.to_string(),
+                    span: test_span(),
+                    subs: Vec::new(),
+                    def_id: root_id,
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: member.to_string(),
+                    span: test_span(),
+                    subs: Vec::new(),
+                    def_id: member_id,
+                },
+            ],
+        )
+        .expect("fixture reference has exact identity"),
+    )
+}
+
 fn make_simple_function() -> Function {
     // function f(input Real x) output Real y; algorithm y := x * 2; end f;
     let mut func = Function::new("test.f", Span::DUMMY);
@@ -989,11 +1021,12 @@ fn test_while_loop() {
 }
 
 #[test]
-fn user_defined_is_equal_shadows_the_msl_intrinsic() {
+fn user_defined_is_equal_is_interpreted_and_absence_is_unknown() {
     // function isEqual(input Real a, input Real b) output Real y;
     // algorithm y := a * 2; end isEqual;
-    // Deliberately different semantics (and result type) from the emulated
-    // MSL isEqual: dispatch must reach this body, not the intrinsic.
+    // isEqual is a legal user function name and no builtin: dispatch must
+    // reach the registered body, and an unregistered call is an unknown
+    // function.
     let mut func = Function::new("isEqual", Span::DUMMY);
     func.add_input(real_param("a"));
     func.add_input(real_param("b"));
@@ -1031,7 +1064,9 @@ fn user_defined_is_equal_shadows_the_msl_intrinsic() {
         call_function("isEqual", vec![Value::Real(3.0), Value::Real(3.0)], &state).unwrap();
     assert!((result.to_real().unwrap() - 6.0).abs() < 1e-12);
 
-    // Without a user definition in scope the intrinsic still answers.
+    // Without a registered function, every spelling is an unknown function:
+    // a missing catalog entry proves no selected identity, and the shape of
+    // the name must never conjure a body.
     let empty = EvalContext::new();
     let state = EvalState {
         ctx: &empty,
@@ -1039,28 +1074,42 @@ fn user_defined_is_equal_shadows_the_msl_intrinsic() {
         depth: 0,
         span: Span::DUMMY,
     };
-    let result =
-        call_function("isEqual", vec![Value::Real(3.0), Value::Real(3.0)], &state).unwrap();
-    assert_eq!(result, Value::Bool(true));
+    for spelling in [
+        "isEqual",
+        "Modelica.Math.Vectors.isEqual",
+        "Modelica.Math.Matrices.isEqual",
+    ] {
+        assert!(
+            call_function(spelling, vec![Value::Real(3.0), Value::Real(3.0)], &state).is_err(),
+            "unregistered {spelling} must be an unknown function"
+        );
+    }
 }
 
 #[test]
-fn msl_short_name_alias_does_not_defeat_the_is_equal_intrinsic() {
-    // add_function registers Modelica.Math.Vectors.isEqual under the bare
-    // short name too. That alias, identity intact, is exactly what the
-    // intrinsic emulates, so dispatch must still take the intrinsic, not
-    // interpret the MSL body.
+fn registered_external_body_fails_closed() {
+    // The registered function is the only body a call may take. One the
+    // interpreter cannot execute (here: an external one) is an error —
+    // there is no other implementation to substitute.
     let mut func = Function::new("Modelica.Math.Vectors.isEqual", Span::DUMMY);
     func.def_id = Some(rumoca_core::DefId::new(11));
     func.add_input(real_param("v1"));
     func.add_input(real_param("v2"));
     func.add_output(real_param("result"));
     func.pure = true;
+    func.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: None,
+        output_name: None,
+        args: Vec::new(),
+        annotations: Vec::new(),
+    });
 
     let mut ctx = EvalContext::new();
     ctx.add_function(func);
     assert!(ctx.functions.contains_key("isEqual"));
-    assert!(!ctx.user_shadows_msl_intrinsic("isEqual"));
+    assert!(ctx.functions.contains_key("isEqual"));
+    assert!(ctx.functions.contains_key("Modelica.Math.Vectors.isEqual"));
 
     let limits = EvalLimits::default();
     let state = EvalState {
@@ -1069,9 +1118,42 @@ fn msl_short_name_alias_does_not_defeat_the_is_equal_intrinsic() {
         depth: 0,
         span: Span::DUMMY,
     };
-    let result =
-        call_function("isEqual", vec![Value::Real(3.0), Value::Real(3.0)], &state).unwrap();
-    assert_eq!(result, Value::Bool(true));
+    for spelling in ["isEqual", "Modelica.Math.Vectors.isEqual"] {
+        assert!(
+            call_function(spelling, vec![Value::Real(3.0), Value::Real(3.0)], &state).is_err(),
+            "{spelling} must fail closed, not fall back to the emulation"
+        );
+    }
+}
+
+#[test]
+fn user_owned_qualified_msl_spelling_wins_by_body_not_by_name() {
+    // The exact adversary name-based dispatch fails: a user package that
+    // itself owns Modelica.Math.Vectors.isEqual. Nothing about the spelling
+    // may decide the callable; the registered body answers under both the
+    // qualified and the bare spelling.
+    let mut func = doubling_bare_is_equal();
+    func.name = rumoca_core::VarName::new("Modelica.Math.Vectors.isEqual");
+    func.def_id = Some(rumoca_core::DefId::new(33));
+
+    let mut ctx = EvalContext::new();
+    ctx.add_function(func);
+
+    let limits = EvalLimits::default();
+    let state = EvalState {
+        ctx: &ctx,
+        limits: &limits,
+        depth: 0,
+        span: Span::DUMMY,
+    };
+    for spelling in ["isEqual", "Modelica.Math.Vectors.isEqual"] {
+        let result =
+            call_function(spelling, vec![Value::Real(3.0), Value::Real(3.0)], &state).unwrap();
+        assert!(
+            (result.to_real().unwrap() - 6.0).abs() < 1e-12,
+            "{spelling} must interpret the registered body"
+        );
+    }
 }
 
 fn doubling_bare_is_equal() -> Function {
@@ -1103,11 +1185,10 @@ fn doubling_bare_is_equal() -> Function {
 
 #[test]
 fn user_bare_shadow_wins_even_with_qualified_msl_registered() {
-    // The adversarial shape: the catalog holds the qualified MSL function AND
-    // a user definition owns the bare name. The bare call selected the user
-    // function; a key-shape scan would see the qualified entry and run the
-    // emulation instead. Registration order A: MSL first (its alias is then
-    // displaced by the direct user registration).
+    // The catalog holds the qualified MSL function AND a user definition
+    // owns the bare name. The bare call selected the user function, and
+    // registration order must not change that. Order A: MSL first (its
+    // short-name alias is then displaced by the direct user registration).
     let mut msl = Function::new("Modelica.Math.Vectors.isEqual", Span::DUMMY);
     msl.def_id = Some(rumoca_core::DefId::new(21));
     msl.add_input(real_param("v1"));
@@ -1118,7 +1199,7 @@ fn user_bare_shadow_wins_even_with_qualified_msl_registered() {
     let mut ctx = EvalContext::new();
     ctx.add_function(msl.clone());
     ctx.add_function(doubling_bare_is_equal());
-    assert!(ctx.user_shadows_msl_intrinsic("isEqual"));
+    assert!(ctx.functions.contains_key("isEqual"));
 
     let limits = EvalLimits::default();
     let state = EvalState {
@@ -1135,7 +1216,7 @@ fn user_bare_shadow_wins_even_with_qualified_msl_registered() {
     let mut ctx = EvalContext::new();
     ctx.add_function(doubling_bare_is_equal());
     ctx.add_function(msl);
-    assert!(ctx.user_shadows_msl_intrinsic("isEqual"));
+    assert!(ctx.functions.contains_key("isEqual"));
     let state = EvalState {
         ctx: &ctx,
         limits: &limits,
@@ -1148,17 +1229,15 @@ fn user_bare_shadow_wins_even_with_qualified_msl_registered() {
 }
 
 #[test]
-fn alias_of_unrelated_qualified_function_is_not_the_intrinsic() {
-    // A user library function My.Lib.isEqual also registers a bare alias.
-    // Its provenance is not an emulated MSL spelling, so the alias body (not
-    // the emulation) must answer the bare call.
+fn short_alias_of_user_library_function_answers_bare_calls() {
+    // A user library function My.Lib.isEqual also registers a bare alias;
+    // the alias body answers the bare call.
     let mut func = doubling_bare_is_equal();
     func.name = rumoca_core::VarName::new("My.Lib.isEqual");
 
     let mut ctx = EvalContext::new();
     ctx.add_function(func);
     assert!(ctx.functions.contains_key("isEqual"));
-    assert!(ctx.user_shadows_msl_intrinsic("isEqual"));
 
     let limits = EvalLimits::default();
     let state = EvalState {
@@ -1172,18 +1251,374 @@ fn alias_of_unrelated_qualified_function_is_not_the_intrinsic() {
     assert!((result.to_real().unwrap() - 6.0).abs() < 1e-12);
 }
 
-#[test]
-fn alias_without_definition_identity_fails_closed_to_the_registered_body() {
-    // An emulated spelling whose registration carried no DefId cannot prove
-    // the identity chain, so dispatch must fall back to the registered
-    // function body rather than assume the emulation matches.
+/// The actual MSL 4.1.0 `Modelica.Math.Vectors.isEqual` body, verbatim in
+/// structure: protected `n = size(v1,1)`, `i = 1`, an if over the length
+/// match, a bounded while with an early-exit rewrite of `i`, indexed reads,
+/// and `abs`. This is the body the general evaluator must interpret now that
+/// no emulation exists for the spelling.
+fn boolean_param(name: &str) -> rumoca_core::FunctionParam {
+    function_param(name, "Boolean", rumoca_core::TypeId::new(3))
+}
+
+fn unknown_vector_param(name: &str) -> rumoca_core::FunctionParam {
+    let real = rumoca_core::TypeId::new(1);
+    let effective_type = rumoca_core::EffectiveType::new(real, real, vec![0]).expect("vector type");
+    rumoca_core::FunctionParam::new(name, "Real", effective_type, test_span())
+}
+
+fn call(name: &str, args: Vec<Expression>) -> Expression {
+    Expression::FunctionCall {
+        name: rumoca_core::Reference::new(name),
+        args,
+        is_constructor: false,
+        span: Span::DUMMY,
+    }
+}
+
+fn bool_literal(value: bool) -> Expression {
+    Expression::Literal {
+        value: Literal::Boolean(value),
+        span: Span::DUMMY,
+    }
+}
+
+fn binary(op: rumoca_core::OpBinary, lhs: Expression, rhs: Expression) -> Expression {
+    Expression::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: Span::DUMMY,
+    }
+}
+
+fn indexed(name: &str, index: &str) -> Expression {
+    Expression::VarRef {
+        name: rumoca_core::Reference::new(name),
+        subscripts: vec![Subscript::Expr {
+            expr: Box::new(var_ref(index)),
+            span: Span::DUMMY,
+        }],
+        span: Span::DUMMY,
+    }
+}
+
+/// The early-exit element scan of the real `isEqual` body: `while i <= n
+/// loop if abs(v1[i] - v2[i]) > eps then result := false; i := n; end if;
+/// i := i + 1; end while`.
+fn is_equal_element_scan() -> Statement {
+    let early_exit = rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: binary(
+                rumoca_core::OpBinary::Gt,
+                call(
+                    "abs",
+                    vec![binary(
+                        rumoca_core::OpBinary::Sub,
+                        indexed("v1", "i"),
+                        indexed("v2", "i"),
+                    )],
+                ),
+                var_ref("eps"),
+            ),
+            stmts: vec![
+                assign(component_reference("result"), bool_literal(false)),
+                assign(component_reference("i"), var_ref("n")),
+            ],
+        }],
+        else_block: None,
+        span: Span::DUMMY,
+    };
+    let bump = assign(
+        component_reference("i"),
+        binary(rumoca_core::OpBinary::Add, var_ref("i"), integer_literal(1)),
+    );
+    rumoca_core::Statement::While {
+        block: rumoca_core::StatementBlock {
+            cond: binary(rumoca_core::OpBinary::Le, var_ref("i"), var_ref("n")),
+            stmts: vec![early_exit, bump],
+        },
+        span: Span::DUMMY,
+    }
+}
+
+fn real_msl_vectors_is_equal() -> Function {
     let mut func = Function::new("Modelica.Math.Vectors.isEqual", Span::DUMMY);
-    func.add_input(real_param("v1"));
-    func.add_input(real_param("v2"));
-    func.add_output(real_param("result"));
+    func.def_id = Some(rumoca_core::DefId::new(41));
     func.pure = true;
+    func.add_input(unknown_vector_param("v1"));
+    func.add_input(unknown_vector_param("v2"));
+    func.add_input(real_param("eps").with_default(real_literal(0.0)));
+    func.add_output(boolean_param("result"));
+    func.add_local(
+        integer_param("n").with_default(call("size", vec![var_ref("v1"), integer_literal(1)])),
+    );
+    func.add_local(integer_param("i").with_default(integer_literal(1)));
+
+    func.body = vec![
+        assign(component_reference("result"), bool_literal(false)),
+        rumoca_core::Statement::If {
+            cond_blocks: vec![rumoca_core::StatementBlock {
+                cond: binary(
+                    rumoca_core::OpBinary::Eq,
+                    call("size", vec![var_ref("v2"), integer_literal(1)]),
+                    var_ref("n"),
+                ),
+                stmts: vec![
+                    assign(component_reference("result"), bool_literal(true)),
+                    is_equal_element_scan(),
+                ],
+            }],
+            else_block: None,
+            span: Span::DUMMY,
+        },
+    ];
+    func
+}
+
+#[test]
+fn real_msl_is_equal_body_interprets_through_the_general_evaluator() {
+    let mut ctx = EvalContext::new();
+    ctx.add_function(real_msl_vectors_is_equal());
+    let limits = EvalLimits::default();
+    let state = EvalState {
+        ctx: &ctx,
+        limits: &limits,
+        depth: 0,
+        span: Span::DUMMY,
+    };
+
+    let vec_of =
+        |values: &[f64]| Value::Array(values.iter().map(|value| Value::Real(*value)).collect());
+    for spelling in ["isEqual", "Modelica.Math.Vectors.isEqual"] {
+        let equal = call_function(
+            spelling,
+            vec![vec_of(&[1.0, 2.0]), vec_of(&[1.0, 2.0])],
+            &state,
+        )
+        .unwrap();
+        assert_eq!(equal, Value::Bool(true), "{spelling} equal vectors");
+
+        let unequal = call_function(
+            spelling,
+            vec![vec_of(&[1.0, 2.0]), vec_of(&[1.0, 3.0])],
+            &state,
+        )
+        .unwrap();
+        assert_eq!(unequal, Value::Bool(false), "{spelling} unequal vectors");
+
+        let length_mismatch =
+            call_function(spelling, vec![vec_of(&[1.0, 2.0]), vec_of(&[1.0])], &state).unwrap();
+        assert_eq!(
+            length_mismatch,
+            Value::Bool(false),
+            "{spelling} length mismatch"
+        );
+
+        let with_eps = call_function(
+            spelling,
+            vec![
+                vec_of(&[1.0, 2.0]),
+                vec_of(&[1.0005, 2.0]),
+                Value::Real(0.01),
+            ],
+            &state,
+        )
+        .unwrap();
+        assert_eq!(with_eps, Value::Bool(true), "{spelling} tolerant compare");
+    }
+}
+
+#[test]
+fn omitted_input_defaults_follow_declaration_semantics() {
+    // function f(input Integer a, input Integer b = a + 1,
+    //            input Integer c = b * 2) output Integer y;
+    // algorithm y := c; end f;
+    // MLS §12.4.1: omitted inputs take their declared defaults; §12.4.4's
+    // ordering rule lets b's default read a and c's default read b.
+    let mut func = Function::new("test.defaults", Span::DUMMY);
+    func.pure = true;
+    func.add_input(integer_param("a"));
+    func.add_input(integer_param("b").with_default(Expression::Binary {
+        op: rumoca_core::OpBinary::Add,
+        lhs: Box::new(var_ref("a")),
+        rhs: Box::new(integer_literal(1)),
+        span: Span::DUMMY,
+    }));
+    func.add_input(integer_param("c").with_default(Expression::Binary {
+        op: rumoca_core::OpBinary::Mul,
+        lhs: Box::new(var_ref("b")),
+        rhs: Box::new(integer_literal(2)),
+        span: Span::DUMMY,
+    }));
+    func.add_output(integer_param("y"));
+    func.body = vec![assign(component_reference("y"), var_ref("c"))];
+
+    let ctx = EvalContext::new();
+    let limits = EvalLimits::default();
+
+    // Positional omission: f(4) -> b = 5, c = 10.
+    let result = eval_function(
+        &func,
+        vec![Value::Integer(4)],
+        &ctx,
+        &limits,
+        0,
+        Span::DUMMY,
+    )
+    .unwrap();
+    assert_eq!(result.as_integer(), Some(10));
+
+    // Named omission skipping the middle formal: f(a = 4, c = 7) -> 7, and
+    // b's default still binds (readable, unused).
+    let result = eval_function_with_call_args(
+        &func,
+        vec![
+            FunctionCallArg::named("a".to_string(), Value::Integer(4)),
+            FunctionCallArg::named("c".to_string(), Value::Integer(7)),
+        ],
+        &ctx,
+        &limits,
+        0,
+        Span::DUMMY,
+    )
+    .unwrap();
+    assert_eq!(result.as_integer(), Some(7));
+
+    // Explicit b overrides its default: f(4, 10) -> c = 20.
+    let result = eval_function(
+        &func,
+        vec![Value::Integer(4), Value::Integer(10)],
+        &ctx,
+        &limits,
+        0,
+        Span::DUMMY,
+    )
+    .unwrap();
+    assert_eq!(result.as_integer(), Some(20));
+}
+
+#[test]
+fn cyclic_or_missing_input_defaults_fail_closed() {
+    // Cyclic defaults have no §12.4.4 order and must error, never take a
+    // type zero.
+    let mut cyclic = Function::new("test.cyclic", Span::DUMMY);
+    cyclic.pure = true;
+    cyclic.add_input(integer_param("a").with_default(var_ref("b")));
+    cyclic.add_input(integer_param("b").with_default(var_ref("a")));
+    cyclic.add_output(integer_param("y"));
+    cyclic.body = vec![assign(component_reference("y"), var_ref("a"))];
+
+    let ctx = EvalContext::new();
+    let limits = EvalLimits::default();
+    assert!(eval_function(&cyclic, vec![], &ctx, &limits, 0, Span::DUMMY).is_err());
+
+    // A required formal without a default stays an error when omitted.
+    let mut required = Function::new("test.required", Span::DUMMY);
+    required.pure = true;
+    required.add_input(integer_param("a"));
+    required.add_output(integer_param("y"));
+    required.body = vec![assign(component_reference("y"), var_ref("a"))];
+    assert!(eval_function(&required, vec![], &ctx, &limits, 0, Span::DUMMY).is_err());
+}
+
+#[test]
+fn pending_formals_shadow_same_named_context_values() {
+    // ctx carries b = 99. function f(input Integer a = b, input Integer
+    // b = 2): the default of `a` reads the FORMAL b (MLS §12.2 shadowing),
+    // so it must wait for b's binding and take 2 — never capture the outer
+    // 99 through the not-yet-bound formal.
+    let mut func = Function::new("test.shadow", Span::DUMMY);
+    func.pure = true;
+    func.add_input(integer_param("a").with_default(var_ref("b")));
+    func.add_input(integer_param("b").with_default(integer_literal(2)));
+    func.add_output(integer_param("y"));
+    func.body = vec![assign(component_reference("y"), var_ref("a"))];
 
     let mut ctx = EvalContext::new();
-    ctx.add_function(func);
-    assert!(ctx.user_shadows_msl_intrinsic("isEqual"));
+    ctx.add_parameter("b", Value::Integer(99));
+    let result =
+        eval_function(&func, vec![], &ctx, &EvalLimits::default(), 0, Span::DUMMY).unwrap();
+    assert_eq!(result.as_integer(), Some(2));
+}
+
+#[test]
+fn cyclic_defaults_stay_cyclic_despite_same_named_context_values() {
+    // ctx carries a = 1, b = 2, but the formals' defaults a = b, b = a form
+    // a cycle among the FORMALS: no §12.4.4 order exists and the call must
+    // error, never bind the outer values.
+    let mut func = Function::new("test.cyclic_outer", Span::DUMMY);
+    func.pure = true;
+    func.add_input(integer_param("a").with_default(var_ref("b")));
+    func.add_input(integer_param("b").with_default(var_ref("a")));
+    func.add_output(integer_param("y"));
+    func.body = vec![assign(component_reference("y"), var_ref("a"))];
+
+    let mut ctx = EvalContext::new();
+    ctx.add_parameter("a", Value::Integer(1));
+    ctx.add_parameter("b", Value::Integer(2));
+    assert!(matches!(
+        eval_function(&func, vec![], &ctx, &EvalLimits::default(), 0, Span::DUMMY),
+        Err(EvalError::CircularDependency { .. })
+    ));
+}
+
+#[test]
+fn default_dependency_is_identity_not_spelling() {
+    // The formal b carries DefId 62; the default of a reads the QUALIFIED
+    // external declaration `Outer.b`, structured root DefId 63. Identity
+    // decides: the read selects no formal, so it consults the context
+    // immediately and must not wait for (or take) the formal b's default.
+    let mut a = integer_param("a");
+    a.def_id = Some(rumoca_core::DefId::new(61));
+    let mut b = integer_param("b");
+    b.def_id = Some(rumoca_core::DefId::new(62));
+    let outer_b_read = Expression::VarRef {
+        name: qualified_reference(
+            "Outer",
+            rumoca_core::DefId::new(63),
+            "b",
+            rumoca_core::DefId::new(64),
+        ),
+        subscripts: Vec::new(),
+        span: Span::DUMMY,
+    };
+
+    let mut func = Function::new("test.identity", Span::DUMMY);
+    func.pure = true;
+    func.add_input(a.with_default(outer_b_read));
+    func.add_input(b.with_default(integer_literal(2)));
+    func.add_output(integer_param("y"));
+    func.body = vec![assign(component_reference("y"), var_ref("a"))];
+
+    let mut ctx = EvalContext::new();
+    ctx.add_parameter("Outer.b", Value::Integer(99));
+    let result =
+        eval_function(&func, vec![], &ctx, &EvalLimits::default(), 0, Span::DUMMY).unwrap();
+    assert_eq!(result.as_integer(), Some(99));
+}
+
+#[test]
+fn identity_absent_read_in_identity_carrying_function_fails_closed() {
+    // The function's formals carry declaration identity, but the default of
+    // `a` reads a bare name with none. Nothing proves what that read
+    // selects, so the default is never ready and the call errors — it must
+    // not fall back to spelling against the formal or the context.
+    let mut a = integer_param("a");
+    a.def_id = Some(rumoca_core::DefId::new(71));
+    let mut b = integer_param("b");
+    b.def_id = Some(rumoca_core::DefId::new(72));
+
+    let mut func = Function::new("test.mixed_identity", Span::DUMMY);
+    func.pure = true;
+    func.add_input(a.with_default(var_ref("b")));
+    func.add_input(b.with_default(integer_literal(2)));
+    func.add_output(integer_param("y"));
+    func.body = vec![assign(component_reference("y"), var_ref("a"))];
+
+    let mut ctx = EvalContext::new();
+    ctx.add_parameter("b", Value::Integer(99));
+    assert!(matches!(
+        eval_function(&func, vec![], &ctx, &EvalLimits::default(), 0, Span::DUMMY),
+        Err(EvalError::CircularDependency { .. })
+    ));
 }
