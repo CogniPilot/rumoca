@@ -7,6 +7,11 @@ use super::*;
 pub(super) fn summarize_msl_results(results: &[MslModelResult]) -> ResultCounters {
     let mut counters = ResultCounters::default();
     for result in results {
+        if result.is_partial == Some(true) {
+            counters
+                .partial_model_names
+                .insert(result.model_name.clone());
+        }
         process_result_error_taxonomy(result, &mut counters);
         match (
             result.tensor_family_bodies,
@@ -135,7 +140,8 @@ fn build_summary_from_counters(
         unbalanced_models: counters.unbalanced_models,
         initial_balanced_models: counters.initial_balanced_models,
         initial_unbalanced_models: counters.initial_unbalanced_models,
-        partial_models: counters.partial_models,
+        partial_models: counters.partial_model_names.len(),
+        partial_model_names: counters.partial_model_names,
         class_type_counts: inputs.class_type_counts,
         failures_by_phase: counters.failures_by_phase.into_iter().collect(),
         unbalanced_list: counters.unbalanced_list,

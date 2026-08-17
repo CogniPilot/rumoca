@@ -1397,8 +1397,10 @@ pub(super) fn print_msl_balance_summary(summary: &MslSummary) {
         summary.initial_unbalanced_models
     );
 
-    // Calculate balance rate excluding partial models
-    let simulatable_models = summary.compiled_models - summary.partial_models;
+    // Only successfully compiled non-partial models enter either balance bucket.
+    // Source-declared partials that fail before DAE remain visible in the
+    // separate cohort roster and therefore must not be subtracted here.
+    let simulatable_models = summary.balanced_models + summary.unbalanced_models;
     if simulatable_models > 0 {
         let balance_rate = (summary.balanced_models as f64 / simulatable_models as f64) * 100.0;
         println!(

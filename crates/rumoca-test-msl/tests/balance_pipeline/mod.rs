@@ -444,9 +444,13 @@ struct MslSummary {
     initial_balanced_models: usize,
     #[serde(default)]
     initial_unbalanced_models: usize,
-    /// Models declared with `partial` keyword (intentionally incomplete).
-    /// MLS §4.7: Partial models are excluded from balance checking.
+    /// Selected source classes declared with `partial` (intentionally incomplete).
+    /// MLS §4.7: Partial models are excluded from balance checking even when
+    /// compilation fails before a Flat model exists.
     partial_models: usize,
+    /// Exact, deterministic roster behind `partial_models`.
+    #[serde(default)]
+    partial_model_names: BTreeSet<String>,
     /// Class type breakdown (model, connector, function, etc.)
     #[serde(default)]
     class_type_counts: BTreeMap<String, usize>,
@@ -581,7 +585,7 @@ struct ResultCounters {
     unbalanced_models: usize,
     initial_balanced_models: usize,
     initial_unbalanced_models: usize,
-    partial_models: usize,
+    partial_model_names: BTreeSet<String>,
     failures_by_phase: HashMap<String, Vec<String>>,
     unbalanced_list: Vec<String>,
     initial_unbalanced_list: Vec<String>,
@@ -625,7 +629,6 @@ struct MslSummaryInputs {
 fn process_success_result(result: &MslModelResult, counters: &mut ResultCounters) {
     counters.compiled_models += 1;
     if result.is_partial == Some(true) {
-        counters.partial_models += 1;
         return;
     }
     let balance = result.balance.unwrap_or(0);
@@ -872,6 +875,7 @@ fn empty_summary(total_mo_files: usize, parse_errors: usize) -> MslSummary {
         initial_balanced_models: 0,
         initial_unbalanced_models: 0,
         partial_models: 0,
+        partial_model_names: BTreeSet::new(),
         class_type_counts: BTreeMap::new(),
         failures_by_phase: BTreeMap::new(),
         unbalanced_list: Vec::new(),

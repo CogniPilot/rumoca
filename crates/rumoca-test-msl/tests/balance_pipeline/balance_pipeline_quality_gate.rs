@@ -399,9 +399,7 @@ impl<'a> From<&'a MslSummary> for MslQualityGateInput<'a> {
             + summary.typecheck_failed
             + summary.flatten_failed
             + summary.todae_failed;
-        let balance_denominator = summary
-            .compiled_models
-            .saturating_sub(summary.partial_models);
+        let balance_denominator = summary.balanced_models + summary.unbalanced_models;
         let parse_models = simulatable_attempted;
         let flatten_models = summary
             .model_results

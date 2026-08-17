@@ -9,6 +9,9 @@ use rumoca_worker::{
 };
 use streaming_workers::*;
 
+#[cfg(test)]
+mod partial_classification_tests;
+
 /// Run full MSL compile pipeline using Session for parallel compilation.
 ///
 /// Set `run_simulation=false` for compile+balance-only runs.
@@ -209,6 +212,57 @@ pub(super) fn select_compile_models_for_run(
         compile_scope_count,
         compile_names: compile_scope_names,
     }
+}
+
+fn source_partial_classification(
+    tree: &rumoca_ir_ast::ClassTree,
+    model_names: &[String],
+) -> Result<BTreeMap<String, bool>, String> {
+    model_names
+        .iter()
+        .map(|name| {
+            tree.get_class_by_qualified_name(name)
+                .map(|class| (name.clone(), class.partial))
+                .ok_or_else(|| format!("source partial classification cannot find `{name}`"))
+        })
+        .collect()
+}
+
+fn apply_source_partial_classification(
+    results: &mut [MslModelResult],
+    classification: &BTreeMap<String, bool>,
+) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for result in results {
+        let source_partial = classification
+            .get(&result.model_name)
+            .copied()
+            .ok_or_else(|| format!("unclassified MSL result `{}`", result.model_name))?;
+        if !seen.insert(result.model_name.clone()) {
+            return Err(format!("duplicate MSL result `{}`", result.model_name));
+        }
+        if let Some(compiled_partial) = result.is_partial
+            && compiled_partial != source_partial
+        {
+            return Err(format!(
+                "partial classification disagrees for `{}`: source={source_partial}, compiled={compiled_partial}",
+                result.model_name
+            ));
+        }
+        result.is_partial = Some(source_partial);
+    }
+    if seen.len() != classification.len() {
+        let missing = classification
+            .keys()
+            .filter(|name| !seen.contains(*name))
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(format!(
+            "source partial classification has no MSL result for: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 fn slow_compile_log_threshold_secs_from_override(raw: Option<&str>) -> Option<f64> {
@@ -1561,7 +1615,10 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
     let context = setup.context(run_simulation);
     let simulation_threads = simulation_threads_for_run(run_simulation);
 
-    let chunked_output = run_chunked_compile_and_render(
+    let partial_classification =
+        source_partial_classification(source_root.tree(), &selection.compile_names)
+            .unwrap_or_else(|error| panic!("invalid source partial classification: {error}"));
+    let mut chunked_output = run_chunked_compile_and_render(
         &source_root,
         &msl_dir,
         &selection.compile_names,
@@ -1569,6 +1626,8 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
         &context,
         simulation_threads,
     );
+    apply_source_partial_classification(&mut chunked_output.model_results, &partial_classification)
+        .unwrap_or_else(|error| panic!("invalid source partial classification: {error}"));
 
     timings.compile_seconds = chunked_output.compile_only_seconds;
     timings.render_and_write_seconds = chunked_output.render_and_write_seconds;
