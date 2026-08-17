@@ -72,7 +72,7 @@ use expression_semi_linear::analyze_semi_linear_rules;
 pub(super) use expression_semi_linear::{SemiLinearRowFilter, SemiLinearRules};
 use expression_validation::{
     PreContext, validate_expression, validate_expression_in_context_with_literals,
-    validate_expression_scoped_with_record_array_fields,
+    validate_expression_scoped_with_record_array_fields, validate_model_algorithm_range,
     validate_model_expression_with_record_array_fields, validate_specialized_expression,
     validate_specialized_subscripts, validate_subscripts_scoped, validate_when_expression,
     when_body_context,
@@ -789,6 +789,7 @@ fn analyze_model_algorithms(
                 algorithm,
                 expression_roles,
                 states,
+                function_shapes.model_values(),
                 constants,
                 sample_lattices,
             )?;
@@ -1079,6 +1080,8 @@ fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
                     variable.variability,
                     Variability::Constant(_) | Variability::Parameter(_)
                 )
+                || matches!(variable.variability, Variability::Parameter(_))
+                    && variable.fixed == Some(false)
             {
                 continue;
             }

@@ -34,6 +34,7 @@ pub(super) fn analyze_model_algorithm(
     roles: &HashMap<VarName, PlannedRole>,
     shapes: &FunctionShapeAnalysis,
 ) -> Result<ModelAlgorithmPlan, ToDaeError> {
+    let model_values = shapes.model_values();
     if contains_event_control(&algorithm.statements) {
         let targets = model_algorithm_targets(flat, algorithm);
         if targets.iter().any(|target| {
@@ -49,7 +50,7 @@ pub(super) fn analyze_model_algorithm(
             ));
         }
         let mut tensor_loops = HashMap::new();
-        analyze_event_tensor_loops(flat, &algorithm.statements, &mut tensor_loops)?;
+        analyze_event_tensor_loops(flat, &algorithm.statements, model_values, &mut tensor_loops)?;
         let mut function_calls = HashMap::new();
         analyze_event_function_calls(
             flat,
@@ -64,7 +65,8 @@ pub(super) fn analyze_model_algorithm(
         });
     }
     let targets = model_algorithm_targets(flat, algorithm);
-    if let Some(plan) = analyze_separated_array_sum(flat, algorithm, &targets, roles)? {
+    if let Some(plan) = analyze_separated_array_sum(flat, algorithm, &targets, roles, model_values)?
+    {
         return Ok(plan);
     }
     let [target] = targets.as_slice() else {
@@ -76,7 +78,7 @@ pub(super) fn analyze_model_algorithm(
     };
     let variable = &flat.variables[target];
     if !variable.dims.is_empty() {
-        return analyze_total_array_definition(algorithm, target, &variable.dims);
+        return analyze_total_array_definition(algorithm, target, &variable.dims, model_values);
     }
     if !is_declarative_role(roles[target]) {
         return Err(ToDaeError::unsupported_algorithm(
@@ -104,12 +106,13 @@ pub(super) fn analyze_model_algorithm(
 fn analyze_event_tensor_loops(
     flat: &flat::Model,
     statements: &[rumoca_core::Statement],
+    model_values: &ShapeEnvironment,
     plans: &mut HashMap<Span, ModelEventTensorLoopPlan>,
 ) -> Result<(), ToDaeError> {
     for statement in statements {
         match statement {
             rumoca_core::Statement::For { span, .. } => {
-                let plan = analyze_event_tensor_loop(flat, statement)?;
+                let plan = analyze_event_tensor_loop(flat, statement, model_values)?;
                 if plans.insert(*span, plan).is_some() {
                     return Err(ToDaeError::unsupported_algorithm(
                         "model",
@@ -124,15 +127,15 @@ fn analyze_event_tensor_loops(
                 ..
             } => {
                 for block in cond_blocks {
-                    analyze_event_tensor_loops(flat, &block.stmts, plans)?;
+                    analyze_event_tensor_loops(flat, &block.stmts, model_values, plans)?;
                 }
                 if let Some(fallback) = else_block {
-                    analyze_event_tensor_loops(flat, fallback, plans)?;
+                    analyze_event_tensor_loops(flat, fallback, model_values, plans)?;
                 }
             }
             rumoca_core::Statement::When { blocks, .. } => {
                 for block in blocks {
-                    analyze_event_tensor_loops(flat, &block.stmts, plans)?;
+                    analyze_event_tensor_loops(flat, &block.stmts, model_values, plans)?;
                 }
             }
             _ => {}
@@ -144,6 +147,7 @@ fn analyze_event_tensor_loops(
 fn analyze_event_tensor_loop(
     flat: &flat::Model,
     statement: &rumoca_core::Statement,
+    model_values: &ShapeEnvironment,
 ) -> Result<ModelEventTensorLoopPlan, ToDaeError> {
     let rumoca_core::Statement::For {
         indices,
@@ -179,7 +183,7 @@ fn analyze_event_tensor_loop(
             ));
         }
         let target_dimensions = &flat.variables[&target].dims;
-        validate_event_tensor_target(indices, comp, target_dimensions, *span)?;
+        validate_event_tensor_target(indices, comp, target_dimensions, model_values, *span)?;
         match &dimensions {
             Some(expected) if expected != target_dimensions => {
                 return Err(ToDaeError::unsupported_algorithm(
@@ -221,6 +225,7 @@ fn validate_event_tensor_target(
     indices: &[rumoca_core::ForIndex],
     component: &rumoca_core::ComponentReference,
     dimensions: &[i64],
+    model_values: &ShapeEnvironment,
     span: Span,
 ) -> Result<(), ToDaeError> {
     let Some(part) = component.parts().last() else {
@@ -241,7 +246,7 @@ fn validate_event_tensor_target(
         ));
     }
     for ((index, subscript), extent) in indices.iter().zip(&part.subs).zip(dimensions) {
-        validate_total_axis(index, subscript, *extent)?;
+        validate_total_axis(index, subscript, *extent, model_values)?;
     }
     Ok(())
 }
@@ -349,6 +354,7 @@ fn analyze_separated_array_sum(
     algorithm: &flat::Algorithm,
     targets: &[VarName],
     roles: &HashMap<VarName, PlannedRole>,
+    model_values: &ShapeEnvironment,
 ) -> Result<Option<ModelAlgorithmPlan>, ToDaeError> {
     let Some((array_target, scalar_target)) =
         separated_array_sum_targets(flat, algorithm, targets, roles)?
@@ -408,7 +414,7 @@ fn analyze_separated_array_sum(
     for (ordinal, ((index, subscript), extent)) in
         indices.iter().zip(subscripts).zip(dimensions).enumerate()
     {
-        validate_total_axis(index, subscript, *extent)?;
+        validate_total_axis(index, subscript, *extent, model_values)?;
         let range_span = expression_span(&index.range)?;
         binders.push(StructuredIndexBinder {
             id: ordinal,
@@ -543,6 +549,7 @@ fn analyze_total_array_definition(
     algorithm: &flat::Algorithm,
     target: &VarName,
     dimensions: &[i64],
+    model_values: &ShapeEnvironment,
 ) -> Result<ModelAlgorithmPlan, ToDaeError> {
     let [
         rumoca_core::Statement::For {
@@ -590,7 +597,7 @@ fn analyze_total_array_definition(
         .zip(dimensions)
         .enumerate()
     {
-        validate_total_axis(index, subscript, *extent)?;
+        validate_total_axis(index, subscript, *extent, model_values)?;
         let range_span = expression_span(&index.range)?;
         binders.push(StructuredIndexBinder {
             id: ordinal,
@@ -621,6 +628,7 @@ fn validate_total_axis(
     index: &rumoca_core::ForIndex,
     subscript: &Subscript,
     extent: i64,
+    model_values: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
     let span = expression_span(&index.range)?;
     let Expression::Range {
@@ -633,9 +641,13 @@ fn validate_total_axis(
             span,
         ));
     };
-    let exact_range = integer_value(start) == Some(1)
-        && step.as_deref().map(integer_value).unwrap_or(Some(1)) == Some(1)
-        && integer_value(end) == Some(extent);
+    let exact_range = settled_integer_value(start, model_values) == Some(1)
+        && step
+            .as_deref()
+            .map(|step| settled_integer_value(step, model_values))
+            .unwrap_or(Some(1))
+            == Some(1)
+        && settled_integer_value(end, model_values) == Some(extent);
     let exact_subscript = matches!(
         subscript,
         Subscript::Expr { expr, .. }
@@ -672,6 +684,10 @@ fn integer_value(expression: &Expression) -> Option<i64> {
         } => Some(*value),
         _ => None,
     }
+}
+
+fn settled_integer_value(expression: &Expression, model_values: &ShapeEnvironment) -> Option<i64> {
+    integer_value(expression).or_else(|| model_values.proven_extent(expression))
 }
 
 fn validate_declarative_sequence(

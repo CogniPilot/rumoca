@@ -37,6 +37,8 @@ mod cc_support;
 #[path = "galec_cli_support/cli.rs"]
 mod cli_support;
 
+#[path = "algorithm_parameter_range.rs"]
+mod algorithm_parameter_range;
 #[path = "array_der_coupling_test.rs"]
 mod array_der_coupling_test;
 #[path = "array_subscript_test.rs"]

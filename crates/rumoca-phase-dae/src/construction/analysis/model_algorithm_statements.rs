@@ -4,6 +4,7 @@ pub(super) fn validate_model_algorithm(
     algorithm: &flat::Algorithm,
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
+    model_values: &ShapeEnvironment,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
@@ -12,6 +13,7 @@ pub(super) fn validate_model_algorithm(
         &algorithm.statements,
         roles,
         states,
+        model_values,
         constants,
         sample_lattices,
     )?;
@@ -250,6 +252,7 @@ fn validate_algorithm_statements(
     statements: &[rumoca_core::Statement],
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
+    model_values: &ShapeEnvironment,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
@@ -310,6 +313,7 @@ fn validate_algorithm_statements(
                         &block.stmts,
                         roles,
                         states,
+                        model_values,
                         constants,
                         sample_lattices,
                     )?;
@@ -319,6 +323,7 @@ fn validate_algorithm_statements(
                         statements,
                         roles,
                         states,
+                        model_values,
                         constants,
                         sample_lattices,
                     )?;
@@ -339,13 +344,19 @@ fn validate_algorithm_statements(
                 }
                 let mut loop_roles = roles.clone();
                 for index in indices {
-                    validate_expression(&index.range, &loop_roles, states)?;
+                    validate_model_algorithm_range(
+                        &index.range,
+                        &loop_roles,
+                        states,
+                        model_values,
+                    )?;
                     loop_roles.insert(VarName::new(&index.ident), PlannedRole::Parameter);
                 }
                 validate_algorithm_statements(
                     equations,
                     &loop_roles,
                     states,
+                    model_values,
                     constants,
                     sample_lattices,
                 )?;
@@ -371,6 +382,7 @@ fn validate_algorithm_statements(
                         &block.stmts,
                         roles,
                         states,
+                        model_values,
                         constants,
                         sample_lattices,
                     )?;

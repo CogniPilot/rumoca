@@ -10,13 +10,11 @@ struct ExpressionValidator<'a> {
     /// validate expressions retained outside the ordinary Flat equation rows.
     /// A catalog spelling alone is never enough to admit such a reference.
     enumeration_literals: Option<&'a ShapeEnvironment>,
-    /// Translation-time values this scope proves, when it is a value-proven
-    /// function specialization.
-    ///
-    /// `None` is the model scope, where no specialization has settled a
-    /// coordinate. Only the compact-range rule of MLS §10.4.1 reads this, and
-    /// only to decide whether a non-literal bound is nevertheless settled at
-    /// translation time.
+    /// Translation-time values this scope proves. Model scope carries settled
+    /// evaluable parameters; a value-proven function specialization additionally
+    /// carries the input values that identify that specialization. Only the
+    /// compact-range rule of MLS §10.4.1 reads this, and only to decide whether a
+    /// non-literal bound is nevertheless settled at translation time.
     values: Option<&'a ShapeEnvironment>,
     /// Which event context, if any, evaluates this expression.
     when_clause: PreContext,
@@ -147,6 +145,32 @@ pub(super) fn validate_specialized_expression(
         record_array_fields: values.record_array_fields(),
         enumeration_literals: Some(values),
         values: Some(values),
+        when_clause: PreContext::Continuous,
+    }
+    .validate(expression)
+}
+
+/// Validate a model-algorithm range with the same translation-time value proof
+/// used by model equation ranges.
+///
+/// Model algorithms remain structured in Flat IR, so an evaluable parameter can
+/// still spell a bound such as `1:n` here. The model shape environment contains
+/// only parameter values settled during DAE construction; an initialization-owned
+/// parameter therefore remains unproved and reaches the ordinary range rejection.
+pub(super) fn validate_model_algorithm_range(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    model_values: &ShapeEnvironment,
+) -> Result<(), ToDaeError> {
+    let binders = HashSet::new();
+    ExpressionValidator {
+        roles,
+        states,
+        binders: &binders,
+        record_array_fields: None,
+        enumeration_literals: Some(model_values),
+        values: Some(model_values),
         when_clause: PreContext::Continuous,
     }
     .validate(expression)
@@ -327,10 +351,10 @@ impl<'a> ExpressionValidator<'a> {
     /// literal" and the reference identities carry "declared by the same
     /// enumeration type", so neither answer comes from a rendered name.
     ///
-    /// "Settled" is a literal in the model scope, and inside a value-proven
-    /// function specialization it is additionally any bound that scope folds —
-    /// MLS §12.2 lets a function write `1:integer(m/2)` over its input `m`, and
-    /// the specialization that fixes `m` fixes the range with it.
+    /// "Settled" is either a literal or a bound the current translation-time
+    /// value environment folds. In model scope that includes evaluable
+    /// parameters; MLS §12.2 additionally lets a function specialization settle
+    /// a bound such as `1:integer(m/2)` from its input `m`.
     fn validate_range(
         self,
         start: &Expression,
@@ -1027,5 +1051,60 @@ mod tests {
             shapes.model_values(),
         )
         .expect("a settled model parameter owns a static compact range extent");
+    }
+
+    #[test]
+    fn model_compact_range_rejects_a_fixed_false_parameter_default() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("non_evaluable_model_range.mo", "1:n");
+        let span = Span::from_offsets(source, 0, 3);
+        let parameter = VarName::new("n");
+        let mut model = flat::Model::new();
+        model.add_variable(
+            parameter.clone(),
+            flat::Variable {
+                instance_id: rumoca_core::InstanceId::new(1),
+                name: parameter.clone(),
+                variability: Variability::Parameter(Default::default()),
+                type_id: rumoca_core::TypeId::new(1),
+                fixed: Some(false),
+                binding: Some(Expression::Literal {
+                    value: Literal::Integer(3),
+                    span,
+                }),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(span)
+            },
+        );
+        let constants = constant_context(&model)
+            .expect("an initialization-owned parameter is valid but not translation-settled");
+        let shapes = FunctionShapeAnalysis::analyze(&model, &constants)
+            .expect("the model still has a scalar parameter shape");
+        let range = Expression::Range {
+            start: Box::new(Expression::Literal {
+                value: Literal::Integer(1),
+                span,
+            }),
+            step: None,
+            end: Box::new(Expression::VarRef {
+                name: rumoca_core::Reference::new("n"),
+                subscripts: Vec::new(),
+                span,
+            }),
+            span,
+        };
+
+        let error = validate_model_expression_with_record_array_fields(
+            &range,
+            &HashMap::from([(parameter, PlannedRole::Parameter)]),
+            &HashSet::new(),
+            &RecordArrayFieldPlans::default(),
+            shapes.model_values(),
+        )
+        .expect_err("a fixed=false default is an initialization seed, not a static range proof");
+        assert!(
+            format!("{error:?}").contains("range end"),
+            "the rejection must remain at the unproved bound: {error:?}"
+        );
     }
 }
