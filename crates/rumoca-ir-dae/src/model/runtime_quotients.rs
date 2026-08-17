@@ -61,9 +61,11 @@ impl<'dae> DaeConstruction<'dae> {
     /// discontinuity root exists to own — a root would smuggle a
     /// function-scope expression into the model's condition system. The
     /// `FunctionBody` capability is the SPEC_0036 proof that a body is
-    /// open, and the constructed expression is validated against that exact
-    /// body — model-scope runtime coordinates are rejected, never silently
-    /// left eventless.
+    /// open. Both operands are validated against that exact body before any
+    /// node is inserted: a pure builtin contributes no scope or read facts
+    /// beyond its operands, so operand prevalidation is the proof, and a
+    /// rejected quotient leaves the expression arena untouched instead of
+    /// stranding an eventless dynamic node behind a late `Err`.
     pub fn function_runtime_quotient(
         &mut self,
         body: &FunctionBody<'dae>,
@@ -71,13 +73,14 @@ impl<'dae> DaeConstruction<'dae> {
         arguments: [ExprId<'dae>; 2],
         provenance: DaeProvenance,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
-        let quotient = self.expressions(|expressions| {
+        for argument in arguments {
+            expect_function_body_expression(self.storage, body, argument, provenance)?;
+            validate_function_value_reads(self.storage, body, argument, provenance)?;
+        }
+        self.expressions(|expressions| {
             expressions
                 .at(provenance)
                 .checked_runtime_quotient(builtin, arguments)
-        })?;
-        expect_function_body_expression(self.storage, body, quotient, provenance)?;
-        validate_function_value_reads(self.storage, body, quotient, provenance)?;
-        Ok(quotient)
+        })
     }
 }

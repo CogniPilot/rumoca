@@ -775,7 +775,7 @@ fn function_body_quotient_rejects_model_expressions() {
     let x_use = source.source("x", 1);
     let two_at = source.source("2", 0);
     let quotient_at = source.source("mod(x, 2)", 0);
-    Dae::construct(source.map, |dae| {
+    let dae = Dae::construct(source.map, |dae| {
         let real =
             dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
         let x = dae.variables(|variables| {
@@ -808,8 +808,14 @@ fn function_body_quotient_rejects_model_expressions() {
                 let rejected =
                     dae.function_runtime_quotient(&body, PureBuiltin::Mod, [x, two], quotient_at);
                 assert!(
-                    rejected.is_err(),
-                    "a model-scope coordinate must not construct through the body capability"
+                    matches!(
+                        rejected,
+                        Err(DaeConstructionError::InvalidFunctionCoordinate {
+                            coordinate: "algebraic",
+                            span,
+                        }) if span == x_use.span()
+                    ),
+                    "the smuggled model algebraic is the exact rejected coordinate"
                 );
                 // Close the body legally so construction can finish.
                 let zero = dae.expressions(|expressions| {
@@ -822,4 +828,24 @@ fn function_body_quotient_rejects_model_expressions() {
         .map(|_| ())
     })
     .expect("the rejection leaves construction consistent");
+    dae.inspect(|view| {
+        let escaped = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .filter(|expression| {
+                matches!(
+                    expression.operation(),
+                    ExpressionOperation::Builtin {
+                        builtin: PureBuiltin::Mod,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            escaped, 0,
+            "the rejected quotient inserts no expression node"
+        );
+        assert_eq!(view.root_count(), 0, "no event surface exists to own it");
+    });
 }
