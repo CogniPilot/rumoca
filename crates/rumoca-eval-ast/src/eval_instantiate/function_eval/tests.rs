@@ -1668,3 +1668,25 @@ fn name_only_real_spelling_without_identity_fails_closed() {
         None
     );
 }
+
+#[test]
+fn non_finite_literal_refuses_to_feed_a_structural_boolean() {
+    // 1e400 parses to Inf; the shared scalar evaluator must refuse the
+    // literal before any comparison can fold it.
+    let ctx = InstantiateEvalCtx {
+        tree: &ast::ClassTree::new(),
+        mod_env: &ast::ModificationEnvironment::new(),
+        effective_components: &IndexMap::default(),
+        resolve_class_components: no_op_resolve_class_components,
+    };
+    let condition = ast::Expression::Binary {
+        op: rumoca_core::OpBinary::Gt,
+        lhs: Arc::new(real_expr("1e400")),
+        rhs: Arc::new(real_expr("2.0")),
+        span: rumoca_core::Span::DUMMY,
+    };
+    assert_eq!(
+        try_eval_integer_expr(&ctx, &structural_int_of_condition(condition)),
+        None
+    );
+}

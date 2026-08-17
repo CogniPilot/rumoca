@@ -97,7 +97,13 @@ pub(crate) fn eval_real<C: AstScalarContext>(
             terminal_type: TerminalType::UnsignedReal,
             token,
             ..
-        } => token.text.parse().ok(),
+        } => token
+            .text
+            .parse::<f64>()
+            .ok()
+            // A literal like 1e400 parses to Inf; a non-finite value must
+            // refuse to fold before it can feed a comparison.
+            .filter(|value| value.is_finite()),
         Expression::Terminal {
             terminal_type: TerminalType::UnsignedInteger,
             token,

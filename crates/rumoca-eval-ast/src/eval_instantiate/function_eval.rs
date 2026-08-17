@@ -231,10 +231,9 @@ fn assign_component_default(
 /// a Real scalar needs a declared-scalar, provably Real formal; a rank-1
 /// Real vector needs a declared rank-1, provably Real formal whose extent —
 /// when the declaration states one statically — matches the value's length
-/// (a declared `[:]` accepts any length). Real-ness is proven by the type
-/// name's resolved identity against the tree's predefined `Real`; a
-/// declaration whose type identity is absent falls back to the literal
-/// predefined spelling, and everything unproved — derived aliases included —
+/// (a declared `[:]` accepts any length). Real-ness is proven only by the
+/// type name's resolved identity equalling the tree's registered predefined
+/// `Real` DefId; absent identity on either side — and every derived alias —
 /// fails closed rather than binding a value the declaration never admitted.
 fn insert_checked_local_value(
     name: &str,
