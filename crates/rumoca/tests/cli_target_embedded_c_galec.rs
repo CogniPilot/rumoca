@@ -881,7 +881,6 @@ fn build_and_run(model: &str, fixture: &str, driver: &str) -> (String, String) {
     // CLI's completion message tells an integrator to do. A link that omits the
     // library fails on `rumoca_galec_copy_real`/`rumoca_galec_fill_real` for any
     // fixture holding an array, which is every fixture below.
-    let kernels = out_dir.join(super::cc_support::GALEC_KERNEL_LIBRARY);
     let compile = assurance_c99_cc()
         .arg("-o")
         .arg(&program)
