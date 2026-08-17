@@ -102,6 +102,7 @@ struct DirectStateConstraint {
 
 #[derive(Clone)]
 struct HolonomicConstraint {
+    owner_ordinal: usize,
     residual: u32,
     owner: dae::DaeProvenance,
     proof: HolonomicDifferentiationProof,
@@ -325,35 +326,143 @@ struct HolonomicRound {
     blocked: Option<DiscardedInitialValue>,
 }
 
-/// Reduce one holonomic constraint of `model`, reporting the replacement DAE
-/// and its manifold expressions once the differentiated system matches.
+/// One accepted holonomic replacement. A singular intermediate remains
+/// private to this phase and is carried only to the next proved round.
+enum HolonomicStep {
+    Sorted {
+        dae: dae::Dae,
+        manifold: Vec<u32>,
+    },
+    Reduced {
+        dae: dae::Dae,
+        manifold: Vec<u32>,
+        residue: usize,
+    },
+}
+
+/// What one fixed-point round found against the current finalized DAE.
+struct HolonomicPass {
+    step: Option<HolonomicStep>,
+    blocked: Option<DiscardedInitialValue>,
+}
+
+/// Accumulate proved holonomic replacements until the differentiated system
+/// matches, reporting only that final replacement and its manifold.
 ///
-/// Held to the same MLS 3.6 §8.6 postcondition as a state demotion, and for a
-/// concrete reason: `rebuild_holonomic_constraint` *replaces* the source
-/// residual with its second derivative, so the equality that carried a stated
-/// value onto another coordinate can leave the system with it. A reduction is
-/// only taken once the system it produces still states everything this one did.
+/// Candidates are recollected from the current finalized DAE every round, so a
+/// differentiability certificate that an earlier replacement invalidated can
+/// never be replayed stale. Owner ordinals impose the deterministic choice
+/// order. Every accepted singular intermediate strictly decreases the unmatched
+/// residue, which is the terminating measure for this lane. A residue-holding
+/// replacement fails closed; only the separately proved direct-demotion lane
+/// may carry such an intermediate.
+///
+/// Every accepted edge is held to the same MLS 3.6 §8.6 postcondition as a
+/// state demotion. `rebuild_holonomic_constraint` replaces the source residual
+/// with its second derivative, so the equality that carried a stated value onto
+/// another coordinate can leave the system with it. The values stated by the
+/// original system survive the full chain by induction over these per-round
+/// comparisons. If the chain stalls, its singular intermediates and partial
+/// manifold are discarded and the caller reports the original typed error.
 fn reduce_holonomic_constraint(model: &dae::Dae) -> Result<HolonomicRound, StructuralError> {
-    let stated = model.inspect(represented_initial_values);
-    let mut blocked = None;
-    for constraint in model.inspect(holonomic_constraints) {
-        let (rebuilt, manifold) = rebuild_holonomic_constraint(model, &constraint)?;
-        if rebuilt.inspect(|view| sort(view).map(|_| ())).is_err() {
-            continue;
+    reduce_holonomic_constraint_with_enumeration(model, |_| {})
+}
+
+/// Testable enumeration seam: production supplies the identity operation,
+/// while the adversary reverses discovery before the mandatory owner sort.
+fn reduce_holonomic_constraint_with_enumeration(
+    model: &dae::Dae,
+    mut perturb_enumeration: impl FnMut(&mut Vec<HolonomicConstraint>),
+) -> Result<HolonomicRound, StructuralError> {
+    let residue = model
+        .inspect(|view| sort(view).map(|_| ()))
+        .map_or_else(|error| unmatched_residue(&error), |_| None);
+    let Some(mut residue) = residue else {
+        return Ok(HolonomicRound {
+            step: None,
+            blocked: None,
+        });
+    };
+    let mut reduced: Option<dae::Dae> = None;
+    let mut manifold = Vec::new();
+    loop {
+        let current = reduced.as_ref().unwrap_or(model);
+        let pass = holonomic_pass(current, residue, &manifold, &mut perturb_enumeration)?;
+        match pass.step {
+            Some(HolonomicStep::Sorted {
+                dae,
+                manifold: complete,
+            }) => {
+                return Ok(HolonomicRound {
+                    step: Some((dae, complete)),
+                    blocked: None,
+                });
+            }
+            Some(HolonomicStep::Reduced {
+                dae,
+                manifold: next_manifold,
+                residue: next_residue,
+            }) => {
+                reduced = Some(dae);
+                manifold = next_manifold;
+                residue = next_residue;
+            }
+            None => {
+                return Ok(HolonomicRound {
+                    step: None,
+                    blocked: pass.blocked,
+                });
+            }
         }
+    }
+}
+
+/// Try every current certificate in deterministic owner order and accept only
+/// the first replacement that strictly reduces the unmatched residue.
+fn holonomic_pass(
+    model: &dae::Dae,
+    residue: usize,
+    prior_manifold: &[u32],
+    perturb_enumeration: &mut impl FnMut(&mut Vec<HolonomicConstraint>),
+) -> Result<HolonomicPass, StructuralError> {
+    let stated = model.inspect(represented_initial_values);
+    let mut candidates = model.inspect(holonomic_constraints);
+    perturb_enumeration(&mut candidates);
+    candidates.sort_by_key(|candidate| candidate.owner_ordinal);
+    let mut reduced = None;
+    let mut blocked = None;
+    for constraint in candidates {
+        let (rebuilt, manifold) = rebuild_holonomic_constraint(model, &constraint, prior_manifold)?;
+        let next = match rebuilt.inspect(|view| sort(view).map(|_| ())) {
+            Ok(()) => None,
+            Err(error) => match unmatched_residue(&error) {
+                Some(next) if next < residue => Some(next),
+                _ => continue,
+            },
+        };
         if let Some(discarded) = model.inspect(|source| {
             rebuilt.inspect(|view| discarded_stated_initial_value(source, view, &stated))
         })? {
             blocked.get_or_insert(discarded);
             continue;
         }
-        return Ok(HolonomicRound {
-            step: Some((rebuilt, manifold)),
-            blocked: None,
+        let Some(next) = next else {
+            return Ok(HolonomicPass {
+                step: Some(HolonomicStep::Sorted {
+                    dae: rebuilt,
+                    manifold,
+                }),
+                blocked: None,
+            });
+        };
+        reduced.get_or_insert(HolonomicStep::Reduced {
+            dae: rebuilt,
+            manifold,
+            residue: next,
         });
     }
-    Ok(HolonomicRound {
-        step: None,
+    Ok(HolonomicPass {
+        step: reduced,
         blocked,
     })
 }

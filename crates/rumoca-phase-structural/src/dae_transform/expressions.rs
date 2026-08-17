@@ -30,6 +30,7 @@ pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     terminals: &'borrow [dae::TerminalId<'target>],
     pub(super) facts: &'borrow DifferentiationFacts,
     candidate: Option<DirectStateConstraint>,
+    pub(super) state_only_derivative: bool,
     rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
 }
 
@@ -72,6 +73,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             terminals: identities.base.terminals,
             facts,
             candidate,
+            state_only_derivative: false,
             rebuilt,
         }
     }

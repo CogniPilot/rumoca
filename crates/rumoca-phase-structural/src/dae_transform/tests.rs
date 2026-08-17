@@ -2,6 +2,7 @@ mod equalities;
 mod functions;
 mod initial_pins;
 mod initial_values;
+mod invariant_balances;
 
 use rumoca_core::{SourceMap, Span, TypeId, VarName};
 

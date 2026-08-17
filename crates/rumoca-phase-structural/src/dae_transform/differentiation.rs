@@ -33,7 +33,23 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         assert_eq!(source_id.index(), proof.residual);
         assert!(order <= proof.maximum_order);
         assert!(!proof.anchored_states.is_empty());
-        self.differentiate_order(source_id, order, provenance)
+        let previous = self.state_only_derivative;
+        self.state_only_derivative = order == 1;
+        let differentiated = self.differentiate_order(source_id, order, provenance);
+        self.state_only_derivative = previous;
+        differentiated
+    }
+
+    /// Re-express a proved holonomic position residual entirely through exact
+    /// state or invariant anchors before it enters the retained manifold.
+    pub(super) fn materialize_holonomic_value(
+        &mut self,
+        source_id: dae::ExprId<'source>,
+        proof: &HolonomicDifferentiationProof,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        assert_eq!(source_id.index(), proof.residual);
+        self.materialize_exact_value(source_id, provenance)
     }
 
     pub(super) fn differentiate(
@@ -183,7 +199,11 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             if order > 1 {
                 return self.differentiate_order(definition, order - 1, provenance);
             }
-            let definition = self.rebuild(definition)?;
+            let definition = if self.state_only_derivative {
+                self.materialize_exact_value(definition, provenance)?
+            } else {
+                self.rebuild(definition)?
+            };
             return self
                 .target
                 .at(provenance)
@@ -198,6 +218,68 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .at(provenance)
             .coordinate(dae::CoordinateInput::Derivative(state))
             .map(Derivative::Expression)
+    }
+
+    /// Rebuild one scalar expression while replacing algebraic coordinates by
+    /// the exact value anchor proved for their equality class.
+    fn materialize_exact_value(
+        &mut self,
+        source_id: dae::ExprId<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let source = self
+            .source
+            .expression(source_id)
+            .expect("materializable expression resolves");
+        match source.operation() {
+            dae::ExpressionOperation::Literal(_)
+            | dae::ExpressionOperation::Coordinate(
+                dae::CoordinateView::Parameter(_)
+                | dae::CoordinateView::Time
+                | dae::CoordinateView::State(_),
+            ) => self.rebuild(source_id),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
+                let (anchor, sign) = self
+                    .facts
+                    .equalities
+                    .value_anchor_of(algebraic.index())
+                    .expect("holonomic value preflight proves an exact algebraic anchor");
+                let anchor = self
+                    .facts
+                    .equalities
+                    .anchor_expression(anchor)
+                    .and_then(|anchor| self.source.expression_id(anchor as usize))
+                    .expect("holonomic value preflight proves a materializable anchor");
+                let anchor = self.materialize_exact_value(anchor, provenance)?;
+                match sign {
+                    EqualitySign::Same => Ok(anchor),
+                    EqualitySign::Opposite => self
+                        .target
+                        .at(provenance)
+                        .unary(dae::UnaryOperator::Negate, anchor),
+                }
+            }
+            dae::ExpressionOperation::Unary {
+                operator: operator @ (dae::UnaryOperator::Plus | dae::UnaryOperator::Negate),
+                operand,
+            } => {
+                let operand = self.materialize_exact_value(operand, provenance)?;
+                self.target.at(provenance).unary(operator, operand)
+            }
+            dae::ExpressionOperation::Binary {
+                operator:
+                    operator @ (dae::BinaryOperator::Add
+                    | dae::BinaryOperator::Subtract
+                    | dae::BinaryOperator::Multiply),
+                lhs,
+                rhs,
+            } => {
+                let lhs = self.materialize_exact_value(lhs, provenance)?;
+                let rhs = self.materialize_exact_value(rhs, provenance)?;
+                self.target.at(provenance).binary(operator, lhs, rhs)
+            }
+            _ => unreachable!("holonomic value preflight rejects this operation"),
+        }
     }
 
     fn differentiate_binary(
@@ -215,8 +297,16 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 self.combine_sum(operator, lhs_derivative, rhs_derivative, provenance)
             }
             dae::BinaryOperator::Multiply if order == 1 => {
-                let lhs_value = self.rebuild(lhs)?;
-                let rhs_value = self.rebuild(rhs)?;
+                let lhs_value = if self.state_only_derivative {
+                    self.materialize_exact_value(lhs, provenance)?
+                } else {
+                    self.rebuild(lhs)?
+                };
+                let rhs_value = if self.state_only_derivative {
+                    self.materialize_exact_value(rhs, provenance)?
+                } else {
+                    self.rebuild(rhs)?
+                };
                 let left = self.multiply(lhs_derivative, rhs_value, provenance)?;
                 let right = self.multiply(rhs_derivative, lhs_value, provenance)?;
                 self.combine_sum(dae::BinaryOperator::Add, left, right, provenance)

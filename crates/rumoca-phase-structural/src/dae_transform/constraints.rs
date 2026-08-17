@@ -575,13 +575,15 @@ pub(super) fn holonomic_constraints(view: dae::DaeView<'_>) -> Vec<HolonomicCons
     let facts = DifferentiationFacts::collect(view);
     let mut scratch = HolonomicProofScratch::new(view.expression_count());
     view.continuous_owners()
-        .filter_map(|owner| {
+        .enumerate()
+        .filter_map(|(owner_ordinal, owner)| {
             let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
                 return None;
             };
             let residual = equation.residual();
             prove_holonomic_differentiation(view, &facts, &mut scratch, residual).map(|proof| {
                 HolonomicConstraint {
+                    owner_ordinal,
                     residual: residual.index(),
                     owner: equation.provenance(),
                     proof,
@@ -618,6 +620,22 @@ fn prove_holonomic_differentiation<'dae>(
     if !walk.can_differentiate_order(residual, 2, true) {
         return None;
     }
+    let mut value_visited = vec![Visit::Pending; view.expression_count()];
+    if !can_materialize_holonomic_value(view, facts, residual, &mut value_visited) {
+        return None;
+    }
+    let mut derivative_visited = vec![Visit::Pending; view.expression_count()];
+    let mut derivative_states = vec![Visit::Pending; view.variable_count()];
+    if !has_state_only_first_derivative(
+        view,
+        facts,
+        residual,
+        &mut derivative_visited,
+        &mut derivative_states,
+        &mut value_visited,
+    ) {
+        return None;
+    }
     walk.anchored_states.sort_unstable();
     walk.anchored_states.dedup();
     if walk.anchored_states.is_empty() || (walk.saw_algebraic && walk.anchored_states.len() < 2) {
@@ -628,6 +646,167 @@ fn prove_holonomic_differentiation<'dae>(
         maximum_order: 2,
         anchored_states: walk.anchored_states.into_boxed_slice(),
     })
+}
+
+/// Whether the retained position-level residual can be reconstructed entirely
+/// from exact state/invariant value anchors.
+fn can_materialize_holonomic_value<'dae>(
+    view: dae::DaeView<'dae>,
+    facts: &DifferentiationFacts,
+    expression: dae::ExprId<'dae>,
+    visited: &mut [Visit],
+) -> bool {
+    let index = expression.index() as usize;
+    match visited[index] {
+        Visit::Differentiable => return true,
+        Visit::InProgress => return false,
+        Visit::Pending => visited[index] = Visit::InProgress,
+    }
+    let Some(expression) = view.expression(expression) else {
+        return false;
+    };
+    let materializable = match expression.operation() {
+        dae::ExpressionOperation::Literal(_)
+        | dae::ExpressionOperation::Coordinate(
+            dae::CoordinateView::Parameter(_)
+            | dae::CoordinateView::Time
+            | dae::CoordinateView::State(_),
+        ) => true,
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => facts
+            .equalities
+            .value_anchor_of(algebraic.index())
+            .and_then(|(anchor, _)| facts.equalities.anchor_expression(anchor))
+            .and_then(|anchor| view.expression_id(anchor as usize))
+            .is_some_and(|anchor| can_materialize_holonomic_value(view, facts, anchor, visited)),
+        dae::ExpressionOperation::Unary {
+            operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
+            operand,
+        } => can_materialize_holonomic_value(view, facts, operand, visited),
+        dae::ExpressionOperation::Binary {
+            operator:
+                dae::BinaryOperator::Add | dae::BinaryOperator::Subtract | dae::BinaryOperator::Multiply,
+            lhs,
+            rhs,
+        } => {
+            can_materialize_holonomic_value(view, facts, lhs, visited)
+                && can_materialize_holonomic_value(view, facts, rhs, visited)
+        }
+        _ => false,
+    };
+    visited[index] = if materializable {
+        Visit::Differentiable
+    } else {
+        Visit::Pending
+    };
+    materializable
+}
+
+/// Whether the retained velocity-level residual materializes through state
+/// coordinates rather than derivative or algebraic coordinates.
+fn has_state_only_first_derivative<'dae>(
+    view: dae::DaeView<'dae>,
+    facts: &DifferentiationFacts,
+    expression: dae::ExprId<'dae>,
+    visited: &mut [Visit],
+    state_visited: &mut [Visit],
+    value_visited: &mut [Visit],
+) -> bool {
+    let index = expression.index() as usize;
+    match visited[index] {
+        Visit::Differentiable => return true,
+        Visit::InProgress => return false,
+        Visit::Pending => visited[index] = Visit::InProgress,
+    }
+    let Some(expression) = view.expression(expression) else {
+        return false;
+    };
+    let materializable = match expression.operation() {
+        dae::ExpressionOperation::Literal(_)
+        | dae::ExpressionOperation::Coordinate(
+            dae::CoordinateView::Parameter(_) | dae::CoordinateView::Time,
+        ) => true,
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) => {
+            state_has_materializable_derivative(
+                view,
+                facts,
+                state.index(),
+                state_visited,
+                value_visited,
+            )
+        }
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
+            match facts.equalities.value_anchor_of(algebraic.index()) {
+                Some((EqualityAnchor::Invariant { .. }, _)) => true,
+                Some((EqualityAnchor::State(state), _)) => state_has_materializable_derivative(
+                    view,
+                    facts,
+                    state,
+                    state_visited,
+                    value_visited,
+                ),
+                None => false,
+            }
+        }
+        dae::ExpressionOperation::Unary {
+            operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
+            operand,
+        } => has_state_only_first_derivative(
+            view,
+            facts,
+            operand,
+            visited,
+            state_visited,
+            value_visited,
+        ),
+        dae::ExpressionOperation::Binary {
+            operator:
+                dae::BinaryOperator::Add | dae::BinaryOperator::Subtract | dae::BinaryOperator::Multiply,
+            lhs,
+            rhs,
+        } => {
+            has_state_only_first_derivative(view, facts, lhs, visited, state_visited, value_visited)
+                && has_state_only_first_derivative(
+                    view,
+                    facts,
+                    rhs,
+                    visited,
+                    state_visited,
+                    value_visited,
+                )
+        }
+        _ => false,
+    };
+    visited[index] = if materializable {
+        Visit::Differentiable
+    } else {
+        Visit::Pending
+    };
+    materializable
+}
+
+fn state_has_materializable_derivative<'dae>(
+    view: dae::DaeView<'dae>,
+    facts: &DifferentiationFacts,
+    state: u32,
+    state_visited: &mut [Visit],
+    value_visited: &mut [Visit],
+) -> bool {
+    match state_visited[state as usize] {
+        Visit::Differentiable => return true,
+        Visit::InProgress => return false,
+        Visit::Pending => state_visited[state as usize] = Visit::InProgress,
+    }
+    let materializable = facts.derivative_definitions[state as usize]
+        .and_then(|definition| view.expression_id(definition as usize))
+        .is_some_and(|definition| {
+            can_materialize_holonomic_value(view, facts, definition, value_visited)
+        });
+    state_visited[state as usize] = if materializable {
+        Visit::Differentiable
+    } else {
+        Visit::Pending
+    };
+    materializable
 }
 
 struct HolonomicProofWalk<'facts, 'dae> {

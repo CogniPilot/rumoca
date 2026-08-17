@@ -302,6 +302,147 @@ fn hidden_holonomic_model() -> dae::Dae {
     )
 }
 
+/// Two independent connector-hidden position constraints. Replacing either
+/// one alone cuts the unmatched residue from four to two; only the accumulated
+/// pair is sortable. The non-unit scale keeps either constraint out of the
+/// direct state-equality demotion lane.
+const INDEPENDENT_HOLONOMIC_TEXT: &str = "Real phi1; Real w1; Real phi2; Real w2; Real angle1; Real angle2; Real acc1; Real acc2; Real phi3; Real w3; Real phi4; Real w4; Real angle3; Real angle4; Real acc3; Real acc4; equation phi1 = angle1; phi2 = angle2; angle1 = 2*angle2; der(phi1) = w1; der(phi2) = w2; der(w1) = acc1; der(w2) = acc2; acc1 = 1; phi3 = angle3; phi4 = angle4; angle3 = 2*angle4; der(phi3) = w3; der(phi4) = w4; der(w3) = acc3; der(w4) = acc4; acc3 = 1;";
+const INDEPENDENT_HOLONOMIC_NAMES: &[&str] = &[
+    "sphi1", "sw1", "sphi2", "sw2", "aangle1", "aangle2", "aacc1", "aacc2", "sphi3", "sw3",
+    "sphi4", "sw4", "aangle3", "aangle4", "aacc3", "aacc4",
+];
+const INDEPENDENT_HOLONOMIC_EQUATIONS: &[&str] = &[
+    "phi1 = angle1",
+    "phi2 = angle2",
+    "angle1 = 2*angle2",
+    "der(phi1) = w1",
+    "der(phi2) = w2",
+    "der(w1) = acc1",
+    "der(w2) = acc2",
+    "acc1 = 1",
+    "phi3 = angle3",
+    "phi4 = angle4",
+    "angle3 = 2*angle4",
+    "der(phi3) = w3",
+    "der(phi4) = w4",
+    "der(w3) = acc3",
+    "der(w4) = acc4",
+    "acc3 = 1",
+];
+
+fn independent_holonomic_model() -> dae::Dae {
+    connector_fixture(
+        INDEPENDENT_HOLONOMIC_TEXT,
+        INDEPENDENT_HOLONOMIC_NAMES,
+        INDEPENDENT_HOLONOMIC_EQUATIONS,
+        build_independent_holonomic,
+    )
+}
+
+fn build_independent_holonomic<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    declared: &[Declared<'dae>],
+    spans: &[dae::DaeProvenance],
+) -> Result<(), dae::DaeConstructionError> {
+    let [
+        phi1,
+        w1,
+        phi2,
+        w2,
+        angle1,
+        angle2,
+        acc1,
+        acc2,
+        phi3,
+        w3,
+        phi4,
+        w4,
+        angle3,
+        angle4,
+        acc3,
+        acc4,
+    ] = *declared
+    else {
+        unreachable!("fixture declares sixteen variables")
+    };
+    let residuals = model.expressions(|expressions| {
+        let mut built = independent_holonomic_half(
+            expressions,
+            &spans[..8],
+            [phi1, w1, phi2, w2, angle1, angle2, acc1, acc2],
+        )?;
+        built.extend(independent_holonomic_half(
+            expressions,
+            &spans[8..],
+            [phi3, w3, phi4, w4, angle3, angle4, acc3, acc4],
+        )?);
+        Ok(built)
+    })?;
+    register(model, spans, residuals)
+}
+
+fn independent_holonomic_half<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    spans: &[dae::DaeProvenance],
+    declared: [Declared<'dae>; 8],
+) -> Result<Vec<dae::ExprId<'dae>>, dae::DaeConstructionError> {
+    let [phi1, w1, phi2, w2, angle1, angle2, acc1, acc2] = declared;
+    let two = expressions
+        .at(spans[2])
+        .literal(dae::DaeLiteral::Real(2.0))?;
+    let one = expressions
+        .at(spans[7])
+        .literal(dae::DaeLiteral::Real(1.0))?;
+    let angle2_value = coordinate(expressions, spans[2], angle2.value())?;
+    let twice_angle2 =
+        expressions
+            .at(spans[2])
+            .binary(dae::BinaryOperator::Multiply, two, angle2_value)?;
+    let terms = [
+        (
+            spans[0],
+            coordinate(expressions, spans[0], phi1.value())?,
+            coordinate(expressions, spans[0], angle1.value())?,
+        ),
+        (
+            spans[1],
+            coordinate(expressions, spans[1], phi2.value())?,
+            coordinate(expressions, spans[1], angle2.value())?,
+        ),
+        (
+            spans[2],
+            coordinate(expressions, spans[2], angle1.value())?,
+            twice_angle2,
+        ),
+        (
+            spans[3],
+            coordinate(expressions, spans[3], phi1.derivative())?,
+            coordinate(expressions, spans[3], w1.value())?,
+        ),
+        (
+            spans[4],
+            coordinate(expressions, spans[4], phi2.derivative())?,
+            coordinate(expressions, spans[4], w2.value())?,
+        ),
+        (
+            spans[5],
+            coordinate(expressions, spans[5], w1.derivative())?,
+            coordinate(expressions, spans[5], acc1.value())?,
+        ),
+        (
+            spans[6],
+            coordinate(expressions, spans[6], w2.derivative())?,
+            coordinate(expressions, spans[6], acc2.value())?,
+        ),
+        (
+            spans[7],
+            coordinate(expressions, spans[7], acc1.value())?,
+            one,
+        ),
+    ];
+    residuals(expressions, terms)
+}
+
 /// `pi + ni = 0; ni + q = 0; q = I; psi = pi; der(psi) = v; v = w`
 ///
 /// The flux state is pinned to a constant excitation current through two node
@@ -1361,6 +1502,126 @@ fn a_connector_hidden_holonomic_constraint_carries_an_anchor_proof() {
             "second derivative completes the matching"
         );
     });
+}
+
+#[test]
+fn independent_holonomic_constraints_accumulate_before_the_dae_escapes() {
+    let model = independent_holonomic_model();
+    let error = model
+        .inspect(|view| sort(view).map(|_| ()))
+        .expect_err("two position constraints leave two accelerations undefined");
+    assert_eq!(unmatched_residue(&error), Some(4));
+
+    let candidates = model.inspect(holonomic_constraints);
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.owner_ordinal)
+            .collect::<Vec<_>>(),
+        vec![2, 10],
+        "candidate order is the continuous-owner order"
+    );
+    for candidate in &candidates {
+        let (single, manifold) = rebuild_holonomic_constraint(&model, candidate, &[])
+            .expect("each proved constraint reconstructs independently");
+        assert_eq!(manifold.len(), 2);
+        let error = single
+            .inspect(|view| sort(view).map(|_| ()))
+            .expect_err("one replacement cannot solve both independent subsystems");
+        assert_eq!(
+            unmatched_residue(&error),
+            Some(2),
+            "each single replacement strictly shrinks but does not close the residue"
+        );
+    }
+
+    let prepared = prepare_for_solve(&model).expect("the proved replacements accumulate");
+    let (transformed, manifold) = match prepared {
+        PreparedDae::Transformed { dae, manifold, .. } => (dae, manifold),
+        PreparedDae::Borrowed { .. } => panic!("the singular source requires index reduction"),
+    };
+    assert_eq!(manifold.len(), 4);
+    for variable in ["phi1", "w1", "phi2", "w2", "phi3", "w3", "phi4", "w4"] {
+        assert_eq!(
+            role(&transformed, variable),
+            dae::VariableRole::State,
+            "holonomic accumulation preserves state {variable}"
+        );
+    }
+    transformed.inspect(|view| {
+        assert!(sort(view).is_ok(), "only the complete chain may escape");
+        let source_equations = manifold
+            .iter()
+            .map(|expression| {
+                let expression = view
+                    .expression_id(*expression as usize)
+                    .and_then(|id| view.expression(id))
+                    .expect("manifold expression resolves in the replacement");
+                view.source_text(expression.provenance())
+                    .expect("manifold expression keeps its source constraint")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            source_equations,
+            [
+                "angle1 = 2*angle2",
+                "angle1 = 2*angle2",
+                "angle3 = 2*angle4",
+                "angle3 = 2*angle4",
+            ],
+            "each original constraint and its first derivative survive exact remapping"
+        );
+    });
+}
+
+#[test]
+fn holonomic_owner_order_makes_discovery_order_irrelevant() {
+    let model = independent_holonomic_model();
+    let normal = reduce_holonomic_constraint(&model)
+        .expect("normal discovery reduces both independent constraints")
+        .step
+        .expect("normal discovery reaches a final DAE");
+    let reversed = reduce_holonomic_constraint_with_enumeration(&model, |candidates| {
+        candidates.reverse();
+    })
+    .expect("reversed discovery reduces both independent constraints")
+    .step
+    .expect("reversed discovery reaches a final DAE");
+
+    assert_eq!(normal.1, reversed.1, "the exact manifold is deterministic");
+    assert_eq!(
+        serde_json::to_vec(&normal.0).expect("normal replacement serializes"),
+        serde_json::to_vec(&reversed.0).expect("reversed replacement serializes"),
+        "owner ordinals make the entire finalized replacement byte-identical",
+    );
+}
+
+#[test]
+fn a_certificate_that_does_not_survive_the_current_dae_fails_closed() {
+    let model = independent_holonomic_model();
+    let mut proof_round = 0;
+    let round = reduce_holonomic_constraint_with_enumeration(&model, |candidates| {
+        proof_round += 1;
+        if proof_round == 2 {
+            // Model a certificate that the first replacement invalidated. The
+            // hook runs only on freshly recollected current-DAE certificates;
+            // clearing this round would be ineffective if the reducer replayed
+            // the pristine list instead of proving the candidate again.
+            candidates.clear();
+        }
+    })
+    .expect("losing a current certificate is a conservative refusal");
+
+    assert_eq!(
+        proof_round, 2,
+        "the current DAE is proved again after the first edge"
+    );
+    assert!(
+        round.step.is_none(),
+        "a partial chain whose next proof disappeared never escapes the phase",
+    );
+    assert!(round.blocked.is_none());
 }
 
 #[test]

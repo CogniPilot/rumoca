@@ -79,6 +79,10 @@ struct SignedClasses {
     parity: Vec<bool>,
     /// Anchor of the class rooted at each variable ordinal.
     anchor: Vec<Option<EqualityAnchor>>,
+    /// Sign of the member that supplied an invariant anchor relative to its
+    /// class root. Derivative readers deliberately ignore this sign because
+    /// both signs differentiate to zero; value readers must retain it.
+    anchor_parity: Vec<bool>,
     /// Classes whose edges contradict each other and prove nothing usable.
     inconsistent: Vec<bool>,
 }
@@ -90,6 +94,7 @@ impl SignedClasses {
             rank: vec![0; count],
             parity: vec![false; count],
             anchor: vec![None; count],
+            anchor_parity: vec![false; count],
             inconsistent: vec![false; count],
         }
     }
@@ -105,16 +110,19 @@ impl SignedClasses {
         (current, parity)
     }
 
-    fn union(&mut self, left: u32, right: u32, opposite: bool) {
+    /// Join one proved equality edge, reporting whether it changed the closed
+    /// relation or newly exposed a contradiction.
+    fn union(&mut self, left: u32, right: u32, opposite: bool) -> bool {
         let (left, left_parity) = self.find(left);
         let (right, right_parity) = self.find(right);
         // Sign of `left` relative to `right` once both are lifted to their roots.
         let relative = left_parity ^ right_parity ^ opposite;
         if left == right {
-            if relative {
+            if relative && !self.inconsistent[left as usize] {
                 self.inconsistent[left as usize] = true;
+                return true;
             }
-            return;
+            return false;
         }
         let left_rank = self.rank[left as usize];
         let right_rank = self.rank[right as usize];
@@ -130,6 +138,7 @@ impl SignedClasses {
         if raise_rank {
             self.rank[keep as usize] = self.rank[keep as usize].saturating_add(1);
         }
+        true
     }
 
     /// The class member whose derivative is known, and how `variable` signs
@@ -152,10 +161,28 @@ impl SignedClasses {
         }
     }
 
+    /// Exact value anchor, retaining the sign of an invariant member.
+    fn value_anchor_of(&self, variable: u32) -> Option<(EqualityAnchor, EqualitySign)> {
+        let (root, parity) = self.find(variable);
+        if self.inconsistent[root as usize] {
+            return None;
+        }
+        match self.anchor[root as usize]? {
+            anchor @ EqualityAnchor::Invariant { .. } => Some((
+                anchor,
+                EqualitySign::of(parity != self.anchor_parity[root as usize]),
+            )),
+            anchor @ EqualityAnchor::State(state) => {
+                let (_, anchor_parity) = self.find(state);
+                Some((anchor, EqualitySign::of(parity != anchor_parity)))
+            }
+        }
+    }
+
     /// Keep `candidate` as the anchor of the class holding `variable` when it
     /// outranks whatever that class already reports.
     fn offer_anchor(&mut self, view: dae::DaeView<'_>, variable: u32, candidate: EqualityAnchor) {
-        let (root, _) = self.find(variable);
+        let (root, parity) = self.find(variable);
         let replace = match self.anchor[root as usize] {
             None => true,
             Some(current) => {
@@ -165,7 +192,13 @@ impl SignedClasses {
         };
         if replace {
             self.anchor[root as usize] = Some(candidate);
+            self.anchor_parity[root as usize] = parity;
         }
+    }
+
+    fn clear_anchors(&mut self) {
+        self.anchor.fill(None);
+        self.anchor_parity.fill(false);
     }
 
     #[cfg(test)]
@@ -203,6 +236,15 @@ pub(super) struct SystemEqualities {
 
 impl SystemEqualities {
     pub(super) fn collect(view: dae::DaeView<'_>) -> Self {
+        Self::collect_with_deferred_enumeration(view, |_| {})
+    }
+
+    /// Testable enumeration seam: production retains source-owner order while
+    /// the adversary perturbs only the deferred balance worklist.
+    fn collect_with_deferred_enumeration(
+        view: dae::DaeView<'_>,
+        perturb: impl FnOnce(&mut Vec<(dae::DaeProvenance, AdditiveOperands)>),
+    ) -> Self {
         let count = view.variable_count();
         let mut equalities = Self {
             exact: SignedClasses::new(count),
@@ -215,11 +257,16 @@ impl SystemEqualities {
             witness: vec![None; count],
         };
         let mut pinned = Vec::new();
+        let mut deferred = Vec::new();
         for owner in view.continuous_owners() {
             let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
                 continue;
             };
-            let Some(equality) = asserted_equality(view, equation.residual()) else {
+            let Some(operands) = additive_operands(view, equation.residual()) else {
+                continue;
+            };
+            let Some(equality) = operands.classify(equation.residual().index()) else {
+                deferred.push((equation.provenance(), operands));
                 continue;
             };
             for variable in equality.variables() {
@@ -231,23 +278,31 @@ impl SystemEqualities {
                     right,
                     opposite,
                     displaced,
-                } => equalities.alias(left, right, opposite, displaced),
+                } => {
+                    equalities.alias(left, right, opposite, displaced);
+                }
                 AssertedEquality::Pinned { variable, anchor } => pinned.push((variable, anchor)),
             }
         }
+        perturb(&mut deferred);
         equalities.resolve_anchors(view, &pinned);
+        equalities.close_invariant_balances(view, &deferred, &pinned);
         equalities
+    }
+
+    #[cfg(test)]
+    pub(super) fn collect_with_reversed_deferred_balances(view: dae::DaeView<'_>) -> Self {
+        Self::collect_with_deferred_enumeration(view, |deferred| deferred.reverse())
     }
 
     /// Record one asserted alias in the layers it holds for.
     ///
     /// A displaced pair shares only its derivative, so it never reaches the
     /// offset-free layer that answers value questions.
-    fn alias(&mut self, left: u32, right: u32, opposite: bool, displaced: bool) {
-        self.affine.union(left, right, opposite);
-        if !displaced {
-            self.exact.union(left, right, opposite);
-        }
+    fn alias(&mut self, left: u32, right: u32, opposite: bool, displaced: bool) -> bool {
+        let affine_changed = self.affine.union(left, right, opposite);
+        let exact_changed = !displaced && self.exact.union(left, right, opposite);
+        affine_changed || exact_changed
     }
 
     /// The class member whose derivative is known, and how `variable` signs
@@ -270,7 +325,7 @@ impl SystemEqualities {
     /// caller reasoning about a *value* — an initial condition, say — must not
     /// see that fallback, so it reads this instead.
     pub(super) fn value_anchor_of(&self, variable: u32) -> Option<(EqualityAnchor, EqualitySign)> {
-        self.exact.anchor_of(variable)
+        self.exact.value_anchor_of(variable)
     }
 
     /// The source expression a demotion onto `anchor` differentiates.
@@ -300,7 +355,7 @@ impl SystemEqualities {
             if !self.state[variable as usize] {
                 return None;
             }
-            let (anchor, sign) = self.exact.anchor_of(variable)?;
+            let (anchor, sign) = self.exact.value_anchor_of(variable)?;
             (anchor != EqualityAnchor::State(variable)).then_some((variable, anchor, sign))
         })
     }
@@ -308,6 +363,8 @@ impl SystemEqualities {
     /// Pick the anchor of every class: a time-invariant pin fixes the whole
     /// class, otherwise the class keeps the state a solver would prefer.
     fn resolve_anchors(&mut self, view: dae::DaeView<'_>, pinned: &[(u32, EqualityAnchor)]) {
+        self.exact.clear_anchors();
+        self.affine.clear_anchors();
         for (id, variable) in view.variables() {
             let index = id.index();
             if variable.role() != dae::VariableRole::State
@@ -325,6 +382,59 @@ impl SystemEqualities {
             self.exact.offer_anchor(view, variable, anchor);
             self.affine.offer_anchor(view, variable, anchor);
         }
+    }
+
+    /// Close connector balances after construction-proved invariant operands
+    /// have become available.
+    ///
+    /// A balance with exactly two non-invariant algebraic coordinates proves
+    /// those two coordinates share a derivative up to sign: every eliminated
+    /// coordinate and explicit invariant term has derivative zero. It proves
+    /// their values equal only when every eliminated offset is an exact literal
+    /// zero. Limiting the derived edge to algebraics keeps this connector
+    /// closure from selecting or demoting a state through a multi-coordinate
+    /// component equation. Each accepted edge is retained in the union-find
+    /// relation; no source owner is removed or rewritten here.
+    fn close_invariant_balances(
+        &mut self,
+        view: dae::DaeView<'_>,
+        deferred: &[(dae::DaeProvenance, AdditiveOperands)],
+        pinned: &[(u32, EqualityAnchor)],
+    ) {
+        loop {
+            let inferred = deferred
+                .iter()
+                .filter_map(|(owner, operands)| {
+                    operands
+                        .alias_after_invariant_elimination(view, self)
+                        .map(|edge| (*owner, edge))
+                })
+                .collect::<Vec<_>>();
+            let mut changed = false;
+            for (owner, edge) in inferred {
+                changed |= self.record_inferred_edge(owner, edge);
+            }
+            if !changed {
+                break;
+            }
+            // Union-find stores the relation, not a mutable anchor cache. A
+            // fresh deterministic pass prevents a root merged this round from
+            // retaining or losing an anchor merely because of union order.
+            self.resolve_anchors(view, pinned);
+        }
+    }
+
+    fn record_inferred_edge(
+        &mut self,
+        owner: dae::DaeProvenance,
+        edge: InferredEqualityEdge,
+    ) -> bool {
+        if !self.alias(edge.left, edge.right, edge.opposite, edge.displaced) {
+            return false;
+        }
+        self.witness[edge.left as usize].get_or_insert(owner);
+        self.witness[edge.right as usize].get_or_insert(owner);
+        true
     }
 }
 
@@ -413,7 +523,7 @@ impl AssertedEquality {
 }
 
 /// The signed operands of one additive residual, split by what they name.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct AdditiveOperands {
     /// Scalar real coordinates, with the sign each carries in the residual.
     pub(super) variables: Vec<(u32, bool)>,
@@ -427,6 +537,14 @@ pub(super) struct AdditiveInvariant {
     pub(super) expression: u32,
     pub(super) negated: bool,
     pub(super) zero: bool,
+}
+
+#[derive(Clone, Copy)]
+struct InferredEqualityEdge {
+    left: u32,
+    right: u32,
+    opposite: bool,
+    displaced: bool,
 }
 
 impl AdditiveOperands {
@@ -478,6 +596,58 @@ impl AdditiveOperands {
             _ => None,
         }
     }
+
+    /// Eliminate only coordinates whose equality class already proves their
+    /// derivative is zero, leaving one signed equality between two coordinates.
+    fn alias_after_invariant_elimination(
+        &self,
+        view: dae::DaeView<'_>,
+        equalities: &SystemEqualities,
+    ) -> Option<InferredEqualityEdge> {
+        if self.variables.len() < 3 {
+            return None;
+        }
+        let mut remaining = Vec::with_capacity(2);
+        let mut offset_free = self.offset_free();
+        for &(variable, negated) in &self.variables {
+            match equalities.anchor_of(variable) {
+                Some((EqualityAnchor::Invariant { .. }, _)) => {
+                    offset_free &= equalities
+                        .value_anchor_of(variable)
+                        .is_some_and(|(anchor, _)| invariant_anchor_is_zero(view, anchor));
+                }
+                _ if remaining.len() < 2 => remaining.push((variable, negated)),
+                _ => return None,
+            }
+        }
+        let [(left, left_negated), (right, right_negated)] = *remaining.as_slice() else {
+            return None;
+        };
+        (left != right && is_algebraic_variable(view, left) && is_algebraic_variable(view, right))
+            .then_some(InferredEqualityEdge {
+                left,
+                right,
+                opposite: left_negated == right_negated,
+                displaced: !offset_free,
+            })
+    }
+}
+
+fn is_algebraic_variable(view: dae::DaeView<'_>, variable: u32) -> bool {
+    view.variable_id(variable as usize)
+        .and_then(|variable| view.variable(variable))
+        .is_some_and(|variable| variable.role() == dae::VariableRole::Algebraic)
+}
+
+fn invariant_anchor_is_zero(view: dae::DaeView<'_>, anchor: EqualityAnchor) -> bool {
+    let EqualityAnchor::Invariant {
+        value: Some(value), ..
+    } = anchor
+    else {
+        return false;
+    };
+    view.expression_id(value as usize)
+        .is_some_and(|value| is_zero_literal(view, value))
 }
 
 /// The equality one additive residual proves.
@@ -488,14 +658,12 @@ impl AdditiveOperands {
 /// body writes `flange_a.s = s - L/2`. A residual that reaches a leaf which is
 /// neither a scalar real coordinate nor a time-invariant expression proves
 /// nothing this closure may use, and is dropped whole.
-fn asserted_equality<'dae>(
+fn additive_operands<'dae>(
     view: dae::DaeView<'dae>,
     residual: dae::ExprId<'dae>,
-) -> Option<AssertedEquality> {
+) -> Option<AdditiveOperands> {
     let mut operands = AdditiveOperands::default();
-    flatten_additive(view, residual, false, &mut operands)
-        .then(|| operands.classify(residual.index()))
-        .flatten()
+    flatten_additive(view, residual, false, &mut operands).then_some(operands)
 }
 
 /// Split `expression` into signed additive leaves, reporting whether every leaf

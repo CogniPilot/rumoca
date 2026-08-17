@@ -26,8 +26,9 @@ use crate::StructuralError;
 pub(super) fn rebuild_holonomic_constraint(
     model: &dae::Dae,
     constraint: &HolonomicConstraint,
+    prior_manifold: &[u32],
 ) -> Result<(dae::Dae, Vec<u32>), StructuralError> {
-    let mut manifold = Vec::with_capacity(2);
+    let mut manifold = Vec::with_capacity(prior_manifold.len() + 2);
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
             if let Some(declaration) = source.predefined_string_declaration() {
@@ -94,13 +95,17 @@ pub(super) fn rebuild_holonomic_constraint(
                 &mut variables,
                 &mut rebuilt_state,
             )?;
+            manifold.extend(
+                prior_manifold
+                    .iter()
+                    .map(|expression| expressions[*expression as usize].index()),
+            );
             let replacement = rebuild_holonomic_replacement(
                 context,
                 target,
                 &variables,
                 &mut rebuilt_state,
                 constraint,
-                &expressions,
                 &mut manifold,
             )?;
             define_variables(source, target, &expressions, &mut variables)?;
@@ -251,7 +256,6 @@ fn rebuild_holonomic_replacement<'target>(
     variables: &[ReservedVariable<'target>],
     rebuilt: &mut [Option<dae::ExprId<'target>>],
     constraint: &HolonomicConstraint,
-    expressions: &[dae::ExprId<'target>],
     manifold: &mut Vec<u32>,
 ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
     target.expressions(|expression_target| {
@@ -271,15 +275,17 @@ fn rebuild_holonomic_replacement<'target>(
             dae::DaeGeneration::IndexReduction,
             constraint.owner.span(),
         )?;
+        let value = rebuilder.materialize_holonomic_value(
+            source_residual,
+            &constraint.proof,
+            provenance,
+        )?;
         let first =
             rebuilder.differentiate_holonomic(source_residual, 1, &constraint.proof, provenance)?;
         let first = rebuilder.materialize_derivative(first, provenance)?;
         let second =
             rebuilder.differentiate_holonomic(source_residual, 2, &constraint.proof, provenance)?;
-        manifold.extend([
-            expressions[constraint.residual as usize].index(),
-            first.index(),
-        ]);
+        manifold.extend([value.index(), first.index()]);
         rebuilder.materialize_derivative(second, provenance)
     })
 }
