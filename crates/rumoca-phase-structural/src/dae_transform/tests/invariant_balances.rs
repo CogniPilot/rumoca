@@ -103,6 +103,17 @@ fn subtraction<'dae>(
         .binary(dae::BinaryOperator::Subtract, lhs, rhs)
 }
 
+fn coordinate_residual<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    at: dae::DaeProvenance,
+    lhs: dae::CoordinateInput<'dae>,
+    rhs: dae::CoordinateInput<'dae>,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let lhs = coordinate(expressions, at, lhs)?;
+    let rhs = coordinate(expressions, at, rhs)?;
+    subtraction(expressions, at, lhs, rhs)
+}
+
 fn offset_residuals<'dae>(
     model: &mut dae::DaeConstruction<'dae>,
     variables: &OffsetVariables<'dae>,
@@ -297,6 +308,222 @@ fn offset_model(kind: OffsetKind) -> dae::Dae {
         })
     })
     .expect("invariant-balance fixture constructs")
+}
+
+struct ParameterSupportVariables<'dae> {
+    phi0: dae::ParameterId<'dae>,
+    phi0_reservation: dae::VariableReservation<'dae>,
+    states: [dae::StateId<'dae>; 4],
+    algebraics: [dae::AlgebraicId<'dae>; 6],
+}
+
+fn declare_parameter_support_variables<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    real: dae::ValueTypeId<'dae>,
+    at: dae::DaeProvenance,
+) -> Result<ParameterSupportVariables<'dae>, dae::DaeConstructionError> {
+    model.variables(|variables| {
+        let attributes = dae::VariableAttributes::default;
+        let (phi0, phi0_reservation) =
+            variables.reserve_parameter(VarName::new("phi0"), real, at)?;
+        Ok(ParameterSupportVariables {
+            phi0,
+            phi0_reservation,
+            states: [
+                variables.state(VarName::new("x"), real, at, attributes())?,
+                variables.state(VarName::new("w"), real, at, attributes())?,
+                variables.state(VarName::new("y"), real, at, attributes())?,
+                variables.state(VarName::new("v"), real, at, attributes())?,
+            ],
+            algebraics: [
+                variables.algebraic(VarName::new("port_x"), real, at, attributes())?,
+                variables.algebraic(VarName::new("port_y"), real, at, attributes())?,
+                variables.algebraic(VarName::new("support"), real, at, attributes())?,
+                variables.algebraic(VarName::new("mount"), real, at, attributes())?,
+                variables.algebraic(VarName::new("shifted"), real, at, attributes())?,
+                variables.algebraic(VarName::new("acc_y"), real, at, attributes())?,
+            ],
+        })
+    })
+}
+
+fn parameter_support_position_residuals<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    variables: &ParameterSupportVariables<'dae>,
+    spans: &[dae::DaeProvenance],
+    declaration: dae::DaeProvenance,
+) -> Result<(dae::ExprId<'dae>, Vec<dae::ExprId<'dae>>), dae::DaeConstructionError> {
+    let phi0 = coordinate(
+        expressions,
+        spans[3],
+        dae::CoordinateInput::Parameter(variables.phi0),
+    )?;
+    let binding = expressions
+        .at(declaration)
+        .literal(dae::DaeLiteral::Real(0.5))?;
+    let port_x = coordinate(
+        expressions,
+        spans[4],
+        dae::CoordinateInput::Algebraic(variables.algebraics[0]),
+    )?;
+    let support = coordinate(
+        expressions,
+        spans[4],
+        dae::CoordinateInput::Algebraic(variables.algebraics[2]),
+    )?;
+    let port_minus_support = subtraction(expressions, spans[4], port_x, support)?;
+    let two = expressions
+        .at(spans[5])
+        .literal(dae::DaeLiteral::Real(2.0))?;
+    let port_y = coordinate(
+        expressions,
+        spans[5],
+        dae::CoordinateInput::Algebraic(variables.algebraics[1]),
+    )?;
+    let twice_port_y =
+        expressions
+            .at(spans[5])
+            .binary(dae::BinaryOperator::Multiply, two, port_y)?;
+    let mount = coordinate(
+        expressions,
+        spans[3],
+        dae::CoordinateInput::Algebraic(variables.algebraics[3]),
+    )?;
+    let shifted4 = coordinate(
+        expressions,
+        spans[4],
+        dae::CoordinateInput::Algebraic(variables.algebraics[4]),
+    )?;
+    let shifted5 = coordinate(
+        expressions,
+        spans[5],
+        dae::CoordinateInput::Algebraic(variables.algebraics[4]),
+    )?;
+    Ok((
+        binding,
+        vec![
+            coordinate_residual(
+                expressions,
+                spans[0],
+                dae::CoordinateInput::State(variables.states[0]),
+                dae::CoordinateInput::Algebraic(variables.algebraics[0]),
+            )?,
+            coordinate_residual(
+                expressions,
+                spans[1],
+                dae::CoordinateInput::State(variables.states[2]),
+                dae::CoordinateInput::Algebraic(variables.algebraics[1]),
+            )?,
+            coordinate_residual(
+                expressions,
+                spans[2],
+                dae::CoordinateInput::Algebraic(variables.algebraics[2]),
+                dae::CoordinateInput::Algebraic(variables.algebraics[3]),
+            )?,
+            subtraction(expressions, spans[3], mount, phi0)?,
+            subtraction(expressions, spans[4], shifted4, port_minus_support)?,
+            subtraction(expressions, spans[5], shifted5, twice_port_y)?,
+        ],
+    ))
+}
+
+fn parameter_support_derivative_residuals<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    variables: &ParameterSupportVariables<'dae>,
+    spans: &[dae::DaeProvenance],
+) -> Result<Vec<dae::ExprId<'dae>>, dae::DaeConstructionError> {
+    let one = expressions
+        .at(spans[2])
+        .literal(dae::DaeLiteral::Real(1.0))?;
+    let derivative_w = coordinate(
+        expressions,
+        spans[2],
+        dae::CoordinateInput::Derivative(variables.states[1]),
+    )?;
+    Ok(vec![
+        coordinate_residual(
+            expressions,
+            spans[0],
+            dae::CoordinateInput::Derivative(variables.states[0]),
+            dae::CoordinateInput::State(variables.states[1]),
+        )?,
+        coordinate_residual(
+            expressions,
+            spans[1],
+            dae::CoordinateInput::Derivative(variables.states[2]),
+            dae::CoordinateInput::State(variables.states[3]),
+        )?,
+        subtraction(expressions, spans[2], derivative_w, one)?,
+        coordinate_residual(
+            expressions,
+            spans[3],
+            dae::CoordinateInput::Derivative(variables.states[3]),
+            dae::CoordinateInput::Algebraic(variables.algebraics[5]),
+        )?,
+    ])
+}
+
+/// The support path in `Rotational.Examples.First`, reduced to the exact
+/// parameter pin, connector hop, and displaced component relation at issue.
+fn parameter_chained_offset_model() -> dae::Dae {
+    const TEXT: &str = "parameter Real phi0=0.5; Real x; Real w; Real y; Real v; Real port_x; Real port_y; Real support; Real mount; Real shifted; Real acc_y; equation x = port_x; y = port_y; support = mount; mount = phi0; shifted = port_x - support; shifted = 2*port_y; der(x) = w; der(y) = v; der(w) = 1; der(v) = acc_y;";
+    const EQUATIONS: [&str; 10] = [
+        "x = port_x",
+        "y = port_y",
+        "support = mount",
+        "mount = phi0",
+        "shifted = port_x - support",
+        "shifted = 2*port_y",
+        "der(x) = w",
+        "der(y) = v",
+        "der(w) = 1",
+        "der(v) = acc_y",
+    ];
+    let mut sources = SourceMap::new();
+    let source = sources.add("parameter_support_chain.mo", TEXT);
+    dae::Dae::construct(sources, |model| {
+        let declaration = source_provenance(source, TEXT, "equation");
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let variables = declare_parameter_support_variables(model, real, declaration)?;
+        let spans = EQUATIONS.map(|equation| source_provenance(source, TEXT, equation));
+        let (binding, residuals) = model.expressions(|expressions| {
+            let (binding, mut residuals) = parameter_support_position_residuals(
+                expressions,
+                &variables,
+                &spans[..6],
+                declaration,
+            )?;
+            residuals.extend(parameter_support_derivative_residuals(
+                expressions,
+                &variables,
+                &spans[6..],
+            )?);
+            Ok((binding, residuals))
+        })?;
+        model.variables(|catalog| {
+            catalog.define(
+                variables.phi0_reservation,
+                dae::VariableAttributes {
+                    binding: Some(binding),
+                    ..dae::VariableAttributes::default()
+                },
+                declaration,
+            )
+        })?;
+        model.continuous(|continuous| {
+            for (span, residual) in spans.into_iter().zip(residuals) {
+                continuous.value_equation(span, residual)?;
+            }
+            Ok(())
+        })
+    })
+    .expect("parameter-support fixture constructs")
 }
 
 fn variable_index(view: dae::DaeView<'_>, name: &str) -> u32 {
@@ -496,6 +723,34 @@ fn nonzero_offset_is_derivative_only_and_cannot_forge_a_manifold() {
         );
     });
     assert!(prepare_for_solve(&model).is_err());
+}
+
+#[test]
+fn chained_parameter_support_is_derivative_only_until_its_value_is_retained() {
+    let model = parameter_chained_offset_model();
+    model.inspect(|view| {
+        let equalities = SystemEqualities::collect(view);
+        let x = variable_index(view, "x");
+        let shifted = variable_index(view, "shifted");
+        assert_eq!(
+            equalities.anchor_of(shifted),
+            Some((EqualityAnchor::State(x), EqualitySign::Same)),
+            "the exact mount hop and affine support edge reach the state derivative"
+        );
+        assert_eq!(
+            equalities.value_anchor_of(shifted),
+            None,
+            "the parameter displacement is not an offset-free value alias"
+        );
+        assert!(
+            holonomic_constraints(view).is_empty(),
+            "the current relation cannot materialize the retained parameter displacement"
+        );
+    });
+    assert!(
+        prepare_for_solve(&model).is_err(),
+        "the current reducer fails closed instead of dropping the parameter displacement"
+    );
 }
 
 #[test]
