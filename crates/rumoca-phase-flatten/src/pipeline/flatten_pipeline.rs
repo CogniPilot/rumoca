@@ -966,6 +966,13 @@ pub(crate) fn finalize_flat_model(
     normalize_record_array_field_access_bindings(flat);
     drop_invalid_field_access_bindings(flat);
     propagate_unexpanded_record_array_dims(flat, overlay);
+    let assertion_error_literal =
+        tree.scope_tree
+            .predefined_member(&rumoca_core::ComponentPath::from_parts([
+                "AssertionLevel",
+                "error",
+            ]));
+    constant_injection::fold_structural_initial_asserts(flat, ctx, assertion_error_literal)?;
     flat.oc_break_edge_scalar_count = vcg::compute_break_edge_scalar_count(
         &flatten_graph.vcg_data.branches,
         &flatten_graph.optional_edges,

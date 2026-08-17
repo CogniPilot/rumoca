@@ -394,9 +394,37 @@ pub enum FlattenError {
         #[label("constructor marker conflicts with the resolved callable")]
         span: Span,
     },
+
+    /// An initial-algorithm assertion whose condition is structurally proven
+    /// false at error level.
+    ///
+    /// MLS §8.3.7: an assertion with a false condition and
+    /// `AssertionLevel.error` terminates; when every value the condition
+    /// reads is a translation-frozen structural constant, that failure is
+    /// certain at every initialization and is reported at translation.
+    #[error("structurally proven assertion failure: {message}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF030),
+        help(
+            "the assertion condition evaluates to false from structural constants alone, so the model cannot initialize consistently"
+        )
+    )]
+    StructuralAssertionFailed {
+        message: String,
+        #[label("assertion condition is false at every initialization")]
+        span: Span,
+    },
 }
 
 impl FlattenError {
+    /// Create a StructuralAssertionFailed error.
+    pub fn structural_assertion_failed(message: impl Into<String>, span: Span) -> Self {
+        Self::StructuralAssertionFailed {
+            message: message.into(),
+            span,
+        }
+    }
+
     // Constructor methods using the error_constructor! macro
     error_constructor!(undefined_variable, UndefinedVariable { name: String });
     error_constructor!(
@@ -689,7 +717,8 @@ impl PhaseError for FlattenError {
                 member_pair = [*structural_span, *variable_span];
                 &member_pair
             }
-            Self::UndefinedVariable { span, .. }
+            Self::StructuralAssertionFailed { span, .. }
+            | Self::UndefinedVariable { span, .. }
             | Self::IncompatibleConnectors { span, .. }
             | Self::UnsupportedEquation { span, .. }
             | Self::InvalidFunctionCallArgs { span, .. }
