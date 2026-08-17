@@ -44,18 +44,18 @@ struct QuotientBatch<'dae> {
     generated_at: DaeProvenance,
 }
 
-/// One in-flight model-owner replay.
+/// Linear capability for one in-flight model-owner replay.
 ///
-/// The token is decoder reconstruction capability, not a producer API: it
-/// stays crate-private, only `begin_quotient_replay` mints it, and each
-/// stage consumes exactly one owner-produced fact in source order —
-/// relation, then activation definition, then root.
+/// This is reconstruction capability, not a producer API: only
+/// [`DaeConstruction::begin_quotient_replay`] mints it, its fields remain
+/// opaque, and each stage consumes exactly one owner-produced fact in source
+/// order — relation, then activation definition, then root.
 /// `finish_quotient_replay` verifies full consumption and clears exactly
 /// this token's construction-issued pending slot; a token that never
 /// finishes is caught at `finish_construction`, so no partially consumed
 /// owner can reach a finalized DAE on any path, and finishing several live
 /// tokens in any order settles each exact slot rather than a stack.
-pub(crate) struct QuotientReplayToken<'dae> {
+pub struct QuotientReplayToken<'dae> {
     quotient: ExprId<'dae>,
     generated: [ExprId<'dae>; 6],
     builtin: PureBuiltin,
@@ -67,16 +67,18 @@ pub(crate) struct QuotientReplayToken<'dae> {
 }
 
 impl<'dae> QuotientReplayToken<'dae> {
-    pub(crate) fn quotient(&self) -> ExprId<'dae> {
+    /// The regenerated quotient expression.
+    pub fn quotient(&self) -> ExprId<'dae> {
         self.quotient
     }
 
-    pub(crate) fn generated(&self) -> [ExprId<'dae>; 6] {
+    /// The regenerated indicator expressions in canonical owner order.
+    pub fn generated(&self) -> [ExprId<'dae>; 6] {
         self.generated
     }
 
     /// The generated RuntimeDiscontinuity provenance anchoring this replay.
-    pub(crate) fn provenance(&self) -> DaeProvenance {
+    pub fn provenance(&self) -> DaeProvenance {
         self.generated_at
     }
 }
@@ -216,7 +218,7 @@ impl<'dae> DaeConstruction<'dae> {
     /// Begin replaying one model quotient owner: re-run the checked batch
     /// construction and return the staged token that the relation,
     /// activation, and root positions consume in source order.
-    pub(crate) fn begin_quotient_replay(
+    pub fn begin_quotient_replay(
         &mut self,
         builtin: PureBuiltin,
         arguments: [ExprId<'dae>; 2],
@@ -241,7 +243,7 @@ impl<'dae> DaeConstruction<'dae> {
 
     /// Re-issue the owner's relation from its own regenerated relation
     /// expression. First stage; consumable exactly once.
-    pub(crate) fn replay_quotient_relation(
+    pub fn replay_quotient_relation(
         &mut self,
         token: &mut QuotientReplayToken<'dae>,
     ) -> Result<RelationId<'dae>, DaeConstructionError> {
@@ -259,7 +261,7 @@ impl<'dae> DaeConstruction<'dae> {
 
     /// Define the owner's exact pre-reserved activation as Always. Second
     /// stage; requires the relation stage and a still-undefined reservation.
-    pub(crate) fn replay_quotient_activation(
+    pub fn replay_quotient_activation(
         &mut self,
         token: &mut QuotientReplayToken<'dae>,
         activation: ConditionId<'dae>,
@@ -295,7 +297,7 @@ impl<'dae> DaeConstruction<'dae> {
 
     /// Re-issue the owner's root from ITS relation and activation. Third
     /// stage; requires both earlier stages.
-    pub(crate) fn replay_quotient_root(
+    pub fn replay_quotient_root(
         &mut self,
         token: &mut QuotientReplayToken<'dae>,
     ) -> Result<RootId<'dae>, DaeConstructionError> {
@@ -319,7 +321,7 @@ impl<'dae> DaeConstruction<'dae> {
 
     /// Verify the token is fully consumed, settle exactly its pending slot,
     /// and record the regenerated owner.
-    pub(crate) fn finish_quotient_replay(
+    pub fn finish_quotient_replay(
         &mut self,
         token: QuotientReplayToken<'dae>,
     ) -> Result<(), DaeConstructionError> {

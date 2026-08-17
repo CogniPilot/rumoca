@@ -12,6 +12,7 @@ use rumoca_ir_dae as dae;
 use super::DirectStateConstraint;
 use super::constraints::DifferentiationFacts;
 use super::expressions::{ExpressionRebuilder, RebuiltIdentities};
+use super::runtime_quotients::{QuotientExpressionContext, RuntimeQuotientReplayPlan};
 use super::variables::{ReservedVariable, TargetVariable};
 
 #[derive(Clone, Copy)]
@@ -190,6 +191,7 @@ pub(super) fn rebuild_delay_coordinates<'target>(
     facts: &DifferentiationFacts,
     candidate: Option<DirectStateConstraint>,
     rebuilt: &mut [Option<dae::ExprId<'target>>],
+    quotients: &mut RuntimeQuotientReplayPlan<'target>,
 ) -> Result<(), dae::DaeConstructionError> {
     let mut coordinate_indices = vec![None; source.delay_count()];
     for index in 0..source.expression_count() {
@@ -221,6 +223,30 @@ pub(super) fn rebuild_delay_coordinates<'target>(
             .expression(coordinate_id)
             .expect("delay coordinate expression identity resolves")
             .provenance();
+        let through = match delay.operation() {
+            dae::DelayOperation::ParameterDelay { delay_time } => {
+                delay.source().index().max(delay_time.expression().index())
+            }
+            dae::DelayOperation::BoundedDelay {
+                delay_time,
+                delay_max,
+            } => delay
+                .source()
+                .index()
+                .max(delay_time.index())
+                .max(delay_max.expression().index()),
+        };
+        quotients.replay_model_owners_through(
+            through as usize,
+            target,
+            QuotientExpressionContext {
+                source,
+                identities,
+                facts,
+                candidate,
+            },
+            rebuilt,
+        )?;
         let rebuilt_delay = target.expressions(|expressions| {
             let mut rebuilder = ExpressionRebuilder::new(
                 source,

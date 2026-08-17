@@ -3,6 +3,7 @@ use rumoca_ir_dae as dae;
 use super::DirectStateConstraint;
 use super::constraints::DifferentiationFacts;
 use super::expressions::{ExpressionRebuilder, RebuiltBaseIdentities, RebuiltIdentities};
+use super::runtime_quotients::RuntimeQuotientReplayPlan;
 
 #[derive(Clone)]
 pub(super) struct RebuiltFunction<'dae> {
@@ -116,6 +117,7 @@ pub(super) fn rebuild_functions<'source, 'target>(
     facts: &DifferentiationFacts,
     candidate: Option<DirectStateConstraint>,
     rebuilt: &mut [Option<dae::ExprId<'target>>],
+    quotients: &mut RuntimeQuotientReplayPlan<'target>,
 ) -> Result<Vec<RebuiltFunction<'target>>, dae::DaeConstructionError> {
     let (function_use_groups, function_uses) = index_function_uses(source);
     let function_definitions = (0..source.function_count())
@@ -140,6 +142,8 @@ pub(super) fn rebuild_functions<'source, 'target>(
         function_use_groups,
         function_uses,
         function_definitions,
+        quotients,
+        active_function: None,
     };
     rebuilder.rebuild_all(target)?;
     Ok(rebuilder.functions)
@@ -257,6 +261,8 @@ struct FunctionRebuilder<'source, 'borrow, 'target> {
     function_use_groups: Vec<FunctionUseGroup>,
     function_uses: Vec<u32>,
     function_definitions: Vec<Vec<Option<dae::FunctionDefinitionId<'target>>>>,
+    quotients: &'borrow mut RuntimeQuotientReplayPlan<'target>,
+    active_function: Option<usize>,
 }
 
 impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
@@ -360,11 +366,16 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         }
         let body =
             target.functions(|functions| functions.begin(reservation, function.declaration()))?;
-        let body =
-            self.rebuild_statements(target, &rebuilt_function, body, function.statements())?;
-        self.seed_results(target, function, &rebuilt_function, &body)?;
-        self.rebuild_orphaned_scoped_expressions(target, index, &body)?;
-        target.functions(|functions| functions.define(body, function.declaration()))
+        self.active_function = Some(index);
+        let result = (|| {
+            let body =
+                self.rebuild_statements(target, &rebuilt_function, body, function.statements())?;
+            self.seed_results(target, function, &rebuilt_function, &body)?;
+            self.rebuild_orphaned_scoped_expressions(target, index, &body)?;
+            target.functions(|functions| functions.define(body, function.declaration()))
+        })();
+        self.active_function = None;
+        result
     }
 
     /// Reconstruct one MLS §12.9 external interface through the same checked
@@ -917,7 +928,9 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                         span: provenance.span(),
                     });
                 }
-                _operation if expanded => self.rebuild_expanded_expression(target, current)?,
+                _operation if expanded => {
+                    self.rebuild_expanded_expression(target, current, body)?
+                }
                 operation => {
                     self.pending.push((current, true));
                     Self::push_dependencies(&mut self.pending, operation);
@@ -985,7 +998,18 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         &mut self,
         target: &mut dae::DaeConstruction<'target>,
         current: dae::ExprId<'source>,
+        body: Option<&dae::FunctionBody<'target>>,
     ) -> Result<(), dae::DaeConstructionError> {
+        if self.quotients.replay_function_owner(
+            self.source,
+            target,
+            body,
+            self.active_function,
+            current,
+            self.rebuilt,
+        )? {
+            return Ok(());
+        }
         let identities = RebuiltIdentities {
             base: self.identities,
             functions: &self.functions,

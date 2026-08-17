@@ -15,6 +15,7 @@ use super::constraints::DifferentiationFacts;
 use super::declarations::{rebuild_domains, rebuild_types, reserve_conditions};
 use super::expressions::{ExpressionRebuilder, RebuiltBaseIdentities, RebuiltIdentities};
 use super::functions::rebuild_functions;
+use super::runtime_quotients::{QuotientExpressionContext, RuntimeQuotientReplayPlan};
 use super::semantic_owners::{RebuiltOwnerIdentities, rebuild_semantic_owners};
 use super::temporal::{rebuild_clocks, rebuild_delay_coordinates, rebuild_temporal_coordinates};
 use super::variables::{
@@ -31,9 +32,7 @@ pub(super) fn rebuild_holonomic_constraint(
     let mut manifold = Vec::with_capacity(prior_manifold.len() + 2);
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
-            if let Some(declaration) = source.predefined_string_declaration() {
-                target.register_predefined_string(declaration)?;
-            }
+            let mut quotients = begin_reconstruction(source, target)?;
             let types = rebuild_types(source, target)?;
             let domains = rebuild_domains(source, target)?;
             let mut variables = reserve_variables(source, target, &types, None)?;
@@ -57,6 +56,7 @@ pub(super) fn rebuild_holonomic_constraint(
                 &facts,
                 None,
                 &mut rebuilt_state,
+                &mut quotients,
             )?;
             rebuild_delay_coordinates(
                 source,
@@ -76,6 +76,7 @@ pub(super) fn rebuild_holonomic_constraint(
                 &facts,
                 None,
                 &mut rebuilt_state,
+                &mut quotients,
             )?;
             let context = RebuildContext {
                 source,
@@ -94,6 +95,7 @@ pub(super) fn rebuild_holonomic_constraint(
                 target,
                 &mut variables,
                 &mut rebuilt_state,
+                &mut quotients,
             )?;
             manifold.extend(
                 prior_manifold
@@ -120,6 +122,7 @@ pub(super) fn rebuild_holonomic_constraint(
                     clocks: &clocks,
                 },
                 Some((constraint.residual, replacement)),
+                &mut quotients,
             )
         })
     });
@@ -134,9 +137,7 @@ pub(super) fn rebuild_with_state_demotion(
 ) -> Result<dae::Dae, StructuralError> {
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
-            if let Some(declaration) = source.predefined_string_declaration() {
-                target.register_predefined_string(declaration)?;
-            }
+            let mut quotients = begin_reconstruction(source, target)?;
             let types = rebuild_types(source, target)?;
             let domains = rebuild_domains(source, target)?;
             let mut variables = reserve_variables(source, target, &types, Some(candidate.state))?;
@@ -160,6 +161,7 @@ pub(super) fn rebuild_with_state_demotion(
                 &facts,
                 Some(candidate),
                 &mut rebuilt_state,
+                &mut quotients,
             )?;
             rebuild_delay_coordinates(
                 source,
@@ -179,6 +181,7 @@ pub(super) fn rebuild_with_state_demotion(
                 &facts,
                 Some(candidate),
                 &mut rebuilt_state,
+                &mut quotients,
             )?;
             let context = RebuildContext {
                 source,
@@ -197,6 +200,7 @@ pub(super) fn rebuild_with_state_demotion(
                 target,
                 &mut variables,
                 &mut rebuilt_state,
+                &mut quotients,
             )?;
             define_variables(source, target, &expressions, &mut variables)?;
             rebuild_semantic_owners(
@@ -210,6 +214,7 @@ pub(super) fn rebuild_with_state_demotion(
                     clocks: &clocks,
                 },
                 None,
+                &mut quotients,
             )
         })
     });
@@ -295,6 +300,7 @@ fn rebuild_expressions_and_static_variables<'source, 'target>(
     target: &mut dae::DaeConstruction<'target>,
     variables: &mut [ReservedVariable<'target>],
     rebuilt: &mut [Option<dae::ExprId<'target>>],
+    quotients: &mut RuntimeQuotientReplayPlan<'target>,
 ) -> Result<Vec<dae::ExprId<'target>>, dae::DaeConstructionError> {
     let (before_expressions, milestones) = static_definition_milestones(context.source);
     define_static_variables_at(
@@ -309,7 +315,15 @@ fn rebuild_expressions_and_static_variables<'source, 'target>(
     let mut milestone = 0_usize;
     while milestone < milestones.len() {
         let expression = milestones[milestone].0;
-        rebuild_expression_segment(context, target, variables, rebuilt, next, expression + 1)?;
+        rebuild_expression_segment(
+            context,
+            target,
+            variables,
+            rebuilt,
+            quotients,
+            next,
+            expression + 1,
+        )?;
         next = expression + 1;
 
         let first = milestone;
@@ -327,6 +341,7 @@ fn rebuild_expressions_and_static_variables<'source, 'target>(
         target,
         variables,
         rebuilt,
+        quotients,
         next,
         context.source.expression_count(),
     )?;
@@ -341,30 +356,54 @@ fn rebuild_expression_segment<'source, 'target>(
     target: &mut dae::DaeConstruction<'target>,
     variables: &[ReservedVariable<'target>],
     rebuilt: &mut [Option<dae::ExprId<'target>>],
+    quotients: &mut RuntimeQuotientReplayPlan<'target>,
     start: usize,
     end: usize,
 ) -> Result<(), dae::DaeConstructionError> {
     if start == end {
         return Ok(());
     }
-    target.expressions(|expressions| {
-        let mut rebuilder = ExpressionRebuilder::new(
-            context.source,
-            expressions,
-            context.identities(variables),
-            context.facts,
-            context.candidate,
+    for index in start..end {
+        quotients.replay_model_owners_through(
+            index,
+            target,
+            QuotientExpressionContext {
+                source: context.source,
+                identities: context.identities(variables),
+                facts: context.facts,
+                candidate: context.candidate,
+            },
             rebuilt,
-        );
-        for index in start..end {
+        )?;
+        target.expressions(|expressions| {
+            let mut rebuilder = ExpressionRebuilder::new(
+                context.source,
+                expressions,
+                context.identities(variables),
+                context.facts,
+                context.candidate,
+                rebuilt,
+            );
             let source_id = context
                 .source
                 .expression_id(index)
                 .expect("finalized expression ordinal resolves");
             rebuilder.rebuild(source_id)?;
-        }
-        Ok(())
-    })
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+fn begin_reconstruction<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+) -> Result<RuntimeQuotientReplayPlan<'target>, dae::DaeConstructionError> {
+    let plan = RuntimeQuotientReplayPlan::collect(source)?;
+    if let Some(declaration) = source.predefined_string_declaration() {
+        target.register_predefined_string(declaration)?;
+    }
+    Ok(plan)
 }
 
 fn static_definition_milestones(source: dae::DaeView<'_>) -> (Vec<usize>, Vec<(usize, usize)>) {

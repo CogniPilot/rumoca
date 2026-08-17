@@ -3,12 +3,14 @@ mod functions;
 mod initial_pins;
 mod initial_values;
 mod invariant_balances;
+mod runtime_quotients;
 
 use rumoca_core::{SourceMap, Span, TypeId, VarName};
 
 use super::reconstruction::construction_failure;
 use super::*;
 use functions::{FixtureFunctionConfig, fixture_function_declarations, insert_fixture_functions};
+use runtime_quotients as rq;
 
 fn source_provenance(
     source: rumoca_core::SourceId,
@@ -80,6 +82,7 @@ struct FixtureFeatures {
     same_rhs_definitions: bool,
     range: bool,
     shaped_parameter: bool,
+    runtime_quotient: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -720,6 +723,7 @@ fn fixture_source_text(nonlinear_constraint: bool, features: FixtureFeatures) ->
         ""
     };
     let function_declarations = fixture_function_declarations(features);
+    let runtime_quotient = rq::fixture_declarations(features.runtime_quotient);
     let range_declaration = if features.range {
         " parameter Integer r[3] = 1:1:3;"
     } else {
@@ -732,7 +736,7 @@ fn fixture_source_text(nonlinear_constraint: bool, features: FixtureFeatures) ->
     };
     let derivative_y_rhs = if features.holonomic { "x" } else { "a" };
     format!(
-        "{record_declarations}{function_declarations} parameter Real p;{range_declaration}{shaped_parameter_declaration} Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = {derivative_y_rhs}; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}{delay_equations}"
+        "{record_declarations}{function_declarations}{runtime_quotient} parameter Real p;{range_declaration}{shaped_parameter_declaration} Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = {derivative_y_rhs}; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}{delay_equations}"
     )
 }
 
@@ -819,6 +823,10 @@ fn build_constrained_fixture(
                 features.holonomic,
             )
         })?;
+        rq::insert(
+            model,
+            (real, variables, source, text, features.runtime_quotient),
+        )?;
         let family_residual =
             fixture_family_residual(model, domain, spans.family_owner, variables.z)?;
         let family = domain

@@ -7,15 +7,20 @@
 use rumoca_ir_dae as dae;
 
 use super::declarations::RebuiltDomain;
+use super::runtime_quotients::RuntimeQuotientReplayPlan;
 use super::variables::{ReservedVariable, TargetVariable};
 
 pub(super) fn rebuild_relations<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     expressions: &[dae::ExprId<'target>],
+    quotients: &mut RuntimeQuotientReplayPlan<'target>,
 ) -> Result<Vec<dae::RelationId<'target>>, dae::DaeConstructionError> {
-    (0..source.relation_count())
-        .map(|index| {
+    let mut relations = Vec::with_capacity(source.relation_count());
+    for index in 0..source.relation_count() {
+        let rebuilt = if let Some(owner) = quotients.relation_owner(index) {
+            quotients.replay_relation(owner, target)?
+        } else {
             let id = source
                 .relation_id(index)
                 .expect("finalized relation ordinal resolves");
@@ -27,9 +32,26 @@ pub(super) fn rebuild_relations<'target>(
                     expressions[relation.expression().index() as usize],
                     relation.provenance(),
                 )
-            })
-        })
-        .collect()
+            })?
+        };
+        if rebuilt.index() as usize != index {
+            return Err(dae::DaeConstructionError::IncompleteDefinition {
+                kind: "rebuilt relation stream",
+                index: index as u32,
+                span: source
+                    .relation(
+                        source
+                            .relation_id(index)
+                            .expect("relation ordinal resolves"),
+                    )
+                    .expect("relation identity resolves")
+                    .provenance()
+                    .span(),
+            });
+        }
+        relations.push(rebuilt);
+    }
+    Ok(relations)
 }
 
 pub(super) fn define_conditions<'target>(
@@ -39,6 +61,7 @@ pub(super) fn define_conditions<'target>(
     conditions: &[dae::ConditionId<'target>],
     relations: &[dae::RelationId<'target>],
     clocks: &[super::temporal::RebuiltClock<'target>],
+    quotients: &mut RuntimeQuotientReplayPlan<'target>,
 ) -> Result<(), dae::DaeConstructionError> {
     for (index, target_id) in conditions.iter().copied().enumerate() {
         let source_id = source
@@ -47,6 +70,10 @@ pub(super) fn define_conditions<'target>(
         let condition = source
             .condition(source_id)
             .expect("finalized condition identity resolves");
+        if let Some(owner) = quotients.condition_owner(index) {
+            quotients.replay_activation(owner, target_id, target)?;
+            continue;
+        }
         let input = match condition.operation() {
             dae::ConditionOperation::Initial => dae::ConditionInput::Initial,
             dae::ConditionOperation::Always => dae::ConditionInput::Always,
@@ -88,19 +115,31 @@ pub(super) fn rebuild_roots<'target>(
     domains: &[RebuiltDomain<'target>],
     conditions: &[dae::ConditionId<'target>],
     relations: &[dae::RelationId<'target>],
+    quotients: &mut RuntimeQuotientReplayPlan<'target>,
 ) -> Result<(), dae::DaeConstructionError> {
     for index in 0..source.root_count() {
         let id = source
             .root_id(index)
             .expect("finalized root ordinal resolves");
         let root = source.root(id).expect("finalized root identity resolves");
-        target.conditions(|target| {
-            target.root(
-                relations[root.relation().index() as usize],
-                conditions[root.activation().index() as usize],
-                root.provenance(),
-            )
-        })?;
+        let rebuilt = if let Some(owner) = quotients.root_owner(index) {
+            quotients.replay_root(owner, target)?
+        } else {
+            target.conditions(|target| {
+                target.root(
+                    relations[root.relation().index() as usize],
+                    conditions[root.activation().index() as usize],
+                    root.provenance(),
+                )
+            })?
+        };
+        if rebuilt.index() as usize != index {
+            return Err(dae::DaeConstructionError::IncompleteDefinition {
+                kind: "rebuilt root stream",
+                index: index as u32,
+                span: root.provenance().span(),
+            });
+        }
     }
     for index in 0..source.structured_root_count() {
         let id = source

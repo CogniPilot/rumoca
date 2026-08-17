@@ -156,6 +156,7 @@ pub(crate) use function_reads::{
     FunctionReadFact, FunctionReadMergeError, FunctionReadSet, FunctionReadSets,
 };
 pub use function_scopes::{FunctionScopeRelation, FunctionScopeView};
+pub use runtime_quotients::QuotientReplayToken;
 pub use value_types::ValueTypes;
 use variable_types::VariableTypeCapability;
 

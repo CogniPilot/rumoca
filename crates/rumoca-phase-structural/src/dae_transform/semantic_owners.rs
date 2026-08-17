@@ -12,6 +12,7 @@ use rumoca_ir_dae as dae;
 
 use super::declarations::RebuiltDomain;
 use super::event_owners::{define_conditions, rebuild_events, rebuild_relations, rebuild_roots};
+use super::runtime_quotients::RuntimeQuotientReplayPlan;
 use super::temporal::RebuiltClock;
 use super::variables::{ReservedVariable, TargetVariable};
 
@@ -28,10 +29,11 @@ pub(super) fn rebuild_semantic_owners<'target>(
     expressions: &[dae::ExprId<'target>],
     identities: RebuiltOwnerIdentities<'_, 'target>,
     replacement: Option<(u32, dae::ExprId<'target>)>,
+    quotients: &mut RuntimeQuotientReplayPlan<'target>,
 ) -> Result<(), dae::DaeConstructionError> {
     rebuild_equations(source, target, expressions, identities.domains, replacement)?;
     rebuild_initial_discrete_values(source, target, expressions, identities.variables)?;
-    let relations = rebuild_relations(source, target, expressions)?;
+    let relations = rebuild_relations(source, target, expressions, quotients)?;
     define_conditions(
         source,
         target,
@@ -39,6 +41,7 @@ pub(super) fn rebuild_semantic_owners<'target>(
         identities.conditions,
         &relations,
         identities.clocks,
+        quotients,
     )?;
     rebuild_discrete_equations(source, target, expressions, identities.conditions)?;
     rebuild_roots(
@@ -48,7 +51,9 @@ pub(super) fn rebuild_semantic_owners<'target>(
         identities.domains,
         identities.conditions,
         &relations,
+        quotients,
     )?;
+    quotients.finish(target)?;
     rebuild_events(
         source,
         target,

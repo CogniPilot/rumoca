@@ -86,6 +86,25 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         if let Some(rebuilt) = self.rebuilt[index] {
             return Ok(rebuilt);
         }
+        if let Some(owner) = self.source.runtime_quotient_owner(source_id) {
+            let provenance = self
+                .source
+                .expression(source_id)
+                .expect("finalized quotient expression resolves")
+                .provenance();
+            return Err(dae::DaeConstructionError::IncompleteDefinition {
+                kind: match owner.kind() {
+                    dae::RuntimeQuotientOwnerKind::ModelEvent { .. } => {
+                        "runtime quotient model owner replay"
+                    }
+                    dae::RuntimeQuotientOwnerKind::FunctionBody { .. } => {
+                        "runtime quotient function owner replay"
+                    }
+                },
+                index: source_id.index(),
+                span: provenance.span(),
+            });
+        }
         let source = self
             .source
             .expression(source_id)
