@@ -143,6 +143,32 @@ fn eval_scalar_math_builtin(
     })())
 }
 
+/// Bare-name MSL library functions emulated as builtins for
+/// structural-parameter evaluation.
+///
+/// Unlike MLS builtins these names are legal user function names, so call
+/// dispatch must let a user definition in scope win over the emulation. The
+/// qualified `Modelica.Math.*` spellings cannot collide and stay
+/// unconditional.
+pub fn is_shadowable_msl_intrinsic(name: &str) -> bool {
+    name == "isEqual"
+}
+
+/// The qualified MSL functions a shadowable bare spelling emulates.
+///
+/// A bare-name catalog entry stands for the intrinsic only when its recorded
+/// alias provenance is one of these spellings; the spellings themselves are
+/// not user-definable names and stay dispatched unconditionally.
+pub fn emulated_msl_spellings(name: &str) -> &'static [&'static str] {
+    match name {
+        "isEqual" => &[
+            "Modelica.Math.Vectors.isEqual",
+            "Modelica.Math.Matrices.isEqual",
+        ],
+        _ => &[],
+    }
+}
+
 /// Check if a function name is a known built-in.
 pub fn is_builtin(name: &str) -> bool {
     matches!(

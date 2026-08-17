@@ -246,7 +246,7 @@ fn eval_fn_call(
     ctx: &EvalContext,
     span: Span,
 ) -> Result<Value, EvalError> {
-    if is_builtin(name) {
+    if is_builtin(name) && !ctx.user_shadows_msl_intrinsic(name) {
         let arg_values: Vec<Value> = args
             .iter()
             .map(|a| eval_expr_with_span(a, ctx, span))

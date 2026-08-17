@@ -22,6 +22,17 @@ pub struct EvalContext {
     /// User-defined function definitions for constant evaluation (MLS §12).
     pub functions: EvalIndexMap<Function>,
 
+    /// Provenance of every short-name alias `add_function` created: the
+    /// qualified source spelling and the definition identity it carried at
+    /// registration.
+    ///
+    /// A bare key present in `functions` but absent here was registered
+    /// directly under that name and is therefore a user definition, never an
+    /// alias. Dispatch decisions about aliases read this recorded provenance
+    /// and compare `DefId`s; they must not infer identity from the shape of
+    /// catalog keys.
+    bare_alias_sources: EvalIndexMap<(VarName, Option<rumoca_core::DefId>)>,
+
     /// Known array dimensions when the array's element values are unavailable.
     ///
     /// This lets the shared evaluator handle `size`/`ndims` without allocating
@@ -67,6 +78,7 @@ impl EvalContext {
             parameters: IndexMap::with_capacity_and_hasher(parameters, FxBuildHasher),
             enum_literals: IndexMap::with_capacity_and_hasher(enum_literals, FxBuildHasher),
             functions: IndexMap::with_capacity_and_hasher(functions, FxBuildHasher),
+            bare_alias_sources: IndexMap::with_capacity_and_hasher(0, FxBuildHasher),
             array_dimensions: IndexMap::with_capacity_and_hasher(parameters, FxBuildHasher),
             values_by_instance: IndexMap::with_capacity_and_hasher(parameters, FxBuildHasher),
             deferred_parameters: IndexMap::with_capacity_and_hasher(0, FxBuildHasher),
@@ -77,16 +89,54 @@ impl EvalContext {
     /// Add a function definition for constant evaluation.
     pub fn add_function(&mut self, func: Function) {
         let full_name = func.name.to_string();
-        // Add with full name
+        // A direct registration under this key supersedes any alias that
+        // previously occupied it, so its provenance record must go too.
+        self.bare_alias_sources.shift_remove(&full_name);
         self.functions.insert(full_name.clone(), func.clone());
         // Also add with short name (last component) for function body lookups
         // This enables recursive calls inside function bodies that use unqualified names
         let short_name = func.name.last_segment().to_string();
         if short_name != full_name && !self.functions.contains_key(&short_name) {
+            let source = (func.name.clone(), func.def_id);
             let mut short_func = func;
             short_func.name = VarName::new(&short_name);
-            self.functions.insert(short_name, short_func);
+            self.functions.insert(short_name.clone(), short_func);
+            self.bare_alias_sources.insert(short_name, source);
         }
+    }
+
+    /// True when `name` is a shadowable MSL intrinsic spelling and the
+    /// registered bare-name function is a user definition rather than the
+    /// short-name alias of an MSL function the intrinsic emulates.
+    ///
+    /// The bare entry stands for the emulation only when the whole identity
+    /// chain is proven: the alias provenance `add_function` recorded names an
+    /// emulated qualified spelling, the alias carried a definition identity,
+    /// and that `DefId` still equals the identity of the catalog entry at the
+    /// qualified spelling. Any break in the chain — a direct user
+    /// registration, an alias of an unrelated function, or an absent or
+    /// mismatched identity — fails closed to the registered function body:
+    /// evaluating the selected body (or failing to fold) is sound, while
+    /// evaluating a body the call never selected is wrong code.
+    pub fn user_shadows_msl_intrinsic(&self, name: &str) -> bool {
+        if !super::is_shadowable_msl_intrinsic(name) || !self.functions.contains_key(name) {
+            return false;
+        }
+        let Some((source, source_id)) = self.bare_alias_sources.get(name) else {
+            return true;
+        };
+        if !super::emulated_msl_spellings(name)
+            .iter()
+            .any(|spelling| source.as_str() == *spelling)
+        {
+            return true;
+        }
+        let Some(source_id) = source_id else {
+            return true;
+        };
+        self.functions
+            .get(source.as_str())
+            .is_none_or(|current| current.def_id != Some(*source_id))
     }
 
     /// Add a parameter value.

@@ -987,3 +987,203 @@ fn test_while_loop() {
 
     assert_eq!(result.as_integer(), Some(4), "while loop should count to 4");
 }
+
+#[test]
+fn user_defined_is_equal_shadows_the_msl_intrinsic() {
+    // function isEqual(input Real a, input Real b) output Real y;
+    // algorithm y := a * 2; end isEqual;
+    // Deliberately different semantics (and result type) from the emulated
+    // MSL isEqual: dispatch must reach this body, not the intrinsic.
+    let mut func = Function::new("isEqual", Span::DUMMY);
+    func.add_input(real_param("a"));
+    func.add_input(real_param("b"));
+    func.add_output(real_param("y"));
+    func.pure = true;
+    func.body = vec![rumoca_core::Statement::Assignment {
+        comp: component_reference("y"),
+        value: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("a"),
+                subscripts: Vec::new(),
+                span: Span::DUMMY,
+            }),
+            rhs: Box::new(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(2),
+                span: Span::DUMMY,
+            }),
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+    }];
+
+    let mut ctx = EvalContext::new();
+    ctx.functions.insert("isEqual".to_string(), func);
+    let limits = EvalLimits::default();
+    let state = EvalState {
+        ctx: &ctx,
+        limits: &limits,
+        depth: 0,
+        span: Span::DUMMY,
+    };
+
+    let result =
+        call_function("isEqual", vec![Value::Real(3.0), Value::Real(3.0)], &state).unwrap();
+    assert!((result.to_real().unwrap() - 6.0).abs() < 1e-12);
+
+    // Without a user definition in scope the intrinsic still answers.
+    let empty = EvalContext::new();
+    let state = EvalState {
+        ctx: &empty,
+        limits: &limits,
+        depth: 0,
+        span: Span::DUMMY,
+    };
+    let result =
+        call_function("isEqual", vec![Value::Real(3.0), Value::Real(3.0)], &state).unwrap();
+    assert_eq!(result, Value::Bool(true));
+}
+
+#[test]
+fn msl_short_name_alias_does_not_defeat_the_is_equal_intrinsic() {
+    // add_function registers Modelica.Math.Vectors.isEqual under the bare
+    // short name too. That alias, identity intact, is exactly what the
+    // intrinsic emulates, so dispatch must still take the intrinsic, not
+    // interpret the MSL body.
+    let mut func = Function::new("Modelica.Math.Vectors.isEqual", Span::DUMMY);
+    func.def_id = Some(rumoca_core::DefId::new(11));
+    func.add_input(real_param("v1"));
+    func.add_input(real_param("v2"));
+    func.add_output(real_param("result"));
+    func.pure = true;
+
+    let mut ctx = EvalContext::new();
+    ctx.add_function(func);
+    assert!(ctx.functions.contains_key("isEqual"));
+    assert!(!ctx.user_shadows_msl_intrinsic("isEqual"));
+
+    let limits = EvalLimits::default();
+    let state = EvalState {
+        ctx: &ctx,
+        limits: &limits,
+        depth: 0,
+        span: Span::DUMMY,
+    };
+    let result =
+        call_function("isEqual", vec![Value::Real(3.0), Value::Real(3.0)], &state).unwrap();
+    assert_eq!(result, Value::Bool(true));
+}
+
+fn doubling_bare_is_equal() -> Function {
+    let mut func = Function::new("isEqual", Span::DUMMY);
+    func.def_id = Some(rumoca_core::DefId::new(22));
+    func.add_input(real_param("a"));
+    func.add_input(real_param("b"));
+    func.add_output(real_param("y"));
+    func.pure = true;
+    func.body = vec![rumoca_core::Statement::Assignment {
+        comp: component_reference("y"),
+        value: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("a"),
+                subscripts: Vec::new(),
+                span: Span::DUMMY,
+            }),
+            rhs: Box::new(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(2),
+                span: Span::DUMMY,
+            }),
+            span: Span::DUMMY,
+        },
+        span: Span::DUMMY,
+    }];
+    func
+}
+
+#[test]
+fn user_bare_shadow_wins_even_with_qualified_msl_registered() {
+    // The adversarial shape: the catalog holds the qualified MSL function AND
+    // a user definition owns the bare name. The bare call selected the user
+    // function; a key-shape scan would see the qualified entry and run the
+    // emulation instead. Registration order A: MSL first (its alias is then
+    // displaced by the direct user registration).
+    let mut msl = Function::new("Modelica.Math.Vectors.isEqual", Span::DUMMY);
+    msl.def_id = Some(rumoca_core::DefId::new(21));
+    msl.add_input(real_param("v1"));
+    msl.add_input(real_param("v2"));
+    msl.add_output(real_param("result"));
+    msl.pure = true;
+
+    let mut ctx = EvalContext::new();
+    ctx.add_function(msl.clone());
+    ctx.add_function(doubling_bare_is_equal());
+    assert!(ctx.user_shadows_msl_intrinsic("isEqual"));
+
+    let limits = EvalLimits::default();
+    let state = EvalState {
+        ctx: &ctx,
+        limits: &limits,
+        depth: 0,
+        span: Span::DUMMY,
+    };
+    let result =
+        call_function("isEqual", vec![Value::Real(3.0), Value::Real(3.0)], &state).unwrap();
+    assert!((result.to_real().unwrap() - 6.0).abs() < 1e-12);
+
+    // Registration order B: user first, MSL second (the alias slot is taken).
+    let mut ctx = EvalContext::new();
+    ctx.add_function(doubling_bare_is_equal());
+    ctx.add_function(msl);
+    assert!(ctx.user_shadows_msl_intrinsic("isEqual"));
+    let state = EvalState {
+        ctx: &ctx,
+        limits: &limits,
+        depth: 0,
+        span: Span::DUMMY,
+    };
+    let result =
+        call_function("isEqual", vec![Value::Real(3.0), Value::Real(3.0)], &state).unwrap();
+    assert!((result.to_real().unwrap() - 6.0).abs() < 1e-12);
+}
+
+#[test]
+fn alias_of_unrelated_qualified_function_is_not_the_intrinsic() {
+    // A user library function My.Lib.isEqual also registers a bare alias.
+    // Its provenance is not an emulated MSL spelling, so the alias body (not
+    // the emulation) must answer the bare call.
+    let mut func = doubling_bare_is_equal();
+    func.name = rumoca_core::VarName::new("My.Lib.isEqual");
+
+    let mut ctx = EvalContext::new();
+    ctx.add_function(func);
+    assert!(ctx.functions.contains_key("isEqual"));
+    assert!(ctx.user_shadows_msl_intrinsic("isEqual"));
+
+    let limits = EvalLimits::default();
+    let state = EvalState {
+        ctx: &ctx,
+        limits: &limits,
+        depth: 0,
+        span: Span::DUMMY,
+    };
+    let result =
+        call_function("isEqual", vec![Value::Real(3.0), Value::Real(3.0)], &state).unwrap();
+    assert!((result.to_real().unwrap() - 6.0).abs() < 1e-12);
+}
+
+#[test]
+fn alias_without_definition_identity_fails_closed_to_the_registered_body() {
+    // An emulated spelling whose registration carried no DefId cannot prove
+    // the identity chain, so dispatch must fall back to the registered
+    // function body rather than assume the emulation matches.
+    let mut func = Function::new("Modelica.Math.Vectors.isEqual", Span::DUMMY);
+    func.add_input(real_param("v1"));
+    func.add_input(real_param("v2"));
+    func.add_output(real_param("result"));
+    func.pure = true;
+
+    let mut ctx = EvalContext::new();
+    ctx.add_function(func);
+    assert!(ctx.user_shadows_msl_intrinsic("isEqual"));
+}

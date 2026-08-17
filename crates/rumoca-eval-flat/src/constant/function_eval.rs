@@ -1330,7 +1330,7 @@ fn eval_comprehension_recursive(
 
 /// Call a function (builtin or user-defined).
 fn call_function(name: &str, args: Vec<Value>, eval: &EvalState<'_>) -> Result<Value, EvalError> {
-    if super::is_builtin(name) {
+    if super::is_builtin(name) && !eval.ctx.user_shadows_msl_intrinsic(name) {
         return super::eval_builtin(name, &args, eval.span);
     }
     if let Some(func) = eval.ctx.functions.get(name) {
