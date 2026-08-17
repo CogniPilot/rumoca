@@ -17,7 +17,10 @@
 use rumoca_core::{Span, StateSelect};
 use rumoca_ir_dae as dae;
 
-use super::equalities::{EqualityAnchor, EqualitySign, SystemEqualities};
+use super::equalities::{
+    EqualityAnchor, EqualitySign, SingletonRealProjection, SystemEqualities, is_scalar_real,
+    singleton_real_projection,
+};
 use super::initial_pins::represented_initial_values;
 use super::{DirectStateConstraint, HolonomicConstraint, HolonomicDifferentiationProof};
 use crate::StructuralError;
@@ -315,7 +318,7 @@ fn redundant_state_constraints(
         .redundant_states()
         .filter_map(|(state, anchor, rhs_sign)| {
             let variable = view.variable(view.variable_id(state as usize)?)?;
-            if variable.state_select() == StateSelect::Always {
+            if variable.state_select() == StateSelect::Always || !is_scalar_real(variable) {
                 return None;
             }
             Some(DirectStateConstraint {
@@ -701,14 +704,37 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
                 self.saw_algebraic |= on_residual;
                 match self.facts.equalities.anchor_of(algebraic.index()) {
                     Some((EqualityAnchor::Invariant { .. }, _)) => true,
-                    Some((EqualityAnchor::State(state), _)) => {
-                        self.can_differentiate_state(state, order, on_residual)
+                    Some((anchor @ EqualityAnchor::State(state), _)) => {
+                        self.can_differentiate_equality_anchor(anchor, state, order, on_residual)
                     }
                     None => false,
                 }
             }
             _ => false,
         }
+    }
+
+    fn can_differentiate_equality_anchor(
+        &mut self,
+        anchor: EqualityAnchor,
+        state: u32,
+        order: u8,
+        on_residual: bool,
+    ) -> bool {
+        let Some(expression) = self
+            .facts
+            .equalities
+            .anchor_expression(anchor)
+            .and_then(|expression| self.view.expression_id(expression as usize))
+            .and_then(|expression| self.view.expression(expression))
+        else {
+            return false;
+        };
+        matches!(
+            expression.operation(),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(candidate))
+                if candidate.index() == state
+        ) && self.can_differentiate_state(state, order, on_residual)
     }
 
     fn can_differentiate_state(&mut self, state: u32, order: u8, on_residual: bool) -> bool {
@@ -770,6 +796,12 @@ fn is_differentiable<'dae>(
             is_differentiable(view, facts, lhs, demoted, visited)
                 && is_differentiable(view, facts, rhs, demoted, visited)
         }
+        dae::ExpressionOperation::Index { .. } => {
+            match singleton_real_projection(view, expression) {
+                Some(SingletonRealProjection::State(state)) => state != demoted.index(),
+                _ => false,
+            }
+        }
         _ => false,
     };
     visited[index] = if differentiable {
@@ -791,10 +823,16 @@ fn is_differentiable_coordinate<'dae>(
         dae::CoordinateView::Parameter(_) | dae::CoordinateView::Time => true,
         dae::CoordinateView::State(state) => state != demoted,
         dae::CoordinateView::Algebraic(algebraic) => {
-            match facts.equalities.anchor_of(algebraic.index()) {
-                Some((EqualityAnchor::Invariant { .. }, _)) => true,
-                Some((EqualityAnchor::State(anchor), _)) => anchor != demoted.index(),
-                None => false,
+            let Some((anchor, _)) = facts.equalities.anchor_of(algebraic.index()) else {
+                return false;
+            };
+            match anchor {
+                EqualityAnchor::Invariant { .. } => true,
+                EqualityAnchor::State(_) => facts
+                    .equalities
+                    .anchor_expression(anchor)
+                    .and_then(|anchor| view.expression_id(anchor as usize))
+                    .is_some_and(|anchor| is_differentiable(view, facts, anchor, demoted, visited)),
             }
         }
         dae::CoordinateView::Derivative(state) => {

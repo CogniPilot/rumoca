@@ -8,8 +8,13 @@
 //! wrong number deep inside a real machine model.
 
 use super::*;
-use crate::dae_transform::constraints::explicit_derivative_definitions;
-use crate::dae_transform::equalities::{EqualityAnchor, EqualitySign, SystemEqualities};
+use crate::dae_transform::constraints::{
+    direct_state_constraints, explicit_derivative_definitions,
+};
+use crate::dae_transform::equalities::{
+    EqualityAnchor, EqualitySign, SingletonRealProjection, SystemEqualities,
+    singleton_real_projection,
+};
 
 /// One declared fixture variable, keeping the role it was declared with.
 #[derive(Clone, Copy)]
@@ -716,6 +721,248 @@ fn contradictory_equalities_model() -> dae::Dae {
     )
 }
 
+/// Whether the aggregate projection carries the only statically provable
+/// scalar subscript or a runtime parameter.
+#[derive(Clone, Copy)]
+enum ProjectionSubscript {
+    LiteralOne,
+    BoundParameter,
+    Parameter,
+}
+
+#[derive(Clone, Copy)]
+struct ProjectedVariables<'dae> {
+    x: dae::StateId<'dae>,
+    q: dae::StateId<'dae>,
+    i: dae::ParameterId<'dae>,
+    a: dae::AlgebraicId<'dae>,
+    b: dae::AlgebraicId<'dae>,
+    u: dae::AlgebraicId<'dae>,
+    v: dae::AlgebraicId<'dae>,
+}
+
+/// `der(x) = u; der(q)[i] = v; x = a; a = b; b = q[i]; u = v`
+///
+/// At extent one with `i = 1` written literally or supplied by a statically
+/// evaluable Integer parameter, `q[i]` is the whole Real payload and can anchor
+/// the scalar equality class. Larger payloads and runtime indices deliberately
+/// use the same equation shape but prove no whole-variable equality.
+fn projected_state_model(extent: u32, subscript: ProjectionSubscript) -> dae::Dae {
+    const TEXT: &str = "Real x; Real q[:]; Integer i; Real a; Real b; Real u; Real v; equation der(x) = u; der(q)[i] = v; x = a; a = b; b = q[i]; u = v;";
+    let mut sources = SourceMap::new();
+    let source = sources.add("projected_state.mo", TEXT);
+    let at = source_provenance(source, TEXT, "equation");
+    dae::Dae::construct(sources, |model| {
+        let (real, real_array, integer) = model.types(|types| {
+            Ok((
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    at,
+                )?,
+                types.intern(
+                    TypeId::new(1),
+                    dae::ValueType::array(dae::ScalarType::Real, [extent]),
+                    at,
+                )?,
+                types.intern(
+                    TypeId::new(2),
+                    dae::ValueType::scalar(dae::ScalarType::Integer),
+                    at,
+                )?,
+            ))
+        })?;
+        let (variables, i_reservation) = model.variables(|variables| {
+            let attributes = dae::VariableAttributes::default;
+            let (i, i_reservation) = variables.reserve_parameter(VarName::new("i"), integer, at)?;
+            Ok((
+                ProjectedVariables {
+                    x: variables.state(VarName::new("x"), real, at, attributes())?,
+                    q: variables.state(VarName::new("q"), real_array, at, attributes())?,
+                    i,
+                    a: variables.algebraic(VarName::new("a"), real, at, attributes())?,
+                    b: variables.algebraic(VarName::new("b"), real, at, attributes())?,
+                    u: variables.algebraic(VarName::new("u"), real, at, attributes())?,
+                    v: variables.algebraic(VarName::new("v"), real, at, attributes())?,
+                },
+                i_reservation,
+            ))
+        })?;
+        let (residuals, one) = model.expressions(|expressions| {
+            projected_residuals(expressions, variables, at, subscript)
+        })?;
+        model.variables(|variables| {
+            variables.define(
+                i_reservation,
+                dae::VariableAttributes {
+                    binding: matches!(subscript, ProjectionSubscript::BoundParameter)
+                        .then_some(one),
+                    ..dae::VariableAttributes::default()
+                },
+                at,
+            )
+        })?;
+        register(model, &[at; 6], residuals)
+    })
+    .expect("projected-state fixture DAE is valid")
+}
+
+fn projected_residuals<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    variables: ProjectedVariables<'dae>,
+    at: dae::DaeProvenance,
+    subscript: ProjectionSubscript,
+) -> Result<(Vec<dae::ExprId<'dae>>, dae::ExprId<'dae>), dae::DaeConstructionError> {
+    let one = expressions.at(at).literal(dae::DaeLiteral::Integer(1))?;
+    let index = match subscript {
+        ProjectionSubscript::LiteralOne => one,
+        ProjectionSubscript::BoundParameter | ProjectionSubscript::Parameter => expressions
+            .at(at)
+            .coordinate(dae::CoordinateInput::Parameter(variables.i))?,
+    };
+    let select = |expression| dae::Subscript::Index {
+        expression,
+        provenance: at,
+    };
+    let q_value = coordinate(expressions, at, dae::CoordinateInput::State(variables.q))?;
+    let q_value = expressions.at(at).index(q_value, [select(index)])?;
+    let q_derivative = coordinate(
+        expressions,
+        at,
+        dae::CoordinateInput::Derivative(variables.q),
+    )?;
+    let q_derivative = expressions.at(at).index(q_derivative, [select(index)])?;
+    let x_derivative = coordinate(
+        expressions,
+        at,
+        dae::CoordinateInput::Derivative(variables.x),
+    )?;
+    let x_value = coordinate(expressions, at, dae::CoordinateInput::State(variables.x))?;
+    let a_value = coordinate(
+        expressions,
+        at,
+        dae::CoordinateInput::Algebraic(variables.a),
+    )?;
+    let b_value = coordinate(
+        expressions,
+        at,
+        dae::CoordinateInput::Algebraic(variables.b),
+    )?;
+    let u_value = coordinate(
+        expressions,
+        at,
+        dae::CoordinateInput::Algebraic(variables.u),
+    )?;
+    let v_value = coordinate(
+        expressions,
+        at,
+        dae::CoordinateInput::Algebraic(variables.v),
+    )?;
+    let residuals = residuals(
+        expressions,
+        [
+            (at, x_derivative, u_value),
+            (at, q_derivative, v_value),
+            (at, x_value, a_value),
+            (at, a_value, b_value),
+            (at, b_value, q_value),
+            (at, u_value, v_value),
+        ],
+    )?;
+    Ok((residuals, one))
+}
+
+#[derive(Clone, Copy)]
+struct ProjectedAlgebraicVariables<'dae> {
+    s: dae::StateId<'dae>,
+    x: dae::StateId<'dae>,
+    w: dae::AlgebraicId<'dae>,
+    v: dae::AlgebraicId<'dae>,
+}
+
+/// A projected algebraic may be equality-anchored on a state, but this slice
+/// owns differentiation of projected states only. Admitting `w[1]` as the RHS
+/// of the `x` demotion would make reconstruction reach an unsupported Index
+/// differentiator arm and panic.
+fn projected_algebraic_definition_model() -> dae::Dae {
+    const TEXT: &str =
+        "Real s; Real x; Real w[1]; Real v; equation der(s) = -s; der(x) = v; x = w[1]; w[1] = s;";
+    let mut sources = SourceMap::new();
+    let source = sources.add("projected_algebraic_definition.mo", TEXT);
+    let at = source_provenance(source, TEXT, "equation");
+    dae::Dae::construct(sources, |model| {
+        let (real, singleton) = model.types(|types| {
+            Ok((
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    at,
+                )?,
+                types.intern(
+                    TypeId::new(1),
+                    dae::ValueType::array(dae::ScalarType::Real, [1]),
+                    at,
+                )?,
+            ))
+        })?;
+        let variables = model.variables(|variables| {
+            let attributes = dae::VariableAttributes::default;
+            Ok(ProjectedAlgebraicVariables {
+                s: variables.state(VarName::new("s"), real, at, attributes())?,
+                x: variables.state(VarName::new("x"), real, at, attributes())?,
+                w: variables.algebraic(VarName::new("w"), singleton, at, attributes())?,
+                v: variables.algebraic(VarName::new("v"), real, at, attributes())?,
+            })
+        })?;
+        let residuals = model
+            .expressions(|expressions| projected_algebraic_residuals(expressions, variables, at))?;
+        register(model, &[at; 4], residuals)
+    })
+    .expect("projected-algebraic fixture DAE is valid")
+}
+
+fn projected_algebraic_residuals<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    variables: ProjectedAlgebraicVariables<'dae>,
+    at: dae::DaeProvenance,
+) -> Result<Vec<dae::ExprId<'dae>>, dae::DaeConstructionError> {
+    let s = coordinate(expressions, at, dae::CoordinateInput::State(variables.s))?;
+    let x = coordinate(expressions, at, dae::CoordinateInput::State(variables.x))?;
+    let w = coordinate(
+        expressions,
+        at,
+        dae::CoordinateInput::Algebraic(variables.w),
+    )?;
+    let one = expressions.at(at).literal(dae::DaeLiteral::Integer(1))?;
+    let w = expressions.at(at).index(
+        w,
+        [dae::Subscript::Index {
+            expression: one,
+            provenance: at,
+        }],
+    )?;
+    let der_s = coordinate(
+        expressions,
+        at,
+        dae::CoordinateInput::Derivative(variables.s),
+    )?;
+    let der_x = coordinate(
+        expressions,
+        at,
+        dae::CoordinateInput::Derivative(variables.x),
+    )?;
+    let v = coordinate(
+        expressions,
+        at,
+        dae::CoordinateInput::Algebraic(variables.v),
+    )?;
+    let minus_s = expressions.at(at).unary(dae::UnaryOperator::Negate, s)?;
+    residuals(
+        expressions,
+        [(at, der_s, minus_s), (at, der_x, v), (at, x, w), (at, w, s)],
+    )
+}
+
 fn variable_index(view: dae::DaeView<'_>, name: &str) -> u32 {
     view.variables()
         .find(|(_, variable)| variable.name().as_str() == name)
@@ -1137,6 +1384,93 @@ fn contradicting_equalities_prove_nothing_about_their_class() {
             "and offers no state as redundant"
         );
     });
+}
+
+#[test]
+fn a_static_one_projection_of_a_singleton_state_payload_is_an_exact_anchor() {
+    for subscript in [
+        ProjectionSubscript::LiteralOne,
+        ProjectionSubscript::BoundParameter,
+    ] {
+        let model = projected_state_model(1, subscript);
+        assert!(
+            model.inspect(|view| sort(view).is_err()),
+            "the two equal state payloads are singular before demotion"
+        );
+        model.inspect(|view| {
+            let equalities = SystemEqualities::collect(view);
+            let x = variable_index(view, "x");
+            let q = variable_index(view, "q");
+            assert_eq!(
+                equalities.anchor_of(x),
+                Some((EqualityAnchor::State(q), EqualitySign::Same)),
+                "the singleton aggregate wins the construction-capability tie"
+            );
+            assert_eq!(
+                equalities.redundant_states().collect::<Vec<_>>(),
+                vec![(x, EqualityAnchor::State(q), EqualitySign::Same)]
+            );
+        });
+        let prepared = prepare_for_solve(&model).expect("singleton projection is reducible");
+        let transformed = match prepared {
+            PreparedDae::Transformed { dae, .. } => dae,
+            PreparedDae::Borrowed { .. } => panic!("singleton projection requires state demotion"),
+        };
+        assert_eq!(role(&transformed, "x"), dae::VariableRole::Algebraic);
+        assert_eq!(role(&transformed, "q"), dae::VariableRole::State);
+        transformed
+            .inspect(|view| assert!(sort(view).is_ok(), "replacement DAE matches perfectly"));
+    }
+}
+
+#[test]
+fn non_singleton_and_dynamic_projections_fail_closed() {
+    for model in [
+        projected_state_model(2, ProjectionSubscript::LiteralOne),
+        projected_state_model(1, ProjectionSubscript::Parameter),
+    ] {
+        model.inspect(|view| {
+            let equalities = SystemEqualities::collect(view);
+            assert!(
+                equalities.redundant_states().next().is_none(),
+                "a partial or dynamically selected payload proves no state redundancy"
+            );
+        });
+    }
+}
+
+#[test]
+fn projected_algebraic_definition_fails_closed_before_differentiation() {
+    let model = projected_algebraic_definition_model();
+    let candidate = model.inspect(|view| {
+        let x = variable_index(view, "x");
+        let candidates = direct_state_constraints(view);
+        assert!(
+            candidates
+                .admissible
+                .iter()
+                .chain(&candidates.conditional)
+                .filter(|candidate| candidate.state == x)
+                .all(|candidate| {
+                    let rhs = view
+                        .expression_id(candidate.rhs as usize)
+                        .expect("candidate RHS resolves");
+                    !matches!(
+                        singleton_real_projection(view, rhs),
+                        Some(SingletonRealProjection::Algebraic(_))
+                    )
+                }),
+            "an unsupported projected-algebraic RHS must not reach reconstruction",
+        );
+        candidates
+            .admissible
+            .into_iter()
+            .chain(candidates.conditional)
+            .find(|candidate| candidate.state == x)
+            .expect("the equality closure retains the safe bare-state anchor")
+    });
+    rebuild_with_state_demotion(&model, candidate)
+        .expect("the admitted bare-state anchor reconstructs without a panic");
 }
 
 #[test]

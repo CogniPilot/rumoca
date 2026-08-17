@@ -14,7 +14,9 @@
 use rumoca_ir_dae as dae;
 
 use super::HolonomicDifferentiationProof;
-use super::equalities::{EqualityAnchor, EqualitySign};
+use super::equalities::{
+    EqualityAnchor, EqualitySign, SingletonRealProjection, singleton_real_projection,
+};
 use super::expressions::ExpressionRebuilder;
 use super::variables::TargetVariable;
 
@@ -102,6 +104,35 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
                 self.differentiate_binary(operator, lhs, rhs, order, provenance)
             }
+            dae::ExpressionOperation::Index { base, subscripts }
+                if order == 1
+                    && matches!(
+                        singleton_real_projection(self.source, source_id),
+                        Some(SingletonRealProjection::State(_))
+                    ) =>
+            {
+                let dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) = self
+                    .source
+                    .expression(base)
+                    .expect("singleton projection base resolves")
+                    .operation()
+                else {
+                    unreachable!("singleton state projection preflight proves its base")
+                };
+                let TargetVariable::State(state) = self.variables[state.index() as usize].identity
+                else {
+                    unreachable!("the projected anchor state is not the demoted state")
+                };
+                let derivative = self
+                    .target
+                    .at(provenance)
+                    .coordinate(dae::CoordinateInput::Derivative(state))?;
+                let subscripts = self.rebuild_subscripts(subscripts)?;
+                self.target
+                    .at(provenance)
+                    .index(derivative, subscripts)
+                    .map(Derivative::Expression)
+            }
             _ => unreachable!("differentiability preflight rejects this operation"),
         }
     }
@@ -117,20 +148,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         let Some((anchor, sign)) = self.facts.equalities.anchor_of(algebraic.index()) else {
             unreachable!("differentiability preflight rejects an unanchored algebraic")
         };
-        let EqualityAnchor::State(anchor) = anchor else {
+        let EqualityAnchor::State(_) = anchor else {
             // A class pinned to a time-invariant value has derivative zero.
             return Ok(Derivative::Zero);
         };
-        let dae::VariableIdentity::State(anchor) = self
-            .source
-            .variable_id(anchor as usize)
-            .and_then(|id| self.source.variable(id))
-            .expect("equality anchor declaration resolves")
-            .identity()
-        else {
-            unreachable!("an equality anchor state keeps its state role")
-        };
-        match (sign, self.differentiate_state(anchor, order, provenance)?) {
+        let anchor = self
+            .facts
+            .equalities
+            .anchor_expression(anchor)
+            .and_then(|anchor| self.source.expression_id(anchor as usize))
+            .expect("a state equality anchor has a checked scalar expression");
+        match (sign, self.differentiate_order(anchor, order, provenance)?) {
             (EqualitySign::Same, derivative)
             | (EqualitySign::Opposite, derivative @ Derivative::Zero) => Ok(derivative),
             (EqualitySign::Opposite, Derivative::Expression(anchor)) => self

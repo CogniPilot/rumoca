@@ -26,6 +26,7 @@
 //! offset can never leak into a substitution that names a value.
 
 use rumoca_core::StateSelect;
+use rumoca_eval_dae::NumericEvaluator;
 use rumoca_ir_dae as dae;
 
 /// The class member whose time derivative is known.
@@ -47,6 +48,18 @@ pub(super) enum EqualityAnchor {
 pub(super) enum EqualitySign {
     Same,
     Opposite,
+}
+
+/// One exact scalar projection of a Real variable whose whole payload has one
+/// scalar. The singleton extent is the load-bearing runtime proof: every
+/// bounds-valid execution selects that sole scalar. Static evaluation narrows
+/// admission to subscripts currently known as `1`; it does not turn a start
+/// value or tunable binding into a separate translation-freeze claim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SingletonRealProjection {
+    State(u32),
+    Derivative(u32),
+    Algebraic(u32),
 }
 
 impl EqualitySign {
@@ -298,7 +311,7 @@ impl SystemEqualities {
         for (id, variable) in view.variables() {
             let index = id.index();
             if variable.role() != dae::VariableRole::State
-                || !is_scalar_real(variable)
+                || !is_single_scalar_real_payload(variable)
                 || self.coordinate[index as usize].is_none()
             {
                 continue;
@@ -324,17 +337,17 @@ impl SystemEqualities {
 /// would silently replace a stated initial condition with a guess. Between two
 /// pins the one that names its value outranks the one that only proves
 /// constancy, because only the named value can define a demoted state.
-fn anchor_rank(view: dae::DaeView<'_>, anchor: EqualityAnchor) -> (u8, u8) {
+fn anchor_rank(view: dae::DaeView<'_>, anchor: EqualityAnchor) -> (u8, u8, u8) {
     match anchor {
         // A time-invariant pin proves the whole class constant, which is
         // strictly more information than any state selection.
-        EqualityAnchor::Invariant { value, .. } => (u8::MAX, u8::from(value.is_some())),
+        EqualityAnchor::Invariant { value, .. } => (u8::MAX, u8::from(value.is_some()), u8::MAX),
         EqualityAnchor::State(variable) => {
             let Some(variable) = view
                 .variable_id(variable as usize)
                 .and_then(|id| view.variable(id))
             else {
-                return (0, 0);
+                return (0, 0, 0);
             };
             let selection = match variable.state_select() {
                 StateSelect::Never => 0,
@@ -343,7 +356,19 @@ fn anchor_rank(view: dae::DaeView<'_>, anchor: EqualityAnchor) -> (u8, u8) {
                 StateSelect::Prefer => 3,
                 StateSelect::Always => 4,
             };
-            (selection, u8::from(variable.fixed() == Some(true)))
+            // Reconstruction demotes only scalar state declarations. When a
+            // scalar and an exact singleton projection have the same explicit
+            // state preference and initial-value strength, keep the singleton
+            // aggregate and demote the scalar member. This is a construction
+            // capability tie-break, never a name or equation-order heuristic.
+            let singleton_aggregate = u8::from(
+                !variable.value_type().is_scalar() && is_single_scalar_real_payload(variable),
+            );
+            (
+                selection,
+                u8::from(variable.fixed() == Some(true)),
+                singleton_aggregate,
+            )
         }
     }
 }
@@ -525,6 +550,17 @@ pub(super) fn flatten_additive<'dae>(
         dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
             push_variable(view, algebraic.index(), negated, operands)
         }
+        dae::ExpressionOperation::Index { .. } => {
+            let variable = match singleton_real_projection(view, expression) {
+                Some(
+                    SingletonRealProjection::State(variable)
+                    | SingletonRealProjection::Algebraic(variable),
+                ) => variable,
+                _ => return false,
+            };
+            operands.variables.push((variable, negated));
+            true
+        }
         _ => {
             if !is_time_invariant(view, expression) {
                 return false;
@@ -623,6 +659,75 @@ pub(super) fn is_scalar_real(variable: dae::VariableView<'_>) -> bool {
         && variable.value_type().scalar_type() == dae::ScalarType::Real
 }
 
+fn is_single_scalar_real_payload(variable: dae::VariableView<'_>) -> bool {
+    variable.value_type().scalar_type() == dae::ScalarType::Real
+        && variable.value_type().scalar_count() == Some(1)
+}
+
+/// Prove that `expression` is the sole scalar of a checked Real aggregate.
+pub(super) fn singleton_real_projection<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<SingletonRealProjection> {
+    let node = whole_model_expression(view, expression)?;
+    if !node.value_type().is_scalar() || node.value_type().scalar_type() != dae::ScalarType::Real {
+        return None;
+    }
+    let dae::ExpressionOperation::Index { base, subscripts } = node.operation() else {
+        return None;
+    };
+    if subscripts.is_empty()
+        || !subscripts
+            .iter()
+            .all(|subscript| is_static_one_subscript(view, subscript))
+    {
+        return None;
+    }
+    let coordinate = match whole_model_expression(view, base)?.operation() {
+        dae::ExpressionOperation::Coordinate(coordinate) => coordinate,
+        _ => return None,
+    };
+    let (variable, projection) = match coordinate {
+        dae::CoordinateView::State(variable) => (
+            variable.index(),
+            SingletonRealProjection::State(variable.index()),
+        ),
+        dae::CoordinateView::Derivative(variable) => (
+            variable.index(),
+            SingletonRealProjection::Derivative(variable.index()),
+        ),
+        dae::CoordinateView::Algebraic(variable) => (
+            variable.index(),
+            SingletonRealProjection::Algebraic(variable.index()),
+        ),
+        _ => return None,
+    };
+    let declaration = view.variable(view.variable_id(variable as usize)?)?;
+    (!declaration.value_type().is_scalar()
+        && is_single_scalar_real_payload(declaration)
+        && subscripts.len() == declaration.value_type().dimensions().len())
+    .then_some(projection)
+}
+
+fn is_static_one_subscript<'dae>(
+    view: dae::DaeView<'dae>,
+    subscript: dae::SubscriptView<'dae>,
+) -> bool {
+    let dae::SubscriptView::Index { expression, .. } = subscript else {
+        return false;
+    };
+    let Some(node) = whole_model_expression(view, expression) else {
+        return false;
+    };
+    if !node.value_type().is_scalar() || node.value_type().scalar_type() != dae::ScalarType::Integer
+    {
+        return false;
+    }
+    NumericEvaluator::new(view)
+        .expression(expression)
+        .is_ok_and(|value| value.as_slice() == [1.0])
+}
+
 /// Index the lowest whole-model coordinate expression naming each state.
 ///
 /// A demotion hands one of these ordinals to reconstruction as the definition
@@ -631,18 +736,33 @@ pub(super) fn is_scalar_real(variable: dae::VariableView<'_>) -> bool {
 fn coordinate_expressions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
     let mut coordinates = vec![None; view.variable_count()];
     for index in 0..view.expression_count() {
-        let Some(expression) = view
-            .expression_id(index)
-            .and_then(|id| whole_model_expression(view, id))
-        else {
+        let Some(expression_id) = view.expression_id(index) else {
             continue;
         };
-        let dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) =
-            expression.operation()
-        else {
+        let Some(expression) = whole_model_expression(view, expression_id) else {
             continue;
         };
-        coordinates[state.index() as usize].get_or_insert(index as u32);
+        match expression.operation() {
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) => {
+                let Some(variable_id) = view.variable_id(state.index() as usize) else {
+                    continue;
+                };
+                let Some(variable) = view.variable(variable_id) else {
+                    continue;
+                };
+                if is_scalar_real(variable) {
+                    coordinates[state.index() as usize].get_or_insert(index as u32);
+                }
+            }
+            dae::ExpressionOperation::Index { .. } => {
+                if let Some(SingletonRealProjection::State(state)) =
+                    singleton_real_projection(view, expression_id)
+                {
+                    coordinates[state as usize].get_or_insert(index as u32);
+                }
+            }
+            _ => {}
+        }
     }
     coordinates
 }

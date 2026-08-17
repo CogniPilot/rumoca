@@ -324,7 +324,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         self.target.at(provenance).conditional(branches, fallback)
     }
 
-    fn rebuild_subscripts(
+    pub(super) fn rebuild_subscripts(
         &mut self,
         subscripts: dae::SubscriptsView<'source>,
     ) -> Result<Vec<dae::Subscript<'target>>, dae::DaeConstructionError> {
