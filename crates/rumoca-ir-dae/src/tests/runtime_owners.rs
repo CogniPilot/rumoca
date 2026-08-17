@@ -707,23 +707,77 @@ fn runtime_quotient_rejects_time_varying_divisors() {
 }
 
 #[test]
-fn function_runtime_quotient_owns_no_event_root() {
+fn function_body_quotient_constructs_without_events() {
     // MLS §3.7.2: a quotient inside a function body keeps its value
-    // semantics under the same divisor admission but generates no event —
-    // the construction must leave the condition system empty.
-    let source = TestSource::new("Real x; mod(x, 2)");
-    let declaration = source.source("Real x", 0);
-    let x_at = source.source("x", 1);
+    // semantics under the same divisor admission but generates no event.
+    // The FunctionBody capability is the proof a body is open; the
+    // constructed quotient is validated against that exact body and the
+    // condition system stays empty.
+    let source = TestSource::new(
+        "function f\n input Real u;\n output Real y;\nalgorithm\n y := mod(u, 2);\nend f;",
+    );
+    let function_at = source.source("function f", 0);
+    let parameter_at = source.source("input Real u", 0);
+    let output_at = source.source("output Real y", 0);
+    let assignment_at = source.source("y := mod(u, 2)", 0);
+    let parameter_use = source.source("u", 1);
     let two_at = source.source("2", 0);
-    let mod_at = source.source("mod(x, 2)", 0);
+    let quotient_at = source.source("mod(u, 2)", 0);
     let dae = Dae::construct(source.map, |dae| {
-        let real = dae.types(|types| {
-            types.intern(
-                TypeId::new(0),
-                ValueType::scalar(ScalarType::Real),
-                declaration,
-            )
-        })?;
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [real], [real], function_at),
+            |dae, reservation| {
+                let parameter = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, parameter_at)
+                })?;
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, output_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let u = dae.expressions(|expressions| {
+                    expressions.at(parameter_use).function_parameter(parameter)
+                })?;
+                let two = dae.expressions(|expressions| {
+                    expressions.at(two_at).literal(DaeLiteral::Integer(2))
+                })?;
+                let quotient =
+                    dae.function_runtime_quotient(&body, PureBuiltin::Mod, [u, two], quotient_at)?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, quotient, assignment_at)
+                })?;
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )
+        .map(|_| ())
+    })
+    .expect("a function-body quotient constructs against its body capability");
+    dae.inspect(|view| {
+        assert_eq!(view.root_count(), 0, "function bodies are event-free");
+    });
+}
+
+#[test]
+fn function_body_quotient_rejects_model_expressions() {
+    // The capability constructor must refuse a quotient assembled from
+    // model-scope runtime coordinates: the body proof covers exactly the
+    // open function's own expressions, and a model algebraic smuggled
+    // through it would be an eventless model discontinuity.
+    let source = TestSource::new(
+        "Real x; function f\n input Real u;\n output Real y;\nalgorithm\n y := mod(x, 2);\nend f;",
+    );
+    let declaration = source.source("Real x", 0);
+    let function_at = source.source("function f", 0);
+    let parameter_at = source.source("input Real u", 0);
+    let output_at = source.source("output Real y", 0);
+    let x_use = source.source("x", 1);
+    let two_at = source.source("2", 0);
+    let quotient_at = source.source("mod(x, 2)", 0);
+    Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
@@ -732,19 +786,40 @@ fn function_runtime_quotient_owns_no_event_root() {
                 VariableAttributes::default(),
             )
         })?;
-        dae.expressions(|expressions| {
-            let x = expressions
-                .at(x_at)
-                .coordinate(CoordinateInput::Algebraic(x))?;
-            let two = expressions.at(two_at).literal(DaeLiteral::Integer(2))?;
-            expressions
-                .at(mod_at)
-                .function_runtime_quotient(PureBuiltin::Mod, [x, two])
-        })?;
-        Ok(())
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [real], [real], function_at),
+            |dae, reservation| {
+                dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, parameter_at)
+                })?;
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, output_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let x = dae.expressions(|expressions| {
+                    expressions
+                        .at(x_use)
+                        .coordinate(CoordinateInput::Algebraic(x))
+                })?;
+                let two = dae.expressions(|expressions| {
+                    expressions.at(two_at).literal(DaeLiteral::Integer(2))
+                })?;
+                let rejected =
+                    dae.function_runtime_quotient(&body, PureBuiltin::Mod, [x, two], quotient_at);
+                assert!(
+                    rejected.is_err(),
+                    "a model-scope coordinate must not construct through the body capability"
+                );
+                // Close the body legally so construction can finish.
+                let zero = dae.expressions(|expressions| {
+                    expressions.at(two_at).literal(DaeLiteral::Real(0.0))
+                })?;
+                dae.functions(|functions| functions.assign(&mut body, output, zero, function_at))?;
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )
+        .map(|_| ())
     })
-    .expect("a function-body quotient constructs without an event surface");
-    dae.inspect(|view| {
-        assert_eq!(view.root_count(), 0, "function bodies are event-free");
-    });
+    .expect("the rejection leaves construction consistent");
 }

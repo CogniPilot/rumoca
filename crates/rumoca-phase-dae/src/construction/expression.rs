@@ -1325,14 +1325,11 @@ fn lower_builtin_call<'dae>(
             return attempted;
         };
         // MLS §3.7.2: no events are generated inside a function body — the
-        // quotient stands alone, without a root; at model scope the checked
-        // runtime owner builds the discontinuity root.
-        if symbols.function_body.is_some() {
-            return construction.expressions(|expressions| {
-                expressions
-                    .at(provenance)
-                    .function_runtime_quotient(builtin, [lhs, rhs])
-            });
+        // quotient stands alone, proven against the exact open body
+        // capability; at model scope the checked runtime owner builds the
+        // discontinuity root.
+        if let Some(body) = symbols.function_body {
+            return construction.function_runtime_quotient(body, builtin, [lhs, rhs], provenance);
         }
         return construction.runtime_quotient(builtin, [lhs, rhs], provenance);
     }
