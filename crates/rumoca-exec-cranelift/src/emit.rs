@@ -6197,7 +6197,7 @@ fn fold_unary_constant(op: UnaryOp, value: f64) -> Option<f64> {
     Some(match op {
         UnaryOp::Neg => -value,
         UnaryOp::Abs => value.abs(),
-        UnaryOp::Sign => value.signum(),
+        UnaryOp::Sign => rumoca_core::modelica_sign(value),
         UnaryOp::Floor => value.floor(),
         UnaryOp::Ceil => value.ceil(),
         UnaryOp::Trunc => value.trunc(),

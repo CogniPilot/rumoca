@@ -77,6 +77,27 @@ fn integer_conversion_returns_the_beta_1_defined_zero_and_signals() {
 }
 
 #[test]
+fn sign_matches_the_emitted_c_helper_at_zero_and_nan() {
+    let block = checked_block();
+    let mut evaluator =
+        Evaluator::new(&block, IntegerDomain::signed_32()).expect("create evaluator");
+
+    for (input, expected) in [
+        (2.5, 1.0),
+        (-2.5, -1.0),
+        (0.0, 0.0),
+        (-0.0, 0.0),
+        (f64::NAN, 0.0),
+    ] {
+        assert_eq!(
+            scalar_builtin(&mut evaluator, "sign", vec![Value::Real(input)]),
+            Ok(Value::Real(expected)),
+            "sign({input})"
+        );
+    }
+}
+
+#[test]
 fn integer_conversion_checks_the_exact_signed_64_boundary() {
     let block = checked_block();
     let domain = IntegerDomain::new(i64::MIN, i64::MAX).expect("signed 64-bit domain");

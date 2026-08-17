@@ -187,7 +187,11 @@ fn scalar_unary_math(name: &str, arguments: &[Value]) -> Result<Value, Evaluatio
         "roundDown" => value.floor(),
         "roundUp" => value.ceil(),
         "roundHalfToEven" => value.round_ties_even(),
-        "sign" => value.signum(),
+        // The emitted C helper `rumoca_galec_sign` and this interpreter both
+        // follow the single normative `sign`: three-way compare, 0 at ±0 and
+        // NaN, owned by rumoca-core (SPEC_0041). `f64::signum` disagrees at
+        // all three points (+0.0 -> 1, -0.0 -> -1, NaN -> NaN).
+        "sign" => rumoca_core::modelica_sign(value),
         "absolute" => value.abs(),
         "fractional" => value.fract(),
         "sqrt" => value.sqrt(),

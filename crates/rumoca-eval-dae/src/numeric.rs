@@ -1,4 +1,4 @@
-use rumoca_core::Span;
+use rumoca_core::{Span, modelica_sign};
 use rumoca_ir_dae as dae;
 
 /// Stable categories for failures while evaluating a checked DAE expression.
@@ -987,7 +987,7 @@ where
         use dae::PureBuiltin as B;
         match builtin {
             dae::PureBuiltin::Abs => values.iter_mut().for_each(|value| *value = value.abs()),
-            dae::PureBuiltin::Sign => values.iter_mut().for_each(|value| *value = value.signum()),
+            dae::PureBuiltin::Sign => values.iter_mut().for_each(|v| *v = modelica_sign(*v)),
             dae::PureBuiltin::Sqrt => values.iter_mut().for_each(|value| *value = value.sqrt()),
             dae::PureBuiltin::Div | dae::PureBuiltin::Mod | dae::PureBuiltin::Rem => {
                 let rhs = self.expression(

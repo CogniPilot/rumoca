@@ -4516,6 +4516,7 @@ dependencies = [
 name = "rumoca-eval-galec"
 version = "0.10.0"
 dependencies = [
+ "rumoca-core",
  "rumoca-ir-galec",
  "thiserror 2.0.18",
 ]

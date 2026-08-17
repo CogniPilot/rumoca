@@ -659,7 +659,7 @@ pub(crate) fn eval_const_real_function_with_scope(
             eval_size_call_with_scope(&args[0], &args[1], ctx, scope).map(|v| v as f64)
         }
         "abs" if args.len() == 1 => eval(&args[0]).map(f64::abs),
-        "sign" if args.len() == 1 => eval(&args[0]).map(f64::signum),
+        "sign" if args.len() == 1 => eval(&args[0]).map(rumoca_core::modelica_sign),
         "sqrt" if args.len() == 1 => eval(&args[0]).map(f64::sqrt),
         "integer" if args.len() == 1 => Some(rumoca_core::modelica_integer_value(eval(&args[0])?)),
         _ => None,

@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+rumoca-core = { workspace = true }
 rumoca-ir-galec = { workspace = true }
 thiserror = { workspace = true }
 
