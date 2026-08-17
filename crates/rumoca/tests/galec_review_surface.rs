@@ -198,9 +198,10 @@ fn emit_production_c(source_root: &Path, out_dir: &Path) -> ProductionSources {
     // the shared array-kernel library beside it. They are gated separately —
     // selecting by stem here is what keeps this gate measuring the model unit
     // rather than panicking on the library's presence.
-    let (kernel_paths, model_paths): (Vec<_>, Vec<_>) = sources
-        .into_iter()
-        .partition(|path| path.file_stem().is_some_and(|stem| stem == KERNEL_LIBRARY_STEM));
+    let (kernel_paths, model_paths): (Vec<_>, Vec<_>) = sources.into_iter().partition(|path| {
+        path.file_stem()
+            .is_some_and(|stem| stem == KERNEL_LIBRARY_STEM)
+    });
     let ([path], [kernels_path]) = (model_paths.as_slice(), kernel_paths.as_slice()) else {
         panic!(
             "expected exactly one model ProductionCode/*.c and one {KERNEL_LIBRARY_STEM}.c \
@@ -216,7 +217,11 @@ fn emit_production_c(source_root: &Path, out_dir: &Path) -> ProductionSources {
     let header = fs::read_to_string(path.with_extension("h")).unwrap_or_default();
     let kernels_c = fs::read_to_string(kernels_path)
         .unwrap_or_else(|error| panic!("read kernel library {}: {error}", kernels_path.display()));
-    ProductionSources { c, header, kernels_c }
+    ProductionSources {
+        c,
+        header,
+        kernels_c,
+    }
 }
 
 /// Collect every `*.c` living directly in a `ProductionCode/` directory below

@@ -51,10 +51,8 @@ use function_context::{
     function_initial_import_map, resolve_import_pairs,
 };
 pub(crate) use function_metadata::FunctionTypeCatalog;
+pub(crate) use function_metadata::lower_record_function_params;
 use function_metadata::*;
-pub(crate) use function_metadata::{
-    lower_record_function_params, specialize_static_function_params,
-};
 use function_output_validation::validate_function_outputs_assigned;
 use function_param_alias::function_param_type_alias_dims;
 use function_requests::{FunctionIdentitySet, same_function_request};

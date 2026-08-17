@@ -64,9 +64,7 @@ fn whole_array_projection_source(
         }
         gast::Reference::State(parts) => {
             let (last, prefix) = parts.split_last()?;
-            if last.subscripts != indices
-                || prefix.iter().any(|part| !part.subscripts.is_empty())
-            {
+            if last.subscripts != indices || prefix.iter().any(|part| !part.subscripts.is_empty()) {
                 return None;
             }
             let mut parts = prefix.to_vec();

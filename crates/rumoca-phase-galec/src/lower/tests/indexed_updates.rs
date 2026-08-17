@@ -621,4 +621,3 @@ fn a_diverted_conditional_update_keeps_each_materialized_call_inside_its_guard()
         );
     });
 }
-

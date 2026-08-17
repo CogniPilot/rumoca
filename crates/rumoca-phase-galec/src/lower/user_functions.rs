@@ -1153,29 +1153,20 @@ struct LoweredTensorAssignment {
     nested: Option<gast::Spanned<gast::Statement>>,
 }
 
-fn lower_tensor_function_assignment<'a, 'dae>(
-    assignment: TensorAssignment<'_, 'dae>,
+/// One elementwise leg of a tensor assignment: the per-axis iterator names,
+/// their index expressions, the coerced element value, and the element scalar
+/// type.
+struct TensorElementValue {
+    names: Vec<gast::Name>,
+    indices: Vec<gast::Expression>,
+    value: gast::Expression,
+    scalar: gast::ScalarType,
+}
+
+fn lower_tensor_element_value<'a, 'dae>(
+    assignment: &TensorAssignment<'_, 'dae>,
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
-) -> Result<Option<LoweredTensorAssignment>, GalecTargetError> {
-    if assignment.target_type.dimensions().is_empty() {
-        return Ok(None);
-    }
-    let direct = match assignment.record_field {
-        Some(field) => lowerer.direct_aggregate_record_field(assignment.expression, field)?,
-        None => lowerer.direct_aggregate_function_argument(assignment.expression)?,
-    };
-    if let Some(value) = direct {
-        return Ok(Some(LoweredTensorAssignment {
-            before: lowerer.drain_prefix_statements(),
-            nested: Some(gast::Spanned::new(
-                gast::Statement::Assignment {
-                    target: gast::Reference::local(assignment.target),
-                    value,
-                },
-                assignment.span,
-            )),
-        }));
-    }
+) -> Result<TensorElementValue, GalecTargetError> {
     let scalar = scalar_type(
         assignment.target_type.scalar_type(),
         assignment.target.lexeme(),
@@ -1219,6 +1210,43 @@ fn lower_tensor_function_assignment<'a, 'dae>(
     };
     lowerer.loop_index_bounds.truncate(bounds_depth);
     let value = coerce(value?, scalar, assignment.span)?;
+    Ok(TensorElementValue {
+        names,
+        indices,
+        value,
+        scalar,
+    })
+}
+
+fn lower_tensor_function_assignment<'a, 'dae>(
+    assignment: TensorAssignment<'_, 'dae>,
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
+) -> Result<Option<LoweredTensorAssignment>, GalecTargetError> {
+    if assignment.target_type.dimensions().is_empty() {
+        return Ok(None);
+    }
+    let direct = match assignment.record_field {
+        Some(field) => lowerer.direct_aggregate_record_field(assignment.expression, field)?,
+        None => lowerer.direct_aggregate_function_argument(assignment.expression)?,
+    };
+    if let Some(value) = direct {
+        return Ok(Some(LoweredTensorAssignment {
+            before: lowerer.drain_prefix_statements(),
+            nested: Some(gast::Spanned::new(
+                gast::Statement::Assignment {
+                    target: gast::Reference::local(assignment.target),
+                    value,
+                },
+                assignment.span,
+            )),
+        }));
+    }
+    let TensorElementValue {
+        names,
+        indices,
+        value,
+        scalar,
+    } = lower_tensor_element_value(&assignment, lowerer)?;
     let (before, mut body) = partition_tensor_prefixes(lowerer.drain_prefix_statements(), &names);
     if body.is_empty()
         && let Some(source) = whole_array_move::provable_whole_array_move(

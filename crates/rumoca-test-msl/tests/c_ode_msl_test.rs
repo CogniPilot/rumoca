@@ -1,13 +1,21 @@
 #![cfg(feature = "msl-external-tests")]
 
-//! Checked C Solve-kernel cross-validation against rumoca's built-in simulator.
+//! Checked C Solve-kernel cross-validation survey against rumoca's built-in
+//! simulator.
+//!
+//! This is a diagnostic corpus survey, not a gate: per-model deviations are
+//! detected against a tolerance, counted, and printed (visible with
+//! `--nocapture`), but the only assertion is that at least one model ran
+//! end-to-end. The gating C-backend runtime checks live in
+//! `backend_template_runtime_regression.rs`; nightly runs this survey with
+//! `continue-on-error` for the same reason.
 //!
 //! Tests the curated MSL simulation set using the same computable Solve IR as
 //! simulation. For each model we:
 //! 1. Compile the model from the MSL source root
 //! 2. Run rumoca's built-in diffsol simulator to get a reference trace
 //! 3. Render the C Solve kernel, integrate it with an RK4 test harness, and emit CSV
-//! 4. Compare the two traces and assert they agree within tolerance
+//! 4. Compare the two traces against a tolerance and report every deviation
 //!
 //! Run with:
 //! ```text

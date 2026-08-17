@@ -961,7 +961,6 @@ pub(crate) fn finalize_flat_model(
     // Attach callable identity before the rewrite fixed point so rewritten
     // calls retain the exact collected target.
     functions::canonicalize_collected_function_calls(flat, class_index)?;
-    functions::specialize_static_function_params(flat);
     mark_record_constructor_calls(flat, tree);
     canonicalize_varrefs_via_record_aliases(flat, ctx);
     normalize_record_array_field_access_bindings(flat);

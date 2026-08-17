@@ -948,12 +948,3 @@ pub(super) fn qualify_function_expr(
 }
 
 pub(crate) use crate::function_lowering::lower_record_function_params;
-
-/// Specialize function-typed formal parameters when their call targets are
-/// statically known.
-///
-/// The full specialization pass is intentionally conservative in this branch:
-/// keeping canonical function names is always semantically valid, while
-/// specialization is an optimization. This hook preserves the pipeline contract
-/// and can be expanded without making function inlining mandatory.
-pub(crate) fn specialize_static_function_params(_flat: &mut flat::Model) {}
