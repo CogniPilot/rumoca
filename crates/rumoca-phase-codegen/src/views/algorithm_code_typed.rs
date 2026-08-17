@@ -1326,12 +1326,13 @@ impl<'a> BlockShapes<'a> {
         let scope = ScopeShapes::new(self, &method.locals, &slots);
         *self.context_reads.borrow_mut() = false;
         let mut statements = scope.statements(&method.statements, &placements, &mut Vec::new())?;
-        let absorbed = kernelize(&mut statements);
+        let frame = frame_locals(&placements, &[]);
+        let absorbed = kernelize(&mut statements, &frame);
         let uses_scratch = *self.context_reads.borrow();
         Ok(TypedMethodView {
             signals: &method.signals,
             locals: &method.locals,
-            c_locals: surviving_locals(frame_locals(&placements, &[]), &absorbed),
+            c_locals: surviving_locals(frame, &absorbed),
             scratch: ScratchRegionView::new(None, Some(spelling), slots),
             uses_scratch,
             definite_state_writes: definite_state_writes(&method.statements)
@@ -1359,7 +1360,8 @@ impl<'a> BlockShapes<'a> {
         *self.context_reads.borrow_mut() = false;
         let mut statements =
             scope.statements(&function.statements, &placements, &mut Vec::new())?;
-        let absorbed = kernelize(&mut statements);
+        let frame = frame_locals(&placements, &[]);
+        let absorbed = kernelize(&mut statements, &frame);
         let uses_scratch = *self.context_reads.borrow();
         Ok(TypedFunctionView {
             kind: function.kind,
@@ -1369,7 +1371,7 @@ impl<'a> BlockShapes<'a> {
             parameters: &function.parameters,
             input_parameters: input_parameters(function),
             locals: &function.locals,
-            c_locals: surviving_locals(frame_locals(&placements, &[]), &absorbed),
+            c_locals: surviving_locals(frame, &absorbed),
             scratch: ScratchRegionView::new(Some(function.name.lexeme()), None, slots),
             uses_scratch,
             statements,
@@ -1612,7 +1614,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                         let body = self.statements(body, placements, path);
                         path.pop();
                         let mut body = body?;
-                        let absorbed = kernelize(&mut body);
+                        let absorbed = kernelize(&mut body, &c_locals);
                         (surviving_locals(c_locals, &absorbed), Some(body))
                     }
                 };
@@ -1630,7 +1632,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                             let body = self.statements(&branch.body, placements, path);
                             path.pop();
                             let mut body = body?;
-                            let absorbed = kernelize(&mut body);
+                            let absorbed = kernelize(&mut body, &c_locals);
                             Ok(TypedIfBranchView {
                                 condition: self.condition(&branch.condition)?,
                                 c_locals: surviving_locals(c_locals, &absorbed),
@@ -1651,7 +1653,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 let body = body_scope.statements(&for_loop.body, placements, path);
                 path.pop();
                 let mut body = body?;
-                let absorbed = kernelize(&mut body);
+                let absorbed = kernelize(&mut body, &c_locals);
                 let c_locals = surviving_locals(c_locals, &absorbed);
                 TypedStatementView::For(Box::new(TypedForView {
                     iterator: &for_loop.iterator,
@@ -2096,7 +2098,10 @@ fn surviving_locals<'a>(
         .collect()
 }
 
-fn kernelize<'a>(statements: &mut [TypedSpannedStatement<'a>]) -> HashSet<&'a str> {
+fn kernelize<'a>(
+    statements: &mut [TypedSpannedStatement<'a>],
+    frame: &[TypedLocalView<'a>],
+) -> HashSet<&'a str> {
     for statement in statements.iter_mut() {
         if let TypedStatementView::Assignment { target, value } = &statement.node
             && target.rank > 0
@@ -2143,8 +2148,20 @@ fn kernelize<'a>(statements: &mut [TypedSpannedStatement<'a>]) -> HashSet<&'a st
         };
         // The accumulator is a compiler temporary, but nothing in this view
         // says so, and reading one that a later statement also reads would
-        // delete its only assignment. Prove it instead: the group is the whole
-        // life of the name in this list.
+        // delete its only assignment. Prove it instead, in two halves. The
+        // name must be declared in this frame: LocalPlacements puts every
+        // declaration at the common prefix of its uses, so a name placed here
+        // cannot be read from an outer statement list — a mentions scan of
+        // this list alone can never rule that out.
+        if !frame
+            .iter()
+            .any(|local| local.decl.name.lexeme() == core.name)
+        {
+            index += 1;
+            continue;
+        }
+        // And within this list (the scan recurses into nested bodies), the
+        // group must be the whole life of the name.
         let mentions = statements
             .iter()
             .enumerate()
@@ -3159,6 +3176,219 @@ const fn builtin_scalar(ty: rumoca_ir_galec::builtins::BuiltinType) -> ast::Scal
 /// assertions about rendered text: the one thing that can turn the overlay into
 /// silent wrong code is two regions sharing storage while both are live, and
 /// that is a fact about the call graph, not about C syntax.
+#[cfg(test)]
+mod kernelize_tests {
+    use super::*;
+
+    struct GroupNames {
+        acc: ast::Name,
+        target: ast::Name,
+        lhs: ast::Name,
+        rhs: ast::Name,
+        iterator: Option<ast::Name>,
+    }
+
+    impl GroupNames {
+        fn new() -> Self {
+            Self {
+                acc: ast::Name::ident("acc"),
+                target: ast::Name::ident("t"),
+                lhs: ast::Name::ident("l"),
+                rhs: ast::Name::ident("r"),
+                iterator: Some(ast::Name::ident("k")),
+            }
+        }
+    }
+
+    fn stmt<'a>(node: TypedStatementView<'a>) -> TypedSpannedStatement<'a> {
+        TypedSpannedStatement {
+            trace: None,
+            kernel: None,
+            node,
+        }
+    }
+
+    fn expr<'a>(
+        scalar: ast::ScalarType,
+        node: TypedExpressionNodeView<'a>,
+    ) -> TypedExpressionView<'a> {
+        TypedExpressionView {
+            rank: 0,
+            extents: Some(Vec::new()),
+            scalar: Some(scalar),
+            node,
+        }
+    }
+
+    fn scalar_ref<'a>(name: &'a ast::Name) -> TypedReferenceView<'a> {
+        TypedReferenceView {
+            rank: 0,
+            extents: Some(Vec::new()),
+            scalar: Some(ast::ScalarType::Real),
+            context_resident: false,
+            declared_extents: None,
+            node: TypedReferenceNodeView::Local(TypedRefPartView {
+                name,
+                subscripts: Vec::new(),
+            }),
+        }
+    }
+
+    fn ref_expr<'a>(name: &'a ast::Name) -> TypedExpressionView<'a> {
+        expr(
+            ast::ScalarType::Real,
+            TypedExpressionNodeView::Ref(scalar_ref(name)),
+        )
+    }
+
+    /// `name[k]`: fully subscripted element of a `Real[3]` run.
+    fn run_element<'a>(name: &'a ast::Name, iterator: &'a ast::Name) -> TypedExpressionView<'a> {
+        let mut iterator_ref = scalar_ref(iterator);
+        iterator_ref.scalar = Some(ast::ScalarType::Integer);
+        expr(
+            ast::ScalarType::Real,
+            TypedExpressionNodeView::Ref(TypedReferenceView {
+                rank: 0,
+                extents: Some(Vec::new()),
+                scalar: Some(ast::ScalarType::Real),
+                context_resident: false,
+                declared_extents: Some(vec![3]),
+                node: TypedReferenceNodeView::Local(TypedRefPartView {
+                    name,
+                    subscripts: vec![expr(
+                        ast::ScalarType::Integer,
+                        TypedExpressionNodeView::Ref(iterator_ref),
+                    )],
+                }),
+            }),
+        )
+    }
+
+    fn binary<'a>(
+        op: ast::BinaryOp,
+        lhs: TypedExpressionView<'a>,
+        rhs: TypedExpressionView<'a>,
+    ) -> TypedExpressionView<'a> {
+        expr(
+            ast::ScalarType::Real,
+            TypedExpressionNodeView::Binary {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                square_reducible: false,
+            },
+        )
+    }
+
+    /// The canonical accumulate group: `acc := 0.0; for k in 1:3 loop
+    /// acc := acc + l[k] * r[k]; end for; t := acc;`
+    fn accumulate_group<'a>(names: &'a GroupNames) -> Vec<TypedSpannedStatement<'a>> {
+        let iterator = names.iterator.as_ref().expect("iterator name");
+        vec![
+            stmt(TypedStatementView::Assignment {
+                target: scalar_ref(&names.acc),
+                value: expr(ast::ScalarType::Real, TypedExpressionNodeView::Real(0.0)),
+            }),
+            stmt(TypedStatementView::For(Box::new(TypedForView {
+                iterator: &names.iterator,
+                start: expr(
+                    ast::ScalarType::Integer,
+                    TypedExpressionNodeView::Integer(1),
+                ),
+                step: None,
+                stop: expr(
+                    ast::ScalarType::Integer,
+                    TypedExpressionNodeView::Integer(3),
+                ),
+                c_locals: Vec::new(),
+                body: vec![stmt(TypedStatementView::Assignment {
+                    target: scalar_ref(&names.acc),
+                    value: binary(
+                        ast::BinaryOp::Add,
+                        ref_expr(&names.acc),
+                        binary(
+                            ast::BinaryOp::Mul,
+                            run_element(&names.lhs, iterator),
+                            run_element(&names.rhs, iterator),
+                        ),
+                    ),
+                })],
+            }))),
+            stmt(TypedStatementView::Assignment {
+                target: scalar_ref(&names.target),
+                value: ref_expr(&names.acc),
+            }),
+        ]
+    }
+
+    #[test]
+    fn frame_declared_accumulator_is_absorbed() {
+        let names = GroupNames::new();
+        let declaration =
+            ast::VariableDeclaration::scalar(ast::ScalarType::Real, ast::Name::ident("acc"));
+        let frame = vec![TypedLocalView {
+            decl: &declaration,
+            needs_unused_marker: false,
+        }];
+        let mut statements = accumulate_group(&names);
+        let dead = kernelize(&mut statements, &frame);
+        assert!(dead.contains("acc"));
+        assert!(matches!(
+            statements[0].kernel,
+            Some(KernelStatementView::Absorbed)
+        ));
+        assert!(matches!(
+            statements[2].kernel,
+            Some(KernelStatementView::Dot { count: 3, .. })
+        ));
+    }
+
+    /// Frame membership alone is not license to absorb: a sibling statement
+    /// in the same list reading the accumulator after the canonical
+    /// three-statement group means the group is not the whole life of the
+    /// name, and deleting its writes would change what that reader observes.
+    #[test]
+    fn sibling_reader_of_the_accumulator_keeps_its_loop() {
+        let names = GroupNames::new();
+        let extra_target = ast::Name::ident("t2");
+        let declaration =
+            ast::VariableDeclaration::scalar(ast::ScalarType::Real, ast::Name::ident("acc"));
+        let frame = vec![TypedLocalView {
+            decl: &declaration,
+            needs_unused_marker: false,
+        }];
+        let mut statements = accumulate_group(&names);
+        statements.push(stmt(TypedStatementView::Assignment {
+            target: scalar_ref(&extra_target),
+            value: ref_expr(&names.acc),
+        }));
+        let dead = kernelize(&mut statements, &frame);
+        assert!(dead.is_empty());
+        assert!(
+            statements
+                .iter()
+                .all(|statement| statement.kernel.is_none())
+        );
+    }
+
+    /// The accumulator's declaration living at an *outer* frame means some
+    /// scope outside this statement list also uses the name — the placement
+    /// is the common prefix of all uses. Absorbing the group here would
+    /// delete writes that outer reader still observes, so the loop stays.
+    #[test]
+    fn outer_declared_accumulator_keeps_its_loop() {
+        let names = GroupNames::new();
+        let mut statements = accumulate_group(&names);
+        let dead = kernelize(&mut statements, &[]);
+        assert!(dead.is_empty());
+        assert!(
+            statements
+                .iter()
+                .all(|statement| statement.kernel.is_none())
+        );
+    }
+}
+
 #[cfg(test)]
 mod layout_tests {
     use super::*;
