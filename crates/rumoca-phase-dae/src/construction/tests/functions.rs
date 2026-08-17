@@ -854,7 +854,10 @@ fn production_lowering_preserves_function_locals_and_statement_order() {
 }
 
 #[test]
-fn dynamic_quotient_fails_at_its_runtime_operator_owner() {
+fn dynamic_quotient_splits_between_its_runtime_owner_and_rejection() {
+    // A dynamic dividend over a time-invariant divisor now reaches the
+    // checked runtime owner and constructs exactly one discontinuity root;
+    // a divisor that varies during simulation keeps the ED018 rejection.
     let source = TestSource::new("Real x; x - div(x, 2);");
     let mut model = test_model();
     add_primitive_variable(&mut model, &source, "x", "Real x", 1, Vec::new(), false);
@@ -872,6 +875,43 @@ fn dynamic_quotient_fails_at_its_runtime_operator_owner() {
                         value: Literal::Integer(2),
                         span: source.span("2", 0),
                     },
+                ],
+                span: quotient_span,
+            }),
+            span: equation_span,
+        },
+        equation_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+    model.is_partial = true;
+
+    let dae = construct(&model, source.map)
+        .expect("a time-invariant divisor owns its checked event surface");
+    dae.inspect(|view| {
+        assert_eq!(
+            view.root_count(),
+            1,
+            "the runtime quotient owns exactly one discontinuity root"
+        );
+    });
+
+    let source = TestSource::new("Real x; Real y; x - div(x, y);");
+    let mut model = test_model();
+    add_primitive_variable(&mut model, &source, "x", "Real x", 1, Vec::new(), false);
+    add_primitive_variable(&mut model, &source, "y", "Real y", 1, Vec::new(), false);
+    let quotient_span = source.span("div(x, y)", 0);
+    let equation_span = source.span("x - div(x, y)", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(variable_reference(&source, "x", "x", 1, Vec::new())),
+            rhs: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::Div,
+                args: vec![
+                    variable_reference(&source, "x", "x", 2, Vec::new()),
+                    variable_reference(&source, "y", "y", 1, Vec::new()),
                 ],
                 span: quotient_span,
             }),

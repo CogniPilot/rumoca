@@ -57,19 +57,34 @@ pub(super) fn validate_runtime_quotient(
     if !storage.expr_type(*lhs, at)?.is_scalar() || !storage.expr_type(*rhs, at)?.is_scalar() {
         return Err(DaeConstructionError::ExpectedScalar { span: at.span() });
     }
-    let Some(divisor) = static_numeric_value(storage, rhs.index()) else {
-        return Err(DaeConstructionError::NonStaticDiscontinuity {
-            operator: quotient_name(builtin),
-            span: at.span(),
-        });
-    };
-    if divisor == 0.0 || !divisor.is_finite() {
-        return Err(DaeConstructionError::UndefinedBuiltinDomain {
-            operator: quotient_name(builtin),
-            span: at.span(),
-        });
+    if let Some(divisor) = static_numeric_value(storage, rhs.index()) {
+        if divisor == 0.0 || !divisor.is_finite() {
+            return Err(DaeConstructionError::UndefinedBuiltinDomain {
+                operator: quotient_name(builtin),
+                span: at.span(),
+            });
+        }
+        return Ok(());
     }
-    Ok(())
+    // A non-literal divisor is admitted when its constructor-derived
+    // variability is at most Parameter: the sin(pi·lhs/rhs) indicator the
+    // runtime owner builds is well-defined for every nonzero divisor, and a
+    // time-invariant divisor keeps the event surface's structure static —
+    // its zero crossings move with parameter values, never with time. A
+    // statically-proven zero is still rejected above; a parameter divisor
+    // that evaluates to zero or a non-finite value surfaces through the
+    // same runtime evaluation domain failure as any parameter reciprocal.
+    // Discrete and continuous divisors would move the discontinuity grid
+    // during simulation and still need a different checked owner.
+    match storage.expr_variability(*rhs, at)? {
+        ExpressionVariability::Constant | ExpressionVariability::Parameter => Ok(()),
+        ExpressionVariability::Discrete | ExpressionVariability::Continuous => {
+            Err(DaeConstructionError::NonStaticDiscontinuity {
+                operator: quotient_name(builtin),
+                span: at.span(),
+            })
+        }
+    }
 }
 
 fn quotient_name(builtin: PureBuiltin) -> &'static str {

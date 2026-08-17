@@ -27,6 +27,21 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         self.insert_builtin(builtin, arguments.into(), result)
     }
 
+    /// Construct a runtime quotient with no event surface.
+    ///
+    /// MLS §3.7.2 exempts calls inside function bodies from event
+    /// generation: the quotient's value semantics stand under the same
+    /// time-invariant divisor admission, but no discontinuity root exists to
+    /// own — a function body is event-free, and a root would smuggle a
+    /// function-scope expression into the model's condition system.
+    pub fn function_runtime_quotient(
+        self,
+        builtin: PureBuiltin,
+        arguments: [ExprId<'dae>; 2],
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        self.checked_runtime_quotient(builtin, arguments)
+    }
+
     fn insert_builtin(
         self,
         builtin: PureBuiltin,

@@ -1306,11 +1306,37 @@ fn lower_builtin_call<'dae>(
             lower_expression_scoped(construction, symbols, binders, argument, None)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    construction.expressions(|expressions| {
-        expressions
-            .at(provenance)
-            .builtin(pure_builtin(function), arguments)
-    })
+    let builtin = pure_builtin(function);
+    // MLS §3.7.2 div/mod/rem generate events at quotient changes. The static
+    // path folds a fully static call; a call the static proof refuses as a
+    // runtime discontinuity is handed to the checked runtime owner, which
+    // admits it exactly when the divisor is proven time-invariant and builds
+    // the sin-indicator event root. A statically undefined domain (proven
+    // zero divisor) stays rejected — only the non-static refusal reroutes.
+    if matches!(
+        builtin,
+        dae::PureBuiltin::Div | dae::PureBuiltin::Mod | dae::PureBuiltin::Rem
+    ) && let [lhs, rhs] = arguments.as_slice()
+    {
+        let (lhs, rhs) = (*lhs, *rhs);
+        let attempted = construction
+            .expressions(|expressions| expressions.at(provenance).builtin(builtin, arguments));
+        let Err(dae::DaeConstructionError::NonStaticDiscontinuity { .. }) = attempted else {
+            return attempted;
+        };
+        // MLS §3.7.2: no events are generated inside a function body — the
+        // quotient stands alone, without a root; at model scope the checked
+        // runtime owner builds the discontinuity root.
+        if symbols.function_body.is_some() {
+            return construction.expressions(|expressions| {
+                expressions
+                    .at(provenance)
+                    .function_runtime_quotient(builtin, [lhs, rhs])
+            });
+        }
+        return construction.runtime_quotient(builtin, [lhs, rhs], provenance);
+    }
+    construction.expressions(|expressions| expressions.at(provenance).builtin(builtin, arguments))
 }
 
 fn lower_function_call<'dae>(

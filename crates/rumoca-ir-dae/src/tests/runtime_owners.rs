@@ -528,3 +528,223 @@ fn assert_event_wire_requires_trigger(encoded: &str) {
     let error = serde_json::from_value::<Dae>(value).unwrap_err();
     assert!(error.to_string().contains("missing field `trigger`"));
 }
+
+#[test]
+fn runtime_mod_accepts_a_parameter_divisor_and_owns_one_root() {
+    let source = TestSource::new("Real x; parameter Real p; mod(x, 2 * p)");
+    let declaration = source.source("Real x", 0);
+    let p_declaration = source.source("parameter Real p", 0);
+    let x_at = source.source("x", 1);
+    let p_at = source.source("p", 1);
+    let two_at = source.source("2", 0);
+    let product_at = source.source("2 * p", 0);
+    let mod_at = source.source("mod(x, 2 * p)", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::scalar(ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let x = dae.variables(|variables| {
+            variables.algebraic(
+                VarName::new("x"),
+                real,
+                declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        let p = dae.variables(|variables| {
+            variables.parameter(
+                VarName::new("p"),
+                real,
+                p_declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        let (x, divisor) = dae.expressions(|expressions| {
+            let x = expressions
+                .at(x_at)
+                .coordinate(CoordinateInput::Algebraic(x))?;
+            let p = expressions
+                .at(p_at)
+                .coordinate(CoordinateInput::Parameter(p))?;
+            let two = expressions.at(two_at).literal(DaeLiteral::Integer(2))?;
+            let divisor = expressions
+                .at(product_at)
+                .binary(BinaryOperator::Multiply, two, p)?;
+            Ok((x, divisor))
+        })?;
+        dae.runtime_quotient(PureBuiltin::Mod, [x, divisor], mod_at)?;
+        Ok(())
+    })
+    .expect("a time-invariant parameter divisor owns the same checked event surface");
+
+    // The parameter divisor changes nothing about the owner: exactly one
+    // synthetic root, generated as a runtime discontinuity, always-active,
+    // with the sin-indicator relation. Widening the divisor admission must
+    // never suppress or duplicate the event surface.
+    dae.inspect(|view| {
+        assert_eq!(view.root_count(), 1);
+        let root = view
+            .root(view.root_id(0).expect("dense synthetic root identity"))
+            .expect("checked synthetic root");
+        assert_eq!(
+            root.provenance().origin(),
+            DaeProvenanceOrigin::Generated(DaeGeneration::RuntimeDiscontinuity)
+        );
+        assert!(matches!(
+            view.condition(root.activation())
+                .expect("checked root activation")
+                .operation(),
+            ConditionOperation::Always
+        ));
+        let relation = view
+            .relation(root.relation())
+            .expect("checked synthetic relation");
+        assert!(matches!(
+            view.expression(relation.expression())
+                .expect("checked relation expression")
+                .operation(),
+            ExpressionOperation::Binary {
+                operator: BinaryOperator::GreaterEqual,
+                ..
+            }
+        ));
+    });
+}
+
+#[test]
+fn runtime_quotient_rejects_time_varying_divisors() {
+    let source = TestSource::new(
+        "Real xx; Real yy; Real ss; discrete Real dd; mod(xx, yy); mod(xx, ss); mod(xx, time); mod(xx, dd)",
+    );
+    let declaration = source.source("Real xx", 0);
+    let y_declaration = source.source("Real yy", 0);
+    let s_declaration = source.source("Real ss", 0);
+    let d_declaration = source.source("discrete Real dd", 0);
+    let x_at = source.source("xx", 1);
+    let y_at = source.source("yy", 1);
+    let s_at = source.source("ss", 1);
+    let time_at = source.source("time", 0);
+    let d_at = source.source("dd", 1);
+    let owner_y = source.source("mod(xx, yy)", 0);
+    let owner_s = source.source("mod(xx, ss)", 0);
+    let owner_time = source.source("mod(xx, time)", 0);
+    let owner_d = source.source("mod(xx, dd)", 0);
+    Dae::construct(source.map, |dae| {
+        let real = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::scalar(ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let x = dae.variables(|variables| {
+            variables.algebraic(
+                VarName::new("x"),
+                real,
+                declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        let y = dae.variables(|variables| {
+            variables.algebraic(
+                VarName::new("yy"),
+                real,
+                y_declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        let s = dae.variables(|variables| {
+            variables.state(
+                VarName::new("ss"),
+                real,
+                s_declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        let d = dae.variables(|variables| {
+            variables.discrete_real(
+                VarName::new("dd"),
+                real,
+                d_declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        let (x, divisors) = dae.expressions(|expressions| {
+            let x = expressions
+                .at(x_at)
+                .coordinate(CoordinateInput::Algebraic(x))?;
+            let y = expressions
+                .at(y_at)
+                .coordinate(CoordinateInput::Algebraic(y))?;
+            let s = expressions.at(s_at).coordinate(CoordinateInput::State(s))?;
+            let time = expressions.at(time_at).coordinate(CoordinateInput::Time)?;
+            let d = expressions
+                .at(d_at)
+                .coordinate(CoordinateInput::DiscreteReal(d))?;
+            Ok((
+                x,
+                [(y, owner_y), (s, owner_s), (time, owner_time), (d, owner_d)],
+            ))
+        })?;
+        for (divisor, owner) in divisors {
+            let rejected = dae.runtime_quotient(PureBuiltin::Mod, [x, divisor], owner);
+            assert!(
+                matches!(
+                    rejected,
+                    Err(DaeConstructionError::NonStaticDiscontinuity { span, .. })
+                        if span == owner.span()
+                ),
+                "a divisor that varies during simulation must keep its rejection"
+            );
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn function_runtime_quotient_owns_no_event_root() {
+    // MLS §3.7.2: a quotient inside a function body keeps its value
+    // semantics under the same divisor admission but generates no event —
+    // the construction must leave the condition system empty.
+    let source = TestSource::new("Real x; mod(x, 2)");
+    let declaration = source.source("Real x", 0);
+    let x_at = source.source("x", 1);
+    let two_at = source.source("2", 0);
+    let mod_at = source.source("mod(x, 2)", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::scalar(ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let x = dae.variables(|variables| {
+            variables.algebraic(
+                VarName::new("x"),
+                real,
+                declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        dae.expressions(|expressions| {
+            let x = expressions
+                .at(x_at)
+                .coordinate(CoordinateInput::Algebraic(x))?;
+            let two = expressions.at(two_at).literal(DaeLiteral::Integer(2))?;
+            expressions
+                .at(mod_at)
+                .function_runtime_quotient(PureBuiltin::Mod, [x, two])
+        })?;
+        Ok(())
+    })
+    .expect("a function-body quotient constructs without an event surface");
+    dae.inspect(|view| {
+        assert_eq!(view.root_count(), 0, "function bodies are event-free");
+    });
+}
