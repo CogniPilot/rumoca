@@ -46,34 +46,37 @@ struct QuotientBatch<'dae> {
 
 /// One in-flight model-owner replay.
 ///
-/// The token is construction-owned: only `begin_quotient_replay` mints it,
-/// its fields are private, and each stage consumes exactly one owner-produced
-/// fact in source order — relation, then activation definition, then root.
-/// `finish_quotient_replay` verifies full consumption and records the
-/// registry entry; a token that never finishes is caught at
-/// `finish_construction`, so no partially consumed owner can reach a
-/// finalized DAE on any path.
-pub struct QuotientReplayToken<'dae> {
+/// The token is decoder reconstruction capability, not a producer API: it
+/// stays crate-private, only `begin_quotient_replay` mints it, and each
+/// stage consumes exactly one owner-produced fact in source order —
+/// relation, then activation definition, then root.
+/// `finish_quotient_replay` verifies full consumption and clears exactly
+/// this token's construction-issued pending slot; a token that never
+/// finishes is caught at `finish_construction`, so no partially consumed
+/// owner can reach a finalized DAE on any path, and finishing several live
+/// tokens in any order settles each exact slot rather than a stack.
+pub(crate) struct QuotientReplayToken<'dae> {
     quotient: ExprId<'dae>,
     generated: [ExprId<'dae>; 6],
     builtin: PureBuiltin,
     generated_at: DaeProvenance,
+    pending_slot: usize,
     relation: Option<RelationId<'dae>>,
     activation: Option<ConditionId<'dae>>,
     root: Option<RootId<'dae>>,
 }
 
 impl<'dae> QuotientReplayToken<'dae> {
-    pub fn quotient(&self) -> ExprId<'dae> {
+    pub(crate) fn quotient(&self) -> ExprId<'dae> {
         self.quotient
     }
 
-    pub fn generated(&self) -> [ExprId<'dae>; 6] {
+    pub(crate) fn generated(&self) -> [ExprId<'dae>; 6] {
         self.generated
     }
 
     /// The generated RuntimeDiscontinuity provenance anchoring this replay.
-    pub fn provenance(&self) -> DaeProvenance {
+    pub(crate) fn provenance(&self) -> DaeProvenance {
         self.generated_at
     }
 }
@@ -213,19 +216,23 @@ impl<'dae> DaeConstruction<'dae> {
     /// Begin replaying one model quotient owner: re-run the checked batch
     /// construction and return the staged token that the relation,
     /// activation, and root positions consume in source order.
-    pub fn begin_quotient_replay(
+    pub(crate) fn begin_quotient_replay(
         &mut self,
         builtin: PureBuiltin,
         arguments: [ExprId<'dae>; 2],
         provenance: DaeProvenance,
     ) -> Result<QuotientReplayToken<'dae>, DaeConstructionError> {
         let batch = self.quotient_batch(builtin, arguments, provenance)?;
-        self.storage.pending_quotient_replays.push(provenance);
+        // The slot index is the construction-issued identity finish must
+        // settle; several live tokens each clear exactly their own slot.
+        let pending_slot = self.storage.pending_quotient_replays.len();
+        self.storage.pending_quotient_replays.push(Some(provenance));
         Ok(QuotientReplayToken {
             quotient: batch.quotient,
             generated: batch.generated,
             builtin,
             generated_at: batch.generated_at,
+            pending_slot,
             relation: None,
             activation: None,
             root: None,
@@ -234,7 +241,7 @@ impl<'dae> DaeConstruction<'dae> {
 
     /// Re-issue the owner's relation from its own regenerated relation
     /// expression. First stage; consumable exactly once.
-    pub fn replay_quotient_relation(
+    pub(crate) fn replay_quotient_relation(
         &mut self,
         token: &mut QuotientReplayToken<'dae>,
     ) -> Result<RelationId<'dae>, DaeConstructionError> {
@@ -252,12 +259,27 @@ impl<'dae> DaeConstruction<'dae> {
 
     /// Define the owner's exact pre-reserved activation as Always. Second
     /// stage; requires the relation stage and a still-undefined reservation.
-    pub fn replay_quotient_activation(
+    pub(crate) fn replay_quotient_activation(
         &mut self,
         token: &mut QuotientReplayToken<'dae>,
         activation: ConditionId<'dae>,
     ) -> Result<(), DaeConstructionError> {
         if token.relation.is_none() || token.activation.is_some() {
+            return Err(DaeConstructionError::InvalidQuotientReplayStage {
+                stage: "activation",
+                span: token.generated_at.span(),
+            });
+        }
+        // The reservation is semantic input, but its stored provenance is an
+        // owner-produced fact: it must be exactly this replay's canonical
+        // generated provenance, or a foreign reservation would smuggle a
+        // different finalized span through the omitted definition.
+        let reserved = self
+            .storage
+            .conditions
+            .get(activation.index() as usize)
+            .map(|entry| entry.provenance);
+        if reserved != Some(token.generated_at) {
             return Err(DaeConstructionError::InvalidQuotientReplayStage {
                 stage: "activation",
                 span: token.generated_at.span(),
@@ -273,7 +295,7 @@ impl<'dae> DaeConstruction<'dae> {
 
     /// Re-issue the owner's root from ITS relation and activation. Third
     /// stage; requires both earlier stages.
-    pub fn replay_quotient_root(
+    pub(crate) fn replay_quotient_root(
         &mut self,
         token: &mut QuotientReplayToken<'dae>,
     ) -> Result<RootId<'dae>, DaeConstructionError> {
@@ -295,8 +317,9 @@ impl<'dae> DaeConstruction<'dae> {
         Ok(root)
     }
 
-    /// Verify the token is fully consumed and record the regenerated owner.
-    pub fn finish_quotient_replay(
+    /// Verify the token is fully consumed, settle exactly its pending slot,
+    /// and record the regenerated owner.
+    pub(crate) fn finish_quotient_replay(
         &mut self,
         token: QuotientReplayToken<'dae>,
     ) -> Result<(), DaeConstructionError> {
@@ -307,7 +330,17 @@ impl<'dae> DaeConstruction<'dae> {
                 span: token.generated_at.span(),
             });
         };
-        self.storage.pending_quotient_replays.pop();
+        let settled = self
+            .storage
+            .pending_quotient_replays
+            .get_mut(token.pending_slot)
+            .and_then(Option::take);
+        if settled.is_none() {
+            return Err(DaeConstructionError::InvalidQuotientReplayStage {
+                stage: "finish",
+                span: token.generated_at.span(),
+            });
+        }
         self.storage.record_quotient_owner(
             RuntimeQuotientOwnerEntry {
                 quotient: token.quotient.index(),
@@ -325,27 +358,47 @@ impl<'dae> DaeConstruction<'dae> {
 }
 
 impl Storage {
+    /// Record one owner, keeping the registry canonical in
+    /// quotient-expression order on EVERY recording path.
+    ///
+    /// Construction and replay reach this in different orders — replay
+    /// records function owners during expression reconstruction but model
+    /// owners only after their root markers — so ordered insertion (with
+    /// exact ordinal repair of the expression lookup) is what makes the
+    /// public view and the structural consumer independent of marker
+    /// timing.
     pub(crate) fn record_quotient_owner(
         &mut self,
         entry: RuntimeQuotientOwnerEntry,
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
-        let ordinal = checked_u32(
+        checked_u32(
             self.runtime_quotient_owners.len(),
             "runtime quotient owner registry",
             at,
         )?;
         if self
             .runtime_quotient_owner_by_expression
-            .insert(entry.quotient, ordinal)
-            .is_some()
+            .contains_key(&entry.quotient)
         {
             return Err(DaeConstructionError::DuplicateRuntimeQuotientOwner {
                 expression: entry.quotient,
                 span: at.span(),
             });
         }
-        self.runtime_quotient_owners.push(entry);
+        let position = self
+            .runtime_quotient_owners
+            .partition_point(|existing| existing.quotient < entry.quotient);
+        self.runtime_quotient_owners.insert(position, entry);
+        for (ordinal, existing) in self
+            .runtime_quotient_owners
+            .iter()
+            .enumerate()
+            .skip(position)
+        {
+            self.runtime_quotient_owner_by_expression
+                .insert(existing.quotient, ordinal as u32);
+        }
         Ok(())
     }
 }

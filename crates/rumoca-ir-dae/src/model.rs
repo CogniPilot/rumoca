@@ -156,7 +156,6 @@ pub(crate) use function_reads::{
     FunctionReadFact, FunctionReadMergeError, FunctionReadSet, FunctionReadSets,
 };
 pub use function_scopes::{FunctionScopeRelation, FunctionScopeView};
-pub use runtime_quotients::QuotientReplayToken;
 pub use value_types::ValueTypes;
 use variable_types::VariableTypeCapability;
 
@@ -494,7 +493,7 @@ pub(crate) struct Storage {
     pub(crate) roots: Vec<RootEntry>,
     pub(crate) runtime_quotient_owners: Vec<runtime_quotients::RuntimeQuotientOwnerEntry>,
     pub(crate) runtime_quotient_owner_by_expression: rustc_hash::FxHashMap<u32, u32>,
-    pub(crate) pending_quotient_replays: Vec<DaeProvenance>,
+    pub(crate) pending_quotient_replays: Vec<Option<DaeProvenance>>,
     pub(crate) structured_roots: Vec<StructuredRootEntry>,
     pub(crate) time_events: Vec<TimeEventEntry>,
     pub(crate) event_actions: Vec<EventActionEntry>,

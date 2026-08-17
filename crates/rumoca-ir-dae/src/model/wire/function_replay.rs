@@ -575,6 +575,9 @@ fn replay_function_quotient<'dae>(
     ids.expressions.push(quotient);
     ids.next_wire_expression += 1;
     ids.owner_operand_extra += 2;
+    // The function owner occupies its global owner ordinal so later model
+    // markers keep naming the construction-issued sequence.
+    ids.quotient_replays.push(PendingOwnerSlot::Function);
     Ok(())
 }
 

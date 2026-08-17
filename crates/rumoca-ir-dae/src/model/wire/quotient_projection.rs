@@ -19,11 +19,20 @@ use super::*;
 /// function scope. Anything else fails serialization: the wire never omits a
 /// range the registry has not proven it owns.
 pub(super) fn verify_owner_projection(storage: &FrozenStorage) -> Result<OwnerProjection, String> {
-    use crate::model::runtime_quotients::{QuotientOwnerKind, RuntimeQuotientOwnerEntry};
+    use crate::model::runtime_quotients::QuotientOwnerKind;
 
-    let mut sorted: Vec<&RuntimeQuotientOwnerEntry> =
-        storage.runtime_quotient_owners.iter().collect();
-    sorted.sort_by_key(|entry| entry.quotient);
+    // The registry is canonical in quotient order on every recording path;
+    // the marker ordinals below are exactly its indices. A violation here
+    // is a broken construction invariant, never something to repair by
+    // sorting at the boundary.
+    let canonical_order = storage
+        .runtime_quotient_owners
+        .windows(2)
+        .all(|pair| pair[0].quotient < pair[1].quotient);
+    if !canonical_order {
+        return Err("owner registry violates canonical quotient order".into());
+    }
+    let sorted = &storage.runtime_quotient_owners;
     let mut projection = OwnerProjection {
         replace: rustc_hash::FxHashMap::default(),
         skip_nodes: rustc_hash::FxHashSet::default(),
@@ -65,7 +74,14 @@ pub(super) fn verify_owner_projection(storage: &FrozenStorage) -> Result<OwnerPr
                     [lhs, rhs],
                     generated,
                 )?;
-                verify_model_owner_surface(storage, *generated, *relation, *activation, *root)?;
+                verify_model_owner_surface(
+                    storage,
+                    entry.quotient,
+                    *generated,
+                    *relation,
+                    *activation,
+                    *root,
+                )?;
                 projection.skip_nodes.extend(*generated);
                 projection.skip_operands.extend(indicator_range.indices());
                 let claimed = projection
@@ -180,39 +196,64 @@ fn verify_model_owner_batch(
     {
         return Err("model owner batch does not own its packed operand slots".into());
     }
+    let canonical = canonical_generated_provenance(storage, quotient)?;
     for &index in &expected {
         let generated_provenance = arena
             .provenance
             .get(index as usize)
             .ok_or("model owner batch escapes the arena")?;
-        if generated_provenance.origin()
-            != DaeProvenanceOrigin::Generated(DaeGeneration::RuntimeDiscontinuity)
-        {
-            return Err("model owner batch lacks generated provenance".into());
+        if *generated_provenance != canonical {
+            return Err("model owner batch lacks the canonical generated provenance".into());
         }
     }
     Ok(*indicator_range)
 }
 
+/// The one generated provenance replay derives from the quotient record:
+/// every omitted node and event artifact must carry exactly it, because the
+/// wire drops their provenance columns and reconstruction re-derives them
+/// from the quotient record's span alone.
+fn canonical_generated_provenance(
+    storage: &FrozenStorage,
+    quotient: u32,
+) -> Result<DaeProvenance, String> {
+    let quotient_provenance = storage
+        .expressions
+        .provenance
+        .get(quotient as usize)
+        .ok_or("registry quotient escapes the arena")?;
+    DaeProvenance::generated(
+        DaeGeneration::RuntimeDiscontinuity,
+        quotient_provenance.span(),
+    )
+    .map_err(|_| "registry quotient span cannot anchor generated provenance".into())
+}
+
 fn verify_model_owner_surface(
     storage: &FrozenStorage,
+    quotient: u32,
     generated: [u32; 6],
     relation: u32,
     activation: u32,
     root: u32,
 ) -> Result<(), String> {
+    let canonical = canonical_generated_provenance(storage, quotient)?;
     let relation_ok = storage
         .relations
         .get(relation as usize)
-        .is_some_and(|entry| entry.expression == generated[5]);
+        .is_some_and(|entry| entry.expression == generated[5] && entry.provenance == canonical);
     let activation_ok = storage
         .conditions
         .get(activation as usize)
-        .is_some_and(|entry| matches!(entry.node, Some(crate::conditions::ConditionNode::Always)));
-    let root_ok = storage
-        .roots
-        .get(root as usize)
-        .is_some_and(|entry| entry.relation == relation && entry.activation == activation);
+        .is_some_and(|entry| {
+            matches!(entry.node, Some(crate::conditions::ConditionNode::Always))
+                && entry.provenance == canonical
+        });
+    let root_ok = storage.roots.get(root as usize).is_some_and(|entry| {
+        entry.relation == relation
+            && entry.activation == activation
+            && entry.provenance == canonical
+    });
     if !relation_ok || !activation_ok || !root_ok {
         return Err("model owner event surface does not match its registry".into());
     }

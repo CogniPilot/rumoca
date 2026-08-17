@@ -9,6 +9,7 @@ mod records;
 use serde::ser::{SerializeStruct, SerializeStructVariant};
 use serde::{Deserialize, Serialize};
 
+use super::runtime_quotients::QuotientReplayToken;
 use crate::expression::OperandRange;
 
 use super::*;
@@ -256,16 +257,24 @@ struct WireIds<'dae> {
     /// `expressions.len()` (the source-ordinal cursor) by six for every
     /// replayed model owner.
     next_wire_expression: usize,
-    /// In-flight owner replays, in owner-record (= quotient) order. Each
-    /// entry's token is consumed by its three stream markers and finished
-    /// after root reconstruction.
-    quotient_replays: Vec<PendingQuotientReplay<'dae>>,
+    /// One slot per owner record in source order — the single global owner
+    /// ordinal the stream markers name. Function owners hold a typed
+    /// placeholder markers must reject; model owners hold the staged token
+    /// consumed by their three markers and finished after roots.
+    quotient_replays: Vec<PendingOwnerSlot<'dae>>,
     /// Extra target expression nodes produced by owner replays (six per
     /// model owner).
     owner_expression_extra: usize,
     /// Extra target packed operands produced by owner replays (three per
     /// model owner, two per function owner).
     owner_operand_extra: usize,
+}
+
+enum PendingOwnerSlot<'dae> {
+    /// A function-owned quotient occupies its global ordinal but stages no
+    /// token; a stream marker naming it is a forged wire.
+    Function,
+    Model(PendingQuotientReplay<'dae>),
 }
 
 struct PendingQuotientReplay<'dae> {
@@ -751,10 +760,11 @@ fn replay_model_quotient_owner<'dae>(
     }
     ids.owner_expression_extra += 6;
     ids.owner_operand_extra += 3;
-    ids.quotient_replays.push(PendingQuotientReplay {
-        token: Some(token),
-        activation,
-    });
+    ids.quotient_replays
+        .push(PendingOwnerSlot::Model(PendingQuotientReplay {
+            token: Some(token),
+            activation,
+        }));
     ids.next_wire_expression += 1;
     Ok(())
 }
@@ -763,20 +773,29 @@ fn pending_quotient_replay<'ids, 'dae>(
     ids: &'ids mut WireIds<'dae>,
     owner: u32,
 ) -> Result<&'ids mut QuotientReplayToken<'dae>, DaeConstructionError> {
-    ids.quotient_replays
-        .get_mut(owner as usize)
-        .and_then(|pending| pending.token.as_mut())
-        .ok_or_else(|| malformed("quotient_owner marker"))
+    // A marker naming a function-kind slot (or no slot) is a forged wire:
+    // only model owners stage tokens for the three stream markers.
+    match ids.quotient_replays.get_mut(owner as usize) {
+        Some(PendingOwnerSlot::Model(pending)) => pending
+            .token
+            .as_mut()
+            .ok_or_else(|| malformed("quotient_owner marker")),
+        _ => Err(malformed("quotient_owner marker")),
+    }
 }
 
-/// After root reconstruction every staged token must be fully consumed:
-/// exactly one relation, activation, and root marker each. Finishing records
-/// the regenerated owner; an unconsumed stage is the typed replay rejection.
+/// After root reconstruction every staged model token must be fully
+/// consumed: exactly one relation, activation, and root marker each.
+/// Finishing records the regenerated owner without compacting the global
+/// owner ordinals; an unconsumed stage is the typed replay rejection.
 fn finish_quotient_replays<'dae>(
     dae: &mut DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
 ) -> Result<(), DaeConstructionError> {
     for pending in &mut ids.quotient_replays {
+        let PendingOwnerSlot::Model(pending) = pending else {
+            continue;
+        };
         let token = pending
             .token
             .take()
@@ -1356,10 +1375,10 @@ fn define_conditions<'dae>(
             // The marker must sit at exactly the reservation ordinal the
             // owner record named as its semantic input.
             let activation = ids.conditions[index];
-            let owner_activation = ids
-                .quotient_replays
-                .get(owner as usize)
-                .map(|pending| pending.activation);
+            let owner_activation = match ids.quotient_replays.get(owner as usize) {
+                Some(PendingOwnerSlot::Model(pending)) => Some(pending.activation),
+                _ => None,
+            };
             if owner_activation != Some(index as u32) {
                 return Err(malformed("conditions.quotient_owner"));
             }

@@ -738,7 +738,11 @@ impl Storage {
         if self.unfilled_conditions != 0 {
             return Err(self.incomplete_arena("condition", &self.conditions));
         }
-        if let Some(&pending) = self.pending_quotient_replays.first() {
+        if let Some(pending) = self
+            .pending_quotient_replays
+            .iter()
+            .find_map(|slot| slot.as_ref())
+        {
             return Err(DaeConstructionError::UnconsumedQuotientReplay {
                 span: pending.span(),
             });
