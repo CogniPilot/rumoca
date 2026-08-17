@@ -30,7 +30,7 @@ use tempfile::tempdir;
 // The `galec_cli_support/` helpers are declared once by the umbrella binary
 // that owns this file (see `suite_galec_fmu.rs`), so the sibling suites share
 // one copy instead of compiling the same file several times per binary.
-use super::cli_support::{run_compile_target, strip_ansi, write_fixture};
+use super::cli_support::{diagnostic_contains, run_compile_target, strip_ansi, write_fixture};
 use super::container_xml_support::{
     assert_xsd_rejects, attribute_values, mask_attribute, mask_uuids, move_line_after,
     relative_file_paths, sole_attribute_value, surgically, validate_against_xsd,
@@ -561,9 +561,15 @@ fn foreign_directory_at_container_path_is_refused_with_remedy() {
         "packaging over a foreign directory must fail.\nstdout:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    let raw_stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = strip_ansi(&raw_stderr);
     assert!(
-        stderr.contains("refusing to remove") && stderr.contains("--output"),
+        diagnostic_contains(&raw_stderr, "refusing to remove")
+            && diagnostic_contains(&raw_stderr, &foreign.display().to_string())
+            && diagnostic_contains(
+                &raw_stderr,
+                "Delete it or choose a different `--output` directory."
+            ),
         "the error must state the remedy, got stderr:\n{stderr}"
     );
     assert_eq!(

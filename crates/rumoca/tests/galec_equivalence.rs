@@ -2217,16 +2217,8 @@ fn embedded_c_unrepresentable_declared_ranges_fail_closed() {
             !output.status.success(),
             "`compile --target {EMBEDDED_C_TARGET}` must fail for {model}:\n{stderr}"
         );
-        // miette hard-wraps the cause text and gutters the continuation, so
-        // the token is compared with the layout removed rather than with a
-        // shorter (and weaker) fragment.
-        let unwrapped = |text: &str| {
-            text.chars()
-                .filter(|character| !character.is_whitespace() && *character != '\u{2502}')
-                .collect::<String>()
-        };
         assert!(
-            unwrapped(&stderr).contains(&unwrapped(expected)),
+            cli_support::diagnostic_contains(&stderr, expected),
             "{model} CLI diagnostic must name the unsupported feature:\n{stderr}"
         );
         assert!(

@@ -45,7 +45,7 @@ use tempfile::tempdir;
 // that owns this file (see `suite_galec_fmu.rs`), so the sibling suites share
 // one copy instead of compiling the same file several times per binary.
 use super::cc_support::assurance_c99_cc;
-use super::cli_support::{run_compile_target, strip_ansi, write_fixture};
+use super::cli_support::{diagnostic_contains, run_compile_target, strip_ansi, write_fixture};
 use super::container_xml_support::{
     assert_xsd_rejects, attribute_values, mask_attribute, mask_uuids, move_line_after,
     relative_file_paths, sole_attribute_value, surgically, validate_against_xsd,
@@ -637,17 +637,6 @@ fn root_id(xml_path: &Path) -> String {
         .unwrap_or_else(|| panic!("no id attribute in {}", xml_path.display()))
 }
 
-/// Collapse miette's line wrapping (newlines plus `│` gutter marks) so
-/// phrase assertions hold regardless of where the renderer breaks lines —
-/// this suite's longer model name shifts the wrap points relative to the
-/// `cli_target_galec.rs` twin, splitting phrases like "refusing to remove".
-fn unwrap_diagnostic_text(text: &str) -> String {
-    text.replace('│', " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// Mask `attribute` only inside the opening tags of `element` — used for
 /// the PC `ManifestReference@checksum`, which derives from the (UUID- and
 /// timestamp-bearing) AC manifest bytes, while `File@checksum` entries in
@@ -1222,11 +1211,15 @@ fn foreign_directory_at_container_path_is_refused_with_remedy() {
         "packaging over a foreign directory must fail.\nstdout:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
-    // Unwrap miette's line breaks first: the longer model name pushes the
-    // renderer to split "refusing to remove" across a gutter-marked line.
-    let stderr = unwrap_diagnostic_text(&strip_ansi(&String::from_utf8_lossy(&output.stderr)));
+    let raw_stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = strip_ansi(&raw_stderr);
     assert!(
-        stderr.contains("refusing to remove") && stderr.contains("--output"),
+        diagnostic_contains(&raw_stderr, "refusing to remove")
+            && diagnostic_contains(&raw_stderr, &foreign.display().to_string())
+            && diagnostic_contains(
+                &raw_stderr,
+                "Delete it or choose a different `--output` directory."
+            ),
         "the error must state the remedy, got stderr:\n{stderr}"
     );
     assert_eq!(

@@ -53,3 +53,20 @@ pub(super) fn strip_ansi(text: &str) -> String {
     }
     out
 }
+
+/// Match semantic diagnostic text independently of miette's rendered layout.
+///
+/// The renderer may wrap both between words and inside a long path, prefixing
+/// continuation lines with a `│` gutter. Removing only renderer whitespace and
+/// that gutter from both sides preserves every non-layout character while
+/// making assertions independent of terminal width.
+pub(super) fn diagnostic_contains(text: &str, expected: &str) -> bool {
+    fn without_layout(text: &str) -> String {
+        strip_ansi(text)
+            .chars()
+            .filter(|character| !character.is_whitespace() && *character != '\u{2502}')
+            .collect()
+    }
+
+    without_layout(text).contains(&without_layout(expected))
+}
