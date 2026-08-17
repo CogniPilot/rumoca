@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Deserializer};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -10,17 +11,19 @@ use super::VerifyMslParityArgs;
 const MSL_QUALITY_BASELINE_ASSET_URL: &str = "https://github.com/CogniPilot/rumoca/releases/download/msl-quality-baseline/msl_quality_baseline.json";
 const MSL_QUALITY_BASELINE_FALLBACK_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
-const MSL_QUALITY_GATE_VERSION: u64 = 3;
-const PREVIOUS_MSL_QUALITY_GATE_VERSION: u64 = 2;
+const MSL_QUALITY_GATE_VERSION: u64 = 4;
+const PREVIOUS_MSL_QUALITY_GATE_VERSION: u64 = 3;
+const COMPARATOR_MIGRATION_FROM_QUALITY_GATE_VERSION: u64 = 2;
 const BRIDGED_PROMOTED_QUALITY_GATE_VERSION: u64 = 1;
 const MSL_QUALITY_RUN_SCOPE: &str = "full";
 const BRIDGED_PROMOTED_GIT_COMMIT: &str = "08fac54846fd73a3471bafc6609a0d34e74f9fe3";
 const BRIDGED_PROMOTED_SHA256: &str =
     "2b0a478b922583106342272bbf85411c539d50d9b9e0ca54c4dbb87621f05fe8";
-const BRIDGED_PROMOTED_EVIDENCE_COMMITS: [&str; 3] = [
+const BRIDGED_PROMOTED_EVIDENCE_COMMITS: [&str; 4] = [
     "a499eb8f15bf6af9d28f5a7011e82edfe73803b4",
     "3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b",
     "6d57e9644b4da542a5498ee42510551e7e7ade70",
+    "5394156facb1e5ff9f099f21c0e833c4870c506f",
 ];
 const CHECKED_DAE_FROM_CONTRACT: &str = "permissive-dae-v1";
 const CHECKED_DAE_TO_CONTRACT: &str = "checked-dae-v1";
@@ -34,6 +37,12 @@ const V3_EXCLUSIONS_FILE: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json";
 const V3_EXCLUSIONS_SHA256: &str =
     "e064ffb80771c1e231e849afcaa25cc2a08b8b7f9bf449bf8651905e5dcdc4d0";
+const V4_MIGRATION_CHANGE: &str = "source-static-partial-cohort-v1";
+const V4_EVIDENCE_GIT_COMMIT: &str = "5394156facb1e5ff9f099f21c0e833c4870c506f";
+const V4_AFFECTED_DIAGNOSTIC_COHORT: &str =
+    "failed-before-success-with-null-partial-classification";
+const V4_PARTIAL_MODELS_BEFORE: usize = 11;
+const V4_PARTIAL_MODELS_AFTER: usize = 13;
 #[derive(Debug, Clone, Deserialize)]
 struct MslQualityBaselineHeader {
     quality_gate_version: u64,
@@ -50,6 +59,8 @@ struct MslQualityBaselineHeader {
     #[serde(default)]
     metric_schema_migration: Option<MetricSchemaMigration>,
     #[serde(default)]
+    partial_classification_migration: Option<PartialClassificationMigration>,
+    #[serde(default)]
     compiler_contract_migration: Option<CompilerContractMigrationHeader>,
     #[serde(default)]
     promoted_baseline_bridge: Option<PromotedBaselineBridge>,
@@ -62,6 +73,8 @@ struct MslQualityBaselineHeader {
     balanced_models: usize,
     unbalanced_models: usize,
     partial_models: usize,
+    #[serde(default)]
+    partial_model_names: BTreeSet<String>,
     balance_denominator: usize,
     initial_balanced_models: usize,
     initial_unbalanced_models: usize,
@@ -113,6 +126,51 @@ struct MetricSchemaMigration {
     excluded_non_high_before: usize,
     exclusions_file: String,
     exclusions_sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PartialClassificationMigration {
+    from_quality_gate_version: u64,
+    to_quality_gate_version: u64,
+    change: String,
+    evidence_git_commit: String,
+    sim_target_models: usize,
+    partial_models_before: usize,
+    partial_models_after: usize,
+    affected_diagnostic_cohort: String,
+    affected_models: BTreeSet<String>,
+    partial_model_names_after: BTreeSet<String>,
+}
+
+fn reviewed_partial_model_names() -> BTreeSet<String> {
+    [
+        "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.PartialOpAmp",
+        "Modelica.Electrical.PowerConverters.Examples.ACAC.ExampleTemplates.Dimmer",
+        "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.Thyristor1Pulse",
+        "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorBridge2Pulse",
+        "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorBridge2mPulse",
+        "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorCenterTap2Pulse",
+        "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorCenterTap2mPulse",
+        "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorCenterTapmPulse",
+        "Modelica.Electrical.PowerConverters.Examples.DCAC.ExampleTemplates.SinglePhaseTwoLevel",
+        "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.ChopperBuckBoost",
+        "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.ChopperStepDown",
+        "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.ChopperStepUp",
+        "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.HBridge",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn reviewed_affected_partial_models() -> BTreeSet<String> {
+    [
+        "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.PartialOpAmp",
+        "Modelica.Electrical.PowerConverters.Examples.ACAC.ExampleTemplates.Dimmer",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -238,12 +296,13 @@ fn choose_baseline(
 ) -> Result<BaselineChoice> {
     validate_context_migration(checked_in)?;
     validate_metric_schema_migration(checked_in)?;
+    validate_partial_classification_migration(checked_in)?;
     validate_promoted_baseline_bridge(checked_in)?;
     if promoted.quality_gate_version != checked_in.quality_gate_version {
         if bridge_matches_promoted(promoted, checked_in)? {
             return Ok(BaselineChoice::CheckedInMigration);
         }
-        let Some(migration) = checked_in.metric_schema_migration.as_ref() else {
+        let Some(migration) = checked_in.partial_classification_migration.as_ref() else {
             bail!(
                 "MSL quality schema differs without an explicit migration (promoted={}, checked-in={})",
                 promoted.quality_gate_version,
@@ -279,7 +338,13 @@ fn choose_baseline(
                 promoted.omc_version
             );
         }
-        validate_migration_metric_integrity(promoted, checked_in, true, omc_context_changed)?;
+        validate_migration_metric_integrity(
+            promoted,
+            checked_in,
+            false,
+            true,
+            omc_context_changed,
+        )?;
         return Ok(BaselineChoice::CheckedInMigration);
     }
     if promoted.omc_version == checked_in.omc_version {
@@ -305,7 +370,7 @@ fn choose_baseline(
         promoted.sim_target_models,
         checked_in.sim_target_models
     );
-    validate_migration_metric_integrity(promoted, checked_in, false, true)?;
+    validate_migration_metric_integrity(promoted, checked_in, false, false, true)?;
     Ok(BaselineChoice::CheckedInMigration)
 }
 
@@ -349,7 +414,7 @@ fn validate_promoted_baseline_bridge(baseline: &MslQualityBaselineHeader) -> Res
     ensure!(
         bridge.from_quality_gate_version == BRIDGED_PROMOTED_QUALITY_GATE_VERSION
             && bridge.to_quality_gate_version == MSL_QUALITY_GATE_VERSION,
-        "MSL promoted baseline bridge must be the reviewed version-1 to version-3 lineage"
+        "MSL promoted baseline bridge must be the reviewed version-1 to version-4 lineage"
     );
     ensure!(
         bridge.from_git_commit == BRIDGED_PROMOTED_GIT_COMMIT
@@ -378,6 +443,10 @@ fn validate_promoted_baseline_bridge(baseline: &MslQualityBaselineHeader) -> Res
     ensure!(
         baseline.metric_schema_migration.is_some(),
         "MSL promoted baseline bridge requires comparator-policy migration evidence"
+    );
+    ensure!(
+        baseline.partial_classification_migration.is_some(),
+        "MSL promoted baseline bridge requires partial-classification migration evidence"
     );
     Ok(())
 }
@@ -410,15 +479,9 @@ fn validate_metric_schema_migration(baseline: &MslQualityBaselineHeader) -> Resu
         return Ok(());
     };
     ensure!(
-        migration.from_quality_gate_version == PREVIOUS_MSL_QUALITY_GATE_VERSION
-            && migration.to_quality_gate_version == MSL_QUALITY_GATE_VERSION,
+        migration.from_quality_gate_version == COMPARATOR_MIGRATION_FROM_QUALITY_GATE_VERSION
+            && migration.to_quality_gate_version == PREVIOUS_MSL_QUALITY_GATE_VERSION,
         "MSL metric schema migration must be the reviewed version-2 to version-3 correction"
-    );
-    ensure!(
-        migration.to_quality_gate_version == baseline.quality_gate_version,
-        "MSL metric schema migration target differs (declared={}, baseline={})",
-        migration.to_quality_gate_version,
-        baseline.quality_gate_version
     );
     ensure!(
         migration.change == V3_MIGRATION_CHANGE,
@@ -453,10 +516,54 @@ fn validate_metric_schema_migration(baseline: &MslQualityBaselineHeader) -> Resu
     Ok(())
 }
 
+fn validate_partial_classification_migration(baseline: &MslQualityBaselineHeader) -> Result<()> {
+    let Some(migration) = baseline.partial_classification_migration.as_ref() else {
+        ensure!(
+            baseline.quality_gate_version != MSL_QUALITY_GATE_VERSION,
+            "MSL baseline requires the reviewed partial-classification migration"
+        );
+        return Ok(());
+    };
+    ensure!(
+        migration.from_quality_gate_version == PREVIOUS_MSL_QUALITY_GATE_VERSION
+            && migration.to_quality_gate_version == MSL_QUALITY_GATE_VERSION,
+        "MSL partial-classification migration must be the reviewed version-3 to version-4 correction"
+    );
+    ensure!(
+        migration.to_quality_gate_version == baseline.quality_gate_version
+            && migration.change == V4_MIGRATION_CHANGE
+            && migration.evidence_git_commit == V4_EVIDENCE_GIT_COMMIT,
+        "MSL partial-classification migration identity differs from the reviewed correction"
+    );
+    ensure!(
+        migration.sim_target_models == baseline.sim_target_models,
+        "MSL partial-classification migration target set differs from the baseline"
+    );
+    ensure!(
+        migration.partial_models_before == V4_PARTIAL_MODELS_BEFORE
+            && migration.partial_models_after == V4_PARTIAL_MODELS_AFTER
+            && migration.partial_models_after == migration.partial_model_names_after.len(),
+        "MSL partial-classification migration counts are inconsistent"
+    );
+    ensure!(
+        migration.affected_diagnostic_cohort == V4_AFFECTED_DIAGNOSTIC_COHORT
+            && migration.affected_models == reviewed_affected_partial_models(),
+        "MSL partial-classification affected cohort differs from the reviewed correction"
+    );
+    ensure!(
+        migration.partial_model_names_after == reviewed_partial_model_names()
+            && baseline.partial_model_names == migration.partial_model_names_after
+            && baseline.partial_models == migration.partial_models_after,
+        "MSL partial-classification roster differs from the reviewed correction"
+    );
+    Ok(())
+}
+
 fn validate_migration_metric_integrity(
     promoted: &MslQualityBaselineHeader,
     checked_in: &MslQualityBaselineHeader,
     trace_is_migrated: bool,
+    partial_is_migrated: bool,
     omc_context_changed: bool,
 ) -> Result<()> {
     ensure!(
@@ -519,12 +626,9 @@ fn validate_migration_metric_integrity(
         checked_in.flatten_models,
     )?;
 
+    validate_partial_migration_metric_integrity(promoted, checked_in, partial_is_migrated)?;
+
     for (label, promoted_value, checked_in_value) in [
-        (
-            "partial models",
-            promoted.partial_models,
-            checked_in.partial_models,
-        ),
         (
             "unbalanced models",
             promoted.unbalanced_models,
@@ -559,6 +663,30 @@ fn validate_migration_metric_integrity(
             "MSL trace-classification migration counts do not match the compared baselines"
         );
     }
+    Ok(())
+}
+
+fn validate_partial_migration_metric_integrity(
+    promoted: &MslQualityBaselineHeader,
+    checked_in: &MslQualityBaselineHeader,
+    partial_is_migrated: bool,
+) -> Result<()> {
+    if !partial_is_migrated {
+        return ensure_not_raised(
+            "partial models",
+            promoted.partial_models,
+            checked_in.partial_models,
+        );
+    }
+    let migration = checked_in
+        .partial_classification_migration
+        .as_ref()
+        .expect("partial schema migration was established by choose_baseline");
+    ensure!(
+        promoted.partial_models == migration.partial_models_before
+            && checked_in.partial_models == migration.partial_models_after,
+        "MSL partial-classification migration counts do not match the compared baselines"
+    );
     Ok(())
 }
 
@@ -778,6 +906,12 @@ fn load_baseline_header_for_source(
         .with_context(|| format!("invalid OMC context migration in {}", path.display()))?;
     validate_metric_schema_migration(&baseline)
         .with_context(|| format!("invalid metric schema migration in {}", path.display()))?;
+    validate_partial_classification_migration(&baseline).with_context(|| {
+        format!(
+            "invalid partial-classification migration in {}",
+            path.display()
+        )
+    })?;
     validate_promoted_baseline_bridge(&baseline)
         .with_context(|| format!("invalid promoted baseline bridge in {}", path.display()))?;
     Ok(baseline)

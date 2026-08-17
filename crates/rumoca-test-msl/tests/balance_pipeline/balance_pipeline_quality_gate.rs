@@ -4,6 +4,7 @@ mod compiler_contract_migration;
 mod parity_measurement;
 mod reference_stage;
 mod runtime_cohort;
+mod schema_migrations;
 mod status;
 #[cfg(test)]
 mod tests;
@@ -17,6 +18,7 @@ pub(super) use parity_measurement::*;
 pub(super) use reference_stage::*;
 use rumoca_test_msl::msl_tools::band_table::BandLabel;
 use runtime_cohort::*;
+use schema_migrations::*;
 use status::*;
 
 // =============================================================================
@@ -71,10 +73,11 @@ pub(super) fn omc_sim_reference_timeout_secs() -> u64 {
 }
 /// Force low-impact OpenMP/BLAS threading in OMC child processes.
 pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
-/// Version 3 makes reviewed pointwise-oracle boundaries explicit and excludes
-/// them from the strict-high denominator while requiring every `sim_ok` model
-/// to remain classified.
-pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 3;
+/// Version 4 classifies the source-static partial cohort before compilation and
+/// pins its exact roster. Version 3's reviewed pointwise-oracle boundary remains
+/// recorded independently as historical migration evidence.
+pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 4;
+const PREVIOUS_MSL_QUALITY_GATE_VERSION: u32 = 3;
 pub(super) const MSL_QUALITY_RUN_SCOPE_FULL: &str = "full";
 pub(super) const MSL_QUALITY_RUN_SCOPE_PARTIAL: &str = "partial";
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
@@ -229,21 +232,18 @@ pub(super) struct MslMetricSchemaMigration {
     exclusions_sha256: String,
 }
 
-fn quality_gate_v3_metric_schema_migration() -> MslMetricSchemaMigration {
-    MslMetricSchemaMigration {
-        from_quality_gate_version: 2,
-        to_quality_gate_version: MSL_QUALITY_GATE_VERSION,
-        change: "reviewed-pointwise-oracle-boundaries-v1".to_string(),
-        strict_high_before: 118,
-        strict_high_after: 113,
-        policy_excluded_after: 9,
-        excluded_strict_high_before: 5,
-        excluded_non_high_before: 4,
-        exclusions_file: "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json"
-            .to_string(),
-        exclusions_sha256: "e064ffb80771c1e231e849afcaa25cc2a08b8b7f9bf449bf8651905e5dcdc4d0"
-            .to_string(),
-    }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct MslPartialClassificationMigration {
+    from_quality_gate_version: u32,
+    to_quality_gate_version: u32,
+    change: String,
+    evidence_git_commit: String,
+    sim_target_models: usize,
+    partial_models_before: usize,
+    partial_models_after: usize,
+    affected_diagnostic_cohort: String,
+    affected_models: IndexSet<String>,
+    partial_model_names_after: IndexSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +269,8 @@ pub(super) struct MslQualityBaseline {
     balanced_models: usize,
     unbalanced_models: usize,
     partial_models: usize,
+    #[serde(default, skip_serializing_if = "IndexSet::is_empty")]
+    partial_model_names: IndexSet<String>,
     balance_denominator: usize,
     initial_balanced_models: usize,
     initial_unbalanced_models: usize,
@@ -298,6 +300,8 @@ pub(super) struct MslQualityBaseline {
     tensor_preservation: MslTensorPreservationBaseline,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     metric_schema_migration: Option<MslMetricSchemaMigration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    partial_classification_migration: Option<MslPartialClassificationMigration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     compiler_contract_migration: Option<MslCompilerContractMigration>,
 }
@@ -338,6 +342,7 @@ pub(super) struct MslQualityGateInput<'a> {
     balanced_models: usize,
     unbalanced_models: usize,
     partial_models: usize,
+    partial_model_names: &'a BTreeSet<String>,
     balance_denominator: usize,
     initial_balanced_models: usize,
     initial_unbalanced_models: usize,
@@ -427,6 +432,7 @@ impl<'a> From<&'a MslSummary> for MslQualityGateInput<'a> {
             balanced_models: summary.balanced_models,
             unbalanced_models: summary.unbalanced_models,
             partial_models: summary.partial_models,
+            partial_model_names: &summary.partial_model_names,
             balance_denominator,
             initial_balanced_models: summary.initial_balanced_models,
             initial_unbalanced_models: summary.initial_unbalanced_models,
@@ -1007,6 +1013,7 @@ pub(super) fn current_msl_quality_baseline(
         balanced_models: gate_input.balanced_models,
         unbalanced_models: gate_input.unbalanced_models,
         partial_models: gate_input.partial_models,
+        partial_model_names: gate_input.partial_model_names.iter().cloned().collect(),
         balance_denominator: gate_input.balance_denominator,
         initial_balanced_models: gate_input.initial_balanced_models,
         initial_unbalanced_models: gate_input.initial_unbalanced_models,
@@ -1038,6 +1045,7 @@ pub(super) fn current_msl_quality_baseline(
             ),
         },
         metric_schema_migration: Some(quality_gate_v3_metric_schema_migration()),
+        partial_classification_migration: Some(reviewed_partial_classification_migration()),
         compiler_contract_migration: Some(checked_dae_compiler_contract_migration()),
     }
 }
@@ -1233,6 +1241,9 @@ pub(super) fn msl_quality_context_mismatch_reason(
             baseline.quality_gate_version, MSL_QUALITY_GATE_VERSION
         ));
     }
+    if let Some(reason) = partial_classification_context_mismatch_reason(baseline) {
+        return Some(reason);
+    }
     if baseline.run_scope != MSL_QUALITY_RUN_SCOPE_FULL {
         return Some(format!(
             "baseline run_scope must be '{}', got '{}'",
@@ -1413,12 +1424,7 @@ fn push_compile_balance_count_regression_reasons(
         denominator,
     );
 
-    if gate_input.partial_models > baseline.partial_models {
-        reasons.push(format!(
-            "partial_models increased: current={} > baseline={}",
-            gate_input.partial_models, baseline.partial_models
-        ));
-    }
+    push_partial_model_roster_regression_reasons(reasons, gate_input, baseline);
     if gate_input.unbalanced_models > baseline.unbalanced_models {
         reasons.push(format!(
             "unbalanced_models increased: current={} > baseline={}",

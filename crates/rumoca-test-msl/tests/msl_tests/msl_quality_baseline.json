@@ -1,5 +1,5 @@
 {
-  "quality_gate_version": 3,
+  "quality_gate_version": 4,
   "run_scope": "full",
   "git_commit": "3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b",
   "msl_version": "v4.1.0",
@@ -13,12 +13,13 @@
     "from_quality_gate_version": 1,
     "from_git_commit": "08fac54846fd73a3471bafc6609a0d34e74f9fe3",
     "from_sha256": "2b0a478b922583106342272bbf85411c539d50d9b9e0ca54c4dbb87621f05fe8",
-    "to_quality_gate_version": 3,
+    "to_quality_gate_version": 4,
     "sim_target_models": 566,
     "evidence_git_commits": [
       "a499eb8f15bf6af9d28f5a7011e82edfe73803b4",
       "3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b",
-      "6d57e9644b4da542a5498ee42510551e7e7ade70"
+      "6d57e9644b4da542a5498ee42510551e7e7ade70",
+      "5394156facb1e5ff9f099f21c0e833c4870c506f"
     ]
   },
   "sim_timeout_seconds": 12.0,
@@ -30,7 +31,22 @@
   "solve_models": 202,
   "balanced_models": 217,
   "unbalanced_models": 0,
-  "partial_models": 11,
+  "partial_models": 13,
+  "partial_model_names": [
+    "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.PartialOpAmp",
+    "Modelica.Electrical.PowerConverters.Examples.ACAC.ExampleTemplates.Dimmer",
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.Thyristor1Pulse",
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorBridge2Pulse",
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorBridge2mPulse",
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorCenterTap2Pulse",
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorCenterTap2mPulse",
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorCenterTapmPulse",
+    "Modelica.Electrical.PowerConverters.Examples.DCAC.ExampleTemplates.SinglePhaseTwoLevel",
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.ChopperBuckBoost",
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.ChopperStepDown",
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.ChopperStepUp",
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.HBridge"
+  ],
   "balance_denominator": 217,
   "initial_balanced_models": 217,
   "initial_unbalanced_models": 0,
@@ -392,6 +408,35 @@
     "excluded_non_high_before": 4,
     "exclusions_file": "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json",
     "exclusions_sha256": "e064ffb80771c1e231e849afcaa25cc2a08b8b7f9bf449bf8651905e5dcdc4d0"
+  },
+  "partial_classification_migration": {
+    "from_quality_gate_version": 3,
+    "to_quality_gate_version": 4,
+    "change": "source-static-partial-cohort-v1",
+    "evidence_git_commit": "5394156facb1e5ff9f099f21c0e833c4870c506f",
+    "sim_target_models": 566,
+    "partial_models_before": 11,
+    "partial_models_after": 13,
+    "affected_diagnostic_cohort": "failed-before-success-with-null-partial-classification",
+    "affected_models": [
+      "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.PartialOpAmp",
+      "Modelica.Electrical.PowerConverters.Examples.ACAC.ExampleTemplates.Dimmer"
+    ],
+    "partial_model_names_after": [
+      "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.PartialOpAmp",
+      "Modelica.Electrical.PowerConverters.Examples.ACAC.ExampleTemplates.Dimmer",
+      "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.Thyristor1Pulse",
+      "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorBridge2Pulse",
+      "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorBridge2mPulse",
+      "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorCenterTap2Pulse",
+      "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorCenterTap2mPulse",
+      "Modelica.Electrical.PowerConverters.Examples.ACDC.ExampleTemplates.ThyristorCenterTapmPulse",
+      "Modelica.Electrical.PowerConverters.Examples.DCAC.ExampleTemplates.SinglePhaseTwoLevel",
+      "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.ChopperBuckBoost",
+      "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.ChopperStepDown",
+      "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.ChopperStepUp",
+      "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.HBridge"
+    ]
   },
   "compiler_contract_migration": {
     "from_contract": "permissive-dae-v1",

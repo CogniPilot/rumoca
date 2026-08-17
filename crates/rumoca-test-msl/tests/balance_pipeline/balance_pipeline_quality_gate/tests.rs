@@ -7,7 +7,14 @@ use std::any::Any;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use tempfile::tempdir;
+
+static REVIEWED_PARTIAL_NAMES: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
+    reviewed_partial_model_names()
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+});
 
 fn assert_distribution_parsed(input: Value, expected: MslDistributionStats) {
     let stats = parse_distribution_stats(&input).expect("expected distribution stats");
@@ -114,7 +121,8 @@ fn baseline_quality_template() -> MslQualityBaseline {
         solve_models: 8,
         balanced_models: 10,
         unbalanced_models: 0,
-        partial_models: 0,
+        partial_models: REVIEWED_PARTIAL_NAMES.len(),
+        partial_model_names: reviewed_partial_model_names(),
         balance_denominator: 10,
         initial_balanced_models: 10,
         initial_unbalanced_models: 0,
@@ -139,6 +147,7 @@ fn baseline_quality_template() -> MslQualityBaseline {
             preservation_percent: None,
         },
         metric_schema_migration: None,
+        partial_classification_migration: Some(reviewed_partial_classification_migration()),
         compiler_contract_migration: None,
     }
 }
@@ -154,7 +163,8 @@ fn gate_input_with_sim_rate(sim_ok: usize, sim_attempted: usize) -> MslQualityGa
         solve_models: sim_ok,
         balanced_models: 10,
         unbalanced_models: 0,
-        partial_models: 0,
+        partial_models: REVIEWED_PARTIAL_NAMES.len(),
+        partial_model_names: &REVIEWED_PARTIAL_NAMES,
         balance_denominator: 10,
         initial_balanced_models: 10,
         initial_unbalanced_models: 0,
@@ -1610,6 +1620,8 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
     assert_eq!(baseline.quality_gate_version, MSL_QUALITY_GATE_VERSION);
     assert_eq!(baseline.sim_timeout_seconds, SIM_TIMEOUT_SECS);
     assert_eq!(baseline.flatten_models, 444);
+    assert_eq!(baseline.partial_models, 13);
+    assert_eq!(baseline.partial_model_names, reviewed_partial_model_names());
     assert_eq!(baseline.tensor_preservation.report_errors, 0);
     assert_eq!(baseline.certified_strict_high_models.len(), 113);
     assert!(baseline.certified_strict_high_models.contains(
@@ -1628,7 +1640,7 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
         .metric_schema_migration
         .expect("checked baseline must document the version-2 to version-3 migration");
     assert_eq!(migration.from_quality_gate_version, 2);
-    assert_eq!(migration.to_quality_gate_version, MSL_QUALITY_GATE_VERSION);
+    assert_eq!(migration.to_quality_gate_version, 3);
     assert_eq!(migration.change, "reviewed-pointwise-oracle-boundaries-v1");
     assert_eq!(migration.strict_high_before, 118);
     assert_eq!(migration.strict_high_after, 113);
@@ -1638,6 +1650,14 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
     assert_eq!(
         migration.exclusions_sha256,
         "e064ffb80771c1e231e849afcaa25cc2a08b8b7f9bf449bf8651905e5dcdc4d0"
+    );
+
+    let partial_migration = baseline
+        .partial_classification_migration
+        .expect("checked baseline must document the version-3 to version-4 migration");
+    assert_eq!(
+        partial_migration,
+        reviewed_partial_classification_migration()
     );
 
     let contract = baseline
@@ -1702,4 +1722,83 @@ fn gate_input_stage_counts_are_derived_from_phase_reached() {
     let gate_input = MslQualityGateInput::from(&summary);
     assert_eq!(gate_input.flatten_models, 2, "Success + ToDae");
     assert_eq!(gate_input.dae_models, 1, "Success only");
+}
+
+#[test]
+fn partial_roster_gate_rejects_additions_removals_and_count_drift() {
+    let baseline = baseline_quality_template();
+    let mut removed_names = REVIEWED_PARTIAL_NAMES.clone();
+    removed_names
+        .remove("Modelica.Electrical.PowerConverters.Examples.ACAC.ExampleTemplates.Dimmer");
+    let removed_input = MslQualityGateInput {
+        partial_models: removed_names.len(),
+        partial_model_names: &removed_names,
+        ..gate_input_with_sim_rate(8, 10)
+    };
+    let mut reasons = Vec::new();
+    push_partial_model_roster_regression_reasons(&mut reasons, removed_input, &baseline);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("lost reviewed"))
+    );
+
+    let mut added_names = REVIEWED_PARTIAL_NAMES.clone();
+    added_names.insert("Modelica.UnreviewedPartial".to_string());
+    let added_input = MslQualityGateInput {
+        partial_models: added_names.len(),
+        partial_model_names: &added_names,
+        ..gate_input_with_sim_rate(8, 10)
+    };
+    reasons.clear();
+    push_partial_model_roster_regression_reasons(&mut reasons, added_input, &baseline);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("gained unreviewed"))
+    );
+
+    let count_drift_input = MslQualityGateInput {
+        partial_models: REVIEWED_PARTIAL_NAMES.len() - 1,
+        partial_model_names: &REVIEWED_PARTIAL_NAMES,
+        ..gate_input_with_sim_rate(8, 10)
+    };
+    reasons.clear();
+    push_partial_model_roster_regression_reasons(&mut reasons, count_drift_input, &baseline);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("count/roster mismatch"))
+    );
+}
+
+#[test]
+fn quality_context_rejects_partial_migration_field_drift() {
+    let mut baseline = baseline_quality_template();
+    baseline
+        .partial_classification_migration
+        .as_mut()
+        .expect("fixture has reviewed migration")
+        .partial_models_after = 12;
+
+    let reason =
+        msl_quality_context_mismatch_reason(gate_input_with_sim_rate(8, 10), &baseline, None)
+            .expect("migration drift must fail closed before ordinary comparison");
+    assert!(
+        reason.contains("partial classification migration"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn quality_context_rejects_baseline_partial_roster_drift() {
+    let mut baseline = baseline_quality_template();
+    baseline
+        .partial_model_names
+        .shift_remove("Modelica.Electrical.PowerConverters.Examples.ACAC.ExampleTemplates.Dimmer");
+
+    let reason =
+        msl_quality_context_mismatch_reason(gate_input_with_sim_rate(8, 10), &baseline, None)
+            .expect("baseline count/roster drift must fail closed");
+    assert!(reason.contains("count/roster mismatch"), "{reason}");
 }
