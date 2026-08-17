@@ -267,6 +267,45 @@ impl CanonicalFunctionIndex {
             })
     }
 
+    /// Match only a collected exposure whose complete rendered path can be
+    /// reconstructed from the occurrence's exact enclosing `DefId` chain.
+    /// Multiple valid closures remain ambiguous and therefore unresolved.
+    fn by_lexical_path(
+        &self,
+        reference: &rumoca_core::Reference,
+        class_index: &ast::ClassDefIndex<'_>,
+    ) -> Option<CanonicalFunctionMatch<'_>> {
+        if reference.resolved_function().is_some() {
+            return None;
+        }
+        let component_ref = reference.component_ref()?;
+        let target_def_id = reference.target_def_id()?;
+        let mut matched = None;
+        for function in self
+            .entries
+            .iter()
+            .filter(|function| function.def_id == Some(target_def_id))
+        {
+            if callable_scope_identity::scope_qualified_path(
+                class_index,
+                component_ref,
+                &function.name,
+            )
+            .is_none()
+            {
+                continue;
+            }
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(CanonicalFunctionMatch {
+                function,
+                exact_instance: false,
+            });
+        }
+        matched
+    }
+
     fn sole_by_def(&self, def_id: rumoca_core::DefId) -> Option<&CanonicalFunction> {
         self.unique_by_def
             .get(&def_id)
@@ -307,7 +346,12 @@ impl CollectedFunctionCallCanonicalizer<'_> {
         &self,
         reference: &rumoca_core::Reference,
     ) -> Option<CanonicalFunctionMatch<'_>> {
-        self.canonical_functions.by_reference(reference)
+        self.canonical_functions
+            .by_reference(reference)
+            .or_else(|| {
+                self.canonical_functions
+                    .by_lexical_path(reference, self.class_index)
+            })
     }
 
     fn occurrence_proves_transitive_nonreplaceability(
