@@ -857,14 +857,6 @@ fn container_checksum_web_recomputes_from_written_bytes() {
             container.c_kernels(),
         ),
         (
-            GALEC_KERNEL_HEADER.to_owned(),
-            container.c_kernels_header(),
-        ),
-        (
-            super::cc_support::GALEC_KERNEL_LIBRARY.to_owned(),
-            container.c_kernels(),
-        ),
-        (
             ".clang-format".to_owned(),
             container.root.join("ProductionCode").join(".clang-format"),
         ),
