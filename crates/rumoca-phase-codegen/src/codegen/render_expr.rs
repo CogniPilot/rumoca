@@ -503,7 +503,7 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
     if cfg.modelica_builtins {
         return Ok(render_builtin_modelica(&func_name, &args, cfg));
     }
-    Ok(render_builtin_python(&func_name, &args, cfg))
+    render_builtin_python(&func_name, &args, cfg)
 }
 
 fn render_builtin_name(builtin: &Value) -> RenderResult {
@@ -581,8 +581,8 @@ fn render_builtin_modelica(func_name: &str, args: &str, _cfg: &ExprConfig) -> St
 }
 
 /// Render builtins using Python/CasADi names (fabs, fmin, fmax, etc.).
-fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> String {
-    match func_name {
+fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> RenderResult {
+    Ok(match func_name {
         "Der" => format!("der({})", args),
         "Pre" => format!("pre({})", args),
         "Abs" => format!("{}fabs({})", cfg.prefix, args),
@@ -627,16 +627,14 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
         "Mod" => format!("{}fmod({})", cfg.prefix, args),
         "Rem" => format!("{}remainder({})", cfg.prefix, args),
         "Fill" => {
-            // fill(val, n) → val (scalar broadcast; array fill not supported yet)
-            if let Some(comma_pos) = args.find(',') {
-                args[..comma_pos].trim().to_string()
-            } else {
-                format!("{}fill({})", cfg.prefix, args)
-            }
+            return Err(render_err(format!(
+                "fill({args}) is not lowerable on this expression path"
+            )));
         }
         "Size" => {
-            // size(arr, dim) — not directly representable in Python, return 0
-            "0".to_string()
+            return Err(render_err(format!(
+                "size({args}) is not lowerable on this expression path"
+            )));
         }
         "Interval" => {
             // interval(u) — clocked partition intrinsic (MLS §16.10)
@@ -644,7 +642,7 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
             "0.0".to_string()
         }
         _ => format!("{}({})", func_name.to_lowercase(), args),
-    }
+    })
 }
 
 /// Expand `min({a,b,c})` → `fmin(fmin(a,b),c)` (or `fmax`, or `((a)+(b)+(c))` for sum).
@@ -727,7 +725,7 @@ fn render_function_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
     // Map Modelica standard library math functions to builtins
     if let Some(builtin) = resolve_modelica_math_function(&raw_name) {
         let args = render_args(func_call, cfg)?;
-        return Ok(render_builtin_python(builtin, &args, cfg));
+        return render_builtin_python(builtin, &args, cfg);
     }
 
     let name = super::emitted_symbol(&raw_name, cfg)?;
@@ -1203,6 +1201,42 @@ mod tests {
                 .to_string()
                 .contains("must be lowered with its clock schedule")
         );
+    }
+
+    #[test]
+    fn test_render_expr_rejects_unlowered_fill_and_size() {
+        // `fill(v, n)` used to render as its first argument and `size(a, d)`
+        // as the literal `0` — silent wrong code on any expression that
+        // reaches this path unlowered. Both must fail closed instead.
+        let array_ref = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("arr"),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        };
+        let one = rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(1),
+            span: rumoca_core::Span::DUMMY,
+        };
+        for (function, args) in [
+            (
+                rumoca_core::BuiltinFunction::Fill,
+                vec![one.clone(), one.clone()],
+            ),
+            (rumoca_core::BuiltinFunction::Size, vec![array_ref, one]),
+        ] {
+            let expression = rumoca_core::Expression::BuiltinCall {
+                function,
+                args,
+                span: rumoca_core::Span::DUMMY,
+            };
+            let error =
+                render_expression(&Value::from_serialize(&expression), &ExprConfig::default())
+                    .expect_err("unlowered fill/size must never render as numeric stubs");
+            assert!(
+                error.to_string().contains("not lowerable"),
+                "unexpected error text: {error}"
+            );
+        }
     }
 
     #[test]
