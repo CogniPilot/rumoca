@@ -189,37 +189,6 @@ pub(super) fn validate_algorithm_condition(
 ) -> Result<(), ToDaeError> {
     match expression {
         Expression::BuiltinCall {
-            function: BuiltinFunction::Change,
-            args,
-            span,
-        } => {
-            let [argument] = args.as_slice() else {
-                return Err(ToDaeError::unsupported_algorithm(
-                    "model",
-                    "change(...) requires exactly one discrete coordinate",
-                    *span,
-                ));
-            };
-            let Some((name, _)) = derivative_reference(argument) else {
-                return Err(ToDaeError::unsupported_algorithm(
-                    "model",
-                    "change(...) requires a discrete coordinate reference",
-                    *span,
-                ));
-            };
-            if !matches!(
-                roles.get(name.var_name()),
-                Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
-            ) {
-                return Err(ToDaeError::unsupported_algorithm(
-                    "model",
-                    "change(...) requires a discrete coordinate",
-                    *span,
-                ));
-            }
-            Ok(())
-        }
-        Expression::BuiltinCall {
             function: BuiltinFunction::Sample,
             args,
             span,

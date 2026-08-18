@@ -97,6 +97,29 @@ fn projection_row_scale_includes_jacobian_coefficient() {
 }
 
 #[test]
+fn projection_scale_expands_to_the_current_coordinate_magnitude() {
+    let block = solve::AlgebraicProjectionBlock {
+        rows: vec![0],
+        y_indices: vec![0],
+    };
+    let model = NominalScaledProjectionModel {
+        plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![block.clone()],
+        },
+        coefficient: 1.0e-5,
+        rhs: 50.0,
+        variable_scale: 1.0,
+    };
+    let jacobian = DMatrix::from_element(1, 1, 1.0e-5);
+
+    let (row_scales, variable_scales) =
+        algebraic_block_scales(&model, &[5.0e6], &block, &jacobian, None);
+
+    assert_eq!(variable_scales, vec![5.0e6]);
+    assert!((row_scales[0] - 50.0).abs() <= 1.0e-12);
+}
+
+#[test]
 fn scaled_newton_system_normalizes_mixed_magnitude_columns() {
     let jacobian = DMatrix::from_diagonal(&DVector::from_vec(vec![1.0e-12, 1.0e12]));
     let delta = scaled_newton_delta(

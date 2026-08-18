@@ -122,7 +122,7 @@ Adding a 21st ACCEPTED/DRAFT spec requires either:
 - moving inactive future-work proposals to `archive/deferred/`, or
 - deleting inactive proposals that are not worth preserving.
 
-Enforced by `crates/rumoca/tests/spec_budget_test.rs::test_active_spec_count_under_cap`.
+Enforced by `crates/rumoca/tests/suite_gates/spec_budget_test.rs::test_active_spec_count_under_cap`.
 
 ### 3a. Hard Word and Line Budgets Per Spec
 

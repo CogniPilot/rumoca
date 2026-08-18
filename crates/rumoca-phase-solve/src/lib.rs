@@ -9,10 +9,12 @@ mod artifacts;
 mod error;
 mod layout;
 mod lower;
+mod model_values;
 mod model_wire;
 
 pub mod ad;
 pub mod diagnostic_codes;
+pub mod fmi;
 
 pub use ad::{
     lower_compute_block_full_jvp, lower_compute_block_jvp, lower_scalar_program_block_ad,
@@ -20,6 +22,9 @@ pub use ad::{
 };
 pub use error::LowerError;
 pub use layout::build_var_layout;
+pub use model_values::{
+    LoweredSolveModel, SolveModelLoweringError, SolveModelLoweringStage, lower_solve_model,
+};
 pub use model_wire::{
     SOLVE_MODEL_SCHEMA_VERSION, SolveModelWireError, SolveModelWireRef, deserialize_solve_model,
     solve_model_wire,
@@ -50,6 +55,13 @@ pub fn lower_solve_package(dae: &dae::Dae) -> Result<LoweredSolvePackage, LowerE
             span: error.source_span(),
         }
     })?;
+    lower_prepared_solve_package(&prepared)
+}
+
+/// Lower the exact prepared DAE retained by complete-model construction.
+fn lower_prepared_solve_package(
+    prepared: &rumoca_phase_structural::PreparedDae<'_>,
+) -> Result<LoweredSolvePackage, LowerError> {
     prepared
         .inspect(lower::lower_solve_problem)
         .map(|(problem, pure_calls)| LoweredSolvePackage {

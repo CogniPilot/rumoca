@@ -8,7 +8,6 @@
 pub mod balance;
 mod construction;
 mod errors;
-pub mod numeric;
 
 use rumoca_core::SourceMap;
 use rumoca_ir_dae as dae;

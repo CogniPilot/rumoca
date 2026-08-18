@@ -15,7 +15,6 @@ use feature_analysis::{
     dae_has_clocks, dae_has_dynamic_derivative_subscripts, dae_has_dynamic_ranges, dae_has_events,
     dae_has_external_functions, dae_has_initialization, dae_has_runtime_events,
     dae_has_unlowered_source_temporal_operators, dae_uses_external_tables, dae_uses_random,
-    solve_has_clocks, solve_has_events, solve_has_initialization, solve_has_runtime_events,
     solve_requires_residual_equations,
 };
 
@@ -785,24 +784,31 @@ pub fn validate_solve_target_capabilities(
             "checked algebraic refresh retains residual projection stages",
         )?;
     }
-    if capabilities.initialization == Some(false) && solve_has_initialization(solve) {
+    // The Solve presence queries below are owned by `rumoca_ir_solve`
+    // (SPEC_0041 §1) and are called qualified so this gate and the checked FMI
+    // projection provably read the same facts.
+    if capabilities.initialization == Some(false)
+        && rumoca_ir_solve::solve_has_initialization(solve)
+    {
         unsupported_feature(
             manifest,
             "initialization",
             "initialization residual, projection, or assignment owners present",
         )?;
     }
-    if capabilities.events != Some(true) && solve_has_events(solve) {
+    if capabilities.events != Some(true) && rumoca_ir_solve::solve_has_events(solve) {
         unsupported_feature(manifest, "events", "event or discrete partitions present")?;
     }
-    if capabilities.runtime_events == Some(false) && solve_has_runtime_events(solve) {
+    if capabilities.runtime_events == Some(false)
+        && rumoca_ir_solve::solve_has_runtime_events(solve)
+    {
         unsupported_feature(
             manifest,
             "runtime_events",
             "delay-history or terminal-event runtime support is required",
         )?;
     }
-    if capabilities.clocks != Some(true) && solve_has_clocks(solve) {
+    if capabilities.clocks != Some(true) && rumoca_ir_solve::solve_has_clocks(solve) {
         unsupported_feature(manifest, "clocks", "clock partition entries present")?;
     }
     let mut inventory = solve.compute_node_counts();

@@ -278,7 +278,7 @@ fn last_series_value(simulation_json: &str, name: &str) -> f64 {
 }
 
 /// The lazy-diffsol path end-to-end (native): the main module lowers a model to
-/// SolveModel JSON (`lower_model_to_solve_json`), and that JSON deserializes and
+/// correlated FMI JSON (`lower_model_to_solve_json`), and that JSON deserializes and
 /// simulates with diffsol — proving the JSON the addon receives is complete.
 #[cfg(feature = "sim-diffsol")]
 #[test]
@@ -294,9 +294,11 @@ fn lower_to_solve_json_feeds_diffsol_simulation() {
         (value["t_end"].as_f64().unwrap() - 1.0).abs() < 1e-9,
         "payload should carry the resolved t_end"
     );
-    let solve_json = serde_json::to_string(&value["solve_model"]).expect("encode solve_model");
-    let mut deserializer = serde_json::Deserializer::from_str(&solve_json);
-    let model = rumoca_sim::deserialize_solve_model(&mut deserializer).expect("replay solve_model");
+    let component_json =
+        serde_json::to_string(&value["fmi_component"]).expect("encode FMI component");
+    let mut deserializer = serde_json::Deserializer::from_str(&component_json);
+    let component = rumoca_sim::deserialize_fmi_component(&mut deserializer)
+        .expect("replay FMI component");
 
     let opts = rumoca_sim::SimOptions {
         solver_mode: rumoca_sim::SimSolverMode::Bdf,
@@ -304,7 +306,8 @@ fn lower_to_solve_json_feeds_diffsol_simulation() {
         dt: Some(0.05),
         ..Default::default()
     };
-    let result = rumoca_sim::simulate_solve_model(&model, &opts).expect("diffsol simulation");
+    let result =
+        rumoca_sim::simulate_fmi_component(component, &opts).expect("diffsol simulation");
     let xi = result
         .names
         .iter()

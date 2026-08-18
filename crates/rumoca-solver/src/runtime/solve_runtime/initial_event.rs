@@ -1,6 +1,7 @@
 use crate::{
-    EventActionOutcome, EventPreMode, RuntimeEventBoundary, RuntimeEventStop, RuntimeSolveError,
-    commit_pre_params_after_event, initial_runtime_event_stop, runtime_event_right_limit,
+    EventActionOutcome, EventPreMode, RuntimeEventStop, RuntimeSolveError,
+    commit_pre_params_after_event, initial_runtime_event_stop,
+    timeline::bounded_event_right_limit_time,
 };
 
 use super::{
@@ -18,7 +19,6 @@ pub struct ProjectedInitialEventInput<'a> {
     pub event_pre_p: &'a [f64],
     pub max_iters: usize,
     pub dynamic_event: Option<RuntimeEventStop>,
-    pub apply_without_initial_event: bool,
 }
 
 /// The projection that follows a settled initial event.
@@ -73,12 +73,7 @@ fn initial_event_right_limit(
     if !event.observe_right_limit || event.pre_mode != EventPreMode::FollowCurrent {
         return None;
     }
-    let right_t = runtime_event_right_limit(RuntimeEventBoundary {
-        event_t,
-        horizon_t,
-        tolerance,
-        event,
-    });
+    let right_t = bounded_event_right_limit_time(event_t, horizon_t, tolerance);
     (right_t > event_t).then_some(right_t)
 }
 
@@ -176,7 +171,6 @@ impl SolveRuntime {
             event_pre_p,
             max_iters,
             dynamic_event,
-            apply_without_initial_event,
         } = input;
         // Every backend reaches the first event instant through this boundary,
         // so the MLS §8.3.5.1 activation buffers are seeded here and only here:
@@ -195,23 +189,25 @@ impl SolveRuntime {
             &seeded_event_pre_p
         };
         let initial_event = initial_runtime_event_stop(&self.model.problem, t_start, dynamic_event);
-        let action = if initial_event.is_some() || apply_without_initial_event {
-            self.apply_initial_event_update(
-                InitialEventUpdate {
-                    y,
-                    p,
-                    t: t_start,
-                    tol,
-                    event_pre_y,
-                    event_pre_p,
-                    max_iters,
-                    initial_event,
-                },
-                &mut project_algebraics,
-            )?
-        } else {
-            EventActionOutcome::Continue
-        };
+        // Modelica assertions and termination equations are active during
+        // initialization even when no clock, relation, or scheduled event
+        // happens at `t_start`. The event inventory controls which discrete
+        // updates activate, never whether the checked action tuple is
+        // evaluated. Making this unconditional removes the historical
+        // backend-profile choice that could erase a constant-false assertion.
+        let action = self.apply_initial_event_update(
+            InitialEventUpdate {
+                y,
+                p,
+                t: t_start,
+                tol,
+                event_pre_y,
+                event_pre_p,
+                max_iters,
+                initial_event,
+            },
+            &mut project_algebraics,
+        )?;
         if action != EventActionOutcome::Continue {
             return Ok(ProjectedInitialEventOutcome {
                 final_t: t_start,

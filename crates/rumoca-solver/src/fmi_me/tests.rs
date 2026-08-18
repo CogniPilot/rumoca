@@ -5,16 +5,19 @@
 //! directional-derivative tests run a real component, because the operation's
 //! whole point is that the *component* owns the derivative.
 
+mod failure_atomicity;
+
 use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
 
 use super::kernel::{
     continuous_state_values_changed, event_right_limit_state_derivatives,
-    event_update_application_time, frozen_projection_changed,
+    event_update_application_time,
 };
 use super::{
-    MeError, MeEventCause, MeEventEntry, MeIndicatorCrossing, MeInstanceConfig, MeModelSource,
-    MeNoStateSession, MeStage, MeTime, ModelExchangeKernel, SolveMeKernel, resolve_me_stage,
+    MeError, MeEventCause, MeEventEntry, MeInstanceConfig, MeModelSource, MeOutputCursor,
+    MeRetainedComponent, MeStage, MeTime, ModelExchangeKernel, SolveMeKernel,
+    driver::live_session_options, resolve_me_stage, session::MeAdvanceOutcome,
 };
 
 #[test]
@@ -25,23 +28,26 @@ fn zero_state_event_continuation_is_independent_of_value_tolerance() {
         rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
             .expect("zero-state fixture refresh owners construct");
     let run = |atol| {
-        let mut session = MeNoStateSession::instantiate(
-            MeModelSource::new(&model),
-            crate::SimOptions {
-                t_start: 0.0,
-                t_end: 2.0e-8,
-                dt: Some(1.0e-10),
-                atol,
-                rtol: atol,
-                ..Default::default()
-            },
+        let retained = MeRetainedComponent::instantiate(
+            MeModelSource::fixture(&model),
+            &fixture_instance_config(),
+            None,
         )
-        .expect("zero-state session should initialize");
+        .expect("zero-state component should instantiate");
+        let options = live_session_options(0.0, atol, atol, 1.0e-10, None)
+            .expect("zero-state session options should construct");
+        let host = retained
+            .into_lease(options)
+            .expect("zero-state component should initialize");
+        let mut session = host
+            .into_session(None)
+            .expect("zero-state session should select the time-only plugin");
+        let mut cursor = MeOutputCursor::empty();
         [2.4e-9, 2.5e-9, 2.6e-9, 5.0e-9]
             .into_iter()
             .map(|target| {
                 session
-                    .advance_to(target)
+                    .advance_to(target, &mut cursor)
                     .expect("zero-state session should reach every local boundary");
                 session.time().to_bits()
             })
@@ -374,8 +380,15 @@ fn strict_root_relation_memory() -> solve::SolveModel {
     );
     let root = block(
         vec![vec![
-            solve::LinearOp::LoadY { dst: 0, index: 0 },
-            solve::LinearOp::StoreOutput { src: 0 },
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::LoadY { dst: 1, index: 0 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
         ]],
         "fmi_me_strict_root_indicator.mo",
     );
@@ -395,9 +408,8 @@ fn strict_root_relation_memory() -> solve::SolveModel {
     );
     solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(IndexMap::new(), 1, 1),
             continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(derivative.clone()),
-                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
                 derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
                 ..Default::default()
             },
@@ -414,6 +426,8 @@ fn strict_root_relation_memory() -> solve::SolveModel {
             events: solve::SolveEventPartition {
                 root_conditions: root,
                 root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
+                root_zero_domains: vec![solve::RootZeroDomain::Positive],
+                root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
                 condition_memory_parameter_indices: vec![0],
                 ..Default::default()
             },
@@ -634,35 +648,22 @@ fn block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::ScalarPr
 }
 
 fn instantiate(model: &solve::SolveModel) -> SolveMeKernel {
-    instantiate_with_numerics(model, super::MeNumericsProfile::Component)
-}
-
-fn instantiate_with_numerics(
-    model: &solve::SolveModel,
-    numerics_profile: super::MeNumericsProfile,
-) -> SolveMeKernel {
     let mut model = model.clone();
     model.problem.continuous.refresh_owners =
         rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
             .expect("ME fixture refresh owners construct");
     SolveMeKernel::instantiate(
-        MeModelSource::new(&model),
-        &MeInstanceConfig {
-            instance_name: "fmi-me-test",
-            tolerance: 1.0e-10,
-            start_time: 0.0,
-            stop_time: 1.0,
-            root_profile: super::MeRootProfile::Component,
-            numerics_profile,
-        },
+        MeModelSource::fixture(&model),
+        &MeInstanceConfig::new("fmi-me-test", 1.0e-10, 0.0, 1.0)
+            .expect("fixture instance configuration constructs"),
     )
     .expect("fixture instantiates")
 }
 
 #[test]
-fn callback_caches_require_the_exact_fmi_coordinate_in_frozen_mode() {
+fn callback_caches_require_the_exact_fmi_coordinate() {
     let model = harmonic_oscillator();
-    let kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    let kernel = instantiate(&model);
     let time = 0.25_f64;
     let adjacent_time = f64::from_bits(time.to_bits() + 1);
     let state = [2.0, 3.0];
@@ -682,7 +683,7 @@ fn callback_caches_require_the_exact_fmi_coordinate_in_frozen_mode() {
 #[test]
 fn repeated_directional_seeds_reuse_only_the_exact_settled_coordinate() {
     let model = nonlinear_right_limit_seed_model();
-    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    let mut kernel = instantiate(&model);
     let state = [4.0];
     let mut derivative = Vec::new();
     kernel
@@ -727,15 +728,9 @@ fn roots_refresh_from_the_exact_derivative_algebraic_branch() {
         rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
             .expect("cached-root fixture refresh owners construct");
     let kernel = SolveMeKernel::instantiate(
-        MeModelSource::new(&model),
-        &MeInstanceConfig {
-            instance_name: "fmi-me-cached-root-test",
-            tolerance: 1.0e-10,
-            start_time: 0.0,
-            stop_time: 1.0,
-            root_profile: super::MeRootProfile::DiffsolFrozen,
-            numerics_profile: super::MeNumericsProfile::DiffsolFrozen,
-        },
+        MeModelSource::fixture(&model),
+        &MeInstanceConfig::new("fmi-me-cached-root-test", 1.0e-10, 0.0, 1.0)
+            .expect("cached-root instance configuration constructs"),
     )
     .expect("cached-root fixture instantiates");
     kernel.verification_cache_continuous_linearization(0.0, &[4.0], &[], &[4.0, -2.0]);
@@ -751,7 +746,7 @@ fn roots_refresh_from_the_exact_derivative_algebraic_branch() {
 #[test]
 fn empty_manifold_artifact_does_not_settle_unrelated_observation_algebraics() {
     let model = nonlinear_right_limit_seed_model();
-    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    let mut kernel = instantiate(&model);
     let mut state = [-1.0];
 
     let changed = kernel
@@ -974,66 +969,12 @@ fn instance_brands_reject_foreign_capabilities_without_mutation() {
 }
 
 #[test]
-fn frozen_full_state_guard_is_not_part_of_the_component_profile() {
-    let model = harmonic_oscillator();
-    let kernel = instantiate(&model);
-
-    let error = kernel
-        .verify_frozen_compatibility_state(
-            &model.initial_y,
-            &model.parameters,
-            MeStage::Initialization,
-        )
-        .expect_err("the ordinary component profile must not expose a migration dual-run guard");
-
-    assert_eq!(error.stage(), Some(MeStage::Initialization));
-    assert!(matches!(error.kind(), MeError::Contract { .. }));
-    assert!(error.to_string().contains("requires DiffsolFrozen"));
-}
-
-#[test]
-fn diffsol_profile_guards_the_settled_full_state_after_initialization() {
-    let model = harmonic_oscillator();
-    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
-    kernel
-        .enter_initialization_mode()
-        .expect("frozen initialization should start");
-    kernel
-        .exit_initialization_mode()
-        .expect("frozen initialization should settle");
-    let mut discrete = kernel
-        .update_discrete_states()
-        .expect("frozen initial event should run");
-    while discrete.discrete_states_need_update {
-        discrete = kernel
-            .update_discrete_states()
-            .expect("frozen initial event iteration should converge");
-    }
-    kernel
-        .enter_continuous_time_mode()
-        .expect("settled component should enter continuous-time mode");
-
-    kernel
-        .verify_frozen_compatibility_state(
-            &model.initial_y,
-            &model.parameters,
-            MeStage::Initialization,
-        )
-        .expect("the settled full state should match the frozen host vector bit-for-bit");
-
-    let mut mismatched = model.initial_y.clone();
-    mismatched.push(0.0);
-    let error = kernel
-        .verify_frozen_compatibility_state(&mismatched, &model.parameters, MeStage::Initialization)
-        .expect_err("a full-layout mismatch must fail the initialization guard");
-    assert_eq!(error.stage(), Some(MeStage::Initialization));
-    assert!(error.to_string().contains("solver_mismatch=Some"));
-}
-
-#[test]
-fn diffsol_profile_retains_the_typed_post_side_of_a_strict_root() {
+fn the_component_retains_the_typed_post_side_of_a_strict_root() {
     let model = strict_root_relation_memory();
-    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    model
+        .validate()
+        .expect("strict-root fixture must satisfy the finalized Solve contract");
+    let mut kernel = instantiate(&model);
     kernel
         .enter_initialization_mode()
         .expect("strict-root initialization should start");
@@ -1047,21 +988,14 @@ fn diffsol_profile_retains_the_typed_post_side_of_a_strict_root() {
         .enter_continuous_time_mode()
         .expect("strict-root model should enter continuous time");
 
+    let entered_time = f64::from_bits(1.0f64.to_bits() + 1);
+    let entered_state = entered_time - 1.0;
     kernel
-        .set_time(MeTime::at(1.0))
-        .expect("component should reach the root instant");
+        .set_time(MeTime::at(entered_time))
+        .expect("component should reach the first checked point in the entered domain");
     kernel
-        .set_continuous_states(&[0.0])
-        .expect("component should use the exact root state");
-    kernel
-        .capture_pre_event_state()
-        .expect("event iteration should retain its entry values");
-    kernel
-        .arm_state_event(&[MeIndicatorCrossing {
-            index: 0,
-            post_indicator_value: 1.0,
-        }])
-        .expect("the typed crossing should arm the post-root side");
+        .set_continuous_states(&[entered_state])
+        .expect("component should use the least state in the entered relation domain");
     assert!(
         kernel.model_description().needs_completed_integrator_step,
         "the linked kernel declares its accepted-step history requirement"
@@ -1069,12 +1003,19 @@ fn diffsol_profile_retains_the_typed_post_side_of_a_strict_root() {
     let completed = kernel
         .completed_integrator_step(true)
         .expect("the integrator should report the located root");
-    assert_eq!(completed, super::MeCompletedIntegratorStep::default());
+    assert_eq!(
+        completed,
+        super::MeCompletedIntegratorStep {
+            enter_event_mode: true,
+            terminate_simulation: false,
+        },
+        "the standard callback reports the component-observed domain change"
+    );
     kernel
         .enter_event_mode(MeEventEntry {
             cause: MeEventCause::StateEvent,
-            event_time: 1.0,
-            horizon: 1.0,
+            event_time: entered_time,
+            horizon: entered_time,
         })
         .expect("the component should enter root event iteration");
     kernel
@@ -1084,28 +1025,17 @@ fn diffsol_profile_retains_the_typed_post_side_of_a_strict_root() {
     assert_eq!(
         kernel.verification_observable_state().3,
         vec![1.0f64.to_bits()],
-        "the exact-root comparison is false, but the typed crossing owns the post-root value"
-    );
-    assert_eq!(
-        kernel.verification_frozen_root_override_count(),
-        0,
-        "the typed post-side override belongs to exactly one event boundary"
+        "the first checked point in the entered domain owns the strict post-root value"
     );
     kernel
         .enter_continuous_time_mode()
         .expect("the settled strict-root event should resume integration");
-    kernel
-        .prepare_frozen_bdf_initial_seed(&[0.0])
-        .expect("the frozen reset should accept its post-event seed");
-    kernel
-        .verify_frozen_compatibility_state(&[0.0], &[1.0], MeStage::EventIteration)
-        .expect("the reset seam should observe the same typed post-root relation memory");
 }
 
 #[test]
 fn post_pre_canonicalization_holds_parameter_only_relation_memory() {
     let model = post_pre_relation_cycle();
-    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    let mut kernel = instantiate(&model);
     let mut solver_y = model.initial_y.clone();
 
     kernel
@@ -1131,7 +1061,7 @@ fn post_commit_relation_free_alias_cannot_flip_a_parameter_only_root() {
         .problem
         .validate()
         .expect("fixture certificates must satisfy the Solve shape contract");
-    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    let mut kernel = instantiate(&model);
     let mut solver_y = model.initial_y.clone();
 
     kernel
@@ -1151,12 +1081,14 @@ fn post_commit_relation_free_alias_cannot_flip_a_parameter_only_root() {
 }
 
 #[test]
-fn diffsol_profile_preserves_a_nonzero_root_distance_inside_solver_tolerance() {
+fn the_component_preserves_a_nonzero_root_distance_inside_solver_tolerance() {
     let mut model = strict_root_relation_memory();
     let positive_distance = 5.0e-11;
-    model.initial_y = vec![positive_distance];
-    model.problem.events.root_zero_domains = vec![solve::RootZeroDomain::NonPositive];
-    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    model.initial_y = vec![-positive_distance];
+    model
+        .validate()
+        .expect("near-root fixture must satisfy the finalized Solve contract");
+    let mut kernel = instantiate(&model);
     kernel
         .enter_initialization_mode()
         .expect("near-root initialization should start");
@@ -1250,60 +1182,197 @@ fn a_mismatched_sensitivity_length_is_rejected_before_evaluation() {
     assert!(matches!(error.kind(), MeError::Contract { .. }));
 }
 
-#[test]
-fn frozen_projection_keeps_small_bit_real_manifold_changes_active() {
-    let before = [293.15];
-    let after = [293.150_01];
-    let tolerance = 1.0e-6;
-
-    assert!(!crate::runtime_values_changed(&before, &after, tolerance));
-    assert!(frozen_projection_changed(true, &before, &after, tolerance));
-}
-
 // -- instantiation staging -----------------------------------------------
 
-/// `NoContinuousStates` routes a host to its zero-state path. Annotating it
-/// would make a routing answer look like an instantiation failure in every
-/// bucket histogram downstream.
+/// ME-ZERO-001: a zero-state model constructs the same component. The common
+/// session chooses its time-only numerical plugin from the checked component
+/// width; a separate routing error would recreate a second host path.
 #[test]
-fn the_zero_state_routing_answer_carries_no_stage() {
-    let model = solve::SolveModel::default();
-    let error = SolveMeKernel::instantiate(
-        MeModelSource::new(&model),
-        &MeInstanceConfig {
-            instance_name: "fmi-me-test",
-            tolerance: 1.0e-10,
-            start_time: 0.0,
-            stop_time: 1.0,
-            root_profile: super::MeRootProfile::Component,
-            numerics_profile: super::MeNumericsProfile::Component,
-        },
-    )
-    .err()
-    .expect("a model with no continuous states has no ME component");
+fn a_zero_state_model_constructs_the_common_component() {
+    let model = refresh_owned(solve::SolveModel::default());
+    let component =
+        SolveMeKernel::instantiate(MeModelSource::fixture(&model), &fixture_instance_config())
+            .expect("a model with no continuous states still has an FMI ME component");
 
-    assert!(matches!(error, MeError::NoContinuousStates));
-    assert_eq!(error.stage(), None);
+    assert_eq!(component.model_description().continuous_state_count, 0);
 }
 
 #[test]
 fn a_rejected_model_is_staged_at_instantiation() {
     let mut model = harmonic_oscillator();
     model.initial_y = vec![1.0];
-    let error = SolveMeKernel::instantiate(
-        MeModelSource::new(&model),
-        &MeInstanceConfig {
-            instance_name: "fmi-me-test",
-            tolerance: 1.0e-10,
-            start_time: 0.0,
-            stop_time: 1.0,
-            root_profile: super::MeRootProfile::Component,
-            numerics_profile: super::MeNumericsProfile::Component,
-        },
-    )
-    .err()
-    .expect("an initial vector that contradicts the solver layout is rejected");
+    let error =
+        SolveMeKernel::instantiate(MeModelSource::fixture(&model), &fixture_instance_config())
+            .err()
+            .expect("an initial vector that contradicts the solver layout is rejected");
 
     assert_eq!(error.stage(), Some(MeStage::Instantiate));
     assert!(matches!(error.kind(), MeError::Evaluation { .. }));
+}
+
+// -- the sole master algorithm, end to end ---------------------------------
+
+/// The first execution of [`super::session::MeSimulationSession`] over a real
+/// component.
+///
+/// Everything below it — the checked options, the lease, the plugin arity
+/// check, the accepted-step proof, the unconditional sampler validation, the
+/// output cursor, the trace recorder — is exercised by driving one FMI
+/// component with the unrelated conformance plugin. The plugin reaches the
+/// component *only* through the capability the host lends per call, which is
+/// what makes this evidence for ME-INT-001 rather than for a fixture.
+#[test]
+fn the_common_host_integrates_a_component_through_the_thin_plugin_contract() {
+    use super::integrator::conformance::{HermiteStepIntegrator, SamplerQuality};
+    use super::session::{
+        MeOutputCursor, MeRetainedComponent, MeSessionOptions, MeSessionOptionsInput,
+    };
+
+    let model = refresh_owned(harmonic_oscillator());
+    let mut retained = MeRetainedComponent::instantiate(
+        MeModelSource::fixture(&model),
+        &fixture_instance_config(),
+        None,
+    )
+    .expect("the fixture component instantiates");
+
+    let options = MeSessionOptions::new(MeSessionOptionsInput {
+        start_time: 0.0,
+        stop_time: Some(1.0),
+        relative_tolerance: 1.0e-8,
+        absolute_tolerance: 1.0e-8,
+        output_interval: 0.1,
+        root_scan_resolution: 0.05,
+        root_location_tolerance: 1.0e-10,
+        max_wall_seconds: None,
+        records_trace: true,
+    })
+    .expect("the fixture options are admissible");
+
+    let host = retained.lease(options).expect("the sole lease is granted");
+    let state_count = host.state_count();
+    assert_eq!(state_count, 2);
+    let mut session = host
+        .into_session(Some(Box::new(HermiteStepIntegrator::new(
+            state_count,
+            SamplerQuality::Native,
+        ))))
+        .expect("a state-carrying component admits a state-carrying plugin");
+
+    let mut cursor = MeOutputCursor::new(
+        (0..=10)
+            .map(|tenth| f64::from(tenth) / 10.0)
+            .collect::<Vec<_>>(),
+    )
+    .expect("the output schedule is sorted and unique");
+    // Yield at each requested coordinate, exactly as an incremental host does.
+    // The conformance plugin takes one accepted step per request, so this is
+    // also what bounds its step: the contract, not a plugin-owned schedule.
+    for tenth in 0..=10 {
+        let boundary = f64::from(tenth) / 10.0;
+        let outcome = session
+            .advance_to(boundary, &mut cursor)
+            .expect("the master algorithm reaches each yield boundary");
+        assert!(
+            matches!(
+                outcome,
+                MeAdvanceOutcome::Yielded | MeAdvanceOutcome::ReachedStop
+            ),
+            "an event-free run neither terminates nor stalls at t={boundary}: {outcome:?}"
+        );
+        assert!((session.time() - boundary).abs() <= 1.0e-12);
+    }
+    assert!(session.is_terminated());
+    assert!(
+        session.verification_component_is_terminated(),
+        "a successful defined-experiment end must terminate the FMI component, not only the host"
+    );
+    let result = session.finish();
+
+    // `der(x) = v`, `der(v) = -4 x` from `x(0) = 1`, `v(0) = 0`, so
+    // `x(t) = cos(2t)`.
+    assert_eq!(result.names, vec!["x".to_string(), "v".to_string()]);
+    assert_eq!(result.times.len(), 11);
+    assert_eq!(result.data.len(), 2);
+    for (index, time) in result.times.iter().copied().enumerate() {
+        let expected = (2.0 * time).cos();
+        let actual = result.data[0][index];
+        assert!(
+            (actual - expected).abs() < 1.0e-4,
+            "x({time}) = {actual}, expected {expected}"
+        );
+    }
+    assert!(result.termination.is_none());
+}
+
+/// A state-carrying component cannot be given the time-only plugin, and the
+/// rejection is typed rather than a rendered message (ME-ZERO-001 in reverse).
+#[test]
+fn a_state_carrying_component_refuses_the_time_only_plugin() {
+    use super::session::{
+        MePluginArity, MeRetainedComponent, MeSessionError, MeSessionOptions, MeSessionOptionsInput,
+    };
+
+    let model = refresh_owned(harmonic_oscillator());
+    let mut retained = MeRetainedComponent::instantiate(
+        MeModelSource::fixture(&model),
+        &fixture_instance_config(),
+        None,
+    )
+    .expect("the fixture component instantiates");
+    let options = MeSessionOptions::new(MeSessionOptionsInput {
+        start_time: 0.0,
+        stop_time: None,
+        relative_tolerance: 1.0e-8,
+        absolute_tolerance: 1.0e-8,
+        output_interval: 0.1,
+        root_scan_resolution: 0.05,
+        root_location_tolerance: 1.0e-10,
+        max_wall_seconds: None,
+        records_trace: false,
+    })
+    .expect("an open live session needs no defined stop");
+    let host = retained.lease(options).expect("the sole lease is granted");
+    let failure = host
+        .into_session(None)
+        .err()
+        .expect("two continuous states cannot be advanced by the time-only plugin");
+    assert!(matches!(
+        failure,
+        MeSessionError::PluginArity {
+            state_count: 2,
+            mismatch: MePluginArity::RequiresANumericalPlugin
+        }
+    ));
+    // The diagnostic names the rule, not a solver: ME-INT-001's thin surface
+    // has no identity operation to ask, and no common enum lists backends
+    // (review finding [399]).
+    assert_eq!(
+        failure.to_string(),
+        "a component with 2 continuous states requires a numerical plugin, and none was supplied"
+    );
+}
+
+fn fixture_instance_config() -> MeInstanceConfig {
+    MeInstanceConfig::new("fmi-me-session", 1.0e-10, 0.0, 1.0)
+        .expect("fixture instance configuration constructs")
+}
+
+/// Build the refresh owners and the solver name index a fixture kernel needs to
+/// answer the batched output getters, without mutating a shared fixture.
+fn refresh_owned(mut model: solve::SolveModel) -> solve::SolveModel {
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+            .expect("ME fixture refresh owners construct");
+    model.problem.solve_layout.solver_maps.name_to_idx = model
+        .problem
+        .solve_layout
+        .solver_maps
+        .names
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, name)| (name, index))
+        .collect();
+    model
 }

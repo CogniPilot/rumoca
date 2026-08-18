@@ -4297,13 +4297,11 @@ dependencies = [
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
- "rumoca-ir-fmi",
  "rumoca-ir-galec",
  "rumoca-ir-solve",
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
- "rumoca-phase-fmi",
  "rumoca-phase-galec",
  "rumoca-phase-instantiate",
  "rumoca-phase-parse",
@@ -4318,6 +4316,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sigpipe",
+ "syn 2.0.118",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
@@ -4362,7 +4361,6 @@ dependencies = [
  "rumoca-compile",
  "rumoca-core",
  "rumoca-eval-ast",
- "rumoca-ir-solve",
  "rumoca-phase-galec",
  "rumoca-sim",
  "rumoca-tool-lint",
@@ -4639,16 +4637,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-ir-fmi"
-version = "0.10.0"
-dependencies = [
- "rumoca-core",
- "rumoca-ir-solve",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "rumoca-ir-galec"
 version = "0.10.0"
 dependencies = [
@@ -4667,6 +4655,7 @@ dependencies = [
  "rumoca-core",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4692,14 +4681,13 @@ dependencies = [
  "minijinja",
  "naga",
  "rumoca-core",
+ "rumoca-eval-dae",
  "rumoca-eval-solve",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
- "rumoca-ir-fmi",
  "rumoca-ir-galec",
  "rumoca-ir-solve",
- "rumoca-phase-dae",
  "serde",
  "serde_json",
  "tempfile",
@@ -4740,17 +4728,6 @@ dependencies = [
  "rustc-hash 2.1.3",
  "thiserror 2.0.18",
  "tracing",
-]
-
-[[package]]
-name = "rumoca-phase-fmi"
-version = "0.10.0"
-dependencies = [
- "rumoca-ir-dae",
- "rumoca-ir-fmi",
- "rumoca-ir-solve",
- "rumoca-phase-dae",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4832,12 +4809,14 @@ version = "0.10.0"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
+ "rumoca-eval-dae",
  "rumoca-eval-solve",
  "rumoca-ir-dae",
  "rumoca-ir-solve",
  "rumoca-phase-structural",
  "rustc-hash 2.1.3",
  "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4895,6 +4874,7 @@ dependencies = [
  "rumoca-codec",
  "rumoca-compile",
  "rumoca-core",
+ "rumoca-eval-dae",
  "rumoca-eval-solve",
  "rumoca-exec-cranelift",
  "rumoca-input",
@@ -4902,7 +4882,6 @@ dependencies = [
  "rumoca-input-keyboard",
  "rumoca-ir-dae",
  "rumoca-ir-solve",
- "rumoca-phase-dae",
  "rumoca-phase-solve",
  "rumoca-phase-structural",
  "rumoca-solver",
@@ -4947,6 +4926,7 @@ dependencies = [
  "rumoca-eval-solve",
  "rumoca-ir-solve",
  "rumoca-solver",
+ "self_cell",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -5418,6 +5398,12 @@ dependencies = [
  "core-foundation-sys",
  "libc",
 ]
+
+[[package]]
+name = "self_cell"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ab42ca02749e120097e328d91d415325bdf43b1c72c4c8badf37375fe40a813"
 
 [[package]]
 name = "semver"

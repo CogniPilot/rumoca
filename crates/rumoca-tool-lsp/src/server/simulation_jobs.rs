@@ -41,13 +41,9 @@ pub(super) fn simulate_dae_with_parameter_overrides(
     if parameter_overrides.is_empty() {
         return simulate_dae_with_diagnostics(dae, opts);
     }
-    let mut solve_model = rumoca_sim::lower_dae_for_simulation(dae, opts)?;
-    let (initial_y, parameters) =
-        rumoca_sim::refresh_prepared_vectors(&solve_model, opts.t_start, parameter_overrides)
-            .map_err(SimulationDiagnosticError::from)?;
-    solve_model.initial_y = initial_y;
-    solve_model.parameters = parameters;
-    rumoca_sim::simulate_solve_model(&solve_model, opts)
+    let mut override_opts = opts.clone();
+    override_opts.param_overrides = parameter_overrides.to_vec();
+    simulate_dae_with_diagnostics(dae, &override_opts)
 }
 
 fn stable_u64_from_hash(hash: blake3::Hash) -> u64 {

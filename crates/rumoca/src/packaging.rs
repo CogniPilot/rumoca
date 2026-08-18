@@ -20,6 +20,9 @@
 //! No placeholder is representable: the digest is computed only after the
 //! producer bytes exist, and the bytes hashed are the exact bytes written.
 
+#[cfg(all(test, feature = "fmu-packaging"))]
+mod tests;
+
 use std::collections::{BTreeMap, HashMap};
 #[cfg(feature = "fmu-packaging")]
 use std::fs;
@@ -37,9 +40,6 @@ use sha1::{Digest, Sha1};
 use time::OffsetDateTime;
 use time::macros::format_description;
 use uuid::Uuid;
-
-#[cfg(all(test, feature = "fmu-packaging"))]
-mod tests;
 
 /// How the rendered files + assets are finalized on disk (contract §4b).
 #[cfg(feature = "fmu-packaging")]
@@ -250,7 +250,7 @@ pub fn render_and_package(
 /// Remove a recognized product directory and archive before a new compilation
 /// attempt. Validation is completed for both paths before either is removed, so
 /// a foreign directory or archive is never partially destroyed.
-#[cfg(feature = "fmu-packaging")]
+#[cfg(all(feature = "fmu-packaging", feature = "scheduled-sim"))]
 pub(crate) fn invalidate_existing_package(
     out_dir: &Path,
     archive_path: Option<&Path>,

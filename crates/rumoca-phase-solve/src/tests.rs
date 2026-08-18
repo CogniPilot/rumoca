@@ -15,6 +15,7 @@ mod continuous;
 mod discrete;
 mod events;
 mod expressions;
+mod fmi;
 mod initial_discrete_values;
 mod initialization;
 mod sampling;

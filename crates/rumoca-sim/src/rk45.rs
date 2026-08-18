@@ -2,14 +2,13 @@ use std::time::Instant;
 
 use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
-use rumoca_ir_solve as solve;
 
 use crate::BuildSimulationTimings;
 #[cfg(feature = "scheduled-sim")]
 use crate::SimulationSessionApi;
 use crate::solve_lowering::{
-    SimulationDiagnosticError, lower_dae_for_simulation_with_stage_timing_and_param_overrides,
-    tunable_param_overrides,
+    SimulationDiagnosticError, apply_correlated_simulation_overrides, finish_runtime_fmi_artifact,
+    lower_correlated_for_simulation_with_stage_timing_and_param_overrides, tunable_param_overrides,
 };
 
 pub use rumoca_solver_rk45::SessionState;
@@ -19,9 +18,9 @@ pub fn simulate(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimError> {
-    let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
-        .map_err(diagnostic_sim_error)?;
-    simulate_solve_model(&solve_model, opts)
+    let (artifact, execution_backend) =
+        lower_runtime_artifact(dae_model, opts).map_err(diagnostic_sim_error)?;
+    simulate_artifact(artifact, opts, execution_backend)
 }
 
 pub use simulate as simulate_dae;
@@ -30,20 +29,30 @@ pub fn simulate_with_diagnostics(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimulationDiagnosticError> {
-    let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)?;
-    simulate_solve_model(&solve_model, opts)
+    let (artifact, execution_backend) = lower_runtime_artifact(dae_model, opts)?;
+    simulate_artifact(artifact, opts, execution_backend)
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 
-pub(crate) fn simulate_solve_model(
-    model: &solve::SolveModel,
+pub(crate) fn simulate_artifact(
+    artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &rumoca_solver::SimOptions,
+    execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<rumoca_solver::SimResult, SimError> {
-    rumoca_solver_rk45::simulate_with_execution_backend(
-        model,
-        opts,
-        crate::native_execution::admitted_native_execution_backend(opts, model),
-    )
+    rumoca_solver_rk45::simulate_with_execution_backend(artifact, opts, execution_backend)
+}
+
+fn lower_runtime_artifact(
+    dae_model: &dae::Dae,
+    opts: &rumoca_solver::SimOptions,
+) -> Result<
+    (
+        rumoca_solver::fmi_me::MeModelArtifact,
+        Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    ),
+    SimulationDiagnosticError,
+> {
+    crate::solve_lowering::lower_runtime_fmi_artifact(dae_model, opts)
 }
 
 pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
@@ -72,8 +81,8 @@ impl SimulationSession {
     ) -> Result<(Self, BuildSimulationTimings), SimError> {
         let param_overrides =
             tunable_param_overrides(dae_model, &opts).map_err(diagnostic_sim_error)?;
-        let (mut solve_model, solve_timings) =
-            lower_dae_for_simulation_with_stage_timing_and_param_overrides(
+        let (mut lowered, solve_timings) =
+            lower_correlated_for_simulation_with_stage_timing_and_param_overrides(
                 dae_model,
                 &opts,
                 &param_overrides,
@@ -82,15 +91,15 @@ impl SimulationSession {
             .map_err(diagnostic_sim_error)?;
         begin_stage("sim_overrides");
         let override_apply_start = Instant::now();
-        crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)
+        apply_correlated_simulation_overrides(&mut lowered, dae_model, &opts)
             .map_err(diagnostic_sim_error)?;
         let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
         begin_stage("sim_build");
         let backend_build_start = Instant::now();
-        let execution_backend =
-            crate::native_execution::admitted_native_execution_backend(&opts, &solve_model);
+        let (artifact, execution_backend) =
+            finish_runtime_fmi_artifact(lowered, &opts).map_err(diagnostic_sim_error)?;
         let inner = rumoca_solver_rk45::SimulationSession::new_with_execution_backend(
-            &solve_model,
+            artifact,
             opts,
             execution_backend,
         )?;
@@ -111,22 +120,18 @@ impl SimulationSession {
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimulationDiagnosticError> {
-        let solve_model =
-            crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, &opts)?;
-        Self::from_solve_model(solve_model, opts)
+        let (artifact, execution_backend) = lower_runtime_artifact(dae_model, &opts)?;
+        Self::from_artifact(artifact, opts, execution_backend)
     }
 
-    /// Build directly from an already-lowered, override-applied solve model, so
-    /// callers that lowered once (e.g. auto solver dispatch that first
-    /// probes for a pure-discrete model) do not lower the model a second time.
-    pub(crate) fn from_solve_model(
-        solve_model: solve::SolveModel,
+    /// Build from one checked correlated FMI artifact.
+    pub(crate) fn from_artifact(
+        artifact: rumoca_solver::fmi_me::MeModelArtifact,
         opts: rumoca_solver::SimOptions,
+        execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
     ) -> Result<Self, SimulationDiagnosticError> {
-        let execution_backend =
-            crate::native_execution::admitted_native_execution_backend(&opts, &solve_model);
         let inner = rumoca_solver_rk45::SimulationSession::new_with_execution_backend(
-            &solve_model,
+            artifact,
             opts,
             execution_backend,
         )

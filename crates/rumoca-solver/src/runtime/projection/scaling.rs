@@ -77,12 +77,19 @@ fn valid_variable_scale(scale: f64) -> f64 {
 pub(super) fn model_variable_scale<M: ImplicitProjectionModel + ?Sized>(
     model: &M,
     index: usize,
+    current_value: f64,
 ) -> f64 {
-    valid_variable_scale(model.variable_scale_for_y_index(index))
+    let current_magnitude = if current_value.is_finite() {
+        current_value.abs()
+    } else {
+        0.0
+    };
+    valid_variable_scale(model.variable_scale_for_y_index(index)).max(current_magnitude)
 }
 
 pub(super) fn algebraic_block_scales<M: ImplicitProjectionModel + ?Sized>(
     model: &M,
+    y: &[f64],
     block: &solve::AlgebraicProjectionBlock,
     jacobian: &DMatrix<f64>,
     structure: Option<&solve::StructuralPattern>,
@@ -90,7 +97,7 @@ pub(super) fn algebraic_block_scales<M: ImplicitProjectionModel + ?Sized>(
     let variable_scales = block
         .y_indices
         .iter()
-        .map(|&index| model_variable_scale(model, index))
+        .map(|&index| model_variable_scale(model, index, y[index]))
         .collect::<Vec<_>>();
     let fallback_scales = block
         .rows
@@ -102,7 +109,7 @@ pub(super) fn algebraic_block_scales<M: ImplicitProjectionModel + ?Sized>(
                 .and_then(y_index_for_slot)
                 .map_or_else(
                     || variable_scales.get(offset).copied().unwrap_or(1.0),
-                    |index| model_variable_scale(model, index),
+                    |index| model_variable_scale(model, index, y[index]),
                 )
         })
         .collect::<Vec<_>>();
@@ -112,6 +119,7 @@ pub(super) fn algebraic_block_scales<M: ImplicitProjectionModel + ?Sized>(
 
 fn initial_block_scales<M: AlgebraicProjectionModel + ?Sized>(
     model: &M,
+    y: &[f64],
     block: &solve::AlgebraicProjectionBlock,
     jacobian: &DMatrix<f64>,
     structure: Option<&solve::StructuralPattern>,
@@ -119,15 +127,16 @@ fn initial_block_scales<M: AlgebraicProjectionModel + ?Sized>(
     let variable_scales = block
         .y_indices
         .iter()
-        .map(|&index| model_variable_scale(model, index))
+        .map(|&index| model_variable_scale(model, index, y[index]))
         .collect::<Vec<_>>();
-    let fallback_scales = initial_block_fallback_scales(model, block, &variable_scales);
+    let fallback_scales = initial_block_fallback_scales(model, y, block, &variable_scales);
     let row_scales = jacobian_row_scales(jacobian, &variable_scales, &fallback_scales, structure);
     (row_scales, variable_scales)
 }
 
 pub(super) fn initial_block_fallback_scales<M: AlgebraicProjectionModel + ?Sized>(
     model: &M,
+    y: &[f64],
     block: &solve::AlgebraicProjectionBlock,
     variable_scales: &[f64],
 ) -> Vec<f64> {
@@ -141,7 +150,7 @@ pub(super) fn initial_block_fallback_scales<M: AlgebraicProjectionModel + ?Sized
                 .and_then(y_index_for_slot)
                 .map_or_else(
                     || variable_scales.get(offset).copied().unwrap_or(1.0),
-                    |index| model_variable_scale(model, index),
+                    |index| model_variable_scale(model, index, y[index]),
                 )
         })
         .collect()
@@ -216,6 +225,7 @@ pub(super) fn algebraic_plan_row_scales<M: ImplicitProjectionModel>(
         scales.extend(
             algebraic_block_scales(
                 model,
+                y,
                 block,
                 &jacobian,
                 structure.map(solve::JacobianStructure::pattern),
@@ -239,7 +249,7 @@ pub(super) fn initial_residual_scales<M: AlgebraicProjectionModel>(
             model
                 .initial_target(row)
                 .and_then(y_index_for_slot)
-                .map_or(1.0, |index| model_variable_scale(model, index))
+                .map_or(1.0, |index| model_variable_scale(model, index, y[index]))
         })
         .collect::<Vec<_>>();
     let mut full_residual = vec![0.0; residual_len];
@@ -257,7 +267,7 @@ pub(super) fn initial_residual_scales<M: AlgebraicProjectionModel>(
         let structure = model
             .initial_projection_block_structure(block_index)
             .map(solve::JacobianStructure::pattern);
-        let block_scales = initial_block_scales(model, block, &jacobian, structure).0;
+        let block_scales = initial_block_scales(model, y, block, &jacobian, structure).0;
         for (&row, scale) in block.rows.iter().zip(block_scales) {
             let Some(slot) = scales.get_mut(row) else {
                 return Err(RuntimeSolveError::solve_ir(format!(

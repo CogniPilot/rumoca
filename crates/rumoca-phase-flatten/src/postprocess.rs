@@ -16,6 +16,10 @@ mod index_collapse;
 mod indexed_dimension_recovery;
 mod occurrence_graph;
 mod record_alias;
+#[cfg(test)]
+mod record_alias_postprocess_tests;
+#[cfg(test)]
+mod substitute_constant_tests;
 
 use super::*;
 
@@ -397,10 +401,3 @@ fn substitute_known_constants_when_equation(
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "postprocess_record_alias_tests.rs"]
-mod record_alias_postprocess_tests;
-
-#[cfg(test)]
-mod substitute_constant_tests;

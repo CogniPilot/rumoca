@@ -9,8 +9,8 @@ repository.workspace = true
 [features]
 default = ["native-solvers"]
 native-solvers = ["solver-diffsol", "solver-rk45"]
+fmi = []
 strict-ir-validation = [
-    "rumoca-phase-dae/strict-ir-validation",
     "rumoca-phase-solve/strict-ir-validation",
 ]
 wasm-solvers = ["solver-diffsol", "solver-rk45"]
@@ -46,7 +46,7 @@ process-control = ["dep:signal-hook"]
 rumoca-core = { workspace = true }
 indexmap = { workspace = true }
 rumoca-ir-dae = { workspace = true }
-rumoca-phase-dae = { workspace = true }
+rumoca-eval-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 rumoca-phase-solve = { workspace = true }

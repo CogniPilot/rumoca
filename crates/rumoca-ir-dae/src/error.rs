@@ -98,6 +98,8 @@ pub enum DaeConstructionError {
     ShapeMismatch { span: Span },
     #[error("function call `{function}` has no checked call-shape certificate")]
     MissingFunctionCallCertificate { function: VarName, span: Span },
+    #[error("history operator `{operator}` has no matching checked occurrence certificate")]
+    MissingHistoryOperatorCertificate { operator: &'static str, span: Span },
     #[error("function result projection does not match its issued call owner")]
     InvalidCallProjectionOwner { span: Span },
     #[error("dynamic quotient expression {expression} already has a runtime owner")]
@@ -334,6 +336,7 @@ impl DaeConstructionError {
             | Self::InvalidStringFormatSource { span, .. }
             | Self::ShapeMismatch { span }
             | Self::MissingFunctionCallCertificate { span, .. }
+            | Self::MissingHistoryOperatorCertificate { span, .. }
             | Self::InvalidCallProjectionOwner { span }
             | Self::DuplicateRuntimeQuotientOwner { span, .. }
             | Self::InvalidQuotientReplayStage { span, .. }

@@ -25,7 +25,7 @@ advertise state serialization or derivatives it does not implement.
 
 ## Verification
 
-- `suite_fmi` validates the official FMI 2.0.5 XSD, archive layout, FMPy,
+- `suite_template_runtime` validates the official FMI 2.0.5 XSD, archive layout, FMPy,
   FMI-VDM, source compilation, direct C ABI lifecycle, and ME/CS execution.
 - Tensor decay traces are compared with the analytic solution and FMI 3.
 - Broken XML and duplicate-name FMUs prove independent validators reject.

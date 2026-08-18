@@ -32,7 +32,7 @@ and reject at the ABI.
 
 ## Verification
 
-- `suite_fmi` validates official FMI 3.0.2 schemas, FMPy, FMI-VDM, source
+- `suite_template_runtime` validates official FMI 3.0.2 schemas, FMPy, FMI-VDM, source
   declarations, direct C ABI lifecycle, native-array access, and execution.
 - ME and CS traces are checked against the analytic solution, FMI 2, and the
   linked checked kernel.

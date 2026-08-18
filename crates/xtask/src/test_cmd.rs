@@ -20,7 +20,7 @@ pub(crate) fn run_workspace_fmt_check(root: &Path) -> Result<()> {
 ///   guard), and `history_policy_test` (git-history policy).
 ///
 /// Both targets link no `rumoca` library, which is what keeps this gate fast.
-/// Add new architecture/policy checks as members of `tests/suite_gates.rs` so
+/// Add new architecture/policy checks as members of `tests/suite_gates/main.rs` so
 /// they're grouped in one fast gate rather than only discovered by the full
 /// workspace test run.
 pub(crate) fn run_architecture_gates(root: &Path) -> Result<()> {

@@ -1,3 +1,6 @@
+use rumoca_ir_solve::{self as solve, ScalarSlot};
+
+use super::event_boundary::event_boundary_horizon;
 use super::*;
 
 impl SolveMeKernel {
@@ -46,71 +49,8 @@ impl SolveMeKernel {
             return Ok(());
         }
         let mut settled_guess = self.cached_continuous_solver_y(time, &self.states, &self.params);
-        self.with_delay_evaluation_params(time, &self.states, |params| match self.root_profile {
-            MeRootProfile::Component => match &mut settled_guess {
-                Some(guess)
-                    if self
-                        .runtime
-                        .derivative_settled_coordinate_can_refresh_roots() =>
-                {
-                    self.runtime
-                        .eval_root_conditions_after_derivative_settle_into(
-                            time,
-                            params,
-                            guess,
-                            ALGEBRAIC_REFRESH_TOL,
-                            UPDATE_MAX_ITERS,
-                            indicators,
-                        )
-                        .map_err(MeError::from)
-                }
-                _ => self
-                    .runtime
-                    .eval_root_conditions_into(
-                        time,
-                        &self.states,
-                        params,
-                        ALGEBRAIC_REFRESH_TOL,
-                        UPDATE_MAX_ITERS,
-                        indicators,
-                    )
-                    .map_err(MeError::from),
-            },
-            MeRootProfile::DiffsolFrozen => match &mut settled_guess {
-                Some(guess)
-                    if self
-                        .runtime
-                        .derivative_settled_coordinate_can_refresh_roots() =>
-                {
-                    self.runtime
-                        .eval_root_search_conditions_after_derivative_settle_into(
-                            time,
-                            params,
-                            guess,
-                            self.tolerance.max(1.0e-10),
-                            256,
-                            indicators,
-                        )
-                }
-                Some(guess) => self.runtime.eval_root_search_conditions_with_guess_into(
-                    time,
-                    &self.states,
-                    params,
-                    guess,
-                    self.tolerance.max(1.0e-10),
-                    256,
-                    indicators,
-                ),
-                None => self.runtime.eval_root_search_conditions_into(
-                    time,
-                    &self.states,
-                    params,
-                    self.tolerance.max(1.0e-10),
-                    256,
-                    indicators,
-                ),
-            }
-            .map_err(MeError::from),
+        self.with_delay_evaluation_params(time, &self.states, |params| {
+            self.evaluate_root_conditions(time, params, &mut settled_guess, indicators)
         })
         .map_err(|error| error.at_stage(MeStage::Integration))?
         .map_err(|error| error.at_stage(MeStage::Integration))?;
@@ -118,7 +58,186 @@ impl SolveMeKernel {
             indicators,
             &self.runtime.model.problem.events.root_zero_domains,
         );
+        self.restore_frozen_zero_domains(indicators);
         self.cache_root_conditions(time, &self.states, indicators);
+        Ok(())
+    }
+
+    fn evaluate_root_conditions(
+        &self,
+        time: f64,
+        params: &[f64],
+        settled_guess: &mut Option<Vec<f64>>,
+        indicators: &mut [f64],
+    ) -> Result<(), MeError> {
+        match settled_guess {
+            Some(guess)
+                if self
+                    .runtime
+                    .derivative_settled_coordinate_can_refresh_roots() =>
+            {
+                self.runtime
+                    .eval_root_conditions_after_derivative_settle_into(
+                        time,
+                        params,
+                        guess,
+                        ALGEBRAIC_REFRESH_TOL,
+                        UPDATE_MAX_ITERS,
+                        indicators,
+                    )
+                    .map_err(MeError::from)
+            }
+            _ => self
+                .runtime
+                .eval_root_conditions_into(
+                    time,
+                    &self.states,
+                    params,
+                    ALGEBRAIC_REFRESH_TOL,
+                    UPDATE_MAX_ITERS,
+                    indicators,
+                )
+                .map_err(MeError::from),
+        }
+    }
+
+    fn restore_frozen_zero_domains(&self, indicators: &mut [f64]) {
+        for (index, (indicator, zero_domain)) in indicators
+            .iter_mut()
+            .zip(&self.runtime.model.problem.events.root_zero_domains)
+            .enumerate()
+        {
+            if *indicator != 0.0 || !matches!(zero_domain, solve::RootZeroDomain::Previous) {
+                continue;
+            }
+            let was_positive = self
+                .frozen_indicator_positive
+                .get(index)
+                .copied()
+                .unwrap_or(false);
+            *indicator = if was_positive {
+                f64::EPSILON
+            } else {
+                -f64::EPSILON
+            };
+        }
+    }
+
+    /// Freeze the standard indicator domains at one completed point and retain
+    /// any domain changes for the next argument-free Event Mode transition.
+    ///
+    /// This is component-owned state: the host classifies roots for location,
+    /// while the component independently observes the standard callback at its
+    /// own accepted coordinate. No crossing vector crosses the FMI boundary.
+    pub(super) fn complete_indicator_domains(&mut self) -> Result<bool, MeError> {
+        let count = self.runtime.root_condition_count();
+        if count == 0 {
+            self.frozen_indicator_positive.clear();
+            self.pending_root_crossings.clear();
+            return Ok(false);
+        }
+        let mut indicators = Vec::new();
+        indicators
+            .try_reserve_exact(count)
+            .map_err(|_| MeError::Allocation {
+                context: "completed event-indicator domains",
+                entries: count,
+            })?;
+        indicators.resize(count, 0.0);
+        self.event_indicators_into(&mut indicators)?;
+        let current = indicators
+            .iter()
+            .map(|indicator| *indicator > 0.0)
+            .collect::<Vec<_>>();
+        if self.frozen_indicator_positive.len() != count {
+            self.frozen_indicator_positive = current;
+            self.pending_root_crossings.clear();
+            return Ok(false);
+        }
+
+        let mut crossings = self
+            .frozen_indicator_positive
+            .iter()
+            .zip(&current)
+            .enumerate()
+            .filter_map(|(index, (before, after))| {
+                (before != after).then_some(RootCrossing {
+                    index,
+                    post_relation_memory_value: if *after { 0.0 } else { 1.0 },
+                })
+            })
+            .collect::<Vec<_>>();
+        filter_scheduled_root_crossings(
+            &mut crossings,
+            &self.runtime.model.problem.events.scheduled_root_conditions,
+        );
+        if !crossings.is_empty() {
+            self.capture_event_entry()?;
+        }
+        self.pending_root_crossings = crossings;
+        self.frozen_indicator_positive = current;
+        Ok(!self.pending_root_crossings.is_empty())
+    }
+
+    /// Seed the domain cache after Event Mode from the settled component state.
+    ///
+    /// A typed relation-memory target decides an exact-zero `Previous` root;
+    /// roots without such a target retain the side the completed-step callback
+    /// froze. Static strict/non-strict roots were already oriented by their
+    /// checked `RootZeroDomain`.
+    pub(super) fn seed_settled_indicator_domains(&mut self) -> Result<(), MeError> {
+        let count = self.runtime.root_condition_count();
+        if count == 0 {
+            self.frozen_indicator_positive.clear();
+            return Ok(());
+        }
+        let previous = self.frozen_indicator_positive.clone();
+        let mut indicators = Vec::new();
+        indicators
+            .try_reserve_exact(count)
+            .map_err(|_| MeError::Allocation {
+                context: "settled event-indicator domains",
+                entries: count,
+            })?;
+        indicators.resize(count, 0.0);
+        self.event_indicators_into(&mut indicators)?;
+        let targets = &self
+            .runtime
+            .model
+            .problem
+            .events
+            .root_relation_memory_targets;
+        let settled = indicators
+            .iter()
+            .enumerate()
+            .map(
+                |(index, indicator)| match targets.get(index).copied().flatten() {
+                    Some(ScalarSlot::P {
+                        index: parameter, ..
+                    }) => self
+                        .params
+                        .get(parameter)
+                        .is_none_or(|memory| *memory <= 0.5),
+                    _ => previous.get(index).copied().unwrap_or(*indicator > 0.0),
+                },
+            )
+            .collect();
+        self.frozen_indicator_positive = settled;
+        Ok(())
+    }
+
+    /// Capture the component's own pre-event values before relation-memory
+    /// overrides are consumed by Event Mode.
+    pub(super) fn capture_event_entry(&mut self) -> Result<(), MeError> {
+        let pre_y = self.runtime.full_solver_y(
+            self.time,
+            &self.states,
+            &self.params,
+            ALGEBRAIC_REFRESH_TOL,
+            UPDATE_MAX_ITERS,
+        )?;
+        self.pending_event_pre_y = Some(pre_y);
+        self.pending_event_pre_p = Some(self.params.clone());
         Ok(())
     }
 
@@ -130,11 +249,6 @@ impl SolveMeKernel {
             self.states.iter().map(|value| value.to_bits()).collect(),
             self.params.iter().map(|value| value.to_bits()).collect(),
         )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn verification_frozen_root_override_count(&self) -> usize {
-        self.frozen_event_root_crossings.len()
     }
 
     #[cfg(test)]
@@ -191,21 +305,11 @@ impl SolveMeKernel {
             && self.advance_state_to_event_right_limit == state.advance_state_to_event_right_limit
             && self.state_time_coincidence == state.state_time_coincidence
             && self.initial_event_pending == state.initial_event_pending
-            && self.skip_next_enter_continuous_delay_commit
-                == state.skip_next_enter_continuous_delay_commit
             && root_crossings_bit_eq(&self.pending_root_crossings, &state.pending_root_crossings)
-            && root_crossings_bit_eq(
-                &self.frozen_event_root_crossings,
-                &state.frozen_event_root_crossings,
-            )
             && option_float_vec_bit_eq(&self.pending_event_pre_y, &state.pending_event_pre_y)
             && option_float_vec_bit_eq(&self.pending_event_pre_p, &state.pending_event_pre_p)
             && option_float_vec_bit_eq(&self.boundary_event_pre_y, &state.boundary_event_pre_y)
             && option_float_vec_bit_eq(&self.boundary_event_pre_p, &state.boundary_event_pre_p)
-            && option_float_vec_bit_eq(
-                &self.frozen_event_accepted_seed,
-                &state.frozen_event_accepted_seed,
-            )
             && float_slice_bit_eq(&self.solver_y_guess.borrow(), &state.solver_y_guess)
             && float_slice_bit_eq(
                 &self.delay_params_scratch.borrow(),
@@ -296,96 +400,8 @@ impl SolveMeKernel {
     ) -> Result<Self, MeError> {
         let execution_backend =
             execution_backend.map(crate::fmi_me::MeExecutionBackend::into_runtime_backend);
-        // `NoContinuousStates` is a routing answer, not a failure: a host reads
-        // it to pick its zero-state path, so it stays unannotated.
-        Self::instantiate_inner(source, config, execution_backend).map_err(|error| match error {
-            routing @ MeError::NoContinuousStates => routing,
-            failure => failure.at_stage(MeStage::Instantiate),
-        })
-    }
-
-    /// Temporary phase-2 dual-run guard for the frozen Diffsol host.
-    ///
-    /// The frozen Diffsol driver still owns a full Solve vector during this
-    /// migration step. Compare it inside the component so the adapter does not
-    /// gain access to component-private algebraic storage. Delete this
-    /// operation with [`MeNumericsProfile::DiffsolFrozen`].
-    pub fn verify_frozen_compatibility_state(
-        &self,
-        expected_solver_y: &[f64],
-        expected_parameters: &[f64],
-        stage: MeStage,
-    ) -> Result<(), MeError> {
-        if !matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            return Err(contract(
-                "frozen compatibility state verification requires DiffsolFrozen numerics",
-            )
-            .at_stage(stage));
-        }
-        let actual_solver_y = self.solver_y_guess.borrow().clone();
-        let state_slots: Vec<_> = (0..self.state_count).collect();
-        if actual_solver_y.len() == expected_solver_y.len()
-            && first_bit_mismatch_except(&actual_solver_y, expected_solver_y, &state_slots)
-                .is_none()
-            && self.frozen_parameters_match(expected_parameters)
-        {
-            return Ok(());
-        }
-        let solver_mismatch =
-            first_bit_mismatch_except(&actual_solver_y, expected_solver_y, &state_slots);
-        let parameter_mismatch = first_bit_mismatch_except(
-            &self.params,
-            expected_parameters,
-            &self
-                .runtime
-                .model
-                .problem
-                .events
-                .delays
-                .value_parameter_indices,
-        );
-        let solver_name = solver_mismatch.and_then(|(index, _, _)| {
-            self.runtime
-                .model
-                .problem
-                .solve_layout
-                .solver_maps
-                .names
-                .get(index)
-        });
-        Err(contract(format!(
-            "frozen compatibility state diverged at {stage:?}: component_time={} \
-             last_event={:?} component_solver_y={} \
-             expected_solver_y={} component_parameters={} expected_parameters={} \
-             solver_mismatch={solver_mismatch:?} solver_name={solver_name:?} \
-             parameter_mismatch={parameter_mismatch:?}",
-            self.time,
-            self.last_event_entry,
-            actual_solver_y.len(),
-            expected_solver_y.len(),
-            self.params.len(),
-            expected_parameters.len(),
-        ))
-        .at_stage(stage))
-    }
-
-    pub(super) fn frozen_parameters_match(&self, expected: &[f64]) -> bool {
-        self.params.len() == expected.len()
-            && self
-                .params
-                .iter()
-                .zip(expected)
-                .enumerate()
-                .all(|(index, (actual, expected))| {
-                    self.runtime
-                        .model
-                        .problem
-                        .events
-                        .delays
-                        .value_parameter_indices
-                        .contains(&index)
-                        || actual.to_bits() == expected.to_bits()
-                })
+        Self::instantiate_inner(source, config, execution_backend)
+            .map_err(|failure| failure.at_stage(MeStage::Instantiate))
     }
 
     pub(super) fn instantiate_inner(
@@ -393,7 +409,6 @@ impl SolveMeKernel {
         config: &MeInstanceConfig,
         execution_backend: Option<Rc<dyn crate::SolveExecutionBackend>>,
     ) -> Result<Self, MeError> {
-        validate_instance_config(config)?;
         let model = source.model();
         rumoca_eval_solve::reset_solve_row_eval_trace();
         validate_explicit_solve_model(model)?;
@@ -424,8 +439,6 @@ impl SolveMeKernel {
             lifecycle: MeLifecycle::instantiated(),
             tolerance: config.tolerance,
             stop_time: config.stop_time,
-            root_profile: config.root_profile,
-            numerics_profile: config.numerics_profile,
             time: config.start_time,
             event_boundary: None,
             post_event_eval_time: None,
@@ -440,14 +453,12 @@ impl SolveMeKernel {
             advance_state_to_event_right_limit: false,
             state_time_coincidence: StateTimeCoincidence::None,
             initial_event_pending: false,
-            skip_next_enter_continuous_delay_commit: false,
             pending_root_crossings: Vec::new(),
-            frozen_event_root_crossings: Vec::new(),
+            frozen_indicator_positive: Vec::new(),
             pending_event_pre_y: None,
             pending_event_pre_p: None,
             boundary_event_pre_y: None,
             boundary_event_pre_p: None,
-            frozen_event_accepted_seed: None,
             derivative_cache: RefCell::new(None),
             root_cache: RefCell::new(None),
             continuous_linearization_cache: RefCell::new(None),
@@ -473,9 +484,6 @@ impl SolveMeKernel {
 
     /// The evaluation time derivative and event-indicator reads use.
     pub(super) fn continuous_eval_time(&self) -> f64 {
-        if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            return self.time;
-        }
         match self.event_boundary {
             Some(boundary) if self.time >= boundary => {
                 timeline::event_left_probe_time(boundary, self.tolerance)
@@ -490,46 +498,25 @@ impl SolveMeKernel {
     }
 
     pub(super) fn numerics_settle(&self) -> AlgebraicSettle {
-        match self.numerics_profile {
-            MeNumericsProfile::Component => AlgebraicSettle {
-                tol: ALGEBRAIC_REFRESH_TOL,
-                max_iters: UPDATE_MAX_ITERS,
-            },
-            MeNumericsProfile::DiffsolFrozen => AlgebraicSettle {
-                tol: self.tolerance.max(1.0e-10),
-                max_iters: 256,
-            },
+        AlgebraicSettle {
+            tol: ALGEBRAIC_REFRESH_TOL,
+            max_iters: UPDATE_MAX_ITERS,
         }
     }
 
     pub(super) fn algebraic_projection_policy(&self) -> MeAlgebraicProjectionPolicy {
         MeAlgebraicProjectionPolicy {
             tolerance: self.tolerance,
-            profile: self.numerics_profile,
             settle: self.numerics_settle(),
         }
     }
 
     pub(super) fn initialization_solver_y(&self) -> Result<Vec<f64>, MeError> {
-        match self.numerics_profile {
-            MeNumericsProfile::Component => self.current_solver_y(),
-            // The frozen Diffsol initialization starts from the declared
-            // full-layout seed exactly as the retired driver did.  A
-            // preliminary full refresh would prime runtime-owned evaluation
-            // state in a different order even when its returned vector is
-            // later overwritten by the initialization solve.
-            MeNumericsProfile::DiffsolFrozen => Ok(self.solver_y_guess.borrow().clone()),
-        }
+        self.current_solver_y()
     }
 
     pub(super) fn with_callback_solver_y<R>(&self, f: impl FnOnce(&mut Vec<f64>) -> R) -> R {
-        match self.numerics_profile {
-            MeNumericsProfile::Component => f(&mut self.solver_y_guess.borrow_mut()),
-            MeNumericsProfile::DiffsolFrozen => {
-                let mut speculative = self.solver_y_guess.borrow().clone();
-                f(&mut speculative)
-            }
-        }
+        f(&mut self.solver_y_guess.borrow_mut())
     }
 
     pub(super) fn directional_derivative_at_parameters(
@@ -789,82 +776,28 @@ impl SolveMeKernel {
         let mut solver_y = self.initialization_solver_y()?;
         let policy = self.algebraic_projection_policy();
         let settle = policy.settle;
-        match self.numerics_profile {
-            MeNumericsProfile::Component => {
-                self.runtime.settle_initialization_system(
-                    &mut solver_y,
-                    &mut self.params,
-                    self.time,
-                    self.tolerance,
-                    settle.max_iters,
-                )?;
-                project_algebraics(
-                    &self.runtime,
-                    &mut solver_y,
-                    &mut self.params,
-                    self.time,
-                    policy,
-                )?;
-                self.copy_states_from_solver_y(&solver_y);
-                self.runtime.update_relation_memory_from_state(
-                    self.time,
-                    &self.states,
-                    &mut self.params,
-                    self.tolerance,
-                    settle.max_iters,
-                )?;
-            }
-            MeNumericsProfile::DiffsolFrozen => {
-                self.runtime.seed_initial_discrete_values(
-                    &mut solver_y,
-                    &mut self.params,
-                    self.time,
-                    self.tolerance,
-                    settle.max_iters,
-                )?;
-                self.runtime
-                    .settle_runtime_assignments_and_relation_memory(
-                        &mut solver_y,
-                        &mut self.params,
-                        self.time,
-                        self.tolerance,
-                        settle.max_iters,
-                    )?;
-                self.runtime.settle_initialization_system(
-                    &mut solver_y,
-                    &mut self.params,
-                    self.time,
-                    self.tolerance,
-                    settle.max_iters,
-                )?;
-                self.runtime.seed_initial_discrete_values(
-                    &mut solver_y,
-                    &mut self.params,
-                    self.time,
-                    self.tolerance,
-                    settle.max_iters,
-                )?;
-                self.runtime.settle_initialization_system(
-                    &mut solver_y,
-                    &mut self.params,
-                    self.time,
-                    self.tolerance,
-                    settle.max_iters,
-                )?;
-                let runtime = Rc::clone(&self.runtime);
-                let projection_runtime = Rc::clone(&runtime);
-                let tol = policy.tolerance;
-                let time = self.time;
-                runtime.settle_projected_runtime_and_relation_memory(
-                    &mut solver_y,
-                    &mut self.params,
-                    time,
-                    tol,
-                    settle.max_iters,
-                    move |y, p| project_algebraics(&projection_runtime, y, p, time, policy),
-                )?;
-            }
-        }
+        self.runtime.settle_initialization_system(
+            &mut solver_y,
+            &mut self.params,
+            self.time,
+            self.tolerance,
+            settle.max_iters,
+        )?;
+        project_algebraics(
+            &self.runtime,
+            &mut solver_y,
+            &mut self.params,
+            self.time,
+            policy,
+        )?;
+        self.copy_states_from_solver_y(&solver_y);
+        self.runtime.update_relation_memory_from_state(
+            self.time,
+            &self.states,
+            &mut self.params,
+            self.tolerance,
+            settle.max_iters,
+        )?;
         self.copy_states_from_solver_y(&solver_y);
         *self.solver_y_guess.borrow_mut() = solver_y.clone();
         // MLS 3.6 §8.6: before integration, v = pre(v). The initial event
@@ -944,75 +877,6 @@ impl SolveMeKernel {
                 .is_some_and(|(event_time, _)| time_match_with_tol(event_time, time))
     }
 
-    pub fn frozen_event_state_derivatives(
-        &self,
-        time: f64,
-        states: &[f64],
-    ) -> Result<Vec<f64>, MeError> {
-        if !matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            return Err(contract(
-                "frozen event derivative evaluation requires DiffsolFrozen numerics",
-            )
-            .at_stage(MeStage::EventIteration));
-        }
-        self.runtime
-            .eval_state_derivatives(time, states, &self.params, self.tolerance.max(1.0e-10), 256)
-            .map_err(MeError::from)
-            .map_err(|error| error.at_stage(MeStage::EventIteration))
-    }
-
-    /// Freeze the retired driver's full-vector ownership at a located root.
-    ///
-    /// The driver reconstructs every solver lane at the located state, then
-    /// brackets the event by changing only the continuous-state prefix.  In
-    /// particular, algebraic lanes in the left-limit snapshot still belong to
-    /// the located root rather than to a fresh solve at the extrapolated left
-    /// state.  This temporary phase-2 bridge preserves that exact ownership.
-    pub fn capture_frozen_located_event_pre(&mut self, pre_states: &[f64]) -> Result<(), MeError> {
-        if !matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            return Err(
-                contract("frozen located-event capture requires DiffsolFrozen numerics")
-                    .at_stage(MeStage::EventIteration),
-            );
-        }
-        if pre_states.len() != self.state_count {
-            return Err(contract(format!(
-                "frozen located-event pre-state has {} entries for {} continuous states",
-                pre_states.len(),
-                self.state_count
-            ))
-            .at_stage(MeStage::EventIteration));
-        }
-        let mut event_pre_y = self.solver_y_at_time(self.time)?;
-        event_pre_y[..self.state_count].copy_from_slice(pre_states);
-        self.pending_event_pre_y = Some(event_pre_y);
-        self.pending_event_pre_p = Some(self.params.clone());
-        Ok(())
-    }
-
-    pub fn prepare_frozen_bdf_initial_seed(
-        &mut self,
-        frozen_solver_y: &[f64],
-    ) -> Result<(), MeError> {
-        if !matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            return Err(contract(
-                "frozen BDF seed preparation requires DiffsolFrozen numerics",
-            ));
-        }
-        if frozen_solver_y.len() != self.runtime.solver_count {
-            return Err(contract(format!(
-                "frozen BDF seed has {} entries for {} solver values",
-                frozen_solver_y.len(),
-                self.runtime.solver_count
-            )));
-        }
-        self.solver_y_guess
-            .borrow_mut()
-            .copy_from_slice(frozen_solver_y);
-        self.clear_runtime_caches();
-        Ok(())
-    }
-
     // -- event boundary ----------------------------------------------------
 
     pub(super) fn apply_discrete_event_updates(
@@ -1031,14 +895,10 @@ impl SolveMeKernel {
             .take()
             .unwrap_or_else(|| self.params.clone());
         let mut solver_y = self.event_iteration_solver_y(&event_entry_y)?;
-        let (pending_root_overrides, has_located_root_crossing) =
-            self.take_pending_event_root_overrides();
+        let pending_root_overrides = self.take_pending_event_root_overrides();
         let root_overrides = pending_root_overrides.as_slice();
         let runtime = Rc::clone(&self.runtime);
         let projection_runtime = Rc::clone(&runtime);
-        let settle_projection_runtime = Rc::clone(&runtime);
-        let projection_time =
-            self.frozen_event_projection_time(event_time, has_located_root_crossing);
         let policy = self.algebraic_projection_policy();
         let tol = policy.tolerance;
         let settle = policy.settle;
@@ -1054,34 +914,8 @@ impl SolveMeKernel {
                 row_filter,
                 root_relation_overrides: root_overrides,
             },
-            move |y, p| {
-                project_event_algebraics(&projection_runtime, y, p, projection_time, policy)
-            },
+            move |y, p| project_event_algebraics(&projection_runtime, y, p, event_time, policy),
         )?;
-        if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen)
-            && !has_located_root_crossing
-        {
-            // Without a located crossing, reconstruct relation memory from the
-            // numerical application point. Any located crossing owns its exact
-            // post side, including conditions with no separate relation-memory
-            // target; rebuilding at a snapped horizon would erase that event.
-            runtime.settle_projected_runtime_and_relation_memory(
-                &mut solver_y,
-                &mut self.params,
-                event_time,
-                tol,
-                settle.max_iters,
-                move |y, p| {
-                    project_event_algebraics(
-                        &settle_projection_runtime,
-                        y,
-                        p,
-                        projection_time,
-                        policy,
-                    )
-                },
-            )?;
-        }
         // Unrelated algebraic/output lanes remain lazy in the retained solver
         // seed. Their owning callback refresh plan materializes them if and
         // when a derivative, root, or visible-value consumer asks for them.
@@ -1091,60 +925,12 @@ impl SolveMeKernel {
         Ok(())
     }
 
-    fn take_pending_event_root_overrides(&mut self) -> (Vec<(usize, f64)>, bool) {
+    fn take_pending_event_root_overrides(&mut self) -> Vec<(usize, f64)> {
         let pending = self.pending_root_crossings.drain(..).collect::<Vec<_>>();
-        let has_located_root_crossing = !pending.is_empty();
-        let has_typed_root_override = pending
+        pending
             .iter()
-            .any(|crossing| self.root_crossing_has_relation_memory(crossing));
-        if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            let typed = pending
-                .iter()
-                .filter(|crossing| self.root_crossing_has_relation_memory(crossing))
-                .cloned()
-                .collect::<Vec<_>>();
-            if !typed.is_empty() {
-                self.frozen_event_root_crossings = typed;
-            }
-        }
-        let use_overrides = matches!(self.numerics_profile, MeNumericsProfile::Component)
-            || has_typed_root_override;
-        let overrides = if use_overrides {
-            pending
-                .iter()
-                .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        (overrides, has_located_root_crossing)
-    }
-
-    fn root_crossing_has_relation_memory(&self, crossing: &RootCrossing) -> bool {
-        matches!(
-            self.runtime
-                .model
-                .problem
-                .events
-                .root_relation_memory_targets
-                .get(crossing.index),
-            Some(Some(_))
-        )
-    }
-
-    fn frozen_event_projection_time(
-        &self,
-        application_time: f64,
-        has_located_root_crossing: bool,
-    ) -> f64 {
-        if !has_located_root_crossing
-            || !matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen)
-        {
-            return application_time;
-        }
-        self.last_event_entry
-            .filter(|entry| entry.cause == MeEventCause::StateEvent)
-            .map_or(application_time, |entry| entry.event_time)
+            .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
+            .collect()
     }
 
     pub(super) fn commit_event_runtime_state(
@@ -1153,23 +939,19 @@ impl SolveMeKernel {
         mut solver_y: Vec<f64>,
         root_overrides: &[(usize, f64)],
     ) -> Result<(), MeError> {
-        if matches!(self.numerics_profile, MeNumericsProfile::Component) {
-            let history_changed = commit_pre_params_after_event_at(
-                &self.runtime.model,
-                &solver_y,
-                &mut self.params,
-                Some(event_time),
-                self.tolerance,
-            );
-            if history_changed {
-                self.canonicalize_committed_event_view(event_time, &mut solver_y, root_overrides)?;
-            }
+        let history_changed = commit_pre_params_after_event_at(
+            &self.runtime.model,
+            &solver_y,
+            &mut self.params,
+            Some(event_time),
+            self.tolerance,
+        );
+        if history_changed {
+            self.canonicalize_committed_event_view(event_time, &mut solver_y, root_overrides)?;
         }
         self.copy_states_from_solver_y(&solver_y);
         *self.solver_y_guess.borrow_mut() = solver_y;
-        if matches!(self.numerics_profile, MeNumericsProfile::Component) {
-            self.commit_delay_point()?;
-        }
+        self.commit_delay_point()?;
         Ok(())
     }
 
@@ -1177,88 +959,7 @@ impl SolveMeKernel {
         &self,
         event_entry_y: &[f64],
     ) -> Result<Vec<f64>, MeError> {
-        match self.numerics_profile {
-            MeNumericsProfile::Component => Ok(event_entry_y.to_vec()),
-            // The frozen driver starts a located event from its dense-output
-            // full vector, then replaces only the continuous-state prefix when
-            // bracketing the right limit. Preserve that ownership here: a
-            // tolerance-equal root may snap back to an output target, and
-            // rebuilding every lane at that target can change strict relation
-            // memory before the shared event iteration sees the located side.
-            MeNumericsProfile::DiffsolFrozen => {
-                let mut solver_y = event_entry_y.to_vec();
-                solver_y[..self.state_count].copy_from_slice(&self.states);
-                Ok(solver_y)
-            }
-        }
-    }
-
-    pub(super) fn finish_frozen_runtime_event(&mut self, event_time: f64) -> Result<(), MeError> {
-        if !matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            return Ok(());
-        }
-        let mut post_event_y = self.current_solver_y()?;
-        let root_overrides = std::mem::take(&mut self.frozen_event_root_crossings)
-            .into_iter()
-            .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
-            .collect::<Vec<_>>();
-        self.settle_frozen_pre_commit_event_view(event_time, &mut post_event_y, &root_overrides)?;
-        let history_changed = commit_pre_params_after_event_at(
-            &self.runtime.model,
-            &post_event_y,
-            &mut self.params,
-            Some(event_time),
-            self.tolerance,
-        );
-        if history_changed {
-            let mut canonical_y = post_event_y;
-            self.canonicalize_committed_event_view(event_time, &mut canonical_y, &root_overrides)?;
-        }
-        self.commit_delay_point()?;
-        if let Some(accepted_seed) = self.frozen_event_accepted_seed.take() {
-            *self.solver_y_guess.borrow_mut() = accepted_seed;
-        }
-        self.skip_next_enter_continuous_delay_commit = true;
-        Ok(())
-    }
-
-    /// Reconcile the reconstructed full solver view while event `pre` is
-    /// still frozen. Relation-evaluating B.1c owners may run only here; after
-    /// history commits, canonicalization consumes the certified post plan.
-    pub(super) fn settle_frozen_pre_commit_event_view(
-        &mut self,
-        event_time: f64,
-        solver_y: &mut [f64],
-        root_relation_overrides: &[(usize, f64)],
-    ) -> Result<(), MeError> {
-        let runtime = Rc::clone(&self.runtime);
-        let policy = self.algebraic_projection_policy();
-        for _ in 0..policy.settle.max_iters {
-            let before_y = solver_y.to_vec();
-            let before_p = self.params.clone();
-            runtime.apply_runtime_assignments_until_stable(
-                solver_y,
-                &mut self.params,
-                event_time,
-                policy.settle.tol,
-                policy.settle.max_iters,
-            )?;
-            project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
-            runtime.update_algebraic_relation_memory_from_solver_y_except_overrides(
-                event_time,
-                solver_y,
-                &mut self.params,
-                root_relation_overrides,
-            )?;
-            if !runtime_values_changed(&before_y, solver_y, policy.settle.tol)
-                && !runtime_values_changed(&before_p, &self.params, policy.settle.tol)
-            {
-                return Ok(());
-            }
-        }
-        Err(contract(format!(
-            "pre-commit derived event view did not converge at t={event_time}"
-        )))
+        Ok(event_entry_y.to_vec())
     }
 
     /// Reconstruct the canonical post-event view after `pre` history advances.
@@ -1321,48 +1022,6 @@ impl SolveMeKernel {
         Err(contract(format!(
             "post-commit derived event view did not converge at t={event_time}"
         )))
-    }
-
-    pub(super) fn complete_coincident_root_right_limit(
-        &mut self,
-        entry: MeEventEntry,
-        event: RuntimeEventStop,
-        settled_right_limit: Option<f64>,
-        tolerance: f64,
-    ) -> Result<Option<f64>, MeError> {
-        let right_time =
-            runtime_root_event_application_time(entry.event_time, entry.horizon, tolerance);
-        if settled_right_limit.map(f64::to_bits) == Some(right_time.to_bits()) {
-            return Ok(settled_right_limit);
-        }
-        // The clock owner has completed at the semantic tick. The root's
-        // numerical right-limit transition starts from that settled superdense
-        // value and may execute only unowned rows; clock-owned rows cannot
-        // sample the post-event state a second time.
-        let event_pre_y = self.current_solver_y()?;
-        self.boundary_event_pre_y = Some(event_pre_y);
-        self.boundary_event_pre_p = Some(self.params.clone());
-        RuntimeEventBoundaryHandler::on_event_right_limit(self, right_time, event)?;
-        Ok(Some(right_time))
-    }
-
-    pub(super) fn refresh_frozen_event_observation(&mut self, time: f64) -> Result<(), MeError> {
-        if !matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            return Ok(());
-        }
-        let mut solver_y = self.solver_y_guess.borrow().clone();
-        self.runtime
-            .refresh_delay_values(time, &solver_y, &mut self.params)?;
-        self.runtime.refresh_observation_discrete_rows(
-            &mut solver_y,
-            &mut self.params,
-            time,
-            self.tolerance.max(1.0e-10),
-            256,
-        )?;
-        self.copy_states_from_solver_y(&solver_y);
-        *self.solver_y_guess.borrow_mut() = solver_y;
-        Ok(())
     }
 
     pub(super) fn record_event_action_outcome(
@@ -1526,21 +1185,12 @@ impl SolveMeKernel {
                 event_pre_p: &startup_event_pre_p,
                 max_iters: settle.max_iters,
                 dynamic_event,
-                apply_without_initial_event: self.root_profile.apply_without_initial_event(),
             },
             move |y, p, t| project_algebraics(&projection_runtime, y, p, t, policy),
         )?;
         self.copy_states_from_solver_y(&solver_y);
         *self.solver_y_guess.borrow_mut() = solver_y;
         self.time = outcome.final_t;
-        if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen)
-            && self.runtime.has_delay_channels()
-        {
-            let solver_y = self.solver_y_guess.borrow();
-            self.runtime
-                .commit_delay_history(self.time, &solver_y, &self.params)?;
-            self.skip_next_enter_continuous_delay_commit = true;
-        }
         self.initial_observations = outcome
             .observations
             .iter()
@@ -1589,29 +1239,11 @@ impl SolveMeKernel {
                 });
                 let horizon_t = coincident_time_event
                     .map_or(entry.event_time.min(entry.horizon), |(_, event)| {
-                        runtime_event_horizon(event, entry.horizon, self.stop_time)
+                        event_boundary_horizon(event, entry.horizon, self.stop_time)
                     });
-                let outcome = process_runtime_event_boundary(
-                    RuntimeEventBoundary {
-                        event_t: event_time,
-                        horizon_t,
-                        tolerance,
-                        event,
-                    },
-                    self,
-                )?;
-                let mut right_limit_t = outcome.right_limit_t;
-                if coincident_time_event.is_some()
-                    && matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen)
-                {
-                    right_limit_t = self.complete_coincident_root_right_limit(
-                        entry,
-                        event,
-                        outcome.right_limit_t,
-                        tolerance,
-                    )?;
-                }
-                self.finish_frozen_runtime_event(entry.event_time)?;
+                let outcome =
+                    self.process_runtime_event_boundary(event_time, horizon_t, tolerance, event)?;
+                let right_limit_t = outcome.right_limit_t;
                 if coincident_time_event.is_some() {
                     self.stop_schedule.advance_past(event_time);
                     self.pending_event_stop = None;
@@ -1631,17 +1263,13 @@ impl SolveMeKernel {
                 let (_, event) = self.pending_event_stop.take().ok_or_else(|| {
                     contract("time event entered without a scheduled component event")
                 })?;
-                let outcome = process_runtime_event_boundary(
-                    RuntimeEventBoundary {
-                        event_t: entry.event_time,
-                        horizon_t: runtime_event_horizon(event, entry.horizon, self.stop_time),
-                        tolerance,
-                        event,
-                    },
-                    self,
+                let outcome = self.process_runtime_event_boundary(
+                    entry.event_time,
+                    event_boundary_horizon(event, entry.horizon, self.stop_time),
+                    tolerance,
+                    event,
                 )?;
                 self.advance_state_to_event_right_limit = false;
-                self.finish_frozen_runtime_event(entry.event_time)?;
                 self.stop_schedule.advance_past(entry.event_time);
                 self.set_post_event_eval_time(outcome.right_limit_t);
                 self.clear_event_entry_scheduled_root_relation_memory(outcome.final_t, event)?;

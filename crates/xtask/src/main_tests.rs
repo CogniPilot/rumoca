@@ -34,7 +34,7 @@ fn classify_marks_zero_callsite_private_as_dead_likely() {
 #[test]
 fn rust_line_count_policy_only_excludes_generated_files() {
     assert!(!is_line_count_excluded_rust_file(
-        "crates/rumoca/tests/architecture_hardening_test.rs"
+        "crates/rumoca/tests/architecture_hardening_test/main.rs"
     ));
     assert!(!is_line_count_excluded_rust_file(
         "crates/foo/src/lower/tests.rs"

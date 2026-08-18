@@ -376,6 +376,8 @@ pub enum TraceCompareError {
     },
     #[error("trace has no valid time samples")]
     MissingTimes,
+    #[error("{trace} trace is malformed: {reason}")]
+    MalformedTrace { trace: &'static str, reason: String },
     #[error("trace has no common variables")]
     NoCommonVariables,
     #[error("trace has no comparable variable samples")]
@@ -387,12 +389,11 @@ pub fn load_trace_json(path: &Path) -> Result<SimTrace, TraceCompareError> {
         path: path.display().to_string(),
         source,
     })?;
-    let mut trace: SimTrace =
+    let trace: SimTrace =
         serde_json::from_str(&payload).map_err(|source| TraceCompareError::Parse {
             path: path.display().to_string(),
             source,
         })?;
-    normalize_trace(&mut trace);
     Ok(trace)
 }
 
@@ -414,6 +415,8 @@ pub fn compare_model_traces(
     if rumoca.times.is_empty() || omc.times.is_empty() {
         return Err(TraceCompareError::MissingTimes);
     }
+    validate_trace("Rumoca", rumoca)?;
+    validate_trace("OMC", omc)?;
 
     let mut channels = compare_common_channels(rumoca, omc)?;
     channels.sort_by(|a, b| {
@@ -527,6 +530,58 @@ fn compare_common_channels(
         return Err(TraceCompareError::NoComparableSamples);
     }
     Ok(channels)
+}
+
+fn validate_trace(trace_label: &'static str, trace: &SimTrace) -> Result<(), TraceCompareError> {
+    for (index, time) in trace.times.iter().copied().enumerate() {
+        if !time.is_finite() {
+            return Err(TraceCompareError::MalformedTrace {
+                trace: trace_label,
+                reason: format!("time at row {index} is not finite"),
+            });
+        }
+        if index > 0 && time < trace.times[index - 1] {
+            return Err(TraceCompareError::MalformedTrace {
+                trace: trace_label,
+                reason: format!(
+                    "time regressed at row {index} from {} to {time}",
+                    trace.times[index - 1]
+                ),
+            });
+        }
+    }
+    if trace.names.len() != trace.data.len() {
+        return Err(TraceCompareError::MalformedTrace {
+            trace: trace_label,
+            reason: format!(
+                "{} channel names do not match {} data columns",
+                trace.names.len(),
+                trace.data.len()
+            ),
+        });
+    }
+    let mut unique_names = HashSet::with_capacity(trace.names.len());
+    for name in &trace.names {
+        if !unique_names.insert(name) {
+            return Err(TraceCompareError::MalformedTrace {
+                trace: trace_label,
+                reason: format!("duplicate channel name `{name}`"),
+            });
+        }
+    }
+    for (index, (name, column)) in trace.names.iter().zip(&trace.data).enumerate() {
+        if column.len() != trace.times.len() {
+            return Err(TraceCompareError::MalformedTrace {
+                trace: trace_label,
+                reason: format!(
+                    "channel {index} `{name}` has {} values for {} time rows",
+                    column.len(),
+                    trace.times.len()
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Time span over which the two traces can be compared at all.
@@ -839,28 +894,13 @@ pub fn count_channel_agreement_bands_default(
     )
 }
 
-fn normalize_trace(trace: &mut SimTrace) {
-    for column in &mut trace.data {
-        if column.len() < trace.times.len() {
-            column.resize(trace.times.len(), None);
-        } else if column.len() > trace.times.len() {
-            column.truncate(trace.times.len());
-        }
-    }
-}
-
 fn series_map(trace: &SimTrace) -> HashMap<String, Vec<Option<f64>>> {
-    let mut out = HashMap::new();
-    for (idx, name) in trace.names.iter().enumerate() {
-        let mut values = trace.data.get(idx).cloned().unwrap_or_default();
-        if values.len() < trace.times.len() {
-            values.resize(trace.times.len(), None);
-        } else if values.len() > trace.times.len() {
-            values.truncate(trace.times.len());
-        }
-        out.insert(name.clone(), values);
-    }
-    out
+    trace
+        .names
+        .iter()
+        .cloned()
+        .zip(trace.data.iter().cloned())
+        .collect()
 }
 
 /// One tool's samples for a single channel: a time grid and the aligned values.
@@ -943,7 +983,7 @@ fn compare_channel(
         return None;
     }
 
-    let deduped_grid = channel_comparison_grid(rumoca.times, omc.times)?;
+    let deduped_grid = channel_comparison_grid(rumoca.times, omc.times, use_step_hold)?;
     if deduped_grid.len() < 2 {
         return None;
     }
@@ -1027,7 +1067,11 @@ fn settled_value_at_exact_start(series: ChannelSeries<'_>) -> Option<f64> {
         .last()
 }
 
-fn channel_comparison_grid(rumoca_times: &[f64], omc_times: &[f64]) -> Option<Vec<f64>> {
+fn channel_comparison_grid(
+    rumoca_times: &[f64],
+    omc_times: &[f64],
+    use_step_hold: bool,
+) -> Option<Vec<f64>> {
     let overlap_start = rumoca_times[0].max(omc_times[0]);
     let overlap_end = rumoca_times[rumoca_times.len() - 1].min(omc_times[omc_times.len() - 1]);
     if overlap_end <= overlap_start {
@@ -1050,19 +1094,23 @@ fn channel_comparison_grid(rumoca_times: &[f64], omc_times: &[f64]) -> Option<Ve
             .filter(|&t| t >= overlap_start && t <= overlap_end),
     );
     grid.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    Some(dedup_grid_times(grid))
+    Some(dedup_grid_times(grid, use_step_hold))
 }
 
-fn dedup_grid_times(grid: Vec<f64>) -> Vec<f64> {
+fn dedup_grid_times(grid: Vec<f64>, merge_numerically_coincident: bool) -> Vec<f64> {
     let mut deduped_grid: Vec<f64> = Vec::with_capacity(grid.len());
     for time in grid {
-        if deduped_grid
-            .last()
-            .is_some_and(|last| (time - *last).abs() <= GRID_DEDUP_EPS)
-        {
-            // Event traces are right-continuous after normalization. Retaining
-            // the later representative keeps interpolation on the settled
-            // side of a pair of numerically coincident event instants.
+        if deduped_grid.last().is_some_and(|last| {
+            time == *last
+                || (merge_numerically_coincident && (time - *last).abs() <= GRID_DEDUP_EPS)
+        }) {
+            // A certified step-held channel has no continuous path between
+            // numerically coincident event coordinates, so its later
+            // representative is the settled right limit. A continuous
+            // channel is different: `event.next_down()` is material left-limit
+            // evidence and coalescing it with `event` would manufacture a
+            // linear ramp from the preceding output-grid sample. Continuous
+            // grids therefore merge exact duplicates only.
             if let Some(last) = deduped_grid.last_mut() {
                 *last = time;
             }
@@ -1516,7 +1564,7 @@ fn interp_linear(times: &[f64], values: &[Option<f64>], t: f64) -> Option<f64> {
     match times.binary_search_by(|probe| probe.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Less))
     {
         Ok(mut idx) => {
-            while idx + 1 < times.len() && (times[idx + 1] - t).abs() <= GRID_DEDUP_EPS {
+            while idx + 1 < times.len() && times[idx + 1] == t {
                 idx += 1;
             }
             values.get(idx).copied().flatten()

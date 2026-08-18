@@ -166,21 +166,35 @@ pub(super) fn projection_error_for_rows<M: ImplicitProjectionModel>(
     message: &str,
     rows: &[usize],
     residual: &[f64],
+    row_scales: &[f64],
+    tolerance: f64,
 ) -> RuntimeSolveError {
-    let worst = residual
-        .iter()
-        .copied()
-        .enumerate()
-        .max_by(|(_, lhs), (_, rhs)| residual_sort_key(*lhs).total_cmp(&residual_sort_key(*rhs)));
+    let worst =
+        residual
+            .iter()
+            .copied()
+            .enumerate()
+            .max_by(|(lhs_offset, lhs), (rhs_offset, rhs)| {
+                let lhs_scale = row_scales.get(*lhs_offset).copied().unwrap_or(1.0);
+                let rhs_scale = row_scales.get(*rhs_offset).copied().unwrap_or(1.0);
+                let lhs_ratio = residual_sort_key(*lhs) / scaled_tolerance(tolerance, lhs_scale);
+                let rhs_ratio = residual_sort_key(*rhs) / scaled_tolerance(tolerance, rhs_scale);
+                lhs_ratio.total_cmp(&rhs_ratio)
+            });
     match worst {
         Some((offset, value)) => {
             let row = rows.get(offset).copied().unwrap_or(offset);
             let target = model
                 .target_name_for_row(row)
                 .map_or(String::new(), |name| format!(" target={name}"));
+            let scale = row_scales.get(offset).copied().unwrap_or(1.0);
+            let scaled_tolerance = scaled_tolerance(tolerance, scale);
+            let ratio = value.abs() / scaled_tolerance;
             RuntimeSolveError::solve_ir(format!(
-                "{message}: max residual row={row}{target} value={value:.6e} norm={:.6e}",
-                residual_norm(residual)
+                "{message}: worst scaled residual row={row}{target} value={value:.6e} \
+                 ratio={ratio:.6e} norm={:.6e} row_scale={scale:.6e} \
+                 scaled_tolerance={scaled_tolerance:.6e}",
+                residual_norm(residual),
             ))
         }
         None => RuntimeSolveError::solve_ir(message),
@@ -320,9 +334,9 @@ pub(super) fn project_initial_block<M: AlgebraicProjectionModel>(
     let y_indices = &block.y_indices;
     let variable_scales = y_indices
         .iter()
-        .map(|&index| model_variable_scale(model, index))
+        .map(|&index| model_variable_scale(model, index, y[index]))
         .collect::<Vec<_>>();
-    let fallback_scales = initial_block_fallback_scales(model, block, &variable_scales);
+    let fallback_scales = initial_block_fallback_scales(model, y, block, &variable_scales);
     let assignment_context = InitialBlockDeltaCtx {
         model,
         p,

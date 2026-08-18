@@ -292,11 +292,10 @@ int main(void) {
 }
 
 fn compile_and_run_rust_failure_abi(source: &str, directory: &std::path::Path) {
-    std::fs::write(directory.join("singular_ode.rs"), source).expect("write generated Rust source");
+    std::fs::write(directory.join("generated.rs"), source).expect("write generated Rust source");
     std::fs::write(
         directory.join("rust_driver.rs"),
-        r#"#[path = "singular_ode.rs"]
-mod generated;
+        r#"mod generated;
 fn main() {
     let mut out = [42.0];
     let result = generated::derivative_rhs(0.0, &[], &[], &mut out);

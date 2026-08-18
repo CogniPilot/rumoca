@@ -7,8 +7,8 @@ use rumoca_compile::{Session, compile::CompilationResult};
 use rumoca_sim::{
     SimOptions, SimResult, SimSolverMode, SimulationRequestSummary, SimulationRunMetrics,
     build_simulation_metrics_value, build_simulation_payload, build_tunable_parameter_meta,
-    lower_dae_for_simulation, lower_for_simulation_with_overrides, refresh_prepared_vectors,
-    simulate_dae_with_diagnostics, simulate_solve_model,
+    fmi_component_wire, lower_correlated_for_simulation_with_overrides, lower_dae_for_simulation,
+    simulate_dae_with_diagnostics,
 };
 
 pub(crate) fn simulate_model_impl(
@@ -32,11 +32,12 @@ pub(crate) fn simulate_model_impl(
     })
 }
 
-/// Compile a model and emit a `{ solve_model, t_end, dt }` payload for the lazy
+/// Compile a model and emit a `{ fmi_component, t_end, dt }` payload for the lazy
 /// diffsol addon (`@cognipilot/rumoca/diffsol`). Lowered with the diffsol
 /// (`bdf`) solver mode so the structure matches what the addon runs. The
 /// resolved `t_end`/`dt` (from the experiment annotation when the caller passes
-/// 0) travel with the model, since the `SolveModel` does not carry them. The
+/// 0) travel with the component, since its model description does not carry
+/// experiment bounds. The
 /// main module stays SIMD-free; only the addon that consumes this carries
 /// relaxed-SIMD.
 pub(crate) fn lower_model_to_solve_json_impl(
@@ -52,11 +53,14 @@ pub(crate) fn lower_model_to_solve_json_impl(
         let result = compile_requested_model(session, &requested_model)?;
         let (opts, _solver_label) = build_simulation_options(&result, t_end, dt, "bdf");
         let parameter_overrides = parse_parameter_overrides(parameter_overrides_json)?;
-        let solve_model = lower_solve_model_with_overrides(&result, &opts, &parameter_overrides)?;
-        let solve_model_wire = rumoca_sim::solve_model_wire(&solve_model)
-            .map_err(|error| WasmError::new(format!("SolveModel wire error: {error}")))?;
+        let mut override_opts = opts.clone();
+        override_opts.param_overrides = parameter_overrides;
+        let lowered = lower_correlated_for_simulation_with_overrides(&result.dae, &override_opts)
+            .map_err(|error| WasmError::new(format!("solve lowering error: {error}")))?;
+        let component_wire = fmi_component_wire(&lowered)
+            .map_err(|error| WasmError::new(format!("FMI component wire error: {error}")))?;
         let payload = serde_json::json!({
-            "solve_model": solve_model_wire,
+            "fmi_component": component_wire,
             "t_end": opts.t_end,
             "dt": opts.dt.unwrap_or(0.0),
         });
@@ -187,8 +191,9 @@ fn run_simulation(
         return simulate_dae_with_diagnostics(&result.dae, opts)
             .map_err(|error| WasmError::new(format!("Simulation error: {error}")));
     }
-    let solve_model = lower_solve_model_with_overrides(result, opts, parameter_overrides)?;
-    simulate_solve_model(&solve_model, opts)
+    let mut override_opts = opts.clone();
+    override_opts.param_overrides = parameter_overrides.to_vec();
+    simulate_dae_with_diagnostics(&result.dae, &override_opts)
         .map_err(|error| WasmError::new(format!("Simulation error: {error}")))
 }
 
@@ -206,25 +211,6 @@ fn model_parameter_metadata_in_session(
     let metadata = build_tunable_parameter_meta(&result.dae, &solve_model)
         .map_err(|error| WasmError::new(format!("parameter metadata error: {error}")))?;
     serde_json::to_string(&metadata).map_err(|e| WasmError::new(format!("JSON error: {e}")))
-}
-
-fn lower_solve_model_with_overrides(
-    result: &CompilationResult,
-    opts: &SimOptions,
-    parameter_overrides: &[(String, f64)],
-) -> Result<rumoca_ir_solve::SolveModel, WasmError> {
-    let mut override_opts = opts.clone();
-    override_opts.param_overrides = parameter_overrides.to_vec();
-    let mut solve_model = lower_for_simulation_with_overrides(&result.dae, &override_opts)
-        .map_err(|e| WasmError::new(format!("solve lowering error: {e}")))?;
-    if !parameter_overrides.is_empty() {
-        let (initial_y, parameters) =
-            refresh_prepared_vectors(&solve_model, opts.t_start, parameter_overrides)
-                .map_err(|e| WasmError::new(format!("parameter override error: {e}")))?;
-        solve_model.initial_y = initial_y;
-        solve_model.parameters = parameters;
-    }
-    Ok(solve_model)
 }
 
 fn parse_parameter_overrides(json: &str) -> Result<Vec<(String, f64)>, WasmError> {

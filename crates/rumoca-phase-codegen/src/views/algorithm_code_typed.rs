@@ -2058,7 +2058,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
 ///
 /// A *host* libm need not agree, and glibc's does not: the same exhaustive
 /// sweep found `powf(x, 2.0f)` off by 1 ulp from the correctly-rounded square
-/// on 1_548_806 inputs. Since `tests/galec_equivalence.rs` compiles the
+/// on 1_548_806 inputs. Since `tests/suite_galec_fmu/galec_equivalence.rs` compiles the
 /// generated C with the host `cc -lm`, emitting the multiply is what makes
 /// that host verification leg and a picolibc target build agree on the same
 /// bits instead of differing on ~0.036% of squared values.

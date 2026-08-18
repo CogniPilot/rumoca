@@ -78,45 +78,77 @@
 //!   component mints that stage where the failure happens rather than letting a
 //!   host re-derive it from rendered text.
 
-mod host;
+pub mod driver;
+pub mod integrator;
 mod kernel;
 pub(crate) mod lifecycle;
-mod no_state;
+/// Host-private root policy. SPEC_0044 §6 makes the scan/location policy, the
+/// root application, and the domain classification host-private with no
+/// unchecked constructor: none of it belongs in the solver-plugin API
+/// (review finding [367]).
+mod root;
+pub mod session;
 #[cfg(test)]
 mod tests;
+/// Host-private trace policy. Roles, the recorder, and its violation type all
+/// stay inside the master algorithm; the session maps a recorder failure onto
+/// the public allocation and host-contract categories
+/// (SPEC_0044 §6, review findings [335]§4, [366]§3).
+mod trace;
 mod validation;
 
-pub use host::{MeRuntimeHost, MeRuntimeInitialState, MeRuntimeOutput, MeRuntimePostEventState};
+pub use integrator::{
+    MeAcceptedStep, MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeDerivativeRefused,
+    MeIntegrationError, MeIntegratorBackend, MeNumericalFailure, MeNumericalSetup, MeStepCandidate,
+    accepted_interval_contains, accepted_step_roundoff,
+};
 pub use kernel::SolveMeKernel;
-pub use no_state::MeNoStateSession;
+pub use session::{
+    MeAdvanceOutcome, MeComponentHost, MeOutputCursor, MePluginArity, MeRetainedComponent,
+    MeSessionError, MeSessionLoss, MeSessionOptions, MeSessionOptionsInput, MeSimulationSession,
+};
 
 use std::rc::Rc;
 
 use crate::solver::{SimTermination, SimVariableMeta};
 
-/// The checked-kernel source an ME component is instantiated from.
+/// The correlated FMI source an ME component is instantiated from.
 ///
-/// This is the one place the FMI boundary names compiler IR: SPEC_0038
-/// requires `SolveProblem` to be projected *once* into an ME component.
-/// Hosts receive it as an opaque handle and can only hand it to
-/// [`SolveMeKernel::instantiate`].
-#[derive(Clone, Copy)]
-pub struct MeModelSource<'a>(&'a rumoca_ir_solve::SolveModel);
+/// Production construction can borrow this only from a checked
+/// [`rumoca_ir_solve::fmi::FmiComponent`]. Hosts receive an opaque handle and
+/// can only hand it to [`SolveMeKernel::instantiate`], so a bare Solve root can
+/// no longer bypass FMI construction or be paired with foreign metadata.
+pub struct MeModelSource<'a>(MeModelSourceInner<'a>);
+
+enum MeModelSourceInner<'a> {
+    Correlated(rumoca_ir_solve::fmi::FmiRuntimeView<'a>),
+    #[cfg(test)]
+    Fixture(&'a rumoca_ir_solve::SolveModel),
+}
 
 impl<'a> MeModelSource<'a> {
     #[must_use]
-    pub fn new(model: &'a rumoca_ir_solve::SolveModel) -> Self {
-        Self(model)
+    pub fn new(component: &'a rumoca_ir_solve::fmi::FmiComponent) -> Self {
+        Self(MeModelSourceInner::Correlated(component.runtime_view()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(model: &'a rumoca_ir_solve::SolveModel) -> Self {
+        Self(MeModelSourceInner::Fixture(model))
     }
 
     pub(crate) fn model(self) -> &'a rumoca_ir_solve::SolveModel {
-        self.0
+        match self.0 {
+            MeModelSourceInner::Correlated(view) => view.model(),
+            #[cfg(test)]
+            MeModelSourceInner::Fixture(model) => model,
+        }
     }
 }
 
-impl<'a> From<&'a rumoca_ir_solve::SolveModel> for MeModelSource<'a> {
-    fn from(model: &'a rumoca_ir_solve::SolveModel) -> Self {
-        Self::new(model)
+impl<'a> From<&'a rumoca_ir_solve::fmi::FmiComponent> for MeModelSource<'a> {
+    fn from(component: &'a rumoca_ir_solve::fmi::FmiComponent) -> Self {
+        Self::new(component)
     }
 }
 
@@ -197,13 +229,12 @@ pub fn admit_execution_backend(
 /// The generic ME runtime is the only layer that can project this artifact
 /// into a component. Concrete solver crates may store it and request an opaque
 /// [`MeModelSource`], but cannot inspect rows, layouts, opcodes, or events.
-#[derive(Clone)]
-pub struct MeModelArtifact(rumoca_ir_solve::SolveModel);
+pub struct MeModelArtifact(rumoca_ir_solve::fmi::FmiComponent);
 
 impl MeModelArtifact {
     #[must_use]
-    pub fn new(model: rumoca_ir_solve::SolveModel) -> Self {
-        Self(model)
+    pub fn new(component: rumoca_ir_solve::fmi::FmiComponent) -> Self {
+        Self(component)
     }
 
     #[must_use]
@@ -213,19 +244,13 @@ impl MeModelArtifact {
 
     #[must_use]
     pub fn continuous_state_count(&self) -> usize {
-        self.0.state_scalar_count()
+        self.0.problem().solve_layout.state_scalar_count()
     }
 }
 
-impl From<rumoca_ir_solve::SolveModel> for MeModelArtifact {
-    fn from(model: rumoca_ir_solve::SolveModel) -> Self {
-        Self::new(model)
-    }
-}
-
-impl From<&rumoca_ir_solve::SolveModel> for MeModelArtifact {
-    fn from(model: &rumoca_ir_solve::SolveModel) -> Self {
-        Self::new(model.clone())
+impl From<rumoca_ir_solve::fmi::FmiComponent> for MeModelArtifact {
+    fn from(component: rumoca_ir_solve::fmi::FmiComponent) -> Self {
+        Self::new(component)
     }
 }
 
@@ -416,65 +441,50 @@ impl From<rumoca_eval_solve::EvalSolveError> for MeError {
 #[derive(Debug, Clone)]
 pub struct MeInstanceConfig {
     /// FMI `instanceName`; also labels the component's eval-trace snapshot.
-    pub instance_name: &'static str,
-    /// FMI `tolerance` (`toleranceDefined = true`).
-    pub tolerance: f64,
+    instance_name: &'static str,
+    /// FMI relative integration `tolerance` (`toleranceDefined = true`).
+    tolerance: f64,
     /// FMI `startTime`.
-    pub start_time: f64,
+    start_time: f64,
     /// FMI `stopTime` (`stopTimeDefined = true`).
-    pub stop_time: f64,
-    /// Temporary phase-2 compatibility profile for the host's root inventory
-    /// and initial-event trigger. This is not an FMI capability: it freezes the
-    /// two pre-migration Diffsol choices while that host moves onto the shared
-    /// component, and is deleted as those divergences are adjudicated.
-    pub root_profile: MeRootProfile,
-    /// Temporary phase-2 compatibility profile for component lifecycle and
-    /// algebraic numerics. In addition to callback tolerance, iteration, and
-    /// warm-start policy, this freezes Diffsol's initialization sequencing,
-    /// accepted-step/event projection, delay-history commits, and full-state
-    /// dual-run checks. It remains independent of the root inventory selected
-    /// by [`Self::root_profile`].
-    pub numerics_profile: MeNumericsProfile,
+    stop_time: f64,
 }
 
-/// Temporary SPEC_0038 phase-2 compatibility profile.
-///
-/// The ordinary component profile exposes the checked event indicators and
-/// runs an initial event only when initialization produced one. The frozen
-/// Diffsol path instead exposed the runtime's root-search inventory (including
-/// planned time roots) and always performed the post-initialization refresh.
-/// Keeping that choice explicit makes the migration behaviour-freezing and
-/// prevents an adapter from silently choosing whichever inventory is easiest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MeRootProfile {
-    /// The FMI-style component inventory used by the rk-like host.
-    Component,
-    /// The pre-migration Diffsol/BDF inventory and initial-event policy.
-    DiffsolFrozen,
-}
-
-impl MeRootProfile {
-    #[must_use]
-    pub(crate) fn apply_without_initial_event(self) -> bool {
-        matches!(self, Self::DiffsolFrozen)
+impl MeInstanceConfig {
+    /// Construct the complete checked FMI Model Exchange instance request.
+    ///
+    /// The tolerance is FMI's relative integration tolerance. Keeping the
+    /// fields private prevents a concrete solver adapter from substituting an
+    /// absolute tolerance or bypassing the horizon proof.
+    pub fn new(
+        instance_name: &'static str,
+        relative_tolerance: f64,
+        start_time: f64,
+        stop_time: f64,
+    ) -> Result<Self, MeError> {
+        if instance_name.is_empty() {
+            return Err(MeError::Contract {
+                reason: "ME instance name must not be empty".to_owned(),
+            });
+        }
+        if !relative_tolerance.is_finite() || relative_tolerance <= 0.0 {
+            return Err(MeError::Contract {
+                reason: "ME relative tolerance must be finite and positive".to_owned(),
+            });
+        }
+        if !start_time.is_finite() || !stop_time.is_finite() || stop_time < start_time {
+            return Err(MeError::Contract {
+                reason: "ME time horizon requires finite values with stop_time >= start_time"
+                    .to_owned(),
+            });
+        }
+        Ok(Self {
+            instance_name,
+            tolerance: relative_tolerance,
+            start_time,
+            stop_time,
+        })
     }
-}
-
-/// Temporary SPEC_0038 phase-2 lifecycle-and-numerics compatibility profile.
-///
-/// This is not an FMI capability. It exists only while the Diffsol state-only
-/// path moves onto the shared ME component without changing its observable
-/// lifecycle or numerical behavior, and is deleted once those divergences are
-/// adjudicated independently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MeNumericsProfile {
-    /// The FMI-style component lifecycle, projection, delay-history, and
-    /// persistent callback warm-start policies.
-    Component,
-    /// The pre-migration Diffsol initialization/event sequencing, full-state
-    /// compatibility guards, algebraic settle, accepted-point seed handling,
-    /// delay-history commits, and speculative numerical callbacks.
-    DiffsolFrozen,
 }
 
 /// Transitional subset of the FMI model description used by the linked host.

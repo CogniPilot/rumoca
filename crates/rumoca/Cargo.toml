@@ -12,10 +12,9 @@ default-run = "rumoca"
 # discovered from `tests/*.rs`. Every `[[test]]` target statically links the
 # whole compiler, so one target per file made linking — not codegen — the
 # dominant memory and disk cost of `cargo test -p rumoca`, and parallel links
-# spiked peak RSS hard enough to trip the OOM killer. The test files stay
-# exactly where they are; `tests/suite_*.rs` pull them in as `#[path]` modules
-# so there is one binary per required-feature set. See `tests/suite_core.rs`
-# for the rules on where a new test file goes.
+# spiked peak RSS hard enough to trip the OOM killer. Each `tests/suite_*.rs`
+# root owns normal modules in its matching directory, leaving one binary per
+# required-feature set. See `tests/suite_core/main.rs` for placement rules.
 autotests = false
 
 [[bin]]
@@ -53,7 +52,8 @@ transport-zenoh = ["rumoca-sim/transport-zenoh"]
 viewer-web = ["rumoca-sim/viewer-web"]
 process-control = ["rumoca-sim/process-control"]
 native-allocator = ["dep:mimalloc"]
-fmu-packaging = ["dep:zip"]
+fmi = ["rumoca-sim/fmi"]
+fmu-packaging = ["dep:zip", "fmi"]
 examples-smoke-tests = []
 msl-sim-tests = []
 # Opt-in RDD2 metric gates inside `suite_gates` (`tests/rdd2_perf_guard.rs`,
@@ -67,7 +67,7 @@ rdd2-metric-gates = []
 template-runtime-tests = []
 # Heavy Solve-lowering regressions that grind for minutes until the compact
 # Solve function-fold owner lands (SPEC 0036 checklist); see
-# `tests/suite_heavy_solve.rs`.
+# `tests/suite_heavy_solve/main.rs`.
 heavy-solve-tests = []
 tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 
@@ -81,10 +81,8 @@ tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
-rumoca-ir-fmi = { workspace = true }
 rumoca-ir-galec = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
-rumoca-phase-fmi = { workspace = true }
 rumoca-phase-galec = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers"] }
@@ -132,63 +130,52 @@ path = "examples/quadrotor_sil.rs"
 # and because it is the one suite whose failure must be readable on its own.
 [[test]]
 name = "architecture_hardening_test"
-path = "tests/architecture_hardening_test.rs"
+path = "tests/architecture_hardening_test/main.rs"
 
 # Repo-inspection policy/budget gates. Deliberately separate from `suite_core`:
 # these link no `rumoca` library, so `cargo xtask verify quick` runs them
 # without paying for a whole-compiler link.
 [[test]]
 name = "suite_gates"
-path = "tests/suite_gates.rs"
+path = "tests/suite_gates/main.rs"
 
 # Every remaining test file that needs no features beyond the crate defaults.
 [[test]]
 name = "suite_core"
-path = "tests/suite_core.rs"
+path = "tests/suite_core/main.rs"
 
-# `tests/examples_smoke.rs`.
+# `tests/suite_examples_smoke/examples_smoke.rs`.
 [[test]]
 name = "suite_examples_smoke"
-path = "tests/suite_examples_smoke.rs"
+path = "tests/suite_examples_smoke/main.rs"
 required-features = ["examples-smoke-tests"]
 
-# `tests/template_target_ci.rs`, `tests/codegen_example_regression.rs`,
-# `tests/backend_template_runtime_regression.rs`.
+# Runtime modules under `tests/suite_template_runtime/`.
 [[test]]
 name = "suite_template_runtime"
-path = "tests/suite_template_runtime.rs"
+path = "tests/suite_template_runtime/main.rs"
 required-features = ["template-runtime-tests"]
 
-# FMI 2/3 package, ABI, lifecycle, and execution conformance. Kept separate
-# from general template runtimes so CI can build it without simulator,
-# transport, viewer, or input-device features.
-[[test]]
-name = "suite_fmi"
-path = "tests/suite_fmi.rs"
-required-features = ["template-runtime-tests", "fmu-packaging"]
-
-# `tests/msl_sim_regression.rs`.
+# `tests/suite_msl_sim/msl_sim_regression.rs`.
 [[test]]
 name = "suite_msl_sim"
-path = "tests/suite_msl_sim.rs"
+path = "tests/suite_msl_sim/main.rs"
 required-features = ["msl-sim-tests"]
 
-# `tests/quadrotor_se23_regression_test.rs`: heavy Solve-lowering guards that
+# `tests/suite_heavy_solve/quadrotor_se23_regression_test.rs`: heavy Solve-lowering guards that
 # run for minutes until compact function folds land; see
-# `tests/suite_heavy_solve.rs`.
+# `tests/suite_heavy_solve/main.rs`.
 [[test]]
 name = "suite_heavy_solve"
-path = "tests/suite_heavy_solve.rs"
+path = "tests/suite_heavy_solve/main.rs"
 required-features = ["heavy-solve-tests"]
 
-# `tests/cli_target_galec.rs` and `tests/cli_target_galec_production.rs`:
-# they exercise generic target-declared packaging end-to-end and inspect the
-# target-declared zip archive via the optional `zip` dependency, so they must
-# not compile under --no-default-features.
+# GALEC-family modules share this owner. Feature-independent checks compile
+# without defaults; container/zip modules are internally `cfg`-gated by
+# `fmu-packaging`.
 [[test]]
 name = "suite_galec_fmu"
-path = "tests/suite_galec_fmu.rs"
-required-features = ["fmu-packaging"]
+path = "tests/suite_galec_fmu/main.rs"
 
 [dev-dependencies]
 crossterm = "0.28"
@@ -202,6 +189,7 @@ walkdir = "2.5"
 ureq = "2.9"
 dirs = "5.0"
 serde = { version = "1.0", features = ["derive"] }
+syn = { workspace = true }
 ntest = "0.9"  # Test timeouts
 # Direct phase access for debugging/analysis tests
 rumoca-ir-ast = { workspace = true }
@@ -213,7 +201,8 @@ rumoca-phase-parse = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
 rumoca-eval-solve = { workspace = true }
-# SPEC_0034 GAL-027/GAL-038 independence oracle. `tests/galec_equivalence.rs`
+# SPEC_0034 GAL-027/GAL-038 independence oracle.
+# `tests/suite_galec_fmu/galec_equivalence.rs`
 # is its consumer: it interprets the same checked AlgorithmCodePackage the
 # `embedded-c-galec` template renders, so the generated C is differentially
 # checked against explicit GALEC semantics instead of only against the

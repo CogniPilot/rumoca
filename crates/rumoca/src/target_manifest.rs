@@ -667,6 +667,7 @@ enum ManifestRenderer {
     /// `wgsl-ode` renders Solve kernels without the DAE JSON context.
     WgslSolve,
     /// One checked tensor-native FMI component plus its lazy Solve program.
+    #[cfg(feature = "fmi")]
     Fmi {
         renderer: rumoca_phase_codegen::SolveTemplateRenderer,
         artifact: crate::packaging::ArtifactSession,
@@ -703,19 +704,26 @@ fn resolve_manifest_renderer(
         return Ok(ManifestRenderer::AlgorithmCode { renderer, artifact });
     }
     if manifest.ir == TargetTemplateIr::Fmi {
-        let solve = rumoca_sim::lower_solve_problem(&result.dae)
-            .context("Lower Solve IR for checked FMI component")?;
-        let artifacts = rumoca_sim::lower_solve_artifacts(&solve)
-            .context("Lower Solve artifacts for checked FMI component")?;
-        let component = rumoca_phase_fmi::lower_to_fmi_component(&result.dae, solve)
-            .context("Construct checked FMI component")?;
-        let renderer = rumoca_phase_codegen::SolveTemplateRenderer::new_owned_with_fmi(
-            component,
-            artifacts,
-            &result.dae,
-        )?;
-        let artifact = crate::packaging::ArtifactSession::new(&manifest.files)?;
-        return Ok(ManifestRenderer::Fmi { renderer, artifact });
+        #[cfg(not(feature = "fmi"))]
+        bail!("FMI targets require the `fmi` feature");
+        #[cfg(feature = "fmi")]
+        {
+            let component = rumoca_sim::lower_fmi_component(&result.dae)
+                .context("Construct checked FMI component")?;
+            // The built-in FMI targets declare `events`, `runtime_events`, and
+            // `clocks` false, so a component these templates cannot render in
+            // full is already refused at the capability gate above. Narrowing
+            // here is what lets the renderer take the proved view, and the
+            // renderer needs nothing else: the view carries its own kernel.
+            let event_free = component
+                .into_codegen_view()
+                .try_event_free()
+                .context("Project checked FMI component for a storage-backed target")?;
+            let renderer =
+                rumoca_phase_codegen::SolveTemplateRenderer::new_owned_with_fmi(event_free)?;
+            let artifact = crate::packaging::ArtifactSession::new(&manifest.files)?;
+            return Ok(ManifestRenderer::Fmi { renderer, artifact });
+        }
     }
     Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
 }
@@ -746,6 +754,7 @@ impl ManifestRenderer {
             Self::WgslSolve => result
                 .render_solve_template_str_without_dae(template, model_identifier)
                 .map_err(Into::into),
+            #[cfg(feature = "fmi")]
             Self::Fmi { renderer, artifact } => renderer
                 .render_with_name_and_artifact(template, model_identifier, artifact)
                 .map_err(Into::into),
@@ -781,6 +790,7 @@ impl ManifestRenderer {
             Self::WgslSolve => result
                 .render_solve_template_str_without_dae(template, model_identifier)
                 .map_err(Into::into),
+            #[cfg(feature = "fmi")]
             Self::Fmi { renderer, .. } => renderer
                 .render_with_name_and_artifact(template, model_identifier, artifact)
                 .map_err(Into::into),
@@ -932,8 +942,168 @@ end ClockedTargetDemo;
             .expect("clocked target demo should compile")
     }
 
+    /// A model whose delay history the generated FMI C does not implement.
+    ///
+    /// Both built-in FMI targets declare `runtime_events = false`, so this is
+    /// the shape their capability gate exists to stop (SPEC_0044 §8, dated
+    /// disposition 2026-08-18).
+    fn compile_delayed_target_demo() -> CompilationResult {
+        let source = r#"
+model FmiDelayedDecay
+  Real x(start = 1.0);
+equation
+  der(x) = -delay(x, 0.5);
+end FmiDelayedDecay;
+"#;
+
+        Compiler::new()
+            .model("FmiDelayedDecay")
+            .compile_str(source, "FmiDelayedDecay.mo")
+            .expect("delayed target demo should compile")
+    }
+
+    /// A model whose state event the generated FMI C does not implement.
+    ///
+    /// Both built-in FMI targets declare `events = false`. This is the second
+    /// event class the same gate stops, and the checked component of such a
+    /// model has no event-free type-state either.
+    fn compile_switched_target_demo() -> CompilationResult {
+        let source = r#"
+model FmiSwitchedDecay
+  Real x(start = 1.0);
+equation
+  der(x) = if x > 0.5 then -1.0 else 1.0;
+end FmiSwitchedDecay;
+"#;
+
+        Compiler::new()
+            .model("FmiSwitchedDecay")
+            .compile_str(source, "FmiSwitchedDecay.mo")
+            .expect("switched target demo should compile")
+    }
+
+    fn compile_undelayed_target_demo() -> CompilationResult {
+        let source = r#"
+model FmiUndelayedDecay
+  output Real x(start = 1.0);
+equation
+  der(x) = -x;
+end FmiUndelayedDecay;
+"#;
+
+        Compiler::new()
+            .model("FmiUndelayedDecay")
+            .compile_str(source, "FmiUndelayedDecay.mo")
+            .expect("undelayed target demo should compile")
+    }
+
     fn command_available(command: &str) -> bool {
         Command::new(command).arg("--version").output().is_ok()
+    }
+
+    /// The in-memory render entry point rejects a delayed model at the
+    /// capability gate, before a renderer for it exists.
+    ///
+    /// The gate's typed feature id is what proves the ordering: the checked FMI
+    /// component of such a model has no event-free type-state either, so if the
+    /// renderer had been resolved first the failure would carry that narrowing
+    /// rejection instead.
+    #[test]
+    fn fmi_targets_reject_a_delayed_model_before_constructing_a_renderer() {
+        assert_gate_refuses_first(
+            &compile_delayed_target_demo(),
+            "FmiDelayedDecay",
+            "unsupported-feature:runtime_events",
+        );
+    }
+
+    /// The same ordering for the other event class the built-in targets
+    /// declare false, so the gate is not preserved for `runtime_events` alone.
+    #[test]
+    fn fmi_targets_reject_a_state_event_model_before_constructing_a_renderer() {
+        assert_gate_refuses_first(
+            &compile_switched_target_demo(),
+            "FmiSwitchedDecay",
+            "unsupported-feature:events",
+        );
+    }
+
+    /// Both FMI targets must refuse `model` with exactly `feature`, and must do
+    /// it at the manifest capability gate rather than at the checked
+    /// component's narrowing, whose refusals all name a semantic event class.
+    fn assert_gate_refuses_first(result: &CompilationResult, model: &str, feature: &str) {
+        for target in ["fmi2", "fmi3"] {
+            let error = render_target_files(result, model, target, None)
+                .expect_err("an FMI target must reject a model outside its capabilities");
+            let message = format!("{error:#}");
+            assert!(message.contains(feature), "{target}: {message}");
+            assert!(
+                !message.contains("semantic events"),
+                "{target} must fail the capability gate before the component is narrowed: {message}"
+            );
+        }
+    }
+
+    /// The same rejection on the packaging entry point, with nothing written.
+    #[cfg(feature = "fmu-packaging")]
+    #[test]
+    fn fmi_packaging_rejects_a_delayed_model_before_writing_any_output() {
+        let result = compile_delayed_target_demo();
+
+        for target in ["fmi2", "fmi3"] {
+            let out_dir = tempfile::tempdir().expect("temp output dir");
+            let error = compile_packaged_target(
+                &result,
+                "FmiDelayedDecay",
+                target,
+                out_dir.path().to_path_buf(),
+            )
+            .expect_err("an FMI package must reject a delay-bearing model");
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("unsupported-feature:runtime_events"),
+                "{target}: {message}"
+            );
+            assert_eq!(
+                std::fs::read_dir(out_dir.path())
+                    .expect("read temp output dir")
+                    .count(),
+                0,
+                "{target} must reject a delay-bearing model before writing any artifact"
+            );
+        }
+    }
+
+    /// The positive control for both cases above: an event-free model still
+    /// renders both descriptions through the same public entry point.
+    #[cfg(feature = "fmi")]
+    #[test]
+    fn fmi_targets_render_an_event_free_model_through_the_same_entry_point() {
+        let result = compile_undelayed_target_demo();
+
+        for target in ["fmi2", "fmi3"] {
+            let files = render_target_files(&result, "FmiUndelayedDecay", target, None)
+                .map_err(|error| format!("{target}: {error:#}"))
+                .expect("an FMI target renders an event-free model");
+            let description = files
+                .iter()
+                .find(|file| file.path == "modelDescription.xml")
+                .ok_or(target)
+                .expect("an FMI target renders a model description");
+            assert!(
+                description.content.contains("name=\"x\"")
+                    || description.content.contains("name=\"x[1]\""),
+                "{target}: {}",
+                description.content
+            );
+            assert!(
+                !description
+                    .content
+                    .contains(rumoca_ir_solve::fmi::MAX_STEP_DURATION_NAME),
+                "{target} must not name a local an event-free component never publishes: {}",
+                description.content
+            );
+        }
     }
 
     #[test]

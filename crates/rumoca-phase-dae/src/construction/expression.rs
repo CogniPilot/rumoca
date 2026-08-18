@@ -1,13 +1,13 @@
-// SPEC_0021 file-size exception - split plan: extract array/comprehension and subscript expression lowering into construction/expression/arrays.rs alongside the existing calls and operators submodules; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
-
-use super::*;
-
 mod calls;
 mod operators;
+mod temporal;
+
+use super::*;
 
 use calls::*;
 pub(super) use calls::{FunctionCallLowering, classify_function_call};
 use operators::*;
+use temporal::*;
 
 pub(super) fn lower_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
@@ -510,6 +510,9 @@ fn lower_builtin_expression<'dae>(
         }
         BuiltinFunction::Pre => {
             lower_pre(construction, symbols, binders, arguments, provenance, span)
+        }
+        BuiltinFunction::Edge | BuiltinFunction::Change => {
+            lower_history_operator(construction, symbols, binders, function, arguments, span)
         }
         BuiltinFunction::Initial => lower_initial_expression(construction, arguments, provenance),
         BuiltinFunction::Terminal => lower_terminal_expression(construction, arguments, provenance),
@@ -1201,52 +1204,6 @@ fn lower_unary_expression<'dae>(
             .at(provenance)
             .unary(unary_operator(operator), rhs)
     })
-}
-
-fn lower_derivative<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    symbols: LoweringSymbols<'_, 'dae>,
-    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    arguments: &[Expression],
-    provenance: dae::DaeProvenance,
-    span: Span,
-) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let (name, subscripts) =
-        derivative_reference(&arguments[0]).expect("analysis proves the derivative target shape");
-    let coordinate = symbols.coordinates[name.var_name()]
-        .derivative(span)
-        .expect("analysis proves derivative role");
-    lower_coordinate_reference(
-        construction,
-        symbols,
-        binders,
-        coordinate,
-        subscripts,
-        provenance,
-    )
-}
-
-fn lower_pre<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    symbols: LoweringSymbols<'_, 'dae>,
-    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    arguments: &[Expression],
-    provenance: dae::DaeProvenance,
-    span: Span,
-) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let (name, subscripts) =
-        derivative_reference(&arguments[0]).expect("analysis proves the pre-value target shape");
-    let coordinate = symbols.coordinates[name.var_name()]
-        .previous(span)
-        .expect("analysis proves the pre-value role");
-    lower_coordinate_reference(
-        construction,
-        symbols,
-        binders,
-        coordinate,
-        subscripts,
-        provenance,
-    )
 }
 
 pub(super) fn derivative_reference(

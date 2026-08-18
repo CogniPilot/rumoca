@@ -25,12 +25,6 @@ pub use report_payload::{
 #[cfg(not(kani))]
 pub use runtime::eval_at::{EvalAtReport, EvalAtSlot};
 #[cfg(not(kani))]
-pub use runtime::event::{
-    RuntimeEventBoundary, RuntimeEventBoundaryHandler, RuntimeEventBoundaryOutcome,
-    process_runtime_event_boundary, runtime_event_horizon, runtime_event_right_limit,
-    runtime_root_event_application_time,
-};
-#[cfg(not(kani))]
 pub use runtime::event_newton::{CoupledEventNewtonModel, solve_coupled_event_newton};
 #[cfg(not(kani))]
 pub use runtime::jacobian::{
@@ -38,14 +32,6 @@ pub use runtime::jacobian::{
 };
 #[cfg(not(kani))]
 pub use runtime::mass_matrix::{PreparedMassMatrix, solve_mass_matrix};
-#[cfg(not(kani))]
-pub use runtime::no_state::{
-    NoStateEventStep, NoStateOrchestrationBackend, NoStateRootBoundary, NoStateRootSearchScratch,
-    NoStateScheduledStop, first_no_state_root_crossing, no_state_root_scan_step_ceiling,
-    run_no_state_output_schedule,
-};
-#[cfg(not(kani))]
-pub use runtime::orchestration::{LoopStats, run_with_runtime_schedule};
 #[cfg(not(kani))]
 pub use runtime::pre_params::{
     clear_scheduled_root_relation_memory, commit_pre_params_after_event,
@@ -80,12 +66,12 @@ pub use runtime::solve_events::{
 #[cfg(not(kani))]
 pub use runtime::solve_ops::{
     EventActionOutcome, EventPreMode, EventPreSources, RootCrossing, RuntimeSolveError,
-    apply_discrete_slot_value, build_sim_result_from_solve_model, convert_variable_meta,
-    discrete_row_active_at, discrete_row_pre_mode, event_eval_params_for_pre_mode,
-    event_eval_params_for_row_pre_mode, filter_scheduled_root_crossings, first_root_crossing,
-    orient_typed_root_zeros, push_visible_values, relation_memory_value_from_root,
-    replace_last_visible_values, root_crossed, root_crossings, root_crossings_with_relation_memory,
-    root_value_crossed, row_reads_solver_or_time, runtime_value_changed, runtime_values_changed,
+    apply_discrete_slot_value, convert_variable_meta, discrete_row_active_at,
+    discrete_row_pre_mode, event_eval_params_for_pre_mode, event_eval_params_for_row_pre_mode,
+    filter_scheduled_root_crossings, first_root_crossing, orient_typed_root_zeros,
+    push_visible_values, relation_memory_value_from_root, replace_last_visible_values,
+    root_crossed, root_crossings, root_crossings_with_relation_memory, root_value_crossed,
+    row_reads_solver_or_time, runtime_value_changed, runtime_values_changed,
     update_relation_memory_slots,
 };
 #[cfg(not(kani))]
@@ -108,6 +94,6 @@ pub use runtime::timeout::{
 };
 #[cfg(not(kani))]
 pub use solver::{
-    BackendState, DiffsolMethod, SimBackend, SimExecutionPolicy, SimOptions, SimPacingMode,
-    SimResult, SimSolverMode, SimTermination, SimVariableMeta, SimulationBackend, StepUntilOutcome,
+    DiffsolMethod, SimBackend, SimExecutionPolicy, SimOptions, SimPacingMode, SimResult,
+    SimSolverMode, SimTermination, SimVariableMeta,
 };

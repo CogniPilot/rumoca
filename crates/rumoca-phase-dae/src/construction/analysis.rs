@@ -20,11 +20,13 @@ mod function_record_assemblies;
 mod function_reductions;
 mod function_returns;
 mod function_value_types;
+mod history_operators;
 mod initial_algorithms;
 mod loop_compaction;
 mod model_algorithm_calls;
 mod model_algorithm_statements;
 mod model_algorithms;
+mod model_expression_owners;
 mod model_roles;
 mod multi_output_equations;
 mod record_array_fields;
@@ -107,6 +109,8 @@ use function_returns::{
 };
 pub(super) use function_value_types::record_field_projections;
 use function_value_types::validate_function_value_type;
+pub(super) use history_operators::HistoryOperatorPlans;
+use history_operators::analyze_history_operators;
 pub(super) use initial_algorithms::InitialDiscreteValue;
 use initial_algorithms::{
     InitialAlgorithmAnalysis, analyze_initial_algorithms, claim_initial_discrete_equations,
@@ -122,6 +126,7 @@ pub(super) use model_algorithms::{
     algorithm_targets, event_targets, is_event_condition, model_algorithm_targets,
     when_chain_targets,
 };
+use model_expression_owners::ModelExpressionOwnerVisitor;
 use model_roles::{
     ModelRoles, analyze_model_roles, apply_clocked_partition_roles, is_predefined_clock_variable,
 };
@@ -141,6 +146,8 @@ use when_chains::validate_when_chains;
 pub(super) struct Analysis {
     pub(super) constants: EvalContext,
     pub(super) delay_plans: HashMap<Span, DelayPlan>,
+    /// Exact analysis certificates for MLS §3.7.5 `edge`/`change` occurrences.
+    pub(super) history_operators: HistoryOperatorPlans,
     pub(super) roles: HashMap<VarName, PlannedRole>,
     pub(super) balance: BalanceDetail,
     pub(super) continuous_family_rows: HashSet<usize>,
@@ -481,6 +488,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     apply_derived_parameter_roles(&derived_parameters.plans, &mut roles, &mut expression_roles);
     let clock_domains =
         analyze_clocked_partitions(flat, &clocks, &constants, &mut roles, &mut expression_roles)?;
+    let history_operators = analyze_history_operators(flat, &roles)?;
     let multi_output_equations =
         analyze_multi_output_equations(flat, &expression_roles, &states, &function_shapes)?;
     let (continuous_family_rows, initialization_family_rows) =
@@ -503,10 +511,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     )?;
     let (discrete_connection_ranks, aggregate_discrete_connections, discrete_value_topology) =
         analyze_discrete_connections(flat, &roles)?;
-    let mut initial_algorithms =
-        analyze_initial_algorithm_owners(flat, &roles, &states, &constants, &mut sample_lattices)?;
-    let initial_discrete_equation_rows =
-        claim_initial_discrete_equations(flat, &roles, &mut initial_algorithms.discrete_values)?;
+    let (initial_algorithms, initial_discrete_equation_rows) =
+        analyze_initial_owners(flat, &roles, &states, &constants, &mut sample_lattices)?;
     let balance = analyze_source_balance(SourceBalanceAnalysisInput {
         flat,
         roles: &roles,
@@ -527,6 +533,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     Ok(Analysis {
         constants,
         delay_plans,
+        history_operators,
         roles,
         balance: balance.detail,
         continuous_family_rows,
@@ -650,6 +657,25 @@ fn analyze_expression_event_ownership(
         aggregate_connections,
     )?;
     Ok((events, aliases))
+}
+
+/// Prove initial-algorithm ownership and claim initial discrete equation rows
+/// as one construction transaction.
+///
+/// The equation claim mutates the algorithm-owned discrete staging plan, so
+/// returning either half before both succeed would expose a partial ownership
+/// proof to the rest of analysis.
+fn analyze_initial_owners(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    constants: &EvalContext,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
+) -> Result<(InitialAlgorithmAnalysis, HashSet<usize>), ToDaeError> {
+    let mut algorithms =
+        analyze_initial_algorithm_owners(flat, roles, states, constants, sample_lattices)?;
+    let rows = claim_initial_discrete_equations(flat, roles, &mut algorithms.discrete_values)?;
+    Ok((algorithms, rows))
 }
 
 type EventAlgorithmAnalysis = (Vec<(Span, PeriodicClockSchedule)>, Vec<ModelAlgorithmPlan>);

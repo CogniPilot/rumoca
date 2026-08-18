@@ -1,18 +1,11 @@
+mod certification;
+mod manifold;
+mod saturation;
+mod scaled_systems;
+
 use std::cell::Cell;
 
 use super::*;
-
-#[path = "tests/scaled_systems.rs"]
-mod scaled_systems;
-
-#[path = "tests/manifold.rs"]
-mod manifold;
-
-#[path = "tests/certification.rs"]
-mod certification;
-
-#[path = "tests/saturation.rs"]
-mod saturation;
 
 fn project_initial_y_plan<M: AlgebraicProjectionModel>(
     model: &M,

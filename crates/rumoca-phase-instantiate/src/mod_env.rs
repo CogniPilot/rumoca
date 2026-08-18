@@ -1,3 +1,9 @@
+#[cfg(test)]
+mod mod_env_tests;
+mod record_projection;
+#[cfg(test)]
+mod tests;
+
 use super::inheritance::{
     find_class_in_tree, get_effective_components, is_type_subtype,
     resolve_effective_components_for_eval,
@@ -10,8 +16,6 @@ use rumoca_eval_ast::eval_instantiate::{
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
-
-mod record_projection;
 
 pub(super) use record_projection::{RecordBindingProjection, propagate_record_binding_to_fields};
 
@@ -908,11 +912,3 @@ fn preserves_source_scoped_attribute(attr_name: &str) -> bool {
         "start" | "min" | "max" | "nominal" | "stateSelect"
     )
 }
-
-#[cfg(test)]
-#[path = "mod_env_tests.rs"]
-mod mod_env_tests;
-
-#[cfg(test)]
-#[path = "mod_env_inline_tests.rs"]
-mod tests;

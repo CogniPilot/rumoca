@@ -12,9 +12,6 @@ use super::MeError;
 
 pub(super) fn validate_explicit_solve_model(model: &solve::SolveModel) -> Result<(), MeError> {
     let state_count = model.state_scalar_count();
-    if state_count == 0 {
-        return Err(MeError::NoContinuousStates);
-    }
     if model.initial_y.len() != model.solver_scalar_count() {
         return Err(evaluation(format!(
             "initial vector length {} does not match solver layout {}",

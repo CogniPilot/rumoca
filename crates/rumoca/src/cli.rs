@@ -10,6 +10,10 @@
 //! live in `main.rs` (binary-only); the error-*report builders* live here so they
 //! can be unit-tested alongside the dispatch logic and reused by `main.rs`.
 
+#[cfg(test)]
+mod cli_report_tests;
+#[cfg(test)]
+mod cli_tests;
 mod model_resolution;
 mod value;
 
@@ -1934,11 +1938,3 @@ pub(crate) fn validate_solver_label(solver_label: &str) -> Result<()> {
 // `cli.rs` stays focused on argument parsing + the binary's print/write
 // dispatch. The child reuses this module's private compute helpers via `super::`.
 pub use value::{compile_to_value, simulate_to_value};
-
-#[cfg(test)]
-#[path = "cli/cli_tests.rs"]
-mod cli_tests;
-
-#[cfg(test)]
-#[path = "cli/cli_report_tests.rs"]
-mod cli_report_tests;

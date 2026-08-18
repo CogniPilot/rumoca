@@ -19,6 +19,66 @@ use rumoca_ir_solve as solve;
 
 use crate::errors::CodegenError;
 
+// ── Kernel handles ───────────────────────────────────────────────────────────
+
+/// One correlated, read-only owner for everything a lazy Solve renderer reads.
+///
+/// Keeping the problem and artifacts in one handle makes it impossible for an
+/// internal caller to pair an FMI problem with artifacts from another model.
+/// Standalone renderers retain their existing pair of separately lowered
+/// values, while the FMI variant retains the complete correlated codegen view
+/// in its proved event-free type-state.
+#[derive(Clone)]
+pub(super) enum SolveRenderHandle {
+    Standalone {
+        problem: Arc<solve::SolveProblem>,
+        artifacts: Arc<solve::SolveArtifacts>,
+    },
+    Fmi(Arc<solve::fmi::FmiEventFreeCodegenView>),
+}
+
+impl SolveRenderHandle {
+    pub(super) fn standalone(
+        problem: Arc<solve::SolveProblem>,
+        artifacts: Arc<solve::SolveArtifacts>,
+    ) -> Self {
+        Self::Standalone { problem, artifacts }
+    }
+
+    pub(super) fn fmi(component: solve::fmi::FmiEventFreeCodegenView) -> Self {
+        Self::Fmi(Arc::new(component))
+    }
+
+    pub(super) fn problem(&self) -> &solve::SolveProblem {
+        match self {
+            Self::Standalone { problem, .. } => problem,
+            Self::Fmi(component) => component.problem(),
+        }
+    }
+
+    pub(super) fn artifacts(&self) -> &solve::SolveArtifacts {
+        match self {
+            Self::Standalone { artifacts, .. } => artifacts,
+            Self::Fmi(component) => component.artifacts(),
+        }
+    }
+
+    /// The `fmi` render entry: nothing for a standalone kernel, and for a
+    /// component the event-free view it was already proved to be.
+    ///
+    /// That view is the only whole-inventory encoding, so a template cannot be
+    /// handed a component whose kernel owns semantic events. Component
+    /// construction already guarantees the inventory shape; the renderer
+    /// constructor checks its remaining capability domain before this handle
+    /// exists, so there is no case to reject here.
+    pub(super) fn fmi_value(&self) -> Value {
+        match self {
+            Self::Standalone { .. } => Value::default(),
+            Self::Fmi(component) => Value::from_serialize(component.as_ref()),
+        }
+    }
+}
+
 // ── Generic lazy Map / Seq ───────────────────────────────────────────────────
 
 type MapGet = Arc<dyn Fn(&str) -> Option<Value> + Send + Sync>;
@@ -351,12 +411,13 @@ pub(super) fn compute_block_value(block: Arc<solve::ComputeBlock>) -> Result<Val
     ))
 }
 
-fn continuous_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenError> {
+fn continuous_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
+    let problem = handle.problem();
     let implicit_rhs = compute_block_value(Arc::new(problem.continuous.implicit_rhs.clone()))?;
     let derivative_rhs = compute_block_value(Arc::new(problem.continuous.derivative_rhs.clone()))?;
     let residual = compute_block_value(Arc::new(problem.continuous.residual.clone()))?;
     let (algebraic_assignment_plan, algebraic_assignment_complete) =
-        algebraic_assignment_plan(&problem)?;
+        algebraic_assignment_plan(problem)?;
     Ok(lazy_map(
         &[
             "implicit_rhs",
@@ -368,7 +429,7 @@ fn continuous_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenE
             "algebraic_assignment_complete",
         ],
         move |k| {
-            let c = &problem.continuous;
+            let c = &handle.problem().continuous;
             match k {
                 "implicit_rhs" => Some(implicit_rhs.clone()),
                 "derivative_rhs" => Some(derivative_rhs.clone()),
@@ -572,8 +633,9 @@ fn append_issued_assignment_sequence(
     Ok(())
 }
 
-fn discrete_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenError> {
-    let scalar = super::discrete_render_view::DiscreteRenderView::checked(&problem.discrete)?;
+fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
+    let scalar =
+        super::discrete_render_view::DiscreteRenderView::checked(&handle.problem().discrete)?;
     let rhs = scalar_program_block_value(Arc::new(scalar.rhs));
     let targets = scalar.targets;
     let pre_modes = scalar.pre_modes;
@@ -592,7 +654,7 @@ fn discrete_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenErr
             "observation_refresh",
         ],
         move |k| {
-            let d = &problem.discrete;
+            let d = &handle.problem().discrete;
             match k {
                 "rhs" => Some(rhs.clone()),
                 "runtime_assignment_rhs" => Some(scalar_program_block_value(Arc::new(
@@ -622,7 +684,8 @@ fn discrete_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenErr
     ))
 }
 
-fn events_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenError> {
+fn events_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
+    let problem = handle.problem();
     let root_plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
         Arc::new(problem.events.root_conditions.clone()),
     )?);
@@ -645,7 +708,7 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenError
             "actions",
         ],
         move |k| {
-            let e = &problem.events;
+            let e = &handle.problem().events;
             match k {
                 "root_conditions" => Some(scalar_program_block_value(Arc::new(
                     e.root_conditions.clone(),
@@ -679,10 +742,8 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenError
     ))
 }
 
-pub(super) fn artifacts_value(
-    artifacts: Arc<solve::SolveArtifacts>,
-) -> Result<Value, CodegenError> {
-    let continuous = continuous_artifacts_value(artifacts.clone())?;
+pub(super) fn artifacts_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
+    let continuous = continuous_artifacts_value(handle.clone())?;
     Ok(lazy_map(&["continuous"], move |k| {
         (k == "continuous").then(|| continuous.clone())
     }))
@@ -691,15 +752,14 @@ pub(super) fn artifacts_value(
 /// Lazy `solve.artifacts.continuous` map: the continuous Jacobian / mass-matrix
 /// artifacts, each produced on demand so a target that never reads them pays
 /// nothing for materializing op-heavy blocks.
-fn continuous_artifacts_value(
-    artifacts: Arc<solve::SolveArtifacts>,
-) -> Result<Value, CodegenError> {
-    let implicit_jacobian_v =
-        compute_block_value(Arc::new(artifacts.continuous.implicit_jacobian_v.clone()))?;
+fn continuous_artifacts_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
+    let implicit_jacobian_v = compute_block_value(Arc::new(
+        handle.artifacts().continuous.implicit_jacobian_v.clone(),
+    ))?;
     Ok(lazy_map(
         &["mass_matrix", "implicit_jacobian_v", "full_jacobian_v"],
         move |k| {
-            let c = &artifacts.continuous;
+            let c = &handle.artifacts().continuous;
             match k {
                 "implicit_jacobian_v" => Some(implicit_jacobian_v.clone()),
                 "full_jacobian_v" => Some(scalar_program_block_value(Arc::new(
@@ -716,14 +776,11 @@ fn continuous_artifacts_value(
 /// `artifacts` field (templates access `solve.artifacts.*`). Structural fields
 /// (`layout`, `solve_layout`, targets) serialize eagerly (small); op-heavy
 /// sub-systems are produced lazily.
-pub(super) fn solve_value(
-    problem: Arc<solve::SolveProblem>,
-    artifacts: Arc<solve::SolveArtifacts>,
-) -> Result<Value, CodegenError> {
-    let continuous = continuous_value(problem.clone())?;
-    let discrete = discrete_value(problem.clone())?;
-    let events = events_value(problem.clone())?;
-    let artifacts_value = artifacts_value(artifacts.clone())?;
+pub(super) fn solve_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
+    let continuous = continuous_value(handle.clone())?;
+    let discrete = discrete_value(handle.clone())?;
+    let events = events_value(handle.clone())?;
+    let artifacts_value = artifacts_value(handle.clone())?;
     Ok(lazy_map(
         &[
             "schema_version",
@@ -737,14 +794,14 @@ pub(super) fn solve_value(
             "artifacts",
         ],
         move |k| match k {
-            "schema_version" => Some(Value::from(problem.schema_version)),
-            "layout" => Some(Value::from_serialize(&problem.layout)),
-            "solve_layout" => Some(Value::from_serialize(&problem.solve_layout)),
+            "schema_version" => Some(Value::from(handle.problem().schema_version)),
+            "layout" => Some(Value::from_serialize(&handle.problem().layout)),
+            "solve_layout" => Some(Value::from_serialize(&handle.problem().solve_layout)),
             "continuous" => Some(continuous.clone()),
             "discrete" => Some(discrete.clone()),
             "events" => Some(events.clone()),
-            "initialization" => Some(Value::from_serialize(&problem.initialization)),
-            "clocks" => Some(Value::from_serialize(&problem.clocks)),
+            "initialization" => Some(Value::from_serialize(&handle.problem().initialization)),
+            "clocks" => Some(Value::from_serialize(&handle.problem().clocks)),
             "artifacts" => Some(artifacts_value.clone()),
             _ => None,
         },

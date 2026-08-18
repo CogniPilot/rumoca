@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod import_shadow_tests;
+
 use super::*;
 
 pub(super) struct EffectiveExpressionContext<'a> {
@@ -197,7 +200,3 @@ fn collect_subscript_shadowed_import_aliases(
         collect_shadowed_import_aliases(expr, imports, def_map, shadowed);
     }
 }
-
-#[cfg(test)]
-#[path = "context_and_tests/import_shadow_tests.rs"]
-mod import_shadow_tests;

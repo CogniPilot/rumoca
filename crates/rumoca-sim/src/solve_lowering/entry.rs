@@ -3,7 +3,6 @@ use rumoca_ir_solve as solve;
 use rumoca_solver::SimOptions;
 
 use super::diagnostics::SimulationDiagnosticError;
-use super::initial_values::{evaluation_error, runtime_vectors};
 
 pub fn lower_dae_for_simulation(
     model: &dae::Dae,
@@ -41,6 +40,18 @@ pub fn lower_dae_for_gpu_preparation(
     model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<solve::SolveModel, SimulationDiagnosticError> {
+    lower_dae_with_host_driven_inputs(model, opts)
+}
+
+/// Lower for a host that writes every input before each evaluation.
+///
+/// GPU preparation and FMI export share this: both hand the kernel to a driver
+/// that owns the input values, so the pre-write value is the checked `start`
+/// attribute rather than a refusal.
+pub(super) fn lower_dae_with_host_driven_inputs(
+    model: &dae::Dae,
+    opts: &SimOptions,
+) -> Result<solve::SolveModel, SimulationDiagnosticError> {
     let host_driven_seeds = host_driven_input_seeds(model)?;
     lower_dae_for_simulation_with_stage_timing_and_param_overrides(
         model,
@@ -57,11 +68,11 @@ pub fn lower_dae_for_gpu_preparation(
 /// default the runtime vectors evaluate. Inputs the checked DAE gave no `start`
 /// are left out too, so they still fail in `runtime_vectors` naming the input,
 /// rather than being seeded with a value this function would have to invent.
-fn host_driven_input_seeds(
+pub(super) fn host_driven_input_seeds(
     model: &dae::Dae,
 ) -> Result<std::collections::HashMap<String, f64>, SimulationDiagnosticError> {
     model.inspect(|view| {
-        let mut evaluator = rumoca_phase_dae::numeric::NumericDaeContext::new(view);
+        let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
         let mut seeds = std::collections::HashMap::new();
         for (_, variable) in view
             .variables()
@@ -74,7 +85,7 @@ fn host_driven_input_seeds(
 }
 
 fn seed_host_driven_input<'dae>(
-    evaluator: &mut rumoca_phase_dae::numeric::NumericDaeContext<'dae>,
+    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
     variable: dae::VariableView<'dae>,
     seeds: &mut std::collections::HashMap<String, f64>,
 ) -> Result<(), SimulationDiagnosticError> {
@@ -129,42 +140,76 @@ fn preparation_error(
 
 pub(crate) fn lower_dae_for_simulation_with_stage_timing_and_param_overrides(
     model: &dae::Dae,
+    opts: &SimOptions,
+    parameter_overrides: &std::collections::HashMap<String, f64>,
+    begin_stage: impl FnMut(&'static str),
+) -> Result<(solve::SolveModel, crate::BuildSimulationTimings), SimulationDiagnosticError> {
+    let (lowered, timings) = lower_correlated_for_simulation_with_stage_timing_and_param_overrides(
+        model,
+        opts,
+        parameter_overrides,
+        begin_stage,
+    )?;
+    Ok((lowered.into_model(), timings))
+}
+
+/// Lower while retaining the phase-owned DAE/Solve correlation until the
+/// caller consumes it into the runtime FMI component.
+pub(crate) fn lower_correlated_for_simulation_with_stage_timing_and_param_overrides<'source>(
+    model: &'source dae::Dae,
     _opts: &SimOptions,
     parameter_overrides: &std::collections::HashMap<String, f64>,
     mut begin_stage: impl FnMut(&'static str),
-) -> Result<(solve::SolveModel, crate::BuildSimulationTimings), SimulationDiagnosticError> {
-    let mut timings = crate::BuildSimulationTimings::default();
-
-    begin_stage("ir_solve");
-    let solve_start = rumoca_core::maybe_start_timer();
-    let package = rumoca_phase_solve::lower_solve_package(model)
-        .map_err(SimulationDiagnosticError::SolveLowering)?;
-    let problem = package.problem;
-    let artifacts = rumoca_phase_solve::lower_solve_artifacts(&problem)
-        .map_err(SimulationDiagnosticError::SolveLowering)?;
-    timings.ir_solve_lower_seconds = rumoca_core::maybe_elapsed_seconds(solve_start);
-
-    begin_stage("runtime_vectors");
-    let vector_start = rumoca_core::maybe_start_timer();
-    let vectors = runtime_vectors(model, &problem, parameter_overrides)?;
-    timings.ir_solve_structural_dae_seconds = rumoca_core::maybe_elapsed_seconds(vector_start);
-    timings.ir_solve_seconds =
-        timings.ir_solve_lower_seconds + timings.ir_solve_structural_dae_seconds;
-
-    let solve_model = solve::SolveModel {
-        problem,
-        pure_calls: package.pure_calls,
-        artifacts,
-        initial_y: vectors.initial_y,
-        solver_nominals: vectors.solver_nominals,
-        parameters: vectors.parameters,
-        external_tables: solve::ExternalTables::default(),
-        visible_names: vectors.visible_names,
-        visible_value_rows: vectors.visible_value_rows,
-        variable_meta: vectors.variable_meta,
+) -> Result<
+    (
+        rumoca_phase_solve::LoweredSolveModel<'source>,
+        crate::BuildSimulationTimings,
+    ),
+    SimulationDiagnosticError,
+> {
+    let lowered =
+        rumoca_phase_solve::lower_solve_model(model, parameter_overrides, |stage| match stage {
+            rumoca_phase_solve::SolveModelLoweringStage::Programs => begin_stage("ir_solve"),
+            rumoca_phase_solve::SolveModelLoweringStage::RuntimeValues => {
+                begin_stage("runtime_vectors");
+            }
+        })
+        .map_err(model_lowering_error)?;
+    let timings = crate::BuildSimulationTimings {
+        ir_solve_seconds: lowered.program_seconds() + lowered.runtime_value_seconds(),
+        ir_solve_structural_dae_seconds: lowered.runtime_value_seconds(),
+        ir_solve_lower_seconds: lowered.program_seconds(),
+        ..crate::BuildSimulationTimings::default()
     };
-    solve_model.validate().map_err(|error| {
-        SimulationDiagnosticError::SolveLowering(rumoca_phase_solve::LowerError::from(error))
-    })?;
-    Ok((solve_model, timings))
+    Ok((lowered, timings))
+}
+
+fn evaluation_error(error: rumoca_eval_dae::NumericEvaluationError) -> SimulationDiagnosticError {
+    if error.kind() == rumoca_eval_dae::NumericEvaluationErrorKind::InvalidOverride {
+        SimulationDiagnosticError::InvalidOverride {
+            message: error.to_string(),
+        }
+    } else {
+        let span = error.span();
+        SimulationDiagnosticError::RuntimePreparation {
+            message: error.to_string(),
+            span: (!span.is_dummy()).then_some(span),
+        }
+    }
+}
+
+pub(super) fn model_lowering_error(
+    error: rumoca_phase_solve::SolveModelLoweringError,
+) -> SimulationDiagnosticError {
+    match error {
+        rumoca_phase_solve::SolveModelLoweringError::Lower(error) => {
+            SimulationDiagnosticError::SolveLowering(error)
+        }
+        rumoca_phase_solve::SolveModelLoweringError::RuntimeValues { message, span } => {
+            SimulationDiagnosticError::RuntimePreparation { message, span }
+        }
+        rumoca_phase_solve::SolveModelLoweringError::InvalidOverride { message } => {
+            SimulationDiagnosticError::InvalidOverride { message }
+        }
+    }
 }

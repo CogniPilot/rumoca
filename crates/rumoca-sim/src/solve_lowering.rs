@@ -7,7 +7,7 @@
 
 mod diagnostics;
 mod entry;
-mod initial_values;
+mod fmi;
 mod overrides;
 mod probe;
 mod structure_report;
@@ -19,6 +19,8 @@ pub use rumoca_solver::{EvalAtReport, EvalAtSlot, JacobianReport};
 
 pub use diagnostics::SimulationDiagnosticError;
 pub use entry::{lower_dae_for_gpu_preparation, lower_dae_for_simulation};
+#[cfg(feature = "fmi")]
+pub use fmi::lower_fmi_component;
 pub use probe::{
     EvalAtProbe, JacobianProbe, ObjectiveGradientProbe, ParameterJacobianProbe,
     StateAndParameterJacobianProbe, SteadyStateSensitivityProbe, eval_dae_at, jacobian_for_dae,
@@ -32,11 +34,14 @@ pub use structure_report::{
 };
 
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-pub(crate) use entry::lower_dae_for_simulation_with_stage_timing_and_param_overrides;
+pub(crate) use entry::lower_correlated_for_simulation_with_stage_timing_and_param_overrides;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-pub(crate) use overrides::{apply_simulation_overrides, tunable_param_overrides};
+pub(crate) use fmi::{finish_runtime_fmi_artifact, lower_runtime_fmi_artifact};
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub(crate) use overrides::{apply_correlated_simulation_overrides, tunable_param_overrides};
 pub use overrides::{
-    lower_for_differentiation_with_overrides, lower_for_simulation_with_overrides,
+    lower_correlated_for_simulation_with_overrides, lower_for_differentiation_with_overrides,
+    lower_for_simulation_with_overrides,
 };
 
 #[cfg(test)]

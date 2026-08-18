@@ -310,6 +310,33 @@ fn numerically_coincident_discrete_events_compare_on_the_right_limit() {
 }
 
 #[test]
+fn continuous_event_left_limit_is_not_coalesced_with_the_settled_coordinate() {
+    let event = 0.5_f64;
+    let rumoca_times = [0.0, event.next_down(), event, 1.0];
+    let rumoca_values = [Some(0.0), Some(0.0), Some(100.0), Some(0.0)];
+    // A reference tool may publish the same semantic event a few ulps later.
+    // The narrow transition interval is material; it must not smear the
+    // candidate's settled value backward over the preceding half second.
+    let omc_times = [0.0, event, event + 2.0e-10, 1.0];
+    let omc_values = [Some(0.0), Some(0.0), Some(100.0), Some(0.0)];
+
+    let metric = compare_channel(
+        "continuous_jump",
+        ChannelSeries::new(&rumoca_times, &rumoca_values),
+        ChannelSeries::new(&omc_times, &omc_values),
+        false,
+        None,
+    )
+    .expect("continuous event channel should compare");
+
+    assert!(
+        metric.bounded_normalized_l1_error < HIGH_AGREEMENT_CHANNEL_THRESHOLD,
+        "preserving the left limit should confine error to the event interval, got {}",
+        metric.bounded_normalized_l1_error
+    );
+}
+
+#[test]
 fn discrete_event_shift_integrates_only_the_different_hold_interval() {
     let rumoca_times = [0.0, 0.5, 1.0];
     let rumoca_values = [Some(0.0), Some(1.0), Some(1.0)];
@@ -512,17 +539,77 @@ fn compare_model_requires_common_variables() {
     assert!(matches!(err, TraceCompareError::NoCommonVariables));
 }
 
+fn assert_malformed_trace(error: TraceCompareError, expected_reason: &str) {
+    match error {
+        TraceCompareError::MalformedTrace { reason, .. } => assert!(
+            reason.contains(expected_reason),
+            "malformed-trace reason `{reason}` did not contain `{expected_reason}`"
+        ),
+        other => panic!("expected malformed trace, got {other}"),
+    }
+}
+
+#[test]
+fn compare_model_rejects_nonfinite_and_decreasing_time_axes() {
+    let valid = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0, 1.0]]);
+    let nonfinite = trace("M", vec![0.0, f64::NAN], vec!["x"], vec![vec![0.0, 1.0]]);
+    assert_malformed_trace(
+        compare_model_traces("M", &nonfinite, &valid)
+            .expect_err("non-finite time axis must fail closed"),
+        "not finite",
+    );
+
+    let decreasing = trace("M", vec![1.0, 0.0], vec!["x"], vec![vec![1.0, 0.0]]);
+    assert_malformed_trace(
+        compare_model_traces("M", &decreasing, &valid)
+            .expect_err("decreasing time axis must fail closed"),
+        "regressed",
+    );
+}
+
+#[test]
+fn compare_model_rejects_nonrectangular_channel_data() {
+    let valid = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0, 1.0]]);
+    let width_mismatch = trace("M", vec![0.0, 1.0], vec!["x", "y"], vec![vec![0.0, 1.0]]);
+    assert_malformed_trace(
+        compare_model_traces("M", &width_mismatch, &valid)
+            .expect_err("channel width mismatch must fail closed"),
+        "channel names do not match",
+    );
+
+    let length_mismatch = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0]]);
+    assert_malformed_trace(
+        compare_model_traces("M", &length_mismatch, &valid)
+            .expect_err("channel length mismatch must fail closed"),
+        "values for 2 time rows",
+    );
+}
+
+#[test]
+fn compare_model_rejects_duplicate_channel_names() {
+    let valid = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0, 1.0]]);
+    let duplicate = trace(
+        "M",
+        vec![0.0, 1.0],
+        vec!["x", "x"],
+        vec![vec![0.0, 1.0], vec![0.0, 1.0]],
+    );
+    assert_malformed_trace(
+        compare_model_traces("M", &duplicate, &valid)
+            .expect_err("duplicate channel names must fail closed"),
+        "duplicate channel name",
+    );
+}
+
 #[test]
 fn trajectory_and_initial_metric_use_settled_exact_start_time_value() {
     let rumoca = trace("M", vec![0.0, 0.1], vec!["x"], vec![vec![1.0, 1.0]]);
-    let mut omc = trace(
+    let omc = trace(
         "M",
         vec![0.0, 0.0, 0.1],
         vec!["x"],
         vec![vec![0.0, 1.0, 1.0]],
     );
-    normalize_trace(&mut omc);
-
     let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
     assert!(
         metric.bounded_normalized_l1_score < 1.0e-12,

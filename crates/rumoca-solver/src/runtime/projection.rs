@@ -1,3 +1,15 @@
+mod branch_continuity;
+mod homotopy;
+mod initial;
+mod initial_diagnostics;
+mod manifold;
+mod plan;
+mod scaling;
+mod singleton;
+mod step_limit;
+#[cfg(test)]
+mod tests;
+
 use std::collections::HashSet;
 
 use nalgebra::{DMatrix, DVector};
@@ -15,15 +27,6 @@ use scaling::{
 };
 use singleton::{SingletonAssignmentStep, initial_row_target_name, singleton_assignment_improves};
 use step_limit::StepLimit;
-
-mod branch_continuity;
-mod homotopy;
-mod initial_diagnostics;
-mod manifold;
-mod plan;
-mod scaling;
-mod singleton;
-mod step_limit;
 
 pub use manifold::{ManifoldProjectionModel, project_state_manifold};
 
@@ -448,6 +451,8 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
         "algebraic projection sensitivity did not satisfy the selected residual system",
         &rows,
         &residual,
+        &row_scales,
+        args.tolerance,
     ))
 }
 
@@ -596,6 +601,8 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
             "algebraic projection did not establish coordinate convergence",
             &rows,
             &residual,
+            &row_scales,
+            args.tolerance,
         ));
     }
     if scaled_residual_converged(&residual, &row_scales, args.tolerance) {
@@ -606,6 +613,8 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
         "algebraic projection did not converge at event boundary",
         &rows,
         &residual,
+        &row_scales,
+        args.tolerance,
     ))
 }
 
@@ -672,7 +681,7 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
     let jacobian =
         algebraic_block_jacobian(model, y, p, t, &block.rows, &block.y_indices, structure)?;
     let pattern = structure.map(solve::JacobianStructure::pattern);
-    let (row_scales, variable_scales) = algebraic_block_scales(model, block, &jacobian, pattern);
+    let (row_scales, variable_scales) = algebraic_block_scales(model, y, block, &jacobian, pattern);
     let residual_converged = scaled_residual_converged(&residual, &row_scales, tol);
     if residual_converged && !certify_coordinates {
         return Ok(ProjectionBlockUpdate {
@@ -928,7 +937,7 @@ fn assignment_tolerances<M: ImplicitProjectionModel + ?Sized>(
     value: f64,
     tol: f64,
 ) -> (f64, f64) {
-    let variable_scale = model_variable_scale(model, y_index);
+    let variable_scale = model_variable_scale(model, y_index, previous.abs().max(value.abs()));
     let step = (previous - value).abs();
     let residual_change = (before - after).abs();
     let row_scale = if step.is_finite() && step > 0.0 && residual_change.is_finite() {
@@ -1354,7 +1363,6 @@ impl<M: AlgebraicProjectionModel> AlgebraicProjectionModel
     }
 }
 
-mod initial;
 #[cfg(test)]
 use initial::project_initial_block;
 use initial::*;
@@ -1362,6 +1370,3 @@ pub use initial::{
     InitialHomotopySystem, project_initial_variables_with_homotopy,
     project_initial_variables_with_plan,
 };
-#[cfg(test)]
-#[path = "projection/tests.rs"]
-mod tests;

@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 build = "build.rs"
 
+[[test]]
+name = "generated_output_stability"
+path = "build_support.rs"
+
 [dependencies]
 rumoca-core = { workspace = true }
 rumoca-ir-ast = { workspace = true }

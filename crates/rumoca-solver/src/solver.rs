@@ -240,33 +240,6 @@ pub struct SimResult {
     pub termination: Option<SimTermination>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BackendState {
-    pub t: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum StepUntilOutcome {
-    InternalStep,
-    RootFound { t_root: f64 },
-    StopReached,
-    Finished,
-}
-
-/// An integrator that advances a model in time.
-///
-/// SPEC_0038 §Internal Solver Boundary: a backend integrates; it does not own
-/// event semantics. Applying an event boundary is a separate capability
-/// ([`crate::RuntimeEventBoundaryHandler`]), required only by hosts that drive the
-/// shared orchestration loop rather than an ME component's own event mode.
-pub trait SimulationBackend {
-    type Error;
-
-    fn init(&mut self) -> Result<(), Self::Error>;
-    fn step_until(&mut self, stop_time: f64) -> Result<StepUntilOutcome, Self::Error>;
-    fn read_state(&self) -> BackendState;
-}
-
 #[cfg(test)]
 mod tests {
     use super::{DiffsolMethod, SimOptions, SimPacingMode, SimSolverMode};

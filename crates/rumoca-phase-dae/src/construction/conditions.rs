@@ -150,20 +150,6 @@ fn lower_condition_tree<'dae>(
         {
             lower_sample_alias_condition(functions, name.var_name(), provenance)?
         }
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Change,
-            args,
-            ..
-        } => {
-            let expression = lower_change_expression(
-                construction,
-                coordinates,
-                functions,
-                args,
-                provenance.span(),
-            )?;
-            (dae::ConditionInput::Discrete(expression), Vec::new(), None)
-        }
         Expression::Binary {
             op:
                 OpBinary::Eq | OpBinary::Neq | OpBinary::Lt | OpBinary::Le | OpBinary::Gt | OpBinary::Ge,
@@ -376,55 +362,6 @@ fn combine_element_activations<'dae>(
         conditions.define(combined, dae::ConditionInput::AnyRise(lhs, rhs), provenance)
     })?;
     Ok(combined)
-}
-
-fn lower_change_expression<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    arguments: &[Expression],
-    span: Span,
-) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let (name, subscripts) =
-        derivative_reference(&arguments[0]).expect("algorithm analysis proves change target");
-    let current_provenance = dae::DaeProvenance::source(
-        arguments[0]
-            .span()
-            .expect("algorithm analysis proves change operand provenance"),
-    )?;
-    let generated = dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, span)?;
-    let symbols = LoweringSymbols {
-        coordinates,
-        functions,
-        shapes: functions.shapes.model_values(),
-        function_body: None,
-        values: None,
-        owner_clock: None,
-    };
-    let current = lower_coordinate_reference(
-        construction,
-        symbols,
-        &HashMap::new(),
-        coordinates[name.var_name()].current(),
-        subscripts,
-        current_provenance,
-    )?;
-    let previous_coordinate = coordinates[name.var_name()]
-        .previous(span)
-        .expect("algorithm analysis proves a discrete change target");
-    let previous = lower_coordinate_reference(
-        construction,
-        symbols,
-        &HashMap::new(),
-        previous_coordinate,
-        subscripts,
-        generated,
-    )?;
-    construction.expressions(|expressions| {
-        expressions
-            .at(generated)
-            .binary(dae::BinaryOperator::NotEqual, current, previous)
-    })
 }
 
 fn merge_condition_clock<'dae>(

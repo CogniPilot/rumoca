@@ -14,8 +14,8 @@ use super::model_fixture::{
 };
 use crate::fmi_me::lifecycle::{MeLifecycle, MeLifecycleCommand, MeState};
 use crate::fmi_me::{
-    MeError, MeEventCause, MeEventEntry, MeInstanceConfig, MeModelSource, MeRootProfile, MeStage,
-    MeTime, ModelExchangeKernel, SolveMeKernel,
+    MeError, MeEventCause, MeEventEntry, MeInstanceConfig, MeModelSource, MeStage, MeTime,
+    ModelExchangeKernel, SolveMeKernel,
 };
 use crate::fmi_me::{MeFmuState, MeIndicatorCrossing, MeOutputSeries};
 
@@ -39,15 +39,9 @@ fn instantiate(model: &rumoca_ir_solve::SolveModel) -> SolveMeKernel {
         rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
             .expect("verification fixture refresh owners construct");
     SolveMeKernel::instantiate(
-        MeModelSource::new(&model),
-        &MeInstanceConfig {
-            instance_name: "solve-verification",
-            tolerance: TOLERANCE,
-            start_time: START_TIME,
-            stop_time: STOP_TIME,
-            root_profile: MeRootProfile::Component,
-            numerics_profile: crate::fmi_me::MeNumericsProfile::Component,
-        },
+        MeModelSource::fixture(&model),
+        &MeInstanceConfig::new("solve-verification", TOLERANCE, START_TIME, STOP_TIME)
+            .expect("verification instance configuration constructs"),
     )
     .expect("the bounded fixture is a well-formed ME model")
 }

@@ -280,8 +280,11 @@ roundoff tolerance; the checked step normalizes a matching public endpoint to
 the host-issued coordinate. This does not truncate/reset the backend. The
 tolerance is solver-neutral and equals
 `max(100 * f64::EPSILON * (abs(current_time) + abs(accepted_interval_duration)),
-f64::MIN_POSITIVE)`. A private numerical trial may overshoot, but the accepted
-step may not. A public batch call asks the common session to reach its defined
+f64::MIN_POSITIVE)`. The common accepted-interval containment predicate admits
+only finite sample coordinates inside the closed interval under that tolerance;
+all plugins MUST import that predicate rather than restating it. A private
+numerical trial may overshoot, but the accepted step may not. A public batch
+call asks the common session to reach its defined
 end once; inside that call the session issues one backend request per accepted
 internal step and consumes intermediate soft observations. Thus the numerical
 request, duration-bound re-read, and completed-step callback have one identical
@@ -343,7 +346,7 @@ producer in one change:
 | Backend-owned sessions, recorders, `SimResult` builders, event loops, schedule rebuilders, and horizon extenders | Delete; facade clients wrap `MeSimulationSession` |
 | Frozen compatibility methods, duplicate initialization, component `max_step_size`, private crossing/arming, and component schedule queries | Remove under §8 dispositions |
 | `MeRootProfile::DiffsolFrozen`, `MeNumericsProfile::DiffsolFrozen`, and every kernel or component branch on them | Delete; FMI and Modelica fix component semantics, while numerical choices remain private backend configuration and no common type names a solver |
-| `rumoca-ir-fmi`, `rumoca-phase-fmi`, `FmiComponent::construct(SolveProblem, ...)`, consuming `into_solve`, and the separate `new_owned_with_fmi` artifacts argument | Delete both crates without shims; move the checked aggregate to `rumoca_ir_solve::fmi`, move lowering to the real feature-scoped `rumoca_phase_solve::fmi` module, and apply the sole construction and consuming-view contract in SPEC_0043 §8 |
+| `rumoca-ir-fmi`, `rumoca-phase-fmi`, `FmiComponent::construct(SolveProblem, ...)`, consuming `into_solve`, and the separate `new_owned_with_fmi` artifacts argument | Delete both crates without shims; move the checked aggregate to `rumoca_ir_solve::fmi`, move lowering to the always-available `rumoca_phase_solve::fmi` module used by the common runtime boundary, and apply the sole construction and consuming-view contract in SPEC_0043 §8 |
 
 Every production consumer of the deleted delay operation has an explicit
 cutover:
@@ -420,8 +423,10 @@ dimensions, causality, variability, starts, and ModelStructure. It obeys the
 sole aggregate and consuming-view construction contract in SPEC_0043 §8. The
 linked runtime receives `rumoca_ir_solve::fmi::FmiComponent` rather than a
 `SolveModel`; concrete solver crates receive only opaque component/evaluation
-handles. The feature-scoped `rumoca-phase-solve::fmi` module is the sole
-DAE+Solve constructor, and non-FMI consumers do not activate that feature.
+handles. The always-available `rumoca-phase-solve::fmi` module is the sole
+DAE+Solve constructor because every in-process simulation crosses the same
+checked FMI ME boundary; the facade's `fmi` feature gates export APIs, not a
+second construction path.
 `rumoca-phase-codegen` consumes only the correlated view specified by
 SPEC_0043 §8. The CLI requests this lowering only through the `rumoca-sim` facade
 and has no production dependency on `rumoca-phase-solve`; the existing

@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Deserializer};
 use sha2::{Digest, Sha256};
@@ -979,7 +982,3 @@ fn download_msl_quality_baseline_asset(root: &Path) -> Result<Option<PathBuf>> {
     );
     Ok(Some(output_path))
 }
-
-#[cfg(test)]
-#[path = "msl_quality_baseline_tests.rs"]
-mod tests;

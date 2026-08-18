@@ -20,7 +20,6 @@ wasm-opt = ['-Oz', '--enable-threads', '--enable-bulk-memory']
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-eval-ast = { workspace = true }
-rumoca-ir-solve = { workspace = true, optional = true }
 rumoca-phase-galec = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, optional = true }
 rumoca-tool-lint = { workspace = true }
@@ -48,9 +47,9 @@ default = ["console_error_panic_hook"]
 # is not safe in all browsers (guarded by
 # architecture_hardening_test::test_bind_wasm_full_web_uses_browser_safe_solver_graph).
 full-web = ["sim-rk45"]
-sim-wasm = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/wasm-solvers"]
-sim-diffsol = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/solver-diffsol"]
-sim-rk45 = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/solver-rk45"]
+sim-wasm = ["dep:rumoca-sim", "rumoca-sim/wasm-solvers"]
+sim-diffsol = ["dep:rumoca-sim", "rumoca-sim/solver-diffsol"]
+sim-rk45 = ["dep:rumoca-sim", "rumoca-sim/solver-rk45"]
 session-diffsol = ["sim-diffsol"]
 wasm-rayon = ["dep:wasm-bindgen-rayon"]
 

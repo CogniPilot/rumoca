@@ -1,19 +1,3 @@
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-
-use rumoca_core::{
-    BuiltinFunction, Causality, ClockLattice, ClockRational, Expression, InstanceId, Literal,
-    OpBinary, OpUnary, PeriodicClockSchedule, SourceMap, Span, StructuredIndexBinder,
-    StructuredIndexDomain, Subscript, VarName, Variability,
-};
-use rumoca_eval_flat::constant::{EvalContext, Value as EvalValue, eval_expr};
-use rumoca_ir_dae as dae;
-use rumoca_ir_flat as flat;
-
-use crate::ToDaeError;
-use crate::balance::BalanceDetail;
-
 mod algorithm;
 mod algorithm_lowering;
 mod analysis;
@@ -36,7 +20,25 @@ mod model_events;
 mod multi_output_equations;
 mod record_equation;
 mod structured_body;
+#[cfg(test)]
+mod tests;
 mod variable_construction;
+
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use rumoca_core::{
+    BuiltinFunction, Causality, ClockLattice, ClockRational, Expression, InstanceId, Literal,
+    OpBinary, OpUnary, PeriodicClockSchedule, SourceMap, Span, StructuredIndexBinder,
+    StructuredIndexDomain, Subscript, VarName, Variability,
+};
+use rumoca_eval_flat::constant::{EvalContext, Value as EvalValue, eval_expr};
+use rumoca_ir_dae as dae;
+use rumoca_ir_flat as flat;
+
+use crate::ToDaeError;
+use crate::balance::BalanceDetail;
 use algorithm::{
     AlgorithmFunctionCall, AlgorithmStatementContext, lower_algorithm_assignment,
     lower_algorithm_function_call, lower_algorithm_tensor_loop, own_clocked_algorithm_targets,
@@ -49,15 +51,16 @@ use analysis::{
     ExternalArgumentPlan, ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,
     FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
     FunctionRecordCallAssemblyPlan, FunctionRecordFieldAssembly, FunctionRecordFieldAssemblyPlan,
-    FunctionStatementPlan, FunctionValueSeed, ModelAlgorithmPlan, ModelEventFunctionCallPlan,
-    ModelEventFunctionOutputPlan, ModelEventTensorLoopPlan, MultiOutputEquationPlan, PlannedRole,
-    RecordArrayFieldPlan, RecordArrayFieldPlans, RecordEquationFieldValue, RecordEquationPlan,
-    SemiLinearRules, analyze, assigned_function_targets, discrete_value_assignment,
-    effective_function_scalar_type, effective_variable_scalar_type,
-    empty_array_bound_to_declaration, equation_partition, function_assertion,
-    function_record_field_name, is_event_condition, is_inferred_clock_condition,
-    is_whole_clock_coordinate, model_algorithm_targets, record_field_projections,
-    selected_conditional_statements, specialized_comprehension_plan, structured_assignment_names,
+    FunctionStatementPlan, FunctionValueSeed, HistoryOperatorPlans, ModelAlgorithmPlan,
+    ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan, ModelEventTensorLoopPlan,
+    MultiOutputEquationPlan, PlannedRole, RecordArrayFieldPlan, RecordArrayFieldPlans,
+    RecordEquationFieldValue, RecordEquationPlan, SemiLinearRules, analyze,
+    assigned_function_targets, discrete_value_assignment, effective_function_scalar_type,
+    effective_variable_scalar_type, empty_array_bound_to_declaration, equation_partition,
+    function_assertion, function_record_field_name, is_event_condition,
+    is_inferred_clock_condition, is_whole_clock_coordinate, model_algorithm_targets,
+    record_field_projections, selected_conditional_statements, specialized_comprehension_plan,
+    structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
 use conditions::{combine_conditions, condition_owner_clock, lower_condition, negate_condition};
@@ -71,11 +74,10 @@ use expression::{
     FunctionArrayUpdate, FunctionCallLowering, LoweringSymbols, all_model_expressions,
     classify_function_call, derivative_reference, expression_children, expression_span,
     lower_array_update, lower_call_operands, lower_clocked_expression,
-    lower_clocked_model_algorithm_expression, lower_coordinate_reference, lower_expression,
-    lower_expression_scoped, lower_function_array_update, lower_function_expression,
-    lower_function_expression_scoped, lower_model_algorithm_expression,
-    lower_scoped_model_algorithm_expression, planned_input_variability, require_span,
-    variable_attribute_expressions,
+    lower_clocked_model_algorithm_expression, lower_expression, lower_expression_scoped,
+    lower_function_array_update, lower_function_expression, lower_function_expression_scoped,
+    lower_model_algorithm_expression, lower_scoped_model_algorithm_expression,
+    planned_input_variability, require_span, variable_attribute_expressions,
 };
 use function_array_assembly::lower_function_array_assembly;
 use function_body::{
@@ -283,6 +285,7 @@ fn build_checked<'dae>(
             record_array_fields: &analysis.record_array_fields,
             constants: &analysis.constants,
             delay_plans: &analysis.delay_plans,
+            history_operators: &analysis.history_operators,
             coordinate_instances: coordinates.by_instance(),
             expression_events: &analysis.expression_events,
             sample_alias_schedules: &analysis.sample_alias_schedules,
@@ -291,20 +294,13 @@ fn build_checked<'dae>(
         },
         &analysis.function_plans,
     )?;
-    let functions = FunctionRegistry {
+    let functions = model_function_registry(
         flat,
-        shapes: &analysis.function_shapes,
-        ids: &function_ids,
-        comprehension_plans: &analysis.comprehension_plans,
-        record_array_fields: &analysis.record_array_fields,
-        constants: &analysis.constants,
-        delay_plans: &analysis.delay_plans,
-        coordinate_instances: coordinates.by_instance(),
-        expression_events: &analysis.expression_events,
-        sample_alias_schedules: &analysis.sample_alias_schedules,
-        clocked_coordinate_owners: &analysis.clocked_coordinate_owners,
-        clocks: &clocks,
-    };
+        analysis,
+        &function_ids,
+        coordinates.by_instance(),
+        &clocks,
+    );
     define_reserved_variables(
         construction,
         VariableDefinitionContext {
@@ -366,6 +362,7 @@ fn model_function_registry<'scope, 'dae>(
         record_array_fields: &analysis.record_array_fields,
         constants: &analysis.constants,
         delay_plans: &analysis.delay_plans,
+        history_operators: &analysis.history_operators,
         coordinate_instances,
         expression_events: &analysis.expression_events,
         sample_alias_schedules: &analysis.sample_alias_schedules,
@@ -1944,6 +1941,3 @@ fn equation_owner_provenance(
         None => dae::DaeProvenance::source(span),
     }
 }
-
-#[cfg(test)]
-mod tests;

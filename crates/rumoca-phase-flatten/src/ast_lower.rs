@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use rumoca_core::{ComponentRefPart, ComponentReference, Reference, SourceMap};
 use rumoca_core::{DefId, Span};
 use rumoca_ir_ast as ast;
@@ -1237,7 +1240,3 @@ fn strip_quotes(text: &str) -> String {
         text.to_string()
     }
 }
-
-#[cfg(test)]
-#[path = "ast_lower/tests.rs"]
-mod tests;

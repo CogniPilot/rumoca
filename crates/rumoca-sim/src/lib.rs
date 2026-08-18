@@ -15,18 +15,19 @@ use serde::{Deserialize, Serialize};
 pub use rumoca_eval_solve::nan_trace;
 use rumoca_ir_dae as dae;
 pub use rumoca_phase_solve::{
-    deserialize_solve_model, lower_solve_artifacts, lower_solve_problem, solve_model_wire,
+    deserialize_solve_model,
+    fmi::{deserialize_fmi_component, fmi_component_wire},
+    lower_solve_artifacts, lower_solve_problem, solve_model_wire,
 };
 pub use rumoca_solver::{
-    BackendState, DiffsolMethod, LoopStats, RuntimeProgressSnapshot, RuntimeStopSchedule,
-    RuntimeTraceContext, SimBackend, SimOptions, SimPacingMode, SimResult, SimSolverMode,
-    SimVariableMeta, SimulationBackend, SimulationRequestSummary, SimulationRunMetrics,
-    SolverDeadlineGuard, StepUntilOutcome, TimeoutBudget, TimeoutExceeded,
+    DiffsolMethod, RuntimeProgressSnapshot, RuntimeStopSchedule, RuntimeTraceContext, SimBackend,
+    SimOptions, SimPacingMode, SimResult, SimSolverMode, SimVariableMeta, SimulationRequestSummary,
+    SimulationRunMetrics, SolverDeadlineGuard, TimeoutBudget, TimeoutExceeded,
     build_simulation_metrics_value, build_simulation_payload, is_solver_timeout_panic,
     panic_on_expired_solver_deadline, run_timeout_result, run_timeout_step,
-    run_timeout_step_result, run_with_runtime_schedule, runtime_progress_snapshot,
-    stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol, trace_runtime_done,
-    trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
+    run_timeout_step_result, runtime_progress_snapshot, stop_time_reached_with_tol,
+    time_advanced_with_tol, time_match_with_tol, trace_runtime_done, trace_runtime_progress,
+    trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
 };
 
 mod build_timing;
@@ -80,12 +81,15 @@ pub(crate) use simulation_session_api::SimulationSessionApi;
 // The inspection/debug facade (probes + their named report types) is surfaced
 // through `solve_lowering` so the root stays a curated same-crate facade; the
 // report types are re-exported from there rather than as root cross-crate uses.
+#[cfg(feature = "fmi")]
+pub use solve_lowering::lower_fmi_component;
 pub use solve_lowering::{
     BlockReport, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe, JacobianReport,
     ObjectiveGradientProbe, ParameterJacobianProbe, SimulationDiagnosticError,
     SingularityDiagnosis, StateAndParameterJacobianProbe, SteadyStateSensitivityProbe,
     StructuralReport, TearingReport, UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis,
-    diagnose_structural_singularity, eval_dae_at, jacobian_for_dae, lower_dae_for_gpu_preparation,
+    diagnose_structural_singularity, eval_dae_at, jacobian_for_dae,
+    lower_correlated_for_simulation_with_overrides, lower_dae_for_gpu_preparation,
     lower_dae_for_simulation, lower_for_differentiation_with_overrides,
     lower_for_simulation_with_overrides, parameter_jacobian_for_dae,
     state_and_parameter_jacobian_for_dae, steady_state_adjoint_objective_gradient_for_dae,
@@ -128,66 +132,75 @@ pub fn simulate_with_diagnostics(
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
 
-/// Simulate an already-lowered [`rumoca_ir_solve::SolveModel`], skipping the
-/// DAE→solve lowering, dispatching by `opts.solver_mode`. This is the
-/// runtime entry the lazy diffsol WASM addon uses: the main module emits the
-/// canonical SolveModel construction inputs, and checked phase-Solve replay
-/// reconstructs every derived executable/structural artifact before this
-/// function can receive the model (pinned by `solve_model_round_trip`).
+/// Simulate one already-constructed correlated FMI component, dispatching by
+/// `opts.solver_mode`.
+///
+/// Wire callers replay through `rumoca_phase_solve::fmi::deserialize_fmi_component`;
+/// a bare Solve root is deliberately not a simulation entry because it carries
+/// no proof that its FMI inventory came from the same source construction.
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-pub fn simulate_solve_model(
-    model: &rumoca_ir_solve::SolveModel,
+pub fn simulate_fmi_component(
+    component: rumoca_ir_solve::fmi::FmiComponent,
     opts: &SimOptions,
 ) -> Result<SimResult, SimulationDiagnosticError> {
+    let execution_backend =
+        native_execution::admitted_native_execution_backend(opts, component.runtime_view().model());
+    let artifact = rumoca_solver::fmi_me::MeModelArtifact::new(component);
     match opts.solver_mode {
-        SimSolverMode::Auto => simulate_solve_model_auto(model, opts),
-        SimSolverMode::RkLike => simulate_solve_model_rk45(model, opts),
-        SimSolverMode::Bdf => simulate_solve_model_diffsol(model, opts),
+        SimSolverMode::Auto => simulate_artifact_auto(artifact, opts, execution_backend),
+        SimSolverMode::RkLike => simulate_artifact_rk45(artifact, opts, execution_backend),
+        SimSolverMode::Bdf => simulate_artifact_diffsol(artifact, opts, execution_backend),
     }
 }
 
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
-fn simulate_solve_model_auto(
-    model: &rumoca_ir_solve::SolveModel,
+fn simulate_artifact_auto(
+    artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &SimOptions,
+    execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    match rumoca_solver_diffsol::assess_bdf_capability(model, opts)
+    match rumoca_solver_diffsol::assess_bdf_capability(&artifact, opts)
         .map_err(|error| SimulationDiagnosticError::Solver(error.to_string()))?
     {
-        rumoca_solver_diffsol::BdfCapability::Eligible => simulate_solve_model_diffsol(model, opts),
+        rumoca_solver_diffsol::BdfCapability::Eligible => {
+            simulate_artifact_diffsol(artifact, opts, execution_backend)
+        }
         rumoca_solver_diffsol::BdfCapability::InitialLinearizationUnavailable { reason } => {
             tracing::debug!(
                 target: "rumoca_sim::solver_selection",
                 %reason,
                 "auto selected rk-like because the initial BDF linearization is unavailable"
             );
-            simulate_solve_model_rk45(model, opts)
+            simulate_artifact_rk45(artifact, opts, execution_backend)
         }
     }
 }
 
 #[cfg(all(feature = "solver-diffsol", not(feature = "solver-rk45")))]
-fn simulate_solve_model_auto(
-    model: &rumoca_ir_solve::SolveModel,
+fn simulate_artifact_auto(
+    artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &SimOptions,
+    execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    simulate_solve_model_diffsol(model, opts)
+    simulate_artifact_diffsol(artifact, opts, execution_backend)
 }
 
 #[cfg(all(not(feature = "solver-diffsol"), feature = "solver-rk45"))]
-fn simulate_solve_model_auto(
-    model: &rumoca_ir_solve::SolveModel,
+fn simulate_artifact_auto(
+    artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &SimOptions,
+    execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    simulate_solve_model_rk45(model, opts)
+    simulate_artifact_rk45(artifact, opts, execution_backend)
 }
 
 #[cfg(feature = "solver-rk45")]
-fn simulate_solve_model_rk45(
-    model: &rumoca_ir_solve::SolveModel,
+fn simulate_artifact_rk45(
+    artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &SimOptions,
+    execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    rk45::simulate_solve_model(model, opts)
+    rk45::simulate_artifact(artifact, opts, execution_backend)
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 
@@ -195,9 +208,10 @@ fn simulate_solve_model_rk45(
     any(feature = "solver-diffsol", feature = "solver-rk45"),
     not(feature = "solver-rk45")
 ))]
-fn simulate_solve_model_rk45(
-    _model: &rumoca_ir_solve::SolveModel,
+fn simulate_artifact_rk45(
+    _artifact: rumoca_solver::fmi_me::MeModelArtifact,
     _opts: &SimOptions,
+    _execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
     Err(SimulationDiagnosticError::Solver(
         "rk-like solver requested, but this build does not include the rk45 backend".to_string(),
@@ -205,12 +219,12 @@ fn simulate_solve_model_rk45(
 }
 
 #[cfg(feature = "solver-diffsol")]
-fn simulate_solve_model_diffsol(
-    model: &rumoca_ir_solve::SolveModel,
+fn simulate_artifact_diffsol(
+    artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &SimOptions,
+    execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    let execution_backend = native_execution::admitted_native_execution_backend(opts, model);
-    rumoca_solver_diffsol::simulate_with_execution_backend(model, opts, execution_backend)
+    rumoca_solver_diffsol::simulate_with_execution_backend(artifact, opts, execution_backend)
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 
@@ -218,9 +232,10 @@ fn simulate_solve_model_diffsol(
     any(feature = "solver-diffsol", feature = "solver-rk45"),
     not(feature = "solver-diffsol")
 ))]
-fn simulate_solve_model_diffsol(
-    _model: &rumoca_ir_solve::SolveModel,
+fn simulate_artifact_diffsol(
+    _artifact: rumoca_solver::fmi_me::MeModelArtifact,
     _opts: &SimOptions,
+    _execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
     Err(SimulationDiagnosticError::Solver(
         "bdf/diffsol solver requested, but this build does not include the diffsol backend"
@@ -260,8 +275,9 @@ fn simulate_with_auto_diagnostics(
     dae_model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    let model = solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)?;
-    simulate_solve_model_auto(&model, opts)
+    let (artifact, execution_backend) =
+        solve_lowering::lower_runtime_fmi_artifact(dae_model, opts)?;
+    simulate_artifact_auto(artifact, opts, execution_backend)
 }
 
 #[cfg(all(feature = "solver-diffsol", not(feature = "solver-rk45")))]
@@ -525,7 +541,7 @@ pub fn build_tunable_parameter_meta(
     solve_model: &solve::SolveModel,
 ) -> Result<Vec<TunableParameterMeta>, SimulationDiagnosticError> {
     dae_model.inspect(|view| {
-        let mut evaluator = rumoca_phase_dae::numeric::NumericDaeContext::new(view);
+        let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
         let mut result = Vec::new();
         for (_, variable) in view.variables().filter(|(_, variable)| {
             variable.role() == dae::VariableRole::Parameter && variable.is_tunable()
@@ -546,7 +562,7 @@ fn tunable_variable_meta<'dae>(
     dae_model: &dae::Dae,
     view: dae::DaeView<'dae>,
     solve_model: &solve::SolveModel,
-    evaluator: &mut rumoca_phase_dae::numeric::NumericDaeContext<'dae>,
+    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
     variable: dae::VariableView<'dae>,
 ) -> Result<Vec<TunableParameterMeta>, SimulationDiagnosticError> {
     let minimum = evaluated_attribute(evaluator, variable, variable.minimum())?;
@@ -589,7 +605,7 @@ fn tunable_variable_meta<'dae>(
 }
 
 fn evaluated_attribute<'dae>(
-    evaluator: &mut rumoca_phase_dae::numeric::NumericDaeContext<'dae>,
+    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
     variable: dae::VariableView<'dae>,
     expression: Option<dae::ExprId<'dae>>,
 ) -> Result<Option<Vec<f64>>, SimulationDiagnosticError> {
@@ -631,7 +647,7 @@ fn parameter_slot(
 }
 
 fn numeric_evaluation_error(
-    error: rumoca_phase_dae::numeric::NumericDaeError,
+    error: rumoca_eval_dae::NumericEvaluationError,
 ) -> SimulationDiagnosticError {
     runtime_preparation(error.to_string(), error.span())
 }

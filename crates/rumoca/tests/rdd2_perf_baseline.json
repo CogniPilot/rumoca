@@ -1,8 +1,8 @@
 {
   "_comment": [
     "Baseline for the RDD2 simulation hot-loop performance guard (ledger #32).",
-    "Consumed by crates/rumoca/tests/rdd2_perf_guard.rs, which also reads",
-    "`source_root` on behalf of crates/rumoca/tests/galec_review_surface.rs so",
+    "Consumed by crates/rumoca/tests/suite_gates/rdd2_perf_guard.rs, which also reads",
+    "`source_root` on behalf of crates/rumoca/tests/suite_gates/galec_review_surface.rs so",
     "both RDD2 gates agree on which checkout they measure.",
     "",
     "THE REPORTED STATISTIC IS A MINIMUM, NOT A MEAN, AND IT IS ONLY ASSERTED",

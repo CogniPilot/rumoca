@@ -16,11 +16,13 @@ strict-ir-validation = [
 rumoca-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-solve = { workspace = true }
+rumoca-eval-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 serde = { workspace = true }
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true

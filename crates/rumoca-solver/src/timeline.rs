@@ -384,23 +384,12 @@ pub fn event_right_limit_time(t_event: f64, _tolerance: f64) -> f64 {
     next_representable_time(t_event)
 }
 
-/// Return an internal probe coordinate far enough beyond an event to classify
-/// its numerical post side.
+/// Return the event right-limit coordinate without crossing the host horizon.
 ///
-/// Unlike [`event_right_limit_time`], this coordinate is never reported as a
-/// trace observation. A solver tolerance may widen the probe so a dense state
-/// changes representably before typed relation memory records the resulting
-/// side.
-pub fn event_right_probe_time(t_event: f64, tolerance: f64) -> f64 {
-    if !t_event.is_finite() {
-        return t_event;
-    }
-    let adjacent = next_representable_time(t_event);
-    let resolution = tolerance.abs();
-    if !resolution.is_finite() || resolution == 0.0 {
-        return adjacent;
-    }
-    adjacent.max(t_event + 2.0 * resolution)
+/// Event initialization and the linked FMI component share this one formula,
+/// so they cannot assign different superdense coordinates to the same event.
+pub fn bounded_event_right_limit_time(t_event: f64, horizon: f64, tolerance: f64) -> f64 {
+    event_right_limit_time(t_event, tolerance).min(horizon)
 }
 
 /// Relative resolution of the semantic left-limit probe at an event boundary.
@@ -510,12 +499,21 @@ mod tests {
     }
 
     #[test]
-    fn event_right_probe_may_use_tolerance_without_moving_the_right_limit() {
-        let t_event = 0.0005_f64;
-        let right_limit = event_right_limit_time(t_event, 1.0e-6);
-        let probe = event_right_probe_time(t_event, 1.0e-6);
-        assert_eq!(right_limit.to_bits(), t_event.next_up().to_bits());
-        assert!(probe >= t_event + 2.0e-6);
+    fn bounded_event_right_limit_uses_the_adjacent_coordinate_inside_the_horizon() {
+        let event = 0.5_f64;
+        assert_eq!(
+            bounded_event_right_limit_time(event, 1.0, 1.0e-6).to_bits(),
+            event.next_up().to_bits()
+        );
+    }
+
+    #[test]
+    fn bounded_event_right_limit_never_crosses_the_host_horizon() {
+        let event = 0.5_f64;
+        assert_eq!(
+            bounded_event_right_limit_time(event, event, 1.0e-6).to_bits(),
+            event.to_bits()
+        );
     }
 
     #[test]

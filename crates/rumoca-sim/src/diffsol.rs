@@ -9,8 +9,8 @@ use crate::BuildSimulationTimings;
 #[cfg(feature = "scheduled-sim")]
 use crate::SimulationSessionApi;
 use crate::solve_lowering::{
-    SimulationDiagnosticError, lower_dae_for_simulation_with_stage_timing_and_param_overrides,
-    tunable_param_overrides,
+    SimulationDiagnosticError, apply_correlated_simulation_overrides, finish_runtime_fmi_artifact,
+    lower_correlated_for_simulation_with_stage_timing_and_param_overrides, tunable_param_overrides,
 };
 
 pub(crate) use rumoca_solver_diffsol::session::SessionState;
@@ -26,7 +26,6 @@ pub use rumoca_solver_diffsol::{SimError, SimFailureStage};
 
 pub struct PreparedSimulation {
     inner: rumoca_solver_diffsol::PreparedSimulation,
-    model: solve::SolveModel,
 }
 
 impl PreparedSimulation {
@@ -40,10 +39,6 @@ impl PreparedSimulation {
 
     pub fn check_initialization(&self) -> Result<(), SimError> {
         self.inner.check_initialization()
-    }
-
-    pub fn model(&self) -> &solve::SolveModel {
-        &self.model
     }
 
     pub fn set_parameter_value(&mut self, _name: &str, _value: f64) -> Result<(), SimError> {
@@ -83,8 +78,8 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
     mut observe_solve_model: impl FnMut(&solve::SolveModel),
 ) -> Result<(PreparedSimulation, BuildSimulationTimings), SimError> {
     let param_overrides = tunable_param_overrides(dae_model, opts).map_err(diagnostic_sim_error)?;
-    let (mut solve_model, solve_timings) =
-        lower_dae_for_simulation_with_stage_timing_and_param_overrides(
+    let (mut lowered, solve_timings) =
+        lower_correlated_for_simulation_with_stage_timing_and_param_overrides(
             dae_model,
             opts,
             &param_overrides,
@@ -93,25 +88,22 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
         .map_err(diagnostic_sim_error)?;
     begin_stage("sim_overrides");
     let override_apply_start = Instant::now();
-    crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, opts)
+    apply_correlated_simulation_overrides(&mut lowered, dae_model, opts)
         .map_err(diagnostic_sim_error)?;
     let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
-    observe_solve_model(&solve_model);
+    observe_solve_model(lowered.model());
     begin_stage("sim_build");
     let backend_build_start = Instant::now();
-    let execution_backend =
-        crate::native_execution::admitted_native_execution_backend(opts, &solve_model);
+    let (artifact, execution_backend) =
+        finish_runtime_fmi_artifact(lowered, opts).map_err(diagnostic_sim_error)?;
     let inner = rumoca_solver_diffsol::build_simulation_with_execution_backend(
-        &solve_model,
+        artifact,
         opts,
         execution_backend,
     )?;
     let backend_build_seconds = backend_build_start.elapsed().as_secs_f64();
     Ok((
-        PreparedSimulation {
-            inner,
-            model: solve_model,
-        },
+        PreparedSimulation { inner },
         BuildSimulationTimings {
             ir_solve_structural_dae_seconds: solve_timings.ir_solve_structural_dae_seconds,
             ir_solve_lower_seconds: solve_timings.ir_solve_lower_seconds,
@@ -136,26 +128,14 @@ pub fn check_initialization(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<(), SimError> {
-    let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
-        .map_err(diagnostic_sim_error)?;
-    let execution_backend =
-        crate::native_execution::admitted_native_execution_backend(opts, &solve_model);
-    rumoca_solver_diffsol::check_initialization_with_execution_backend(
-        &solve_model,
-        opts,
-        execution_backend,
-    )
+    build_simulation(dae_model, opts)?.check_initialization()
 }
 
 pub fn simulate(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimError> {
-    let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
-        .map_err(diagnostic_sim_error)?;
-    let execution_backend =
-        crate::native_execution::admitted_native_execution_backend(opts, &solve_model);
-    rumoca_solver_diffsol::simulate_with_execution_backend(&solve_model, opts, execution_backend)
+    build_simulation(dae_model, opts)?.run()
 }
 
 pub use simulate as simulate_dae;
@@ -164,10 +144,8 @@ pub(crate) fn simulate_with_diagnostics(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimulationDiagnosticError> {
-    let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)?;
-    let execution_backend =
-        crate::native_execution::admitted_native_execution_backend(opts, &solve_model);
-    rumoca_solver_diffsol::simulate_with_execution_backend(&solve_model, opts, execution_backend)
+    build_simulation(dae_model, opts)
+        .and_then(|prepared| prepared.run())
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 
@@ -176,17 +154,15 @@ pub(crate) struct SimulationSession {
 }
 
 impl SimulationSession {
-    /// Build directly from an already-lowered, override-applied solve model, so
-    /// callers that lowered once (e.g. auto solver dispatch that first
-    /// probes for a pure-discrete model) do not lower the model a second time.
-    pub(crate) fn from_solve_model(
-        solve_model: solve::SolveModel,
+    /// Build from one checked correlated FMI artifact, preserving the same
+    /// component across solver selection and session construction.
+    pub(crate) fn from_artifact(
+        artifact: rumoca_solver::fmi_me::MeModelArtifact,
         opts: rumoca_solver::SimOptions,
+        execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
     ) -> Result<Self, SimulationDiagnosticError> {
-        let execution_backend =
-            crate::native_execution::admitted_native_execution_backend(&opts, &solve_model);
         let inner = rumoca_solver_diffsol::session::SimulationSession::new_with_execution_backend(
-            &solve_model,
+            artifact,
             opts,
             execution_backend,
         )
@@ -399,8 +375,8 @@ mod native_policy_tests {
         }
 
         /// Every observable interaction with the backend: compiles plus call
-        /// attempts. The typed-rejection and zero-state discriminators assert
-        /// this is zero — the backend must never be touched at all.
+        /// attempts. Typed policy rejections assert this is zero because a
+        /// rejected handle must never be touched.
         fn total_activity(&self) -> usize {
             self.expression_compiles.get()
                 + self.jacobian_compiles.get()
@@ -565,7 +541,32 @@ mod native_policy_tests {
         }
     }
 
-    fn lower(source: &str, model: &str, opts: &SimOptions) -> solve::SolveModel {
+    struct ModelFixture {
+        model: solve::SolveModel,
+        component_wire: String,
+    }
+
+    impl std::ops::Deref for ModelFixture {
+        type Target = solve::SolveModel;
+
+        fn deref(&self) -> &Self::Target {
+            &self.model
+        }
+    }
+
+    impl ModelFixture {
+        fn component(&self) -> solve::fmi::FmiComponent {
+            let mut deserializer = serde_json::Deserializer::from_str(&self.component_wire);
+            rumoca_phase_solve::fmi::deserialize_fmi_component(&mut deserializer)
+                .expect("fixture FMI component replays")
+        }
+
+        fn artifact(&self) -> rumoca_solver::fmi_me::MeModelArtifact {
+            rumoca_solver::fmi_me::MeModelArtifact::new(self.component())
+        }
+    }
+
+    fn lower(source: &str, model: &str, opts: &SimOptions) -> ModelFixture {
         let mut session = Session::new(SessionConfig::default());
         session
             .add_document("native_policy_fixture.mo", source)
@@ -574,8 +575,17 @@ mod native_policy_tests {
             .compile_model(model)
             .expect("fixture compiles through checked ToDAE")
             .dae;
-        crate::solve_lowering::lower_for_simulation_with_overrides(&dae, opts)
-            .expect("fixture lowers to a Solve model")
+        let lowered =
+            crate::solve_lowering::lower_correlated_for_simulation_with_overrides(&dae, opts)
+                .expect("fixture lowers to a correlated Solve model");
+        let model = lowered.model().clone();
+        let wire = rumoca_phase_solve::fmi::fmi_component_wire(&lowered)
+            .expect("fixture FMI wire constructs");
+        let component_wire = serde_json::to_string(&wire).expect("fixture FMI wire serializes");
+        ModelFixture {
+            model,
+            component_wire,
+        }
     }
 
     /// One state solved by a *nonlinear* initial equation (initialization
@@ -583,7 +593,7 @@ mod native_policy_tests {
     /// one nonlinear algebraic (`y`), and one affine algebraic (`z`, exact
     /// assignment schedule), so a single native run must exercise compiled
     /// expression, compiled JVP, and compiled exact-assignment calls.
-    fn state_fixture(opts: &SimOptions) -> solve::SolveModel {
+    fn state_fixture(opts: &SimOptions) -> ModelFixture {
         lower(
             concat!(
                 "model NativeDiscriminator\n",
@@ -603,7 +613,7 @@ mod native_policy_tests {
         )
     }
 
-    fn zero_state_fixture(opts: &SimOptions) -> solve::SolveModel {
+    fn zero_state_fixture(opts: &SimOptions) -> ModelFixture {
         lower(
             concat!(
                 "model NativeZeroState\n",
@@ -621,7 +631,7 @@ mod native_policy_tests {
     /// counter. This is the exact shape the rk-like no-state session accepts
     /// (a purely algebraic zero-state model is rejected as `EmptySystem`
     /// there), and the shape the zero-state composition rule exists for.
-    fn zero_state_discrete_fixture(opts: &SimOptions) -> solve::SolveModel {
+    fn zero_state_discrete_fixture(opts: &SimOptions) -> ModelFixture {
         lower(
             concat!(
                 "model NativeZeroStateDiscrete\n",
@@ -774,9 +784,12 @@ mod native_policy_tests {
         let opts = sim_opts(SimExecutionPolicy::Auto);
         let model = state_fixture(&opts);
         let (_backend, counters, handle) = counting_handle(&model);
-        let result =
-            rumoca_solver_diffsol::simulate_with_execution_backend(&model, &opts, Some(handle))
-                .expect("native BDF run succeeds");
+        let result = rumoca_solver_diffsol::simulate_with_execution_backend(
+            model.artifact(),
+            &opts,
+            Some(handle),
+        )
+        .expect("native BDF run succeeds");
         assert!(!result.times.is_empty(), "BDF run produced no samples");
         for (class, counter) in [
             ("expression", &counters.expression),
@@ -821,9 +834,12 @@ mod native_policy_tests {
         let opts = sim_opts(SimExecutionPolicy::Auto);
         let model = state_fixture(&opts);
         let (_backend, counters, handle) = counting_handle_over(Rc::new(FailingBackend));
-        let result =
-            rumoca_solver_diffsol::simulate_with_execution_backend(&model, &opts, Some(handle))
-                .expect("current runtime semantics fall back to the interpreter and complete");
+        let result = rumoca_solver_diffsol::simulate_with_execution_backend(
+            model.artifact(),
+            &opts,
+            Some(handle),
+        )
+        .expect("current runtime semantics fall back to the interpreter and complete");
         assert!(!result.times.is_empty(), "fallback run produced no samples");
         assert!(
             counters.total_failed() > 0,
@@ -868,9 +884,12 @@ mod native_policy_tests {
         let auto_opts = sim_opts(SimExecutionPolicy::Auto);
         let model = state_fixture(&auto_opts);
         let (_backend, counters, handle) = counting_handle(&model);
-        let native =
-            rumoca_solver_rk45::simulate_with_execution_backend(&model, &auto_opts, Some(handle))
-                .expect("rk-like native run succeeds");
+        let native = rumoca_solver_rk45::simulate_with_execution_backend(
+            model.artifact(),
+            &auto_opts,
+            Some(handle),
+        )
+        .expect("rk-like native run succeeds");
         assert!(
             counters.expression.succeeded.get() > 0,
             "the Auto leg never executed compiled expressions natively — the comparison \
@@ -884,9 +903,12 @@ mod native_policy_tests {
         );
 
         let interpreter_opts = sim_opts(SimExecutionPolicy::Interpreter);
-        let interpreted =
-            rumoca_solver_rk45::simulate_with_execution_backend(&model, &interpreter_opts, None)
-                .expect("rk-like interpreter run succeeds");
+        let interpreted = rumoca_solver_rk45::simulate_with_execution_backend(
+            model.artifact(),
+            &interpreter_opts,
+            None,
+        )
+        .expect("rk-like interpreter run succeeds");
 
         assert!(
             native.termination.is_none() && interpreted.termination.is_none(),
@@ -953,8 +975,9 @@ mod native_policy_tests {
             admitted_native_execution_backend(&auto_opts, &model).is_some(),
             "the auto policy must compose a native execution backend for a state-carrying model"
         );
-        let result = rumoca_solver_diffsol::simulate_with_execution_backend(&model, &opts, None)
-            .expect("interpreter BDF run succeeds without a backend");
+        let result =
+            rumoca_solver_diffsol::simulate_with_execution_backend(model.artifact(), &opts, None)
+                .expect("interpreter BDF run succeeds without a backend");
         assert!(
             !result.times.is_empty(),
             "interpreter run produced no samples"
@@ -972,7 +995,7 @@ mod native_policy_tests {
         let model = state_fixture(&interpreter_opts);
         let (_backend, counters, handle) = counting_handle(&model);
         let error = rumoca_solver_diffsol::simulate_with_execution_backend(
-            &model,
+            model.artifact(),
             &interpreter_opts,
             Some(handle),
         )
@@ -1007,7 +1030,7 @@ mod native_policy_tests {
         let model = state_fixture(&interpreter_opts);
         let (_backend, counters, handle) = counting_handle(&model);
         let error = rumoca_solver_rk45::simulate_with_execution_backend(
-            &model,
+            model.artifact(),
             &interpreter_opts,
             Some(handle),
         )
@@ -1028,7 +1051,7 @@ mod native_policy_tests {
 
         let (_session_backend, session_counters, session_handle) = counting_handle(&model);
         let session_error = rumoca_solver_rk45::SimulationSession::new_with_execution_backend(
-            &model,
+            model.artifact(),
             interpreter_opts.clone(),
             Some(session_handle),
         )
@@ -1051,8 +1074,8 @@ mod native_policy_tests {
 
     /// Discriminator (e-rk45, composition half): the rk-like path constructs
     /// NO backend for a zero-state model. All three rk45 composition call
-    /// sites (`rk45::simulate_solve_model`, the stage-timing session build,
-    /// and `rk45::SimulationSession::from_solve_model`) route through the ONE
+    /// sites (the rk45 batch path, the stage-timing session build, and
+    /// `rk45::SimulationSession::from_artifact`) route through the ONE
     /// shared admission gate asserted here, which withholds — returning
     /// `None` before any backend is built — when `state_scalar_count() == 0`,
     /// so a pure-discrete request never pays Cranelift composition cost it
@@ -1080,62 +1103,61 @@ mod native_policy_tests {
             "the same gate must compose a backend for a state-carrying model under Auto, \
              or the zero-state assertion above is vacuous"
         );
-        // The rk-like route that owns zero-state models is the session (the
-        // batch entry maps `NoContinuousStates` to the typed `EmptySystem`
-        // rejection); building it through the real rk45 composition call site
-        // proves the withheld path still completes.
-        crate::rk45::SimulationSession::from_solve_model(zero_model, opts)
+        // Building through the real rk45 composition call site proves the
+        // automatically withheld path still completes.
+        crate::rk45::SimulationSession::from_artifact(zero_model.artifact(), opts, None)
             .expect("the rk-like zero-state session builds with the backend withheld");
     }
 
-    /// Discriminator (e-rk45, ME-route half): even a handle deliberately
-    /// forced past the composition gate reaches the rk-like ME route on a
-    /// zero-state model with ZERO compile/call activity — the ME validator
-    /// answers `NoContinuousStates` before any runtime compilation — and the
-    /// handle is not retained once ME ownership ends, on either public rk45
-    /// entry point.
+    /// An explicitly supplied execution backend is a component evaluator, not
+    /// a numerical integrator. A zero-state component may therefore use it for
+    /// discrete/algebraic programs even though the automatic composition gate
+    /// correctly constructs no backend. Both public rk45 entries must honor
+    /// the supplied handle and release it with ME ownership.
     #[cfg(feature = "solver-rk45")]
     #[test]
-    fn rk45_zero_state_force_supplied_handle_sees_no_activity_and_is_released() {
+    fn rk45_zero_state_force_supplied_handle_is_honored_and_released() {
         let opts = sim_opts(SimExecutionPolicy::Auto);
         let model = zero_state_discrete_fixture(&opts);
         assert_eq!(model.state_scalar_count(), 0, "fixture must be zero-state");
 
-        // Batch entry: the ME validator answers `NoContinuousStates` before
-        // any runtime compilation, which this entry maps to the typed
-        // `EmptySystem` rejection — with zero backend activity and no
-        // retention even on the error path.
         let (backend, counters, handle) = counting_handle(&model);
-        let error =
-            rumoca_solver_rk45::simulate_with_execution_backend(&model, &opts, Some(handle))
-                .expect_err("the rk-like batch entry rejects zero-state models as EmptySystem");
+        let result = rumoca_solver_rk45::simulate_with_execution_backend(
+            model.artifact(),
+            &opts,
+            Some(handle),
+        )
+        .expect("the shared ME batch path executes a zero-state model");
         assert!(
-            matches!(&error, rumoca_solver_rk45::SimError::EmptySystem),
-            "expected the typed EmptySystem rejection, got: {error}"
+            !result.times.is_empty(),
+            "the zero-state batch run produced no observations"
         );
-        assert_eq!(
-            counters.total_activity(),
-            0,
-            "the rk-like zero-state route must never compile against or call the backend"
+        assert!(
+            counters.total_succeeded() > 0,
+            "the explicitly supplied component evaluator was silently discarded"
         );
+        assert_eq!(counters.total_failed(), 0);
         assert_eq!(
             Rc::strong_count(&backend),
             1,
-            "the rk-like zero-state route must not retain the unused backend"
+            "the completed zero-state batch run retained its component evaluator"
         );
 
         let (session_backend, session_counters, session_handle) = counting_handle(&model);
-        let session = rumoca_solver_rk45::SimulationSession::new_with_execution_backend(
-            &model,
+        let mut session = rumoca_solver_rk45::SimulationSession::new_with_execution_backend(
+            model.artifact(),
             opts.clone(),
             Some(session_handle),
         )
         .expect("rk-like zero-state session builds with a force-supplied handle");
-        assert_eq!(
-            session_counters.total_activity(),
-            0,
-            "the rk-like zero-state session must never compile against or call the backend"
+        session
+            .advance_to(opts.t_end)
+            .expect("the zero-state session executes through the common component");
+        assert!(
+            session_counters.total_succeeded() > 0,
+            "the zero-state session silently discarded its supplied component evaluator"
         );
+        assert_eq!(session_counters.total_failed(), 0);
         drop(session);
         assert_eq!(
             Rc::strong_count(&session_backend),
@@ -1163,7 +1185,7 @@ mod native_policy_tests {
         let model = state_fixture(&opts);
         let (_backend, counters, handle) = counting_handle(&model);
         let prepared = rumoca_solver_diffsol::build_simulation_with_execution_backend(
-            &model,
+            model.artifact(),
             &opts,
             Some(handle),
         )
@@ -1248,12 +1270,12 @@ mod native_policy_tests {
     /// Two runs of a freshly built prepared simulation that never calls
     /// `check_initialization()`, as the interleaving-immunity baseline.
     fn unchecked_baseline_runs(
-        model: &solve::SolveModel,
+        model: &ModelFixture,
         opts: &SimOptions,
     ) -> (rumoca_solver::SimResult, rumoca_solver::SimResult) {
         let (_backend, counters, handle) = counting_handle(model);
         let unchecked = rumoca_solver_diffsol::build_simulation_with_execution_backend(
-            model,
+            model.artifact(),
             opts,
             Some(handle),
         )
@@ -1313,14 +1335,14 @@ mod native_policy_tests {
         let model = state_fixture(&opts);
         let (_one_shot_backend, one_shot_counters, one_shot_handle) = counting_handle(&model);
         rumoca_solver_diffsol::simulate_with_execution_backend(
-            &model,
+            model.artifact(),
             &opts,
             Some(one_shot_handle),
         )
         .expect("one-shot native BDF run succeeds");
         let (_build_backend, build_counters, build_handle) = counting_handle(&model);
         let _prepared = rumoca_solver_diffsol::build_simulation_with_execution_backend(
-            &model,
+            model.artifact(),
             &opts,
             Some(build_handle),
         )
@@ -1368,7 +1390,7 @@ mod native_policy_tests {
         let handle_b = MeExecutionBackend::new(factory.clone() as Rc<dyn SolveExecutionBackend>);
 
         let prepared_a = rumoca_solver_diffsol::build_simulation_with_execution_backend(
-            &model_a,
+            model_a.artifact(),
             &opts,
             Some(handle_a),
         )
@@ -1381,7 +1403,7 @@ mod native_policy_tests {
         );
 
         let prepared_b = rumoca_solver_diffsol::build_simulation_with_execution_backend(
-            &model_b,
+            model_b.artifact(),
             &opts,
             Some(handle_b),
         )
@@ -1423,7 +1445,7 @@ mod native_policy_tests {
         let model = state_fixture(&opts);
         let (backend, _counters, handle) = counting_handle(&model);
         let prepared = rumoca_solver_diffsol::build_simulation_with_execution_backend(
-            &model,
+            model.artifact(),
             &opts,
             Some(handle),
         )
@@ -1441,12 +1463,12 @@ mod native_policy_tests {
         );
     }
 
-    /// Discriminator (e): the zero-state path is explicitly tested. The
-    /// composition gate never constructs (pays for) a backend for a
-    /// zero-state model, and even a handle forced past the gate is never
-    /// compiled against or called by the no-state session.
+    /// The automatic composition gate never constructs a compiled evaluator
+    /// for a zero-state model. An explicitly supplied evaluator is nonetheless
+    /// honored by the common component for its discrete/algebraic programs and
+    /// released when the run ends.
     #[test]
-    fn zero_state_path_constructs_and_uses_no_backend() {
+    fn zero_state_force_supplied_backend_is_honored_and_released() {
         let opts = sim_opts(SimExecutionPolicy::Auto);
         let model = zero_state_fixture(&opts);
         assert_eq!(model.state_scalar_count(), 0, "fixture must be zero-state");
@@ -1455,22 +1477,25 @@ mod native_policy_tests {
             "a zero-state model must not pay for a native backend it cannot use"
         );
         let (backend, counters, handle) = counting_handle(&model);
-        let result =
-            rumoca_solver_diffsol::simulate_with_execution_backend(&model, &opts, Some(handle))
-                .expect("zero-state run succeeds");
+        let result = rumoca_solver_diffsol::simulate_with_execution_backend(
+            model.artifact(),
+            &opts,
+            Some(handle),
+        )
+        .expect("zero-state run succeeds");
         assert!(
             !result.times.is_empty(),
             "zero-state run produced no samples"
         );
-        assert_eq!(
-            counters.total_activity(),
-            0,
-            "the zero-state path must never compile against or call the backend"
+        assert!(
+            counters.total_succeeded() > 0,
+            "the explicitly supplied component evaluator was silently discarded"
         );
+        assert_eq!(counters.total_failed(), 0);
         assert_eq!(
             Rc::strong_count(&backend),
             1,
-            "the zero-state path must not retain the unused backend"
+            "the zero-state path retained its supplied evaluator after completion"
         );
     }
 }

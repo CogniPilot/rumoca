@@ -1,11 +1,7 @@
 #[cfg(not(kani))]
 pub mod delay;
 #[cfg(not(kani))]
-pub mod driver;
-#[cfg(not(kani))]
 pub mod eval_at;
-#[cfg(not(kani))]
-pub mod event;
 pub(crate) mod event_history;
 #[cfg(not(kani))]
 pub mod event_newton;
@@ -19,10 +15,6 @@ pub mod iterative_solve;
 pub mod jacobian;
 #[cfg(not(kani))]
 pub mod mass_matrix;
-#[cfg(not(kani))]
-pub mod no_state;
-#[cfg(not(kani))]
-pub mod orchestration;
 #[cfg(not(kani))]
 pub mod pre_params;
 #[cfg(not(kani))]

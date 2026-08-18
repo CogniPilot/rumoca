@@ -57,6 +57,35 @@ Rumoca builds portable symbolic systems. The DAE fixes what a model **means**;
 Solve IR fixes what a consumer **runs**; FMI 3 ME fixes how a solver **calls**
 it. No private fourth path around those three is permitted.
 
+### Compilation Soundness Theorem
+
+For every Modelica model `M`, a successful simulation-capable compilation to
+an FMI Model Exchange component `A` is a claim that every conforming host and
+solver execution of `A` refines the Modelica semantics of `M` within the
+execution's declared numerical tolerance:
+
+```text
+compile(M) = A  =>  for every conforming host/solver H,
+                     trace(H, A) refines semantics(M) within tolerance(H)
+```
+
+This is the compiler's governing soundness obligation. It has four inseparable
+parts:
+
+- Every finalized compiler and component aggregate is valid by construction;
+  independently constructed roots, metadata, layouts, or provenance cannot be
+  paired into a successful artifact.
+- Every compiler phase and the FMI host/solver boundary preserves the semantic
+  relation established by its predecessor. A concrete solver may own numerical
+  method state, but it cannot introduce a solver-specific model contract.
+- Unsupported or unproved semantics fail with a typed diagnostic at their
+  first owning phase. Producing a plausible artifact and discovering the gap
+  from a wrong trace is a soundness failure, not partial support.
+- Differential and strict-high trace results are counterexample and regression
+  evidence for the theorem. They do not replace construction or refinement
+  proofs, and raw compilation or simulation completion is not affirmative
+  semantic evidence.
+
 ### DAE Contract Properties
 
 | Property | What it means |
@@ -130,7 +159,7 @@ example workflows. To preserve the core/solver split:
 |---|---|
 | Core WASM build = parsing, semantics, DAE generation only | Provides DAE to any external solver/runtime |
 | Full WASM build with bundled solver = extension, not core | Solver inclusion is a feature flag, not a default |
-| WASM transitive dep graph MUST NOT pull in a solver backend by default | Enforced by `test_bind_wasm_default_graph_does_not_include_diffsol` in `architecture_hardening_test.rs` |
+| WASM transitive dep graph MUST NOT pull in a solver backend by default | Enforced by `test_bind_wasm_default_graph_does_not_include_diffsol` in `architecture_hardening_test/main.rs` |
 
 ### Known Risk: Bundled-Solver Drift
 

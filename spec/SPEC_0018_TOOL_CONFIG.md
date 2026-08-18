@@ -101,7 +101,7 @@ to completion, hover, diagnostics, go-to-definition, and model discovery. The
 playground and docs apply the same semantics through the shared WASM/runtime
 workspace API.
 
-**Enforcement:** `crates/rumoca/tests/architecture_hardening/env_var_registry.rs`
+**Enforcement:** `crates/rumoca/tests/architecture_hardening_test/env_var_registry.rs`
 (`test_rumoca_env_vars_are_registered`) scans workspace source files, excluding
 build output, dependencies, and vendored trees. Adding a `RUMOCA_*` name to its
 allowlist is a deliberate, reviewable policy exception with written rationale.

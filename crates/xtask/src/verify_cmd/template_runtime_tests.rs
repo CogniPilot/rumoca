@@ -116,26 +116,44 @@ fn manifest_test_targets() -> BTreeMap<String, ManifestTestTarget> {
     targets
 }
 
-/// `#[path = "…"]` on a module declaration, resolved against `dir`.
-///
-/// Umbrella test binaries pull their member files in this way, so the gate has
-/// to follow the include to see the tests it selects.
-fn path_attribute_target(item: &syn::ItemMod, dir: &Path) -> Option<PathBuf> {
-    item.attrs
-        .iter()
-        .find(|attr| attr.path().is_ident("path"))
-        .and_then(|attr| attr.meta.require_name_value().ok())
-        .and_then(|meta| match &meta.value {
-            syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(literal),
-                ..
-            }) => Some(dir.join(literal.value())),
-            _ => None,
-        })
+/// Resolve an out-of-line module through Rust's content-based layout.
+fn module_target(item: &syn::ItemMod, owner: &Path) -> PathBuf {
+    let parent = owner
+        .parent()
+        .unwrap_or_else(|| panic!("{} has a parent directory", owner.display()));
+    let stem = owner
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_else(|| panic!("{} has a UTF-8 file stem", owner.display()));
+    let module_dir = if matches!(stem, "main" | "mod") {
+        parent.to_path_buf()
+    } else {
+        parent.join(stem)
+    };
+    let direct = module_dir.join(format!("{}.rs", item.ident));
+    let nested = module_dir.join(item.ident.to_string()).join("mod.rs");
+    match (direct.is_file(), nested.is_file()) {
+        (true, false) => direct,
+        (false, true) => nested,
+        (false, false) => panic!(
+            "module `{}` in {} has no normal source at {} or {}",
+            item.ident,
+            owner.display(),
+            direct.display(),
+            nested.display()
+        ),
+        (true, true) => panic!(
+            "module `{}` in {} has two normal sources: {} and {}",
+            item.ident,
+            owner.display(),
+            direct.display(),
+            nested.display()
+        ),
+    }
 }
 
 /// Libtest paths of every `#[test]` function reachable from a test source file,
-/// following `#[path]` module includes and prefixing each name with its module
+/// following normal out-of-line modules and prefixing each name with its module
 /// path exactly the way libtest reports it.
 fn declared_test_functions(path: &Path) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
@@ -153,9 +171,6 @@ fn collect_test_functions(path: &Path, prefix: &str, names: &mut BTreeSet<String
         fs::read_to_string(path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
     let file =
         syn::parse_file(&source).unwrap_or_else(|err| panic!("parse {}: {err}", path.display()));
-    let dir = path
-        .parent()
-        .unwrap_or_else(|| panic!("{} has a parent directory", path.display()));
     for item in &file.items {
         match item {
             syn::Item::Fn(function) => {
@@ -168,9 +183,7 @@ fn collect_test_functions(path: &Path, prefix: &str, names: &mut BTreeSet<String
                 }
             }
             syn::Item::Mod(module) if module.content.is_none() => {
-                let Some(target) = path_attribute_target(module, dir) else {
-                    continue;
-                };
+                let target = module_target(module, path);
                 let nested = format!("{prefix}{}::", module.ident);
                 collect_test_functions(&target, &nested, names);
             }

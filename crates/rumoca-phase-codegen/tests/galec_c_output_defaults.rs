@@ -180,7 +180,7 @@ fn render(block: &CheckedAlgorithmBlock, target: &str, path: &str) -> String {
 // verbatim across two files, which live in different crates:
 //
 //   * crates/rumoca-phase-codegen/tests/galec_c_output_defaults.rs
-//   * crates/rumoca/tests/cli_target_embedded_c_galec.rs
+//   * crates/rumoca/tests/suite_galec_fmu/cli_target_embedded_c_galec.rs
 //
 // A test-only reader has no home either crate can import without adding it to
 // a shipped crate's public surface, so the copies are kept BYTE-identical

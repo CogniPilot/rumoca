@@ -4,6 +4,12 @@
 //! and runtime helper objects. split plan: move C, MLIR, and tensor object
 //! renderers into separate modules behind this facade.
 
+mod dense_solve_render;
+mod mlir_family;
+#[cfg(test)]
+mod render_solve_tests;
+mod template_partition;
+
 use std::sync::Arc;
 
 use crate::errors::render_err;
@@ -17,12 +23,6 @@ use super::render_solve_ops::{
 };
 use super::{RenderResult, render_vec_with_capacity, reserve_render_capacity, value_to_string};
 
-mod dense_solve_render;
-mod mlir_family;
-#[cfg(test)]
-#[path = "render_solve_tests.rs"]
-mod render_solve_tests;
-mod template_partition;
 #[cfg(test)]
 pub(super) use dense_solve_render::{LinSolveRenderShape, MatMulRenderShape};
 pub(super) use dense_solve_render::{

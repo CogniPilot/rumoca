@@ -34,7 +34,7 @@ pub(super) fn analyze_delays(
         plans: HashMap::new(),
         in_function: false,
     };
-    analyzer.visit_model(flat)?;
+    analyzer.visit_model_owners(flat)?;
     Ok(analyzer.plans)
 }
 
@@ -44,116 +44,10 @@ struct DelayAnalyzer<'model> {
     in_function: bool,
 }
 
-impl DelayAnalyzer<'_> {
-    fn visit_model(&mut self, flat: &flat::Model) -> Result<(), ToDaeError> {
-        all_model_expressions(flat)
-            .chain(structured_template_expressions(&flat.structured_equations))
-            .chain(structured_template_expressions(
-                &flat.initial_structured_equations,
-            ))
-            .try_for_each(|expression| self.visit_expression(expression))?;
-        for assertion in flat
-            .assert_equations
-            .iter()
-            .chain(&flat.initial_assert_equations)
-        {
-            self.visit_expression(&assertion.condition)?;
-            self.visit_expression(&assertion.message)?;
-            if let Some(level) = &assertion.level {
-                self.visit_expression(level)?;
-            }
-        }
-        flat.algorithms
-            .iter()
-            .chain(&flat.initial_algorithms)
-            .flat_map(|algorithm| &algorithm.statements)
-            .try_for_each(|statement| self.visit_statement(statement))?;
-        flat.when_chains
-            .iter()
-            .flat_map(flat::WhenChain::branches)
-            .try_for_each(|branch| {
-                self.visit_expression(&branch.condition)?;
-                self.visit_when_equations(&branch.equations)
-            })?;
+impl ModelExpressionOwnerVisitor for DelayAnalyzer<'_> {
+    fn enter_function_owners(&mut self) -> Result<(), Self::Error> {
         self.in_function = true;
-        flat.functions
-            .values()
-            .try_for_each(|function| self.visit_function(function))
-    }
-
-    fn visit_function(&mut self, function: &rumoca_core::Function) -> Result<(), ToDaeError> {
-        function
-            .inputs
-            .iter()
-            .chain(&function.outputs)
-            .chain(&function.locals)
-            .try_for_each(|parameter| self.visit_function_parameter(parameter))?;
-        function
-            .body
-            .iter()
-            .try_for_each(|statement| self.visit_statement(statement))
-    }
-
-    fn visit_function_parameter(
-        &mut self,
-        parameter: &rumoca_core::FunctionParam,
-    ) -> Result<(), ToDaeError> {
-        [&parameter.default, &parameter.min, &parameter.max]
-            .into_iter()
-            .flatten()
-            .try_for_each(|expression| self.visit_expression(expression))?;
-        parameter
-            .shape_expr
-            .iter()
-            .try_for_each(|subscript| self.visit_subscript(subscript))
-    }
-
-    fn visit_when_equations(&mut self, equations: &[flat::WhenEquation]) -> Result<(), ToDaeError> {
-        equations
-            .iter()
-            .try_for_each(|equation| self.visit_when_equation(equation))
-    }
-
-    fn visit_when_equation(&mut self, equation: &flat::WhenEquation) -> Result<(), ToDaeError> {
-        match equation {
-            flat::WhenEquation::Assign { value, .. }
-            | flat::WhenEquation::Reinit { value, .. }
-            | flat::WhenEquation::Terminate { message: value, .. }
-            | flat::WhenEquation::FunctionCallOutputs {
-                function: value, ..
-            } => self.visit_expression(value),
-            flat::WhenEquation::Assert {
-                condition,
-                message,
-                level,
-                ..
-            } => {
-                self.visit_expression(condition)?;
-                self.visit_expression(message)?;
-                level
-                    .iter()
-                    .try_for_each(|level| self.visit_expression(level))
-            }
-            flat::WhenEquation::Conditional {
-                branches,
-                else_branch,
-                ..
-            } => self.visit_conditional_when(branches, else_branch),
-        }
-    }
-
-    fn visit_conditional_when(
-        &mut self,
-        branches: &[(Expression, Vec<flat::WhenEquation>)],
-        else_branch: &Option<Vec<flat::WhenEquation>>,
-    ) -> Result<(), ToDaeError> {
-        branches.iter().try_for_each(|(condition, equations)| {
-            self.visit_expression(condition)?;
-            self.visit_when_equations(equations)
-        })?;
-        else_branch
-            .as_deref()
-            .map_or(Ok(()), |equations| self.visit_when_equations(equations))
+        Ok(())
     }
 }
 

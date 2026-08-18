@@ -128,15 +128,9 @@ fn instantiate(model: &solve::SolveModel) -> SolveMeKernel {
         rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
             .expect("event-entry fixture refresh owners construct");
     SolveMeKernel::instantiate(
-        MeModelSource::new(&model),
-        &MeInstanceConfig {
-            instance_name: "fmi-me-event-entry",
-            tolerance: 1.0e-4,
-            start_time: 0.0,
-            stop_time: 2.0,
-            root_profile: MeRootProfile::Component,
-            numerics_profile: MeNumericsProfile::Component,
-        },
+        MeModelSource::fixture(&model),
+        &MeInstanceConfig::new("fmi-me-event-entry", 1.0e-4, 0.0, 2.0)
+            .expect("event-entry instance configuration constructs"),
     )
     .expect("event-entry fixture instantiates")
 }

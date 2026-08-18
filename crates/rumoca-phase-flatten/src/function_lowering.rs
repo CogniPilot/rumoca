@@ -6,6 +6,9 @@
 //! - Normalizing structured record-field component references
 //! - Rewriting FieldAccess expressions on decomposed record params to direct VarRef
 
+#[cfg(test)]
+mod tests;
+
 use crate::errors::FlattenError;
 use rumoca_core::{ExpressionRewriter, StatementRewriter};
 use rumoca_ir_flat as flat;
@@ -1727,7 +1730,3 @@ fn record_field_reference(
             )
         })
 }
-
-#[cfg(test)]
-#[path = "function_lowering/tests.rs"]
-mod tests;

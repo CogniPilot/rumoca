@@ -205,7 +205,6 @@ fn initial_event_commits_delay_left_limit_before_the_synthetic_right_limit() {
                 event_pre_p: &event_pre_p,
                 max_iters: 8,
                 dynamic_event: None,
-                apply_without_initial_event: false,
             },
             |y, p, t| {
                 let before = p.to_vec();
@@ -267,7 +266,6 @@ fn initial_event_advances_pre_memory_before_the_synthetic_right_limit() {
                 event_pre_p: &event_pre_p,
                 max_iters: 8,
                 dynamic_event: None,
-                apply_without_initial_event: false,
             },
             |_, p, t| {
                 if t > 0.0 {
@@ -367,7 +365,6 @@ fn phase_zero_clock_tick_executes_once_after_initialization() {
                 event_pre_p: &event_pre_p,
                 max_iters: 8,
                 dynamic_event: None,
-                apply_without_initial_event: false,
             },
             |_, _, _| Ok(false),
         )

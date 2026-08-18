@@ -51,36 +51,51 @@ impl SolveTemplateRenderer {
         dae_model: &dae::Dae,
     ) -> Result<Self, CodegenError> {
         let dae_entry = checked_dae_template_value(dae_model)?;
+        let handle = super::solve_lazy::SolveRenderHandle::standalone(
+            std::sync::Arc::new(problem),
+            std::sync::Arc::new(artifacts),
+        );
         Ok(Self {
-            context: solve_render_context_value_with_arcs(
-                std::sync::Arc::new(problem),
-                std::sync::Arc::new(artifacts),
-                None,
-                dae_entry,
-                Value::default(),
-            )?,
+            context: solve_render_context_value_with_handles(handle, None, dae_entry)?,
         })
     }
 
     /// Renderer for one checked FMI component. The FMI entry is the opaque
     /// constructor-validated metadata/storage binding; Solve operations remain
     /// lazy so large tensor programs are not materialized as template maps.
+    ///
+    /// The correlated view is the **only** input. Its retained kernel supplies
+    /// the Solve program and the artifacts, so no second argument can pair this
+    /// metadata with a different model, and the FMI templates read no DAE at
+    /// all, so this path builds no DAE template context and takes no `Dae`
+    /// argument that could be an unrelated model:
+    ///
+    /// ```compile_fail
+    /// # use rumoca_phase_codegen::SolveTemplateRenderer;
+    /// fn pair(
+    ///     component: rumoca_ir_solve::fmi::FmiEventFreeCodegenView,
+    ///     foreign: &rumoca_ir_dae::Dae,
+    /// ) {
+    ///     let _ = SolveTemplateRenderer::new_owned_with_fmi(component, foreign);
+    /// }
+    /// ```
+    ///
+    /// Should an FMI template ever need a DAE fact, it must travel inside the
+    /// correlated component rather than arrive beside it.
+    ///
+    /// The view is taken in its event-free type-state because these templates
+    /// render each entry from a Solve storage run and a present `start`, and
+    /// describe no semantic event instant. A component that is not that shape
+    /// is outside this input domain rather than a case to diagnose here; a
+    /// caller narrows the view with
+    /// [`solve::fmi::FmiCodegenView::try_event_free`] first.
     pub fn new_owned_with_fmi(
-        component: rumoca_ir_fmi::FmiComponent,
-        artifacts: solve::SolveArtifacts,
-        dae_model: &dae::Dae,
+        component: solve::fmi::FmiEventFreeCodegenView,
     ) -> Result<Self, CodegenError> {
-        let dae_entry = checked_dae_template_value(dae_model)?;
-        let fmi_entry = Value::from_serialize(&component);
-        let solve = component.into_solve();
+        require_builtin_fmi_template_domain(component.problem())?;
+        let handle = super::solve_lazy::SolveRenderHandle::fmi(component);
         Ok(Self {
-            context: solve_render_context_value_with_arcs(
-                std::sync::Arc::new(solve),
-                std::sync::Arc::new(artifacts),
-                None,
-                dae_entry,
-                fmi_entry,
-            )?,
+            context: solve_render_context_value_with_handles(handle, None, Value::default())?,
         })
     }
 
@@ -120,6 +135,41 @@ impl SolveTemplateRenderer {
     }
 }
 
+/// Prove the complete current built-in FMI template domain before a renderer
+/// exists. The event/storage inventory is already carried by the input
+/// type-state; this owns the remaining Solve capabilities the C templates do
+/// not implement.
+fn require_builtin_fmi_template_domain(problem: &solve::SolveProblem) -> Result<(), CodegenError> {
+    if solve::solve_has_initialization(problem) {
+        return Err(CodegenError::dae_preparation_failed(
+            "built-in FMI templates do not implement initialization owners",
+            None,
+        ));
+    }
+    let continuous = &problem.continuous;
+    let has_algebraic_system = !continuous.implicit_rhs.is_empty()
+        || !continuous.algebraic_projection_plan.is_empty()
+        || problem.solve_layout.algebraic_scalar_count() != 0;
+    if has_algebraic_system && !super::solve_lazy::explicit_algebraic_assignment_complete(problem) {
+        return Err(CodegenError::dae_preparation_failed(
+            "built-in FMI templates cannot render residual algebraic systems",
+            None,
+        ));
+    }
+    if problem.uses_linear_solve_component()
+        || problem
+            .initialization
+            .residual
+            .uses_linear_solve_component()
+    {
+        return Err(CodegenError::dae_preparation_failed(
+            "built-in FMI templates do not implement tensor linear-solve components",
+            None,
+        ));
+    }
+    Ok(())
+}
+
 fn checked_dae_template_value(dae: &dae::Dae) -> Result<Value, CodegenError> {
     Ok(Value::from_serialize(dae_template_json_for_solve_context(
         dae,
@@ -140,30 +190,30 @@ fn solve_render_context_value_with_dae(
     model_name: Option<&str>,
     dae_entry: Value,
 ) -> Result<Value, CodegenError> {
-    solve_render_context_value_with_arcs(
-        std::sync::Arc::new(solve_problem.clone()),
-        std::sync::Arc::new(artifacts.clone()),
+    solve_render_context_value_with_handles(
+        super::solve_lazy::SolveRenderHandle::standalone(
+            std::sync::Arc::new(solve_problem.clone()),
+            std::sync::Arc::new(artifacts.clone()),
+        ),
         model_name,
         dae_entry,
-        Value::default(),
     )
 }
 
-fn solve_render_context_value_with_arcs(
-    problem_arc: std::sync::Arc<solve::SolveProblem>,
-    artifacts_arc: std::sync::Arc<solve::SolveArtifacts>,
+fn solve_render_context_value_with_handles(
+    handle: super::solve_lazy::SolveRenderHandle,
     model_name: Option<&str>,
     dae_entry: Value,
-    fmi_entry: Value,
 ) -> Result<Value, CodegenError> {
     // Lazy `solve` / `solve_derivative_nodes` (see `solve_lazy`): structural
     // fields serialize on demand and op lists materialize one op at a time, so a
     // ~150k-op model costs O(one program) here instead of ~5 GB of eager `Value`
     // materialization (`from_serialize(solve_problem)` alone was ~4.7 GB).
-    let solve_problem = problem_arc.as_ref();
-    let artifacts = artifacts_arc.as_ref();
-    let solve_value = super::solve_lazy::solve_value(problem_arc.clone(), artifacts_arc.clone())?;
-    let artifacts_value = super::solve_lazy::artifacts_value(artifacts_arc.clone())?;
+    let fmi_entry = handle.fmi_value();
+    let solve_problem = handle.problem();
+    let artifacts = handle.artifacts();
+    let solve_value = super::solve_lazy::solve_value(handle.clone())?;
+    let artifacts_value = super::solve_lazy::artifacts_value(handle.clone())?;
     let solve_blocks = solve_template_blocks_value(solve_problem, artifacts)?;
     let derivative_nodes = Value::from_object(LazyDerivativeNodesValue::new(
         solve_problem.continuous.derivative_rhs.clone(),

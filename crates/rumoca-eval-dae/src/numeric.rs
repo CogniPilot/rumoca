@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use rumoca_core::{Span, modelica_sign};
 use rumoca_ir_dae as dae;
 
@@ -1735,7 +1738,3 @@ fn failure(
         span,
     }
 }
-
-#[cfg(test)]
-#[path = "numeric/tests.rs"]
-mod tests;

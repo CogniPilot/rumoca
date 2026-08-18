@@ -22,6 +22,8 @@ mod dae_diagnostics;
 mod discrete_render_view;
 mod expr_config;
 #[cfg(test)]
+mod fmi_projection_tests;
+#[cfg(test)]
 mod galec_golden_tests;
 #[cfg(test)]
 mod galec_manifest_template_tests;

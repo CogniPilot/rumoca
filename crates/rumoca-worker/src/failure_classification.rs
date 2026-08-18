@@ -249,12 +249,12 @@ impl ModelFailureBucket {
             SimError::Terminated { .. } => Self::ModelTermination,
             SimError::EmptySystem => Self::EmptySystem,
             SimError::RuntimeContract { .. } => Self::RuntimeContract,
-            // The model has no reduced state-only system. The backend pins this
-            // at `BackendBuild`, so it buckets there like any other
-            // construction-time rejection; routing it through the stage keeps
-            // the bucket producer knowledge rather than a second mapping.
-            SimError::StateOnlyPathUnavailable(_)
-            | SimError::DirectionalDerivativeUnavailable { .. }
+            SimError::ModelExchangeSession(session) if session.is_timeout() => Self::Timeout,
+            SimError::ModelExchangeSession(session) if session.is_integrator_failure() => {
+                Self::SolverIntegration
+            }
+            SimError::ModelExchangeSession(_) => Self::RuntimeContract,
+            SimError::DirectionalDerivativeUnavailable { .. }
             | SimError::ExecutionPolicyContradiction { .. }
             | SimError::SolveIr(_)
             | SimError::SolverError(_) => Self::from_sim_stage(error.stage().unwrap_or(fallback)),

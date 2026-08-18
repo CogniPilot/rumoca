@@ -1185,7 +1185,7 @@ fn shared_render_environment_holds_exactly_the_declared_shared_templates() {
 /// A support partial is exactly "declared, bundled, shared — and renders no
 /// product file". The manifest-side half of that invariant (no `[[files]]`
 /// entry) is checked where target manifests are parsed, in
-/// `rumoca/tests/template_target_ci.rs`; this is the registry-side half.
+/// `rumoca/tests/suite_template_runtime/template_target_ci.rs`; this is the registry-side half.
 #[test]
 fn support_partials_are_shared_and_are_not_artifacts() {
     let mut partials = Vec::new();

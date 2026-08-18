@@ -1,3 +1,16 @@
+mod fuzz;
+mod kani;
+mod msl_cargo_setup_timing;
+mod msl_local_run;
+mod msl_quality_baseline;
+mod msl_results_cleanup;
+mod parity_budgets;
+mod parity_comparator;
+#[cfg(test)]
+mod template_runtime_tests;
+#[cfg(test)]
+mod tests;
+
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
@@ -14,15 +27,6 @@ use crate::{
     lsp_benchmark_cmd, modelica_dependency_cache, run_forwarded_tool, run_status, test_cmd,
     vscode_cmd, wasm_smoke,
 };
-
-mod fuzz;
-mod kani;
-mod msl_cargo_setup_timing;
-mod msl_local_run;
-mod msl_quality_baseline;
-mod msl_results_cleanup;
-mod parity_budgets;
-mod parity_comparator;
 
 use fuzz::VerifyFuzzArgs;
 use msl_cargo_setup_timing::{
@@ -726,11 +730,10 @@ struct TemplateRuntimeTestGroup {
     filters: &'static [&'static str],
 }
 
-/// The `template-runtime-tests` sources all live in one Cargo test target now
-/// (`crates/rumoca/tests/suite_template_runtime.rs` includes them as `#[path]`
-/// modules, so ~60 whole-compiler links collapse into a handful). libtest names
-/// then carry the source file's module prefix, which is exactly what lets the
-/// groups below keep selecting one member file at a time.
+/// The `template-runtime-tests` sources live in one Cargo test target as normal
+/// modules below `tests/suite_template_runtime/`, so repeated whole-compiler
+/// links collapse into one. Libtest names carry each module prefix, which lets
+/// the groups below select one member file at a time.
 const TEMPLATE_RUNTIME_TEST: &str = "suite_template_runtime";
 
 const TEMPLATE_RUNTIME_GROUPS: &[TemplateRuntimeTestGroup] = &[
@@ -771,7 +774,7 @@ const TEMPLATE_RUNTIME_GROUPS: &[TemplateRuntimeTestGroup] = &[
     },
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Fmi,
-        test: "suite_fmi",
+        test: TEMPLATE_RUNTIME_TEST,
         filters: &["cli_target_fmi::", "fmi_ls_dae_contract::"],
     },
     TemplateRuntimeTestGroup {
@@ -1755,11 +1758,3 @@ where
         eprintln!("  {line}");
     }
 }
-
-#[cfg(test)]
-#[path = "verify_cmd/template_runtime_tests.rs"]
-mod template_runtime_tests;
-
-#[cfg(test)]
-#[path = "verify_cmd/tests.rs"]
-mod tests;

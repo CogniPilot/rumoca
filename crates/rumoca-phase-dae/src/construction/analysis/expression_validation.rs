@@ -543,6 +543,9 @@ impl ExpressionValidator<'_> {
         if function == BuiltinFunction::Pre {
             return self.validate_pre(arguments, span);
         }
+        if matches!(function, BuiltinFunction::Edge | BuiltinFunction::Change) {
+            return self.validate_history_operator(function, arguments, span);
+        }
         if function == BuiltinFunction::Initial {
             return if arguments.is_empty() {
                 Ok(())
@@ -658,6 +661,44 @@ impl ExpressionValidator<'_> {
             return Err(ToDaeError::unsupported_flat(
                 "derivative expression",
                 "der(...) target is not a state coordinate",
+                span,
+            ));
+        }
+        self.validate_subscripts(subscripts)
+    }
+
+    /// Validate the reference grammar shared by MLS §3.7.5 `edge`/`change`.
+    ///
+    /// [`analyze_history_operators`] issues the exact runtime/type certificate
+    /// consumed by construction. This local boundary additionally keeps every
+    /// expression-validation scope fail-closed and validates subscript bodies.
+    fn validate_history_operator(
+        self,
+        function: BuiltinFunction,
+        arguments: &[Expression],
+        span: Span,
+    ) -> Result<(), ToDaeError> {
+        let [argument] = arguments else {
+            return Err(invalid_reference_builtin(
+                "history operator",
+                function.name(),
+                span,
+            ));
+        };
+        let Some((name, subscripts)) = derivative_reference(argument) else {
+            return Err(invalid_reference_builtin(
+                "history operator",
+                function.name(),
+                span,
+            ));
+        };
+        if !matches!(
+            self.roles.get(name.var_name()),
+            Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
+        ) {
+            return Err(ToDaeError::unsupported_flat(
+                format!("{} expression", function.name()),
+                format!("{}(...) must name a discrete coordinate", function.name()),
                 span,
             ));
         }

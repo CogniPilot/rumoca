@@ -1,10 +1,7 @@
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 
-use crate::{
-    SimResult, SimTermination, SimVariableMeta, runtime::pre_params::write_pre_params_from_sources,
-    timeline,
-};
+use crate::{SimVariableMeta, runtime::pre_params::write_pre_params_from_sources, timeline};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeSolveError {
@@ -367,22 +364,6 @@ pub fn convert_variable_meta(meta: &[solve::SolveVariableMeta]) -> Vec<SimVariab
             description: item.description.clone(),
         })
         .collect()
-}
-
-pub fn build_sim_result_from_solve_model(
-    model: &solve::SolveModel,
-    recorded_times: Vec<f64>,
-    data: Vec<Vec<f64>>,
-    termination: Option<SimTermination>,
-) -> SimResult {
-    SimResult {
-        times: recorded_times,
-        names: model.visible_names.clone(),
-        data,
-        n_states: model.state_scalar_count(),
-        variable_meta: convert_variable_meta(&model.variable_meta),
-        termination,
-    }
 }
 
 pub fn root_crossed(before: &[f64], after: &[f64], tol: f64) -> bool {

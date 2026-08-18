@@ -1,15 +1,14 @@
 use std::{cell::RefCell, rc::Rc};
 
+mod component;
+mod event_boundary;
+
 use super::lifecycle::{MeLifecycle, MeLifecycleCommand, MeLifecycleViolation, MeState};
 use super::{
     MeCompletedIntegratorStep, MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeEventStop,
     MeFmuState, MeIndicatorCrossing, MeInstanceConfig, MeModelDescription, MeModelSource,
-    MeNumericsProfile, MeObservation, MeOutputSeries, MeRootProfile, MeStage, MeTime, MeValueRef,
-    ModelExchangeKernel, advance_states_to_event_probe,
-};
-use crate::runtime::event::{
-    RuntimeEventBoundary, RuntimeEventBoundaryHandler, process_runtime_event_boundary,
-    runtime_event_horizon, runtime_root_event_application_time,
+    MeObservation, MeOutputSeries, MeStage, MeTime, MeValueRef, ModelExchangeKernel,
+    advance_states_to_event_probe,
 };
 use crate::runtime::pre_params::{
     clear_scheduled_root_relation_memory, commit_pre_params_after_event_at,
@@ -65,7 +64,6 @@ impl CachedContinuousLinearization {
 #[derive(Clone, Copy)]
 struct MeAlgebraicProjectionPolicy {
     tolerance: f64,
-    profile: MeNumericsProfile,
     settle: AlgebraicSettle,
 }
 
@@ -101,11 +99,6 @@ pub struct SolveMeKernel {
     tolerance: f64,
     /// FMI `stopTime`.
     stop_time: f64,
-    /// Temporary phase-2 compatibility profile selected by the owning host.
-    root_profile: MeRootProfile,
-    /// Temporary phase-2 callback-numerics profile selected by the host.
-    numerics_profile: MeNumericsProfile,
-
     /// The time `fmi3SetTime` last set.
     time: f64,
     /// The event instant the integrator is stepping toward, if any.
@@ -126,15 +119,14 @@ pub struct SolveMeKernel {
     advance_state_to_event_right_limit: bool,
     state_time_coincidence: StateTimeCoincidence,
     initial_event_pending: bool,
-    skip_next_enter_continuous_delay_commit: bool,
-
     pending_root_crossings: Vec<RootCrossing>,
-    frozen_event_root_crossings: Vec<RootCrossing>,
+    /// FMI event-indicator domains frozen at the previous completed point.
+    /// `true` is `z > 0`; `false` is FMI's `z <= 0` domain.
+    frozen_indicator_positive: Vec<bool>,
     pending_event_pre_y: Option<Vec<f64>>,
     pending_event_pre_p: Option<Vec<f64>>,
     boundary_event_pre_y: Option<Vec<f64>>,
     boundary_event_pre_p: Option<Vec<f64>>,
-    frozen_event_accepted_seed: Option<Vec<f64>>,
 
     solver_y_guess: RefCell<Vec<f64>>,
     delay_params_scratch: RefCell<Vec<f64>>,
@@ -175,14 +167,12 @@ pub(crate) struct MeKernelSnapshot {
     advance_state_to_event_right_limit: bool,
     state_time_coincidence: StateTimeCoincidence,
     initial_event_pending: bool,
-    skip_next_enter_continuous_delay_commit: bool,
     pending_root_crossings: Vec<RootCrossing>,
-    frozen_event_root_crossings: Vec<RootCrossing>,
+    frozen_indicator_positive: Vec<bool>,
     pending_event_pre_y: Option<Vec<f64>>,
     pending_event_pre_p: Option<Vec<f64>>,
     boundary_event_pre_y: Option<Vec<f64>>,
     boundary_event_pre_p: Option<Vec<f64>>,
-    frozen_event_accepted_seed: Option<Vec<f64>>,
     solver_y_guess: Vec<f64>,
     delay_params_scratch: Vec<f64>,
     delay_solver_y_scratch: Vec<f64>,
@@ -195,96 +185,6 @@ pub(crate) struct MeKernelSnapshot {
     termination: Option<SimTermination>,
     settled_initialization_y: Option<Vec<f64>>,
     runtime: SolveRuntimeSnapshot,
-}
-
-mod component;
-impl RuntimeEventBoundaryHandler for SolveMeKernel {
-    type Error = MeError;
-
-    fn on_event_time(
-        &mut self,
-        event_time: f64,
-        event: RuntimeEventStop,
-    ) -> Result<(), Self::Error> {
-        if self.advance_state_to_event_right_limit {
-            self.time = event_time;
-        }
-        if event.terminal
-            && let Some(index) = self
-                .runtime
-                .model
-                .problem
-                .solve_layout
-                .terminal_event_parameter_index
-            && let Some(slot) = self.params.get_mut(index)
-        {
-            *slot = 1.0;
-        }
-        let (event_pre_y, event_pre_p) = self.event_pre_for_update(event_time, event)?;
-        self.boundary_event_pre_y = Some(event_pre_y.clone());
-        self.boundary_event_pre_p = Some(event_pre_p.clone());
-        self.pending_event_pre_y = Some(event_pre_y);
-        self.pending_event_pre_p = Some(event_pre_p);
-        self.seed_scheduled_root_relation_overrides(event_time, event);
-        let application_time = event_update_application_time(
-            event_time,
-            self.time,
-            self.state_time_coincidence.is_some(),
-        );
-        let row_filter = if self.state_time_coincidence.is_consumed() {
-            EventUpdateRowFilter::UnownedOnly
-        } else {
-            EventUpdateRowFilter::All
-        };
-        self.apply_discrete_event_updates(application_time, event, row_filter)?;
-        if self.advance_state_to_event_right_limit {
-            self.refresh_frozen_event_observation(event_time)?;
-        }
-        Ok(())
-    }
-
-    fn on_event_right_limit(
-        &mut self,
-        right_time: f64,
-        event: RuntimeEventStop,
-    ) -> Result<(), Self::Error> {
-        if self.advance_state_to_event_right_limit || self.state_time_coincidence.is_some() {
-            let event_time = self.time;
-            let settle = self.numerics_settle();
-            let derivatives = event_right_limit_state_derivatives(
-                &self.runtime,
-                &self.solver_y_guess.borrow(),
-                event_time,
-                &self.states,
-                &self.params,
-                settle,
-            )?;
-            advance_states_to_event_probe(&mut self.states, &derivatives, event_time, right_time);
-        }
-        self.time = right_time;
-        let event_pre_y = if let Some(event_pre_y) = self.boundary_event_pre_y.clone() {
-            event_pre_y
-        } else {
-            self.current_solver_y()?
-        };
-        let event_pre_p = self
-            .boundary_event_pre_p
-            .clone()
-            .unwrap_or_else(|| self.params.clone());
-        self.pending_event_pre_y = Some(event_pre_y);
-        self.pending_event_pre_p = Some(event_pre_p);
-        let row_filter = if self.state_time_coincidence.is_some() {
-            EventUpdateRowFilter::UnownedOnly
-        } else {
-            EventUpdateRowFilter::All
-        };
-        self.apply_discrete_event_updates(right_time, event, row_filter)?;
-        if self.advance_state_to_event_right_limit {
-            self.refresh_frozen_event_observation(right_time)?;
-        }
-        self.set_post_event_eval_time(Some(right_time));
-        Ok(())
-    }
 }
 
 pub(super) fn event_right_limit_state_derivatives(
@@ -371,9 +271,6 @@ impl ModelExchangeKernel for SolveMeKernel {
             .map_err(|error| error.at_stage(MeStage::EventIteration))?;
         validate_event_entry(entry, self.tolerance)
             .map_err(|error| error.at_stage(MeStage::EventIteration))?;
-        if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            self.frozen_event_accepted_seed = Some(self.solver_y_guess.borrow().clone());
-        }
         // Entering Event Mode is the standard signal that any continuous-
         // mode accepted-point cache is no longer authoritative. This replaces
         // the retired Rumoca-only `AtStateEvent` completed-step variant.
@@ -411,13 +308,10 @@ impl ModelExchangeKernel for SolveMeKernel {
                 "enter_continuous_time_mode requires the pending event update to complete",
             ));
         }
-        if self.skip_next_enter_continuous_delay_commit {
-            self.skip_next_enter_continuous_delay_commit = false;
-        } else {
-            self.commit_delay_point()?;
-        }
+        self.commit_delay_point()?;
         self.clear_all_scheduled_root_relation_memory()?;
         self.clear_runtime_caches();
+        self.seed_settled_indicator_domains()?;
         self.commit_lifecycle_transition(MeLifecycleCommand::EnterContinuousTimeMode)
     }
 
@@ -530,11 +424,12 @@ impl ModelExchangeKernel for SolveMeKernel {
     ) -> Result<MeCompletedIntegratorStep, MeError> {
         self.require_active_lifecycle("completed_integrator_step")?;
         self.post_event_eval_time = None;
+        let enter_event_mode = self.complete_indicator_domains()?;
         if !self.pending_root_crossings.is_empty() {
             self.clear_runtime_caches();
         } else if self.last_projection_changed {
             self.clear_derivative_cache();
-        } else if matches!(self.numerics_profile, MeNumericsProfile::Component) {
+        } else {
             // FMI does not let an importer hand an FSAL stage into the FMU.
             // Keep the ordinary accepted-point cache private by evaluating it
             // through the same standard derivative operation the importer
@@ -546,7 +441,10 @@ impl ModelExchangeKernel for SolveMeKernel {
         }
         self.commit_delay_point()
             .map_err(|error| error.at_stage(MeStage::Integration))?;
-        Ok(MeCompletedIntegratorStep::default())
+        Ok(MeCompletedIntegratorStep {
+            enter_event_mode,
+            terminate_simulation: false,
+        })
     }
 
     fn max_step_size(&self) -> Option<f64> {
@@ -605,19 +503,7 @@ impl ModelExchangeKernel for SolveMeKernel {
 
     fn capture_pre_event_state(&mut self) -> Result<(), MeError> {
         self.require_active_lifecycle("capture_pre_event_state")?;
-        let pre_y = match self.numerics_profile {
-            MeNumericsProfile::Component => self.runtime.full_solver_y(
-                self.time,
-                &self.states,
-                &self.params,
-                ALGEBRAIC_REFRESH_TOL,
-                UPDATE_MAX_ITERS,
-            )?,
-            MeNumericsProfile::DiffsolFrozen => self.solver_y_at_time(self.time)?,
-        };
-        self.pending_event_pre_y = Some(pre_y);
-        self.pending_event_pre_p = Some(self.params.clone());
-        Ok(())
+        self.capture_event_entry()
     }
 
     fn arm_state_event(&mut self, crossings: &[MeIndicatorCrossing]) -> Result<(), MeError> {
@@ -752,15 +638,12 @@ impl ModelExchangeKernel for SolveMeKernel {
                 advance_state_to_event_right_limit: self.advance_state_to_event_right_limit,
                 state_time_coincidence: self.state_time_coincidence,
                 initial_event_pending: self.initial_event_pending,
-                skip_next_enter_continuous_delay_commit: self
-                    .skip_next_enter_continuous_delay_commit,
                 pending_root_crossings: self.pending_root_crossings.clone(),
-                frozen_event_root_crossings: self.frozen_event_root_crossings.clone(),
+                frozen_indicator_positive: self.frozen_indicator_positive.clone(),
                 pending_event_pre_y: self.pending_event_pre_y.clone(),
                 pending_event_pre_p: self.pending_event_pre_p.clone(),
                 boundary_event_pre_y: self.boundary_event_pre_y.clone(),
                 boundary_event_pre_p: self.boundary_event_pre_p.clone(),
-                frozen_event_accepted_seed: self.frozen_event_accepted_seed.clone(),
                 solver_y_guess: self.solver_y_guess.borrow().clone(),
                 delay_params_scratch: self.delay_params_scratch.borrow().clone(),
                 delay_solver_y_scratch: self.delay_solver_y_scratch.borrow().clone(),
@@ -802,12 +685,10 @@ impl ModelExchangeKernel for SolveMeKernel {
         self.advance_state_to_event_right_limit = state.advance_state_to_event_right_limit;
         self.state_time_coincidence = state.state_time_coincidence;
         self.initial_event_pending = state.initial_event_pending;
-        self.skip_next_enter_continuous_delay_commit =
-            state.skip_next_enter_continuous_delay_commit;
         self.pending_root_crossings
             .clone_from(&state.pending_root_crossings);
-        self.frozen_event_root_crossings
-            .clone_from(&state.frozen_event_root_crossings);
+        self.frozen_indicator_positive
+            .clone_from(&state.frozen_indicator_positive);
         self.pending_event_pre_y
             .clone_from(&state.pending_event_pre_y);
         self.pending_event_pre_p
@@ -816,8 +697,6 @@ impl ModelExchangeKernel for SolveMeKernel {
             .clone_from(&state.boundary_event_pre_y);
         self.boundary_event_pre_p
             .clone_from(&state.boundary_event_pre_p);
-        self.frozen_event_accepted_seed
-            .clone_from(&state.frozen_event_accepted_seed);
         self.solver_y_guess
             .borrow_mut()
             .clone_from(&state.solver_y_guess);
@@ -865,7 +744,6 @@ impl ModelExchangeKernel for SolveMeKernel {
         self.pending_event_pre_p = None;
         self.boundary_event_pre_y = None;
         self.boundary_event_pre_p = None;
-        self.frozen_event_accepted_seed = None;
         self.post_event_eval_time = None;
         self.event_anchor_time = start_time;
         self.pending_event_entry = None;
@@ -873,7 +751,6 @@ impl ModelExchangeKernel for SolveMeKernel {
         self.pending_event_stop = None;
         self.advance_state_to_event_right_limit = false;
         self.state_time_coincidence = StateTimeCoincidence::None;
-        self.skip_next_enter_continuous_delay_commit = false;
         self.initial_observations.clear();
         self.clear_runtime_caches();
         self.runtime.reset_delay_history();
@@ -1075,24 +952,6 @@ fn lifecycle_contract(violation: MeLifecycleViolation) -> MeError {
     ))
 }
 
-fn validate_instance_config(config: &MeInstanceConfig) -> Result<(), MeError> {
-    if config.instance_name.is_empty() {
-        return Err(contract("ME instance name must not be empty"));
-    }
-    if !config.tolerance.is_finite() || config.tolerance <= 0.0 {
-        return Err(contract("ME tolerance must be finite and positive"));
-    }
-    if !config.start_time.is_finite()
-        || !config.stop_time.is_finite()
-        || config.stop_time < config.start_time
-    {
-        return Err(contract(
-            "ME time horizon requires finite values with stop_time >= start_time",
-        ));
-    }
-    Ok(())
-}
-
 fn validate_event_entry(entry: MeEventEntry, tolerance: f64) -> Result<(), MeError> {
     let order_tolerance =
         tolerance.max(1.0e-12 * (1.0 + entry.event_time.abs().max(entry.horizon.abs())));
@@ -1115,22 +974,6 @@ fn state_values_match(a: &[f64], b: &[f64]) -> bool {
             .all(|(lhs, rhs)| lhs.to_bits() == rhs.to_bits())
 }
 
-fn first_bit_mismatch_except(
-    a: &[f64],
-    b: &[f64],
-    excluded: &[usize],
-) -> Option<(usize, Option<f64>, Option<f64>)> {
-    let len = a.len().max(b.len());
-    (0..len).find_map(|index| {
-        if excluded.contains(&index) {
-            return None;
-        }
-        let lhs = a.get(index).copied();
-        let rhs = b.get(index).copied();
-        (lhs.map(f64::to_bits) != rhs.map(f64::to_bits)).then_some((index, lhs, rhs))
-    })
-}
-
 fn project_algebraics(
     runtime: &SolveRuntime,
     y: &mut [f64],
@@ -1138,48 +981,17 @@ fn project_algebraics(
     t: f64,
     policy: MeAlgebraicProjectionPolicy,
 ) -> Result<bool, crate::runtime::solve_ops::RuntimeSolveError> {
-    let MeAlgebraicProjectionPolicy {
-        tolerance: tol,
-        profile,
-        settle,
-    } = policy;
-    match profile {
-        MeNumericsProfile::Component => {
-            let before = y.to_vec();
-            runtime.project_state_manifold(y, p, t, tol)?;
-            runtime.refresh_algebraic_and_output_slots_certified(
-                t,
-                y,
-                p,
-                ALGEBRAIC_REFRESH_TOL,
-                UPDATE_MAX_ITERS,
-            )?;
-            Ok(runtime_values_changed(&before, y, tol))
-        }
-        MeNumericsProfile::DiffsolFrozen => {
-            runtime.refresh_delay_values(t, y, p)?;
-            let manifold_changed = runtime.project_state_manifold(y, p, t, tol)?;
-            // Mirror the frozen driver's callback exactly: state-manifold
-            // projection reports every bit-level state change, while the
-            // scaled comparison applies only to the subsequent runtime-lane
-            // refresh.  Dropping `manifold_changed` can stop an event fixed
-            // point one pass early for large-magnitude states.
-            let before_runtime_refresh = y.to_vec();
-            runtime.refresh_algebraic_and_output_slots_certified(
-                t,
-                y,
-                p,
-                settle.tol,
-                settle.max_iters,
-            )?;
-            Ok(frozen_projection_changed(
-                manifold_changed,
-                &before_runtime_refresh,
-                y,
-                tol,
-            ))
-        }
-    }
+    let tol = policy.tolerance;
+    let before = y.to_vec();
+    runtime.project_state_manifold(y, p, t, tol)?;
+    runtime.refresh_algebraic_and_output_slots_certified(
+        t,
+        y,
+        p,
+        ALGEBRAIC_REFRESH_TOL,
+        UPDATE_MAX_ITERS,
+    )?;
+    Ok(runtime_values_changed(&before, y, tol))
 }
 
 fn project_event_algebraics(
@@ -1189,9 +1001,6 @@ fn project_event_algebraics(
     t: f64,
     policy: MeAlgebraicProjectionPolicy,
 ) -> Result<bool, crate::runtime::solve_ops::RuntimeSolveError> {
-    if !matches!(policy.profile, MeNumericsProfile::Component) {
-        return project_algebraics(runtime, y, p, t, policy);
-    }
     let before = y.to_vec();
     runtime.project_state_manifold(y, p, t, policy.tolerance)?;
     runtime.refresh_event_dependency_slots_certified(
@@ -1202,16 +1011,6 @@ fn project_event_algebraics(
         policy.settle.max_iters,
     )?;
     Ok(runtime_values_changed(&before, y, policy.tolerance))
-}
-
-pub(super) fn frozen_projection_changed(
-    manifold_changed: bool,
-    before_runtime_refresh: &[f64],
-    after_runtime_refresh: &[f64],
-    tolerance: f64,
-) -> bool {
-    manifold_changed
-        || runtime_values_changed(before_runtime_refresh, after_runtime_refresh, tolerance)
 }
 
 /// SPEC_0038 "Unsupported lifecycle capability fails before execution".

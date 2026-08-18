@@ -25,6 +25,24 @@ pub fn lower_for_simulation_with_overrides(
     Ok(solve_model)
 }
 
+/// Lower one simulation model while retaining the phase-owned DAE/Solve
+/// correlation needed for FMI construction or canonical component wire.
+pub fn lower_correlated_for_simulation_with_overrides<'source>(
+    model: &'source dae::Dae,
+    opts: &SimOptions,
+) -> Result<rumoca_phase_solve::LoweredSolveModel<'source>, SimulationDiagnosticError> {
+    let overrides = tunable_param_overrides(model, opts)?;
+    let (mut lowered, _) =
+        super::entry::lower_correlated_for_simulation_with_stage_timing_and_param_overrides(
+            model,
+            opts,
+            &overrides,
+            |_| {},
+        )?;
+    apply_correlated_simulation_overrides(&mut lowered, model, opts)?;
+    Ok(lowered)
+}
+
 pub fn lower_for_differentiation_with_overrides(
     model: &dae::Dae,
     opts: &SimOptions,
@@ -86,9 +104,8 @@ fn record_parameter_names(
     }
 }
 
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-pub(crate) fn apply_simulation_overrides(
-    solve_model: &mut solve::SolveModel,
+fn verify_parameter_overrides(
+    solve_model: &solve::SolveModel,
     model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<(), SimulationDiagnosticError> {
@@ -114,7 +131,24 @@ pub(crate) fn apply_simulation_overrides(
             )));
         }
     }
-    apply_state_overrides(solve_model, opts)
+    Ok(())
+}
+
+/// Apply experiment overrides through the phase-owned correlated aggregate,
+/// without exposing mutable Solve IR before FMI construction.
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub(crate) fn apply_correlated_simulation_overrides(
+    lowered: &mut rumoca_phase_solve::LoweredSolveModel<'_>,
+    model: &dae::Dae,
+    opts: &SimOptions,
+) -> Result<(), SimulationDiagnosticError> {
+    verify_parameter_overrides(lowered.model(), model, opts)?;
+    for (name, value) in &opts.start_overrides {
+        lowered
+            .set_initial_state(name, *value)
+            .map_err(super::entry::model_lowering_error)?;
+    }
+    Ok(())
 }
 
 fn apply_state_overrides(

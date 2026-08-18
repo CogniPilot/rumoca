@@ -4,14 +4,14 @@
 //! (stiff/implicit) pulls relaxed-SIMD via faer/pulp, which a single combined
 //! module would require at instantiation — hard-failing the whole package on
 //! older browsers. So diffsol lives here, in a *separate* module that:
-//!   1. carries no Modelica front end — it replays a canonical `SolveModel`
-//!      wire the main module already lowered, mechanically rebuilding the
-//!      derived solver artifacts (see the `solve_model_round_trip` test), and
+//!   1. carries no Modelica front end — it replays a canonical correlated FMI
+//!      component wire the main module already lowered, mechanically rebuilding
+//!      the derived solver artifacts and FMI inventory, and
 //!   2. is loaded lazily by JS only after feature-detecting relaxed-SIMD, so an
 //!      old browser never has to instantiate it (the stiff solver is simply
 //!      greyed out in the UI instead of breaking the page).
 
-use rumoca_ir_solve::SolveModel;
+use rumoca_ir_solve::fmi::FmiComponent;
 use rumoca_solver::{
     SimOptions, SimSolverMode, SimulationRequestSummary, SimulationRunMetrics,
     build_simulation_payload,
@@ -20,13 +20,13 @@ use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
 /// The payload the main module's `lower_model_to_solve_json` produces: the
-/// lowered model plus the resolved simulation time (which the SolveModel does
+/// lowered component plus the resolved simulation time (which the component does
 /// not itself carry, and which the main module resolves from the experiment
 /// annotation when the caller defers).
 #[derive(Deserialize)]
 struct DiffsolInput {
-    #[serde(deserialize_with = "rumoca_phase_solve::deserialize_solve_model")]
-    solve_model: SolveModel,
+    #[serde(deserialize_with = "rumoca_phase_solve::fmi::deserialize_fmi_component")]
+    fmi_component: FmiComponent,
     #[serde(default)]
     t_end: f64,
     #[serde(default)]
@@ -40,7 +40,7 @@ pub fn start() {
 }
 
 /// Simulate a pre-lowered model with the stiff/implicit diffsol backend.
-/// `input_json` is the `{ solve_model, t_end, dt }` payload from the main
+/// `input_json` is the `{ fmi_component, t_end, dt }` payload from the main
 /// module's `lower_model_to_solve_json`. Returns the same `{ "payload": ... }`
 /// JSON shape as the main module's `simulate_model`, so callers treat both
 /// paths uniformly.
@@ -61,7 +61,7 @@ pub fn simulate_solve_model_diffsol(input_json: &str) -> Result<String, JsValue>
         ..defaults
     };
 
-    let sim = rumoca_solver_diffsol::simulate(&input.solve_model, &opts)
+    let sim = rumoca_solver_diffsol::simulate(input.fmi_component, &opts)
         .map_err(|e| JsValue::from_str(&format!("diffsol simulation error: {e}")))?;
 
     let metrics = SimulationRunMetrics::default();
