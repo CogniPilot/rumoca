@@ -17,7 +17,7 @@
 //! Both made the body-rate derivatives diverge (`der(X[12])` jumped from 0 to
 //! ~10x `der(X[11])`). The model fixture lives under `tests/fixtures/` and the
 //! `LieGroups` library is pulled from the cached CMM snapshot (via
-//! `cargo xtask repo modelica-deps ensure`), so this guards the actual model against the
+//! `cargo make modelica-deps`), so this guards the actual model against the
 //! real library, not a hand-written approximation.
 
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ use rumoca::Compiler;
 use rumoca_sim::{SimOptions, eval_dae_at};
 
 /// The `LieGroups` library ships in the cached CogniPilot Modelica Models
-/// (CMM) snapshot, pulled by `cargo xtask repo modelica-deps ensure`. Resolve its package
+/// (CMM) snapshot, pulled by `cargo make modelica-deps`. Resolve its package
 /// directory, or `None` when the cache is absent (so the test skips locally
 /// without the cache, matching the other CMM-dependent regressions).
 fn cached_lie_groups() -> Option<PathBuf> {
@@ -61,7 +61,7 @@ fn quadrotor_se23_13state_initial_derivatives_are_stable() {
     let Some(lie_groups) = cached_lie_groups() else {
         eprintln!(
             "skipping SE_2(3) 13-state quadrotor regression: requires cached CMM at \
-             target/cmm/CMM-a642c381; run `cargo xtask repo modelica-deps ensure`"
+             target/cmm/CMM-a642c381; run `cargo make modelica-deps`"
         );
         return;
     };

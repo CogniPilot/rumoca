@@ -9,7 +9,7 @@ import {
   collectDocumentCompletionTimings,
 } from "./msl_extension_smoke_support.mjs";
 
-// Read a `--flag value` argument passed by `cargo xtask` (the harness's argv
+// Read a `--flag value` argument passed by the editor gate (the harness's argv
 // channel; editor configuration travels in the launched workspace file).
 function argValue(name) {
   const idx = process.argv.indexOf(name);

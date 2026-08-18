@@ -109,7 +109,7 @@ fn balance_failure_record(result: &MslModelResult) -> Option<BalanceFailureRecor
         discrete_value_definitions: detail.discrete_value_definitions,
         detail: rumoca_compile::analysis::BalanceBreakdown::from(detail.clone()).to_string(),
         reproduction: format!(
-            "cargo run -p rumoca-test-msl --bin rumoca-msl-tools -- debug-model --model {}",
+            "cargo make msl debug-model --model {}",
             result.model_name
         ),
     })

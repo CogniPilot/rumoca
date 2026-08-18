@@ -77,7 +77,7 @@ closed.
 A reviewed model-specific exclusion may identify a limitation of the OMC
 pointwise test, never an exception to compiler refinement. It stays visible and
 non-strict-high but is not a counterexample; unreviewed misses are. SPEC_0033
-§6a owns reasons and accounting.
+§6b owns reasons and accounting.
 
 ### Phase Proof Obligations
 
@@ -234,7 +234,7 @@ tool versions, and remaining trusted assumptions.
 | V7 | Numerical runtime profile | Published error-bound theorem |
 
 OMC/MSL validation and counterexample handling follow
-[SPEC_0033 §6a](SPEC_0033_DEVELOPMENT_PROCESS.md#6a-two-tier-verification-cadence);
+[SPEC_0033 §6b](SPEC_0033_DEVELOPMENT_PROCESS.md#6b-two-tier-verification-cadence);
 they are not proof evidence.
 
 ### Phasing
@@ -264,7 +264,7 @@ Kani-backed W1 evidence is reproducible only when all of the following are
 present in the same revision:
 
 - the Kani release and its Rust toolchain are pinned by the repository;
-- `cargo xtask verify kani` is the canonical local and CI entry point;
+- `cargo make kani` is the canonical local and CI entry point;
 - CI runs every required harness named by a checked-in proof manifest;
 - the Kani 0.67 driver verifies one harness at a time within each deterministic
   manifest stripe, because its parallel

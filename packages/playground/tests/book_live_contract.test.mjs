@@ -127,11 +127,11 @@ test("book live runner can execute codegen scenarios", async () => {
 });
 
 test("docs staging writes workspace config and stages examples", async () => {
-  const docsCmd = await readRepoFile("crates/xtask/src/docs_cmd.rs");
+  const workflow = await readRepoFile("infra/cargo-make/workflows.toml");
 
-  assert.match(docsCmd, /write_user_guide_workspace_config/);
-  assert.match(docsCmd, /\("examples\/codegen", "codegen"\)/);
-  assert.match(docsCmd, /copy_dir_recursive_excluding/);
-  assert.match(docsCmd, /&\["gen"\]/);
-  assert.match(docsCmd, /WORKSPACE_CONFIG_FILE/);
+  assert.match(workflow, /\[tasks\.docs-user-stage\]/);
+  assert.match(workflow, /for name in models simulation codegen interactive assets/);
+  assert.match(workflow, /cp -a "\$root\/examples\/\$name" "\$out\/\$name"/);
+  assert.match(workflow, /generated="\$out\/codegen\/gen"/);
+  assert.match(workflow, /rumoca-workspace\.toml/);
 });

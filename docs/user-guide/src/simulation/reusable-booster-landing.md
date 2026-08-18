@@ -30,7 +30,7 @@ stops the run.
 For a native run:
 
 ```bash
-cargo xtask repo modelica-deps ensure
+cargo make modelica-deps
 cargo run -p rumoca --release -- \
   sim -c examples/interactive/reusable_booster/rumoca-scenario.toml
 ```
@@ -153,7 +153,7 @@ The native packaging command emits both a directory-form eFMU and a matching
 `.efmu` archive with Algorithm Code and Production Code representations:
 
 ```bash
-cargo xtask repo modelica-deps ensure
+cargo make modelica-deps
 cargo run -p rumoca -- \
   compile examples/interactive/reusable_booster/ReusableBoosterLanding.mo \
   --model ReusableBoosterEmbeddedControlLaw \

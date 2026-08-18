@@ -1,0 +1,251 @@
+# Verification DAG. Direct tools implement simple leaves; cohesive Cargo
+# packages own only checks that contain substantive algorithms.
+
+[tasks.verify-format]
+private = true
+command = "cargo"
+args = ["fmt", "--all", "--", "--check"]
+
+[tasks.verify-traversal-policy]
+private = true
+command = "cargo"
+args = ["run", "--package", "rumoca-repo-policy", "--bin", "rumoca-traversal-policy-check"]
+
+[tasks.verify-clippy]
+private = true
+command = "cargo"
+args = ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
+
+[tasks.verify-lint]
+description = "Run formatting, traversal-policy, and clippy checks"
+category = "Verification"
+dependencies = ["verify-format", "verify-traversal-policy", "verify-clippy"]
+
+[tasks.verify-kani]
+private = true
+description = "Run repository-pinned Kani proofs"
+category = "Verification"
+command = "cargo"
+args = ["run", "--package", "rumoca-kani", "--", "${@}"]
+
+[tasks.verify-workspace]
+private = true
+description = "Run the workspace test matrix"
+category = "Verification"
+dependencies = ["verify-workspace-nextest", "verify-workspace-docs"]
+
+[tasks.verify-workspace-nextest]
+private = true
+description = "Run workspace unit and integration tests under nextest"
+category = "Verification"
+command = "cargo"
+args = [
+    "nextest", "run", "--workspace",
+    "--exclude", "rumoca-bind-python",
+    "--exclude", "rumoca-bind-wasm",
+    "--features", "rumoca/msl-sim-tests",
+    "${@}",
+]
+
+[tasks.verify-workspace-docs]
+private = true
+description = "Run workspace doctests"
+category = "Verification"
+command = "cargo"
+args = [
+    "test", "--doc", "--workspace", "--verbose",
+    "--exclude", "rumoca-bind-python",
+    "--exclude", "rumoca-bind-wasm",
+    "--features", "rumoca/msl-sim-tests",
+]
+
+[tasks.verify-template-runtimes]
+private = true
+description = "Run generated-code runtime checks"
+category = "Verification"
+script = '''
+set -eu
+if [ "${1:-}" = -- ]; then shift; fi
+backend=all
+strict=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --backend) backend="$2"; shift 2 ;;
+    --require-external-tools) strict=true; shift ;;
+    *) echo "unknown template-runtime argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+marker="$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/target/template-runtimes/strict"
+if [ "$strict" = true ]; then
+  mkdir -p "$(dirname "$marker")"
+  printf '%s\n' 'required by cargo make verify-full' > "$marker"
+  trap 'rm -f "$marker"' EXIT INT TERM
+fi
+
+run_filter() {
+  filter="$1"
+  features="$2"
+  cargo test --verbose --jobs 1 --package rumoca --no-default-features \
+    --features "$features" --test suite_template_runtime "$filter" -- --nocapture
+}
+
+case "$backend" in
+  all)
+    cargo test --verbose --jobs 1 --package rumoca --no-default-features \
+      --features template-runtime-tests,fmu-packaging \
+      --test suite_template_runtime -- --nocapture
+    ;;
+  render)
+    run_filter 'template_target_ci::' template-runtime-tests,fmu-packaging
+    run_filter 'codegen_example_regression::' template-runtime-tests,fmu-packaging
+    run_filter 'dae_template_context_' template-runtime-tests,fmu-packaging
+    run_filter 'explicit_rhs_targets_reject_implicit_algebraic_models' template-runtime-tests,fmu-packaging
+    ;;
+  c) run_filter 'c_ode_' template-runtime-tests ;;
+  casadi) run_filter 'casadi_' template-runtime-tests ;;
+  cuda) run_filter 'cuda_ode_' template-runtime-tests ;;
+  fmi)
+    run_filter 'cli_target_fmi::' template-runtime-tests,fmu-packaging
+    run_filter 'fmi_ls_dae_contract::' template-runtime-tests,fmu-packaging
+    run_filter 'only_fmi3_' template-runtime-tests,fmu-packaging
+    run_filter 'fmi3_rejects_' template-runtime-tests,fmu-packaging
+    run_filter 'fmi3_exact_runtime_' template-runtime-tests,fmu-packaging
+    ;;
+  jax) run_filter 'jax_' template-runtime-tests ;;
+  modelica) run_filter 'modelica_interchange_runtime::' template-runtime-tests ;;
+  rust)
+    run_filter 'rust_ode_' template-runtime-tests
+    run_filter 'rust_fixed_ode_' template-runtime-tests
+    ;;
+  wasm) run_filter 'fmi_ls_wasm_' template-runtime-tests,fmu-packaging ;;
+  *) echo "unknown template backend: $backend" >&2; exit 2 ;;
+esac
+'''
+
+[tasks.verify-examples]
+private = true
+description = "Fetch example libraries and run example smoke tests"
+category = "Verification"
+dependencies = ["modelica-deps"]
+command = "cargo"
+args = [
+    "test", "--package", "rumoca",
+    "--features", "examples-smoke-tests",
+    "--test", "suite_examples_smoke",
+    "--", "--nocapture",
+]
+
+[tasks.modelica-deps]
+description = "Fetch and validate the pinned Modelica libraries"
+category = "Setup"
+command = "cargo"
+args = [
+    "run", "--package", "rumoca-modelica-cache",
+    "--bin", "rumoca-modelica-cache", "--",
+    "modelica-deps", "ensure",
+]
+
+[tasks.verify-vscode-msl]
+private = true
+description = "Run the VS Code extension-host MSL smoke check"
+category = "Verification"
+dependencies = ["modelica-deps"]
+command = "cargo"
+args = ["run", "--package", "rumoca-test-msl", "--bin", "rumoca-editor-gate", "--", "vscode-msl", "${@}"]
+
+[tasks.verify-lsp-msl-completion-timings]
+private = true
+description = "Run full-MSL LSP timings and editor runtime smokes"
+category = "Verification"
+dependencies = ["modelica-deps", "playground-build"]
+command = "cargo"
+args = ["run", "--package", "rumoca-test-msl", "--bin", "rumoca-editor-gate", "--", "lsp-msl-completion-timings", "${@}"]
+
+[tasks.verify-wasm-editor-msl]
+private = true
+description = "Run the browser-hosted WASM editor MSL smoke check"
+category = "Verification"
+dependencies = ["modelica-deps", "playground-build"]
+command = "cargo"
+args = ["run", "--package", "rumoca-test-msl", "--bin", "rumoca-editor-gate", "--", "wasm-editor-msl", "${@}"]
+
+[tasks.verify-editor-msl]
+private = true
+description = "Run VS Code and WASM editor MSL smoke checks"
+category = "Verification"
+dependencies = ["verify-vscode-msl", "verify-wasm-editor-msl"]
+
+[tasks.verify-architecture]
+private = true
+description = "Run architecture-hardening and file-size gates"
+category = "Verification"
+command = "cargo"
+args = [
+    "test", "--package", "rumoca",
+    "--test", "architecture_hardening_test",
+    "--test", "suite_gates",
+]
+
+[tasks.verify-binaries]
+private = true
+description = "Verify primary binaries build"
+category = "Verification"
+command = "cargo"
+args = ["build", "--verbose", "--bin", "rumoca", "--bin", "rumoca-lsp"]
+
+[tasks.verify-docs]
+private = true
+description = "Run rustdoc and mdBook verification"
+category = "Verification"
+dependencies = ["verify-rustdoc", "docs-build"]
+
+[tasks.verify-rustdoc]
+private = true
+env = { RUSTDOCFLAGS = "-D warnings" }
+command = "cargo"
+args = [
+    "doc", "--workspace", "--no-deps",
+    "--exclude", "rumoca-bind-python",
+    "--exclude", "rumoca-bind-wasm",
+]
+
+[tasks.msl-parity]
+description = "Run the full MSL/OMC parity gate"
+category = "Verification"
+command = "cargo"
+args = ["run", "--package", "rumoca-test-msl", "--bin", "rumoca-msl-tools", "--", "parity", "${@}"]
+
+[tasks.coverage-gate-full]
+private = true
+command = "cargo"
+args = ["run", "--package", "rumoca-coverage", "--", "gate", "--allowed-workspace-line-coverage-drop", "3.0"]
+
+[tasks.verify-quick]
+description = "Run the risk-focused local verification DAG"
+category = "Verification"
+dependencies = [
+    "verify-lint",
+    "verify-architecture",
+    "verify-workspace",
+]
+
+[tasks.verify-full]
+description = "Run the complete local/CI verification DAG"
+category = "Verification"
+dependencies = [
+    "verify-lint",
+    "msl-parity",
+    "verify-architecture",
+    "verify-workspace",
+    "verify-examples",
+    "verify-binaries",
+    "verify-template-runtimes",
+    "coverage-run",
+    "coverage-report",
+    "coverage-gate-full",
+    "verify-docs",
+    "vscode-test",
+    "playground-test",
+    "verify-lsp-msl-completion-timings",
+]

@@ -5,11 +5,11 @@ REFERENCE
 
 ## Summary
 Lookup catalog for the trace-production and rejection rules governed by
-SPEC_0033 §6a.
+SPEC_0033 §6b.
 
 ## Specification
 
-Rows below are normative by reference from SPEC_0033 §6a and add no independent
+Rows below are normative by reference from SPEC_0033 §6b and add no independent
 requirements.
 
 | Rule | Owner/Where | Brief Justification |
@@ -22,5 +22,5 @@ requirements.
 
 ## References
 
-- [SPEC_0033 §6a](SPEC_0033_DEVELOPMENT_PROCESS.md#6a-two-tier-verification-cadence)
+- [SPEC_0033 §6b](SPEC_0033_DEVELOPMENT_PROCESS.md#6b-two-tier-verification-cadence)
   — owning development-process rules.

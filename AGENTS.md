@@ -12,7 +12,7 @@ spec, it's not a rule — propose a spec change first.
 - [spec/SPEC_0000_SPEC_GUIDELINES.md](spec/SPEC_0000_SPEC_GUIDELINES.md) —
   how specs themselves work; what the statuses mean; how to propose a new
   spec.
-- [CONTRIBUTING.md](CONTRIBUTING.md) — local setup and `cargo xtask` CLI usage.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — local setup and cargo-make workflow usage.
 - [spec/SPEC_0033_DEVELOPMENT_PROCESS.md](spec/SPEC_0033_DEVELOPMENT_PROCESS.md) —
   operational workflow, triage proof requirements, upstream-first fix policy,
   and MSL-backed validation expectations.

@@ -474,25 +474,22 @@ Author reminder: fmt/lint APIs live in rumoca-tool-fmt and rumoca-tool-lint."
 }
 
 #[test]
-fn test_tool_dev_uses_session_facade() {
-    let cargo_toml = workspace_root().join("crates/xtask/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read tool-dev Cargo.toml");
-
-    for banned in [
-        "rumoca",
-        "rumoca-core",
-        "rumoca-phase-solve",
-        "rumoca-ir-ast",
-        "rumoca-ir-flat",
-        "rumoca-ir-dae",
-        "rumoca-phase-parse",
-    ] {
-        assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
-            "xtask must not depend directly on {banned}; \
-Author reminder: use rumoca-compile facade APIs instead."
-        );
-    }
+fn test_generic_rust_task_runner_is_absent() {
+    let root = workspace_root();
+    let workspace = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
+    let makefiles = [
+        "Makefile.toml",
+        "infra/cargo-make/verify.toml",
+        "infra/cargo-make/vscode.toml",
+        "infra/cargo-make/workflows.toml",
+        "infra/cargo-make/tools.toml",
+    ]
+    .into_iter()
+    .map(|path| fs::read_to_string(root.join(path)).expect("read cargo-make file"))
+    .collect::<String>();
+    assert!(!workspace.contains("crates/xtask"));
+    assert!(!makefiles.contains("rumoca-dev"));
+    assert!(!makefiles.contains("cargo xtask"));
 }
 
 #[test]

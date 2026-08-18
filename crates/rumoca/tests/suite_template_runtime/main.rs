@@ -2,7 +2,7 @@
 //! render and execute generated target code. See `suite_core/main.rs` for the
 //! grouping rules.
 //!
-//! `xtask verify template-runtimes` drives this target per backend and selects
+//! Cargo-make drives this target per backend and selects
 //! each member with a module-prefixed libtest filter, so the external-toolchain
 //! groups stay separable.
 

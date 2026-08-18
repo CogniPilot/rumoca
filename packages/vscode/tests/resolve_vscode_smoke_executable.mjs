@@ -6,7 +6,7 @@ import { downloadAndUnzipVSCode } from "@vscode/test-electron";
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const vscodeDir = path.resolve(thisDir, "..");
 
-// Read a `--flag value` argument passed by `cargo xtask` (the harness's argv
+// Read a `--flag value` argument passed by the editor gate (the harness's argv
 // channel for the smoke executable path).
 function argValue(name) {
   const idx = process.argv.indexOf(name);

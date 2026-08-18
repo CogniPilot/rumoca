@@ -78,11 +78,11 @@ fn flatten_if_equation(...) { ... }
 | List the key commands run | Reviewers reproduce locally; absent commands signal untested paths |
 | Describe the behavior or regression covered | Tests must prove behavior, not just exercise code |
 | State commands NOT run and why | Honest disclosure beats silent gaps |
-| Report Tier 1 evidence — focused suites plus the fixed 20-model canary delta — for every capability change | Tier 1 is the per-change done-criterion (SPEC_0033 §6a) |
+| Report Tier 1 evidence — focused suites plus the fixed 20-model canary delta — for every capability change | Tier 1 is the per-change done-criterion (SPEC_0033 §6b) |
 | Quote cohort parity only from a complete Tier 2 566-model sweep, naming its commit | Partial, sharded, focused, and stale runs are not cohort evidence |
 
 Run every command below under `CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4`
-(SPEC_0033 §6a).
+(SPEC_0033 §6b).
 
 Standard verification commands (all merged code MUST pass):
 
@@ -104,7 +104,7 @@ cargo test --release --package rumoca-test-msl --features msl-full-test \
 ModelicaTest semantic gate (compiler / simulator semantic changes):
 
 ```bash
-cargo xtask verify msl-parity \
+cargo make msl parity \
   --results-dir target/msl/modelicatest-results \
   --sim-targets-file crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json \
   --include-modelica-test \
@@ -139,10 +139,10 @@ Rust developer workflow MUST remain Cargo-native.
   mechanisms such as explicit test filters, package/test selection, or Cargo
   features. Do not require user-facing bespoke environment variables solely to
   decide whether a Rust test runs.
-- `rum` orchestrates repository maintenance, verification bundles, packaging,
-  editor/WASM checks, and releases instead of ad-hoc shell/Python scripts. It
-  MAY run Cargo test commands inside a larger workflow, but test ownership and
-  documentation stay on the underlying Cargo command.
+- Cargo-make orchestrates repository maintenance, verification bundles,
+  packaging, and editor/WASM checks. It MAY run Cargo test commands inside a
+  larger workflow, but test ownership and documentation stay on the underlying
+  Cargo command.
 - The `rumoca` compiler binary is product-facing. It MUST NOT grow repository
   test-runner subcommands.
 - The workspace MUST NOT use `#[ignore]` for parked or heavyweight tests. Tests
@@ -154,7 +154,7 @@ Rust developer workflow MUST remain Cargo-native.
 | Run the unified MSL gate for any parser, instantiate, flatten, ToDae, or sim change | One gate produces consistent OMC reference + sim trace + quality artifacts |
 | Run the separate ModelicaTest semantic gate for language-semantics changes when the MSL source-tree `ModelicaTest` package is available | ModelicaTest is an assertion-heavy semantic suite and must not be conflated with the curated MSL example target set |
 | Run the pinned `modelica_models` aggregate-compile and corpus-owned assertion-smoke gate for compiler/simulator semantic changes | A fixed external assertion corpus catches cross-library compatibility regressions without weakening MLS or MSL gates |
-| Compare against the resolved MSL quality baseline (`cargo xtask verify msl-parity` downloads the promoted `msl-quality-baseline/msl_quality_baseline.json` release asset and falls back to `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json` offline) | Baseline is the regression bar |
+| Compare against the resolved MSL quality baseline (`rumoca-msl-tools parity` downloads the promoted `msl-quality-baseline/msl_quality_baseline.json` release asset and falls back to `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json` offline) | Baseline is the regression bar |
 | An explicitly reviewed checked-in full baseline MAY declare an exact `from_omc_version` -> `to_omc_version` migration and fixed target count; only a declaration matching both baseline contexts takes precedence over the older promoted release until the next successful main run promotes that context | Metrics from different reference compilers are not directly comparable, while undeclared, reversed, malformed, or target-set-changing migrations fail and the normal gate still verifies the selected context against current artifacts |
 | A corrected metric definition MAY lower a checked-in stage count only through a quality-gate schema-version migration that records the prior/new versions, prior/new count, affected diagnostic cohort, and exact affected model set; the checked-in migration takes precedence over an older-schema promoted release until main promotes the new schema | A truthful correction must not preserve a known-bad count, but an ordinary baseline edit must never disguise a compiler regression as measurement cleanup |
 | A checked-in full baseline MAY bridge a promoted asset across multiple reviewed migrations only with the exact source digest, source/target schemas, target count, and ordered evidence commits; all other old assets MUST fail | Promotion lag must not deadlock CI or permit a generic old-schema fallback |
@@ -164,8 +164,8 @@ Rust developer workflow MUST remain Cargo-native.
 | Focused or limited MSL runs MUST mark quality snapshots as partial and partial snapshots MUST NOT be promoted | Prevents local-debug subsets from becoming the committed release baseline |
 | Trace-quality metrics MUST be gated against the resolved promoted baseline when OMC parity data is available | Prevents balanced-but-numerically-worse simulations from passing unnoticed |
 | Runtime speedup medians (system & wall) MUST NOT regress by > 35% | Tolerates 4-core hosted-runner noise without hiding material regressions |
-| Promoted baseline release-asset updates require a successful full main CI run and a non-regressing ratchet decision; checked-in fallback updates remain explicit via `cargo xtask repo msl promote-quality-baseline` | Prevents silent baseline drift |
-| Coverage trim/gate updates follow `cargo xtask coverage {run,report,gate}` workflow | Coverage promotion is explicit only |
+| Promoted baseline release-asset updates require a successful full main CI run and a non-regressing ratchet decision; checked-in fallback updates remain explicit via `rumoca-msl-tools promote-quality-baseline` | Prevents silent baseline drift |
+| Coverage trim/gate updates follow the `rumoca-coverage {run,report,gate}` workflow | Coverage promotion is explicit only |
 
 ### 5. Code Size Budget
 
@@ -195,7 +195,7 @@ net_added_lines:
 |---|---|
 | At least one approving review | Two-eyes on every merge |
 | All CI checks passing | CI gates (incl. `architecture_hardening_test`, `spec_budget_test`) are the non-negotiables |
-| Capability PRs show Tier 1 evidence and source every parity number | SPEC_0033 §6a cadence must be checkable at review |
+| Capability PRs show Tier 1 evidence and source every parity number | SPEC_0033 §6b cadence must be checkable at review |
 | No unresolved conversations | Open threads = open questions |
 | Branch is up-to-date with target | Avoids merge-on-stale surprises |
 | Signed-off-by on every commit (`git commit -s`) | DCO compliance |
@@ -232,5 +232,5 @@ they are enforced by §4 commands.
 - SPEC_0021 — code complexity limits
 - SPEC_0022 — MLS compiler compliance catalog
 - SPEC_0029 — crate boundaries
-- SPEC_0033 — development process and the §6a verification cadence
+- SPEC_0033 — development process and the §6b verification cadence
 - [Modelica Language Specification](https://specification.modelica.org/)

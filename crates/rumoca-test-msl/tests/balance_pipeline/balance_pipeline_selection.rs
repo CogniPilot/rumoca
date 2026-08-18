@@ -213,7 +213,7 @@ pub(super) fn compile_model_memory_costs_for_names(names: &[String]) -> HashMap<
 /// threshold on a 62 GB host) while leaving over 90% of RAM spendable on hosts
 /// larger than ~55 GB. Scaling the reserve with total RAM keeps a fixed slice of
 /// the machine - and therefore a fixed multiple of the kill threshold - out of
-/// the budget on every host size. This matches the rule `xtask`'s Rust build
+/// the budget on every host size. This matches the repository Rust-build
 /// budget applies to `CARGO_BUILD_JOBS`.
 fn reserved_memory_mb_for_total(total_mb: Option<usize>) -> usize {
     let proportional = total_mb

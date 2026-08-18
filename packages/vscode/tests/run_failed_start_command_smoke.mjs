@@ -9,7 +9,7 @@ const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const vscodeDir = path.resolve(thisDir, "..");
 const suitePath = path.resolve(vscodeDir, "tests", "failed_start_extension_suite.cjs");
 
-// Read a `--flag value` argument passed by `cargo xtask` (the harness's argv
+// Read a `--flag value` argument passed by the editor gate (the harness's argv
 // channel; the editor configuration travels in the launched workspace file).
 function argValue(name) {
   const idx = process.argv.indexOf(name);

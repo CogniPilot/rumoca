@@ -1,0 +1,32 @@
+# Repository task graph. Cargo owns Rust dependency/freshness decisions; these
+# tasks compose Cargo with the non-Rust toolchains used by Rumoca.
+extend = [
+    { path = "infra/cargo-make/verify.toml" },
+    { path = "infra/cargo-make/vscode.toml" },
+    { path = "infra/cargo-make/workflows.toml" },
+    { path = "infra/cargo-make/tools.toml" },
+]
+
+[config]
+min_version = "0.37.24"
+default_to_workspace = false
+skip_core_tasks = true
+
+[env]
+RUMOCA_EXE_SUFFIX = { source = "${CARGO_MAKE_RUST_TARGET_OS}", default_value = "", mapping = { windows = ".exe" } }
+RUMOCA_SHARED_LIBRARY_PREFIX = { source = "${CARGO_MAKE_RUST_TARGET_OS}", default_value = "lib", mapping = { windows = "" } }
+RUMOCA_SHARED_LIBRARY_SUFFIX = { source = "${CARGO_MAKE_RUST_TARGET_OS}", default_value = ".so", mapping = { macos = ".dylib", windows = ".dll" } }
+
+[tasks.default]
+clear = true
+description = "Print the public Rumoca workflows and tools"
+script = '''
+echo "Rumoca's public workflows and tools:"
+echo "  cargo make vscode-{edit,test}"
+echo "  cargo make playground-{build,edit,test}"
+echo "  cargo make docs-{build,serve}"
+echo "  cargo make verify-{quick,full}"
+echo "  cargo make {modelica-deps,msl-parity}"
+echo "  cargo make {msl,coverage,crate-graph,review,release,kani,fuzz} <args>"
+echo "Use ordinary cargo commands for Rust-only work."
+'''

@@ -1,0 +1,170 @@
+# Product-adjacent development workflows. Cargo-make owns composition and
+# invokes each language's native tool directly where no algorithmic leaf exists.
+
+[tasks.playground-build]
+description = "Build a playground WASM bundle"
+category = "Playground"
+dependencies = ["vscode-web-assets"]
+command = "node"
+args = ["packages/rumoca/build.mjs", "${@}"]
+
+[tasks.playground-npm-deps]
+private = true
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/packages/playground"
+condition = { condition_type = "Or", files_not_exist = [
+    "node_modules/.package-lock.json",
+    "node_modules/playwright-core/package.json",
+], files_modified = { input = ["package.json", "package-lock.json"], output = ["node_modules/.package-lock.json"] } }
+command = "npm"
+args = ["ci"]
+
+[tasks.playground-test]
+description = "Run the playground browser verification gate"
+category = "Playground"
+dependencies = ["playground-build", "playground-npm-deps"]
+script = '''
+set -eu
+cargo test --package rumoca-bind-wasm --all-features --verbose
+node --test packages/playground/tests/*.test.mjs
+node packages/playground/tests/simulate_smoke.mjs --pkg-subdir release-full-web
+node packages/playground/tests/source_root_smoke.mjs --pkg-subdir release-full-web
+'''
+
+[tasks.playground-cmm]
+private = true
+command = "cargo"
+args = ["run", "--package", "rumoca-modelica-cache", "--", "cmm", "ensure"]
+
+[tasks.playground-edit]
+description = "Build and serve the playground"
+category = "Playground"
+dependencies = ["playground-build", "playground-cmm"]
+script = '''
+set -eu
+if [ "${1:-}" = -- ]; then shift; fi
+port=${PORT:-8080}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --port) port="$2"; shift 2 ;;
+    *) echo "unknown playground-edit argument: $1" >&2; exit 2 ;;
+  esac
+done
+echo "Playground URL: http://localhost:$port/packages/playground/"
+python3 -m http.server "$port" --directory "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY"
+'''
+
+[tasks.coverage-run]
+private = true
+description = "Generate unified workspace llvm-cov artifacts"
+category = "Coverage"
+command = "cargo"
+args = ["run", "--package", "rumoca-coverage", "--", "run", "${@}"]
+
+[tasks.coverage-report]
+private = true
+description = "Generate coverage inventory and trim candidates"
+category = "Coverage"
+command = "cargo"
+args = ["run", "--package", "rumoca-coverage", "--", "report", "${@}"]
+
+[tasks.docs-user-mdbook]
+private = true
+condition = { condition_type = "Or", files_not_exist = ["docs/user-guide/book/index.html"], files_modified = { input = [
+    "docs/user-guide/book.toml",
+    "docs/user-guide/src/**/*.md",
+    "docs/user-guide/live/**/*",
+], output = ["docs/user-guide/book/index.html"] } }
+command = "mdbook"
+args = ["build", "docs/user-guide"]
+
+[tasks.docs-user-stage]
+private = true
+dependencies = ["docs-user-mdbook"]
+condition = { condition_type = "Or", files_not_exist = ["docs/user-guide/book/repo-examples/.stamp"], files_modified = { input = [
+    "docs/user-guide/book/index.html",
+    "examples/models/**/*",
+    "examples/simulation/**/*",
+    "examples/codegen/**/*",
+    "examples/interactive/**/*",
+    "examples/assets/**/*",
+    "examples/modelica_dependencies.toml",
+], output = ["docs/user-guide/book/repo-examples/.stamp"] } }
+script = '''
+set -eu
+root="$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY"
+out="$root/docs/user-guide/book/repo-examples"
+case "$out" in "$root/docs/user-guide/book/repo-examples") ;; *) exit 1 ;; esac
+if [ -L "$out" ]; then echo "refusing to replace symlink: $out" >&2; exit 1; fi
+if [ -d "$out" ]; then rm -rf -- "$out"; fi
+mkdir -p "$out"
+for name in models simulation codegen interactive assets; do
+  cp -a "$root/examples/$name" "$out/$name"
+done
+generated="$out/codegen/gen"
+if [ -L "$generated" ]; then echo "refusing to remove symlink: $generated" >&2; exit 1; fi
+if [ -d "$generated" ]; then rm -rf -- "$generated"; fi
+
+roots="$out/source-roots"
+mkdir -p "$roots"
+set -- "$roots/cache.bin.gz"
+manifest_entries=
+workspace_entries=
+msl="$root/target/msl/ModelicaStandardLibrary-4.1.0"
+cmm="$root/target/cmm/CMM-a642c381"
+if [ -d "$msl" ]; then
+  set -- "$@" 'target/msl/ModelicaStandardLibrary-4.1.0' "$msl"
+  manifest_entries='    {"key":"target/msl/ModelicaStandardLibrary-4.1.0","matches":["target/msl/ModelicaStandardLibrary-4.1.0","ModelicaStandardLibrary-4.1.0"]}'
+  workspace_entries='    "target/msl/ModelicaStandardLibrary-4.1.0",'
+fi
+if [ -d "$cmm" ]; then
+  set -- "$@" 'target/cmm/CMM-a642c381' "$cmm"
+  if [ -n "$manifest_entries" ]; then manifest_entries="$manifest_entries,"; fi
+  manifest_entries="$manifest_entries
+    {\"key\":\"target/cmm/CMM-a642c381\",\"matches\":[\"target/cmm/CMM-a642c381\",\"CMM-a642c381\"]}"
+  workspace_entries="$workspace_entries
+    \"target/cmm/CMM-a642c381\","
+fi
+if [ "$#" -gt 1 ]; then
+  cargo run --package rumoca-compile --bin rumoca-source-root-cache -- "$@"
+fi
+cache_json=null
+if [ -f "$roots/cache.bin.gz" ]; then cache_json='"cache.bin.gz"'; fi
+printf '{\n  "version": 1,\n  "cache": %s,\n  "roots": [\n%s\n  ]\n}\n' \
+  "$cache_json" "$manifest_entries" > "$roots/manifest.json"
+printf '# Generated by `cargo make docs-build`.\nsource_roots = [\n%s\n]\n' \
+  "$workspace_entries" > "$out/rumoca-workspace.toml"
+touch "$out/.stamp"
+'''
+
+[tasks.docs-dev-mdbook]
+private = true
+condition = { condition_type = "Or", files_not_exist = ["docs/dev-guide/book/index.html"], files_modified = { input = [
+    "docs/dev-guide/book.toml",
+    "docs/dev-guide/src/**/*.md",
+], output = ["docs/dev-guide/book/index.html"] } }
+command = "mdbook"
+args = ["build", "docs/dev-guide"]
+
+[tasks.docs-build]
+description = "Build the mdBook user and developer guides"
+category = "Documentation"
+dependencies = ["docs-user-stage", "docs-dev-mdbook"]
+
+[tasks.docs-serve]
+description = "Build and serve the documentation locally"
+category = "Documentation"
+dependencies = ["docs-build", "playground-build"]
+script = '''
+set -eu
+if [ "${1:-}" = -- ]; then shift; fi
+port=${PORT:-8080}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --port) port="$2"; shift 2 ;;
+    *) echo "unknown docs-serve argument: $1" >&2; exit 2 ;;
+  esac
+done
+echo "User guide: http://localhost:$port/docs/user-guide/book/"
+echo "Developer guide: http://localhost:$port/docs/dev-guide/book/"
+python3 -m http.server "$port" --directory "$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY"
+'''

@@ -39,7 +39,7 @@ by scanning flattened row text.
 ## Template Runtime Tests
 
 Targets whose output is executable are covered by opt-in template-runtime
-regression tests (`cargo xtask verify template-runtimes`), which actually
+regression tests (`cargo make verify-template-runtimes`), which actually
 run the generated code. Adding a target with runnable output should come
 with such a test.
 

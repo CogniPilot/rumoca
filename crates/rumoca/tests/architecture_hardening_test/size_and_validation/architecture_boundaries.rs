@@ -131,8 +131,8 @@ fn test_content_split_module_roots_declare_submodules_before_imports() {
         "crates/rumoca-solver/src/runtime/projection/tests.rs",
         "crates/rumoca/src/packaging.rs",
         "crates/rumoca/tests/architecture_hardening_test/main.rs",
-        "crates/xtask/src/verify_cmd.rs",
-        "crates/xtask/src/verify_cmd/msl_quality_baseline.rs",
+        "crates/rumoca-test-msl/src/parity_gate.rs",
+        "crates/rumoca-test-msl/src/parity_gate/msl_quality_baseline.rs",
     ];
     for relative in module_roots {
         let source = fs::read_to_string(root.join(relative)).expect("read module root");

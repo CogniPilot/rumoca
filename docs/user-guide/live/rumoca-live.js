@@ -158,7 +158,7 @@
             'Rumoca WASM package not found next to this book. ' +
             'Live examples work on the published site ' +
             '(https://cognipilot.github.io/rumoca/user-guide/) or through ' +
-            'the local preview command `cargo xtask docs serve`.'
+            'the local preview command `cargo make docs-serve`.'
         );
     }
 
@@ -4010,7 +4010,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 if (!gpu || typeof gpu.probeGpu !== 'function') {
                     throw new Error(
                         'GPU driver (rumoca_gpu.js) not found in this package; '
-                        + 'rebuild it (cargo xtask playground build) or uncheck GPU to '
+                        + 'rebuild it (cargo make playground-build) or uncheck GPU to '
                         + 'simulate on the CPU (WASM) path.'
                     );
                 }
@@ -4018,7 +4018,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 if (typeof wasm.prepare_gpu_simulation !== 'function') {
                     throw new Error(
                         'This WASM build predates the wgsl-ode backend; '
-                        + 'rebuild the package (cargo xtask playground build) or '
+                        + 'rebuild the package (cargo make playground-build) or '
                         + 'uncheck GPU to simulate on the CPU (WASM) path.'
                     );
                 }

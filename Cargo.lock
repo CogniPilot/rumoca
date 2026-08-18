@@ -4480,6 +4480,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-coverage"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rumoca-crate-graph"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "rumoca-eval-ast"
 version = "0.10.0"
 dependencies = [
@@ -4656,6 +4677,32 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rumoca-kani"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "num_cpus",
+ "serde",
+ "serde_json",
+ "walkdir",
+]
+
+[[package]]
+name = "rumoca-modelica-cache"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "sha2",
+ "tempfile",
+ "toml",
+ "ureq",
+ "zip",
 ]
 
 [[package]]
@@ -4857,6 +4904,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-release"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "rumoca-repo-policy"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "syn 2.0.118",
+]
+
+[[package]]
+name = "rumoca-review"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
 name = "rumoca-signal-frame"
 version = "0.10.0"
 dependencies = [
@@ -4952,6 +5031,7 @@ dependencies = [
  "dirs 5.0.1",
  "flate2",
  "indexmap 2.14.0",
+ "lsp-types",
  "mimalloc",
  "nix 0.29.0",
  "ntest",
@@ -4974,6 +5054,7 @@ dependencies = [
  "rumoca-worker",
  "serde",
  "serde_json",
+ "sha2",
  "tar",
  "tempfile",
  "ureq",
@@ -7389,28 +7470,6 @@ name = "xml_writer"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a74a847d8392999f89e9668c4dd46283b91fd6fc1f34aa5ecf4ceaf8fa3258e"
-
-[[package]]
-name = "xtask"
-version = "0.10.0"
-dependencies = [
- "anyhow",
- "blake3",
- "clap",
- "clap_complete",
- "lsp-types",
- "mimalloc",
- "num_cpus",
- "serde",
- "serde_json",
- "sha2",
- "syn 2.0.118",
- "tempfile",
- "toml",
- "ureq",
- "walkdir",
- "zip",
-]
 
 [[package]]
 name = "xz2"

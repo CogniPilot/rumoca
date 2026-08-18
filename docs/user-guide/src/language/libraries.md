@@ -41,7 +41,7 @@ The examples in the Rumoca repository use pinned library versions declared
 in `examples/modelica_dependencies.toml`. Fetch them once:
 
 ```bash
-cargo xtask repo modelica-deps ensure
+cargo make modelica-deps
 ```
 
 This downloads MSL and the CogniPilot Modelica Models (CMM) into `target/`.
@@ -73,7 +73,7 @@ thing they demonstrate is package/source-root resolution.
 // rumoca-live-scenario: ../repo-examples/simulation/rumoca-scenario.switched_rlc_msl.toml
 ```
 
-For a local book build, run `cargo xtask repo modelica-deps ensure` before
+For a local book build, run `cargo make modelica-deps` before
 building if you want these blocks to compile against the pinned libraries.
 
 ## Packages and `within`

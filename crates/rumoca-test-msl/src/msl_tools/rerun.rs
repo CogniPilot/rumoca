@@ -129,12 +129,9 @@ fn collect_reason_models_from_section(
 
 fn build_rerun_command_spec(models: &[String], results_dir: Option<&Path>) -> RerunCommandSpec {
     let mut args = vec![
-        "run".to_string(),
-        "--bin".to_string(),
-        "xtask".to_string(),
-        "--".to_string(),
-        "verify".to_string(),
-        "msl-parity".to_string(),
+        "make".to_string(),
+        "msl".to_string(),
+        "parity".to_string(),
         "--sim-match-exact".to_string(),
     ];
     for model in models {
@@ -229,12 +226,9 @@ mod tests {
         assert_eq!(
             spec.args,
             [
-                "run",
-                "--bin",
-                "xtask",
-                "--",
-                "verify",
-                "msl-parity",
+                "make",
+                "msl",
+                "parity",
                 "--sim-match-exact",
                 "--sim-match",
                 "Modelica.A",

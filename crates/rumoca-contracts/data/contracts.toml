@@ -1,5 +1,5 @@
 # Contract registry data — source of truth for SPEC_0022.
-# Regenerate with: cargo run -p xtask -- dump-contracts
+# Maintained directly; validated by the rumoca-contracts registry tests.
 
 [[contracts]]
 id = 'ALG-001'

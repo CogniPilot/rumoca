@@ -31,10 +31,10 @@ fn required_msl_sim_regressions_are_selected_by_workspace_verification() {
         "`suite_msl_sim` must declare `msl_sim_regression`"
     );
 
-    let workspace_runner = repository_file("crates/xtask/src/test_cmd.rs");
+    let workspace_runner = repository_file("infra/cargo-make/verify.toml");
     assert!(
         workspace_runner.contains(r#"["--features", "rumoca/msl-sim-tests"]"#),
-        "`cargo xtask verify workspace` must select the MSL simulation regressions"
+        "workspace verification must select the MSL simulation regressions"
     );
 
     let workflow = repository_file(".github/workflows/ci.yml");
@@ -42,7 +42,7 @@ fn required_msl_sim_regressions_are_selected_by_workspace_verification() {
         .find("- name: Ensure MSL")
         .expect("CI must stage the pinned MSL tree");
     let workspace_tests = workflow
-        .find("cargo xtask verify workspace")
+        .find("cargo make verify-workspace")
         .expect("CI must run workspace verification");
     assert!(
         ensure_msl < workspace_tests,

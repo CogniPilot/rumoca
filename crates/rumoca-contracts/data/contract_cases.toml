@@ -1,5 +1,5 @@
 # Contract test case manifest — source of truth for coverage checks.
-# Regenerate with: cargo run -p xtask -- dump-contract-cases
+# Maintained directly; validated by the rumoca-contracts registry tests.
 
 [[cases]]
 contract_id = 'ALG-001'

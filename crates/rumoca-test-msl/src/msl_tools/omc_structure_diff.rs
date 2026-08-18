@@ -1,4 +1,4 @@
-//! `xtask repo msl omc-structure` — cross-reference rumoca's structural analysis
+//! `rumoca-msl-tools omc-structure` — cross-reference rumoca's structural analysis
 //! (matching / BLT / coupled SCCs / tearing) against OpenModelica's for one MSL
 //! model, so a state-selection or tearing divergence is visible automatically
 //! instead of hand-reading OMC's generated `_info.json` / `_03lsy.c`.
@@ -104,7 +104,7 @@ pub fn run(args: Args) -> Result<()> {
     let info_path = paths.sim_work_dir.join(format!("{}_info.json", args.model));
     let info_text = std::fs::read_to_string(&info_path).with_context(|| {
         format!(
-            "OMC info not found at {} — run `xtask repo msl omc-simulation-reference` first",
+            "OMC info not found at {} — run `cargo make msl omc-simulation-reference` first",
             info_path.display()
         )
     })?;

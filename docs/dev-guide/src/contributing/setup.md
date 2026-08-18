@@ -10,25 +10,25 @@ cd rumoca
 cargo build --workspace
 ```
 
-## Install the Developer CLI
+## Install the Workflow Runner
 
-The repository uses an `xtask` developer CLI (the
-[cargo-xtask](https://github.com/matklad/cargo-xtask) convention) for every
-verification, packaging, and maintenance workflow. Install the standalone
-launcher and the repo hooks once:
+Cargo owns Rust dependency graphs and freshness. The repository uses
+`cargo-make` only to compose Cargo with npm, Python, mdBook, browsers, and
+other external tools. Install the pinned version and repository hooks once:
 
 ```bash
-cargo xtask repo cli install     # `xtask` on PATH + shell completions
-cargo xtask repo hooks install   # git hooks
+cargo install --locked cargo-make --version 0.37.24
+git config core.hooksPath .githooks
 ```
 
-After that, `xtask ...` works from anywhere in the workspace (the
-`cargo xtask ...` form always works too).
+`nix develop` already includes cargo-make, but Nix is optional. Run
+`cargo make` for the concise public workflow list. Fast Bash/Fish completion
+scripts live in `infra/cargo-make/completions/`.
 
 ## Fetch Modelica Dependencies
 
 ```bash
-cargo xtask repo modelica-deps ensure
+cargo make modelica-deps
 ```
 
 Downloads the pinned MSL and CMM versions into `target/`, which the
@@ -37,7 +37,7 @@ examples, tests, and committed VS Code settings expect.
 ## Sanity Check
 
 ```bash
-cargo xtask verify quick
+cargo make verify-quick
 ```
 
 This runs the same verification surface as GitHub CI except the slow

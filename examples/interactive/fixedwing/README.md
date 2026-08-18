@@ -36,7 +36,7 @@ Model asset licenses and attributions are recorded in
 ## Running
 
 ```bash
-cargo xtask repo modelica-deps ensure
+cargo make modelica-deps
 cargo run -p rumoca --release -- \
   sim -c examples/interactive/fixedwing/rumoca-scenario.toml
 ```

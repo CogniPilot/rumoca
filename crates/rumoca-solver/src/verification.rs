@@ -14,7 +14,7 @@
 //!   normal developer workflow, without being reported as proof evidence.
 //!
 //! Kani 0.67.0 is pinned in the dedicated `nix develop .#kani` shell. The
-//! canonical `cargo xtask verify kani` gate reads
+//! canonical `cargo make kani` gate reads
 //! `infra/verification/kani-proofs.json` and proves every required harness listed
 //! there. The fallback remains useful conventional test evidence, but a green
 //! property-test run is never reported as a proof. Both drivers call the same

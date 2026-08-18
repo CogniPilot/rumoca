@@ -1,0 +1,378 @@
+# VS Code extension verification DAG. Every node in this migrated flow invokes
+# its owning tool directly; no generic Rust task runner sits behind the DAG.
+
+[tasks.vscode-web-deps]
+private = true
+description = "Install browser-asset npm dependencies when their lockfile changes"
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/packages/rumoca-web"
+condition = { condition_type = "Or", files_not_exist = [
+    "node_modules/.package-lock.json",
+    "node_modules/esbuild/package.json",
+    "node_modules/monaco-editor/min/vs/loader.js",
+], files_modified = { input = ["package.json", "package-lock.json"], output = ["node_modules/.package-lock.json"] } }
+command = "npm"
+args = ["ci"]
+
+[tasks.vscode-web-assets]
+private = true
+description = "Build shared browser assets consumed by the VS Code extension"
+dependencies = ["vscode-web-deps"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/packages/rumoca-web"
+condition = { condition_type = "Or", files_not_exist = [
+    "vendor/web_deps.js",
+    "vendor/monaco/vs/loader.js",
+    "vendor/results_report.js",
+], files_modified = { input = [
+    "build.mjs",
+    "package.json",
+    "package-lock.json",
+    "runtime/**/*.js",
+    "viz/**/*.js",
+    "viz/**/*.css",
+], output = ["vendor/web_deps.js"] } }
+command = "npm"
+args = ["run", "build"]
+
+[tasks.vscode-npm-deps]
+private = true
+description = "Install VS Code npm dependencies when their lockfile changes"
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/packages/vscode"
+condition = { condition_type = "Or", files_not_exist = [
+    "node_modules/.package-lock.json",
+    "node_modules/esbuild/package.json",
+    "node_modules/vscode-languageclient/lib/common/utils/uuid.js",
+], files_modified = { input = ["package.json", "package-lock.json"], output = ["node_modules/.package-lock.json"] } }
+command = "npm"
+args = ["ci", "--ignore-scripts"]
+
+[tasks.vscode-node-test]
+private = true
+description = "Compile and run the VS Code extension unit tests"
+dependencies = ["vscode-web-assets", "vscode-npm-deps"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/packages/vscode"
+command = "npm"
+args = ["test"]
+
+[tasks.vscode-lint]
+private = true
+description = "Lint the VS Code extension after its tests pass"
+dependencies = ["vscode-node-test"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/packages/vscode"
+command = "npm"
+args = ["run", "lint"]
+
+[tasks.vscode-bundle]
+private = true
+description = "Bundle the VS Code extension after tests and lint pass"
+dependencies = ["vscode-lint"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/packages/vscode"
+command = "npm"
+args = ["run", "esbuild"]
+
+[tasks.vscode-test]
+description = "Run the complete VS Code extension verification DAG"
+category = "VS Code"
+dependencies = ["vscode-bundle"]
+
+[tasks.vscode-lsp-debug-build]
+private = true
+description = "Let Cargo update the debug language-server binaries when its dependency graph is stale"
+command = "cargo"
+args = [
+    "build",
+    "--bin", "rumoca-lsp",
+    "--bin", "rumoca-lsp-galec",
+    "--bin", "rumoca",
+]
+
+[tasks.vscode-lsp-debug-stage-main]
+private = true
+description = "Stage the debug Modelica language server when Cargo changed it"
+dependencies = ["vscode-lsp-debug-build"]
+condition = { files_modified = { input = ["${CARGO_MAKE_CRATE_TARGET_DIRECTORY}/debug/rumoca-lsp${RUMOCA_EXE_SUFFIX}"], output = ["packages/vscode/bin/rumoca-lsp${RUMOCA_EXE_SUFFIX}"] } }
+script_runner = "@duckscript"
+script = '''
+bin_dir = set "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/packages/vscode/bin"
+mkdir ${bin_dir}
+cp "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}/debug/rumoca-lsp${RUMOCA_EXE_SUFFIX}" "${bin_dir}/rumoca-lsp${RUMOCA_EXE_SUFFIX}"
+'''
+
+[tasks.vscode-lsp-debug-stage-galec]
+private = true
+description = "Stage the debug GALEC language server when Cargo changed it"
+dependencies = ["vscode-lsp-debug-build"]
+condition = { files_modified = { input = ["${CARGO_MAKE_CRATE_TARGET_DIRECTORY}/debug/rumoca-lsp-galec${RUMOCA_EXE_SUFFIX}"], output = ["packages/vscode/bin/rumoca-lsp-galec${RUMOCA_EXE_SUFFIX}"] } }
+script_runner = "@duckscript"
+script = '''
+bin_dir = set "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/packages/vscode/bin"
+mkdir ${bin_dir}
+cp "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}/debug/rumoca-lsp-galec${RUMOCA_EXE_SUFFIX}" "${bin_dir}/rumoca-lsp-galec${RUMOCA_EXE_SUFFIX}"
+'''
+
+[tasks.vscode-lsp-debug-stage-cli]
+private = true
+description = "Stage the debug Rumoca CLI when Cargo changed it"
+dependencies = ["vscode-lsp-debug-build"]
+condition = { files_modified = { input = ["${CARGO_MAKE_CRATE_TARGET_DIRECTORY}/debug/rumoca${RUMOCA_EXE_SUFFIX}"], output = ["packages/vscode/bin/rumoca${RUMOCA_EXE_SUFFIX}"] } }
+script_runner = "@duckscript"
+script = '''
+bin_dir = set "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/packages/vscode/bin"
+mkdir ${bin_dir}
+cp "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}/debug/rumoca${RUMOCA_EXE_SUFFIX}" "${bin_dir}/rumoca${RUMOCA_EXE_SUFFIX}"
+'''
+
+[tasks.vscode-lsp-debug-stage]
+private = true
+description = "Stage each changed debug binary in the extension"
+dependencies = [
+    "vscode-lsp-debug-stage-main",
+    "vscode-lsp-debug-stage-galec",
+    "vscode-lsp-debug-stage-cli",
+]
+
+[tasks.vscode-edit-extensions]
+private = true
+description = "Install Python and Jupyter into the isolated edit profile when absent"
+condition = { files_not_exist = ["${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/target/vscode-edit/extensions/.rumoca-notebooks-ready"] }
+script = '''
+set -eu
+profile="$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/target/vscode-edit"
+mkdir -p "$profile/user-data" "$profile/extensions"
+installed=$(code \
+  --user-data-dir "$profile/user-data" \
+  --extensions-dir "$profile/extensions" \
+  --list-extensions)
+for extension in ms-python.python ms-toolsai.jupyter; do
+  if ! printf '%s\n' "$installed" | grep -Fxiq "$extension"; then
+    echo "Installing VS Code extension in isolated profile: $extension"
+    code \
+      --user-data-dir "$profile/user-data" \
+      --extensions-dir "$profile/extensions" \
+      --install-extension "$extension" \
+      --force
+  fi
+done
+touch "$profile/extensions/.rumoca-notebooks-ready"
+'''
+
+[tasks.vscode-notebook-venv]
+private = true
+description = "Create the examples virtual environment when absent"
+condition = { files_not_exist = ["${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/examples/.venv/bin/python"] }
+script = '''
+set -eu
+root="$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY"
+venv="$root/examples/.venv"
+if command -v python3 >/dev/null 2>&1; then
+  base_python=python3
+elif command -v python >/dev/null 2>&1; then
+  base_python=python
+else
+  echo "Python notebooks require python3/python. Enter 'nix develop .#vscode' or install Python 3.10+." >&2
+  exit 1
+fi
+echo "Creating examples venv at $venv"
+"$base_python" -m venv "$venv"
+'''
+
+[tasks.vscode-notebook-tools]
+private = true
+description = "Install maturin into the examples virtual environment when absent"
+dependencies = ["vscode-notebook-venv"]
+condition = { files_not_exist = ["${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/examples/.venv/bin/maturin"] }
+script = '''
+set -eu
+unset PYTHONPATH
+python="$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/examples/.venv/bin/python"
+"$python" -m pip install --upgrade pip maturin
+'''
+
+[tasks.vscode-notebook-rust-build]
+private = true
+description = "Let Cargo update the Python extension artifact when its dependency graph is stale"
+dependencies = ["vscode-notebook-tools"]
+script = '''
+set -eu
+unset PYTHONPATH
+root="$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY"
+venv="$root/examples/.venv"
+python="$venv/bin/python"
+pyo3_signature=$("$python" -c 'import platform, sys; print(f"cpython-{sys.version_info.major}.{sys.version_info.minor}-{platform.architecture()[0]}")')
+PYO3_ENVIRONMENT_SIGNATURE="$pyo3_signature" PYO3_PYTHON="$python" VIRTUAL_ENV="$venv" \
+  CARGO_TARGET_DIR="$root/target/python" \
+  cargo build --package rumoca-bind-python
+'''
+
+[tasks.vscode-notebook-local-install]
+private = true
+description = "Install the local Rumoca binding only when Cargo or Python sources changed"
+dependencies = ["vscode-notebook-rust-build"]
+condition = { files_modified = { input = [
+    "target/python/debug/${RUMOCA_SHARED_LIBRARY_PREFIX}rumoca${RUMOCA_SHARED_LIBRARY_SUFFIX}",
+    "crates/rumoca-bind-python/pyproject.toml",
+    "crates/rumoca-bind-python/python/**/*.py",
+], output = ["examples/.venv/.rumoca-local-build.stamp"] } }
+script = '''
+set -eu
+unset PYTHONPATH
+root="$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY"
+venv="$root/examples/.venv"
+
+echo "Installing changed local Rumoca notebook binding..."
+VIRTUAL_ENV="$venv" CARGO_TARGET_DIR="$root/target/python" "$venv/bin/maturin" develop \
+  --extras notebook \
+  --manifest-path "$root/crates/rumoca-bind-python/Cargo.toml"
+touch "$venv/.rumoca-local-build.stamp"
+'''
+
+[tasks.vscode-notebook-requirements]
+private = true
+description = "Install notebook requirements only when their manifest changes"
+dependencies = ["vscode-notebook-local-install"]
+condition = { files_modified = { input = ["examples/requirements.txt"], output = ["examples/.venv/.rumoca-requirements.stamp"] } }
+script = '''
+set -eu
+unset PYTHONPATH
+root="$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY"
+python="$root/examples/.venv/bin/python"
+"$python" -m pip install -r "$root/examples/requirements.txt"
+"$python" -c 'import rumoca, IPython, ipykernel'
+touch "$root/examples/.venv/.rumoca-requirements.stamp"
+'''
+
+[tasks.vscode-notebooks]
+private = true
+description = "Prepare the local notebook environment using Cargo-owned Rust freshness"
+dependencies = ["vscode-notebook-requirements"]
+
+[tasks.vscode-notebooks-refresh]
+description = "Force-refresh the local Python notebook environment"
+category = "VS Code"
+script = '''
+set -eu
+local_stamp="$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/examples/.venv/.rumoca-local-build.stamp"
+requirements_stamp="$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY/examples/.venv/.rumoca-requirements.stamp"
+test ! -e "$local_stamp" || rm "$local_stamp"
+test ! -e "$requirements_stamp" || rm "$requirements_stamp"
+cargo make vscode-notebooks
+'''
+
+[tasks.vscode-edit-launch]
+private = true
+description = "Run the TypeScript watcher for the lifetime of the extension host"
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+script = '''
+set -eu
+root="$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY"
+vscode_dir="$root/packages/vscode"
+profile="$root/target/vscode-edit"
+workspace="${RUMOCA_VSCODE_WORKSPACE:-$root/examples}"
+
+watch_pid=
+cleanup() {
+  if [ -n "$watch_pid" ] && kill -0 "$watch_pid" 2>/dev/null; then
+    kill -TERM -- "-$watch_pid" 2>/dev/null || kill -TERM "$watch_pid" 2>/dev/null || true
+    wait "$watch_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+echo "Starting TypeScript watch (esbuild --watch=forever)..."
+setsid sh -c 'cd "$1" && exec npm run esbuild-base -- --sourcemap --watch=forever' sh "$vscode_dir" &
+watch_pid=$!
+
+echo "Launching VS Code extension development mode..."
+cd "$workspace"
+code \
+  --user-data-dir "$profile/user-data" \
+  --extensions-dir "$profile/extensions" \
+  --extensionDevelopmentPath="$vscode_dir" \
+  --wait \
+  "$workspace"
+'''
+
+[tasks.vscode-edit-launch.windows]
+clear = true
+private = true
+script_runner = "powershell"
+script_extension = "ps1"
+script = '''
+$ErrorActionPreference = 'Stop'
+$root = $env:CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+$vscodeDir = Join-Path $root 'packages/vscode'
+$profile = Join-Path $root 'target/vscode-edit'
+$workspace = if ($env:RUMOCA_VSCODE_WORKSPACE) { $env:RUMOCA_VSCODE_WORKSPACE } else { Join-Path $root 'examples' }
+$watch = Start-Process npm -ArgumentList @('run', 'esbuild-base', '--', '--sourcemap', '--watch=forever') -WorkingDirectory $vscodeDir -PassThru -NoNewWindow
+try {
+  & code --user-data-dir (Join-Path $profile 'user-data') --extensions-dir (Join-Path $profile 'extensions') --extensionDevelopmentPath=$vscodeDir --wait $workspace
+} finally {
+  if (-not $watch.HasExited) { Stop-Process -Id $watch.Id -Force }
+}
+'''
+
+[tasks.vscode-prepare]
+private = true
+description = "Prepare the VS Code development environment, rebuilding only stale outputs"
+category = "VS Code"
+dependencies = [
+    "vscode-edit-extensions",
+    "vscode-lsp-debug-stage",
+    "vscode-npm-deps",
+    "vscode-web-assets",
+    "vscode-notebooks",
+]
+
+[tasks.vscode-package]
+description = "Package a platform-specific VSIX"
+category = "VS Code"
+dependencies = ["vscode-web-assets", "vscode-npm-deps"]
+script = '''
+set -eu
+if [ "${1:-}" = -- ]; then shift; fi
+target=
+install_musl=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --target) target="$2"; shift 2 ;;
+    --install-musl-tools) install_musl=true; shift ;;
+    *) echo "unknown vscode-package argument: $1" >&2; exit 2 ;;
+  esac
+done
+case "$target" in
+  linux-x64) rust_target=x86_64-unknown-linux-musl ;;
+  linux-arm64) rust_target=aarch64-unknown-linux-musl ;;
+  '') echo 'vscode-package requires --target linux-x64|linux-arm64' >&2; exit 2 ;;
+  *) echo "unsupported VS Code package target: $target" >&2; exit 2 ;;
+esac
+if ! command -v musl-gcc >/dev/null 2>&1; then
+  if [ "$install_musl" = true ] && command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get install -y musl-tools
+  else
+    echo 'musl-gcc is required; install musl-tools, use the Nix shell, or pass --install-musl-tools on Debian/Ubuntu' >&2
+    exit 1
+  fi
+fi
+
+root="$CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY"
+vscode="$root/packages/vscode"
+target_env=$(printf '%s' "$rust_target" | tr '[:lower:]-' '[:upper:]_')
+cc_env=$(printf '%s' "$rust_target" | tr '-' '_')
+env "CC_$cc_env=musl-gcc" "CARGO_TARGET_${target_env}_LINKER=musl-gcc" \
+  cargo build --release --target "$rust_target" \
+    --bin rumoca-lsp --bin rumoca-lsp-galec --bin rumoca
+
+mkdir -p "$vscode/bin"
+for binary in rumoca-lsp rumoca-lsp-galec rumoca; do
+  install -m 755 "$root/target/$rust_target/release/$binary" "$vscode/bin/$binary"
+done
+cd "$vscode"
+npm run esbuild-base -- --minify
+npx @vscode/vsce package --target "$target" --no-dependencies --no-yarn
+'''
+
+[tasks.vscode-edit]
+description = "Watch the extension and launch its development host"
+category = "VS Code"
+dependencies = ["vscode-prepare"]
+run_task = "vscode-edit-launch"

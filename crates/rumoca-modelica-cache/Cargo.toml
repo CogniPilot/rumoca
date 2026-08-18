@@ -1,0 +1,27 @@
+[package]
+name = "rumoca-modelica-cache"
+description = "Verified Modelica library cache management for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "rumoca-modelica-cache"
+path = "src/bin/rumoca-modelica-cache.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+sha2 = "0.10"
+toml = { workspace = true }
+ureq = "2.9"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

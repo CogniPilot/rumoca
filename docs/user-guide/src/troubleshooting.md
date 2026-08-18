@@ -71,14 +71,14 @@ bundled server is used.
 
 **Library completion missing** — Add shared library roots to
 `rumoca-workspace.toml`. For the repository's own examples, run
-`cargo xtask repo modelica-deps ensure` first.
+`cargo make modelica-deps` first.
 
 ## Runnable Blocks in This Book
 
 **The ▶ Simulate button reports the WASM package is missing** — Live
 examples need the WASM package deployed next to the book. They work on
 [the published site](https://cognipilot.github.io/rumoca/user-guide/); for
-a local build, use `cargo xtask docs serve`; it builds the missing local
+a local build, use `cargo make docs-serve`; it builds the missing local
 WASM package for live examples before serving the books.
 
 **The editor has no syntax highlighting** — Monaco loads from a CDN; when

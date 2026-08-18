@@ -258,6 +258,11 @@ jobs:
 
       # Read-only: the nightly lane never writes the shared `msl-gate` cache
       # that the PR lane depends on.
+      - name: Install cargo-make
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-make@0.37.24
+
       - name: Rust cache (msl-gate)
         uses: Swatinem/rust-cache@v2
         with:
@@ -373,7 +378,7 @@ jobs:
           SHARD_COUNT: ${{ needs.msl-sweep-build.outputs.shard-count }}
         run: |
           set -euo pipefail
-          cargo xtask verify msl-parity \
+          cargo make msl parity \
             --shard "${SHARD_INDEX}/${SHARD_COUNT}" \
             --no-remote-quality-baseline \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
@@ -421,6 +426,11 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install cargo-make
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-make@0.37.24
 
       - name: Rust cache (msl-gate)
         uses: Swatinem/rust-cache@v2
@@ -489,7 +499,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo xtask verify msl-parity \
+          cargo make msl parity \
             --merge-shards target/msl/shards \
             --no-remote-quality-baseline \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests"
@@ -717,6 +727,11 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      - name: Install cargo-make
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-make@0.37.24
+
       - name: Rust cache (nightly-event-cohort)
         uses: Swatinem/rust-cache@v2
         with:
@@ -774,7 +789,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf target/msl/event-cohort
-          cargo xtask verify msl-parity \
+          cargo make msl parity \
             --results-dir target/msl/event-cohort \
             --sim-targets-file crates/rumoca-test-msl/tests/msl_tests/event_cohort_targets_nightly.json \
             --sim-set full \
@@ -881,8 +896,13 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
 
+      - name: Install cargo-make
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-make@0.37.24
+
       - name: Fuzz the Modelica parser
-        run: cargo xtask verify fuzz --max-total-secs 900
+        run: cargo make fuzz --max-total-secs 900
 
       - name: Upload fuzz reproducers
         if: failure()

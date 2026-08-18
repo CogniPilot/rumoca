@@ -1,7 +1,7 @@
 //! Umbrella binary for the repo-inspection policy and budget gates.
 //!
 //! These members link no `rumoca` library, so this binary stays a few MB and
-//! `cargo xtask verify quick` can run the fast gates without paying for a
+//! `cargo make verify-quick` can run the fast gates without paying for a
 //! whole-compiler link. Keep it that way: a member that needs the compiler
 //! belongs in `suite_core/main.rs`, which also documents the grouping rules.
 //!

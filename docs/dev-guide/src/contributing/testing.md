@@ -2,28 +2,29 @@
 
 ## The Verification Surface
 
-`cargo xtask verify` is the umbrella for everything CI runs:
+Cargo-make provides two repository-wide verification aggregates while focused
+Rust checks remain ordinary Cargo commands:
 
 | Command | Scope |
 |---|---|
-| `cargo xtask verify quick` | Full CI surface *except* the slow full-MSL parity gate |
-| `cargo xtask verify full` | Everything, including full-MSL parity |
-| `cargo xtask verify lint` | Formatting + clippy |
-| `cargo xtask verify workspace` | Workspace build/tests |
-| `cargo xtask verify docs` | Documentation build (rustdoc + mdBook books) |
-| `cargo xtask verify msl-parity` | MSL parity gate on its own |
-| `cargo xtask verify template-runtimes` | Opt-in execution tests for generated target code |
+| `cargo make verify-quick` | Lint, architecture checks, workspace tests, and doctests |
+| `cargo make verify-full` | Complete local/CI verification DAG |
+| `cargo make verify-lint` | Formatting, repository policy, and clippy |
+| `cargo test --workspace` | Cargo-native workspace tests |
+| `cargo make docs-build` | Both mdBook books |
+| `cargo make msl-parity` | MSL parity gate |
+| `cargo make verify-template-runtimes` | Generated-code execution tests |
 
 Editor surfaces have their own gates:
 
 ```bash
-cargo xtask vscode test      # extension compile + tests
-cargo xtask playground test  # wasm build + browser smoke tests
+cargo make vscode-test       # extension compile + tests
+cargo make playground-test   # wasm build + browser smoke tests
 ```
 
-`verify quick`/`full` include the coverage, VS Code, and wasm gates, so
-they need the same prerequisites CI installs: `cargo-llvm-cov`, Node/npm,
-and the wasm Rust target/tooling.
+`verify-full` includes coverage, VS Code, and wasm gates, so it needs the same
+prerequisites CI installs: `cargo-llvm-cov`, Node/npm, and the wasm Rust
+target/tooling.
 
 ## During Development
 
@@ -47,14 +48,14 @@ simulation success, and trace parity. Details, baseline policy, and
 promotion workflow: [MSL Quality Gate](../tooling/msl-quality-gate.md).
 
 For compiler changes that could affect MSL behavior, run the parity gate
-(or at minimum `verify quick` plus a targeted MSL model) before opening the
+(or at minimum `cargo make verify-quick` plus a targeted MSL model) before opening the
 PR — [SPEC_0025](https://github.com/CogniPilot/rumoca/blob/main/spec/SPEC_0025_PR_REVIEW_PROCESS.md)
 defines what evidence a PR needs.
 
 ## Coverage
 
 ```bash
-cargo xtask coverage report
+cargo make coverage report
 ```
 
 CI enforces a coverage gate; locally you need `cargo-llvm-cov`.

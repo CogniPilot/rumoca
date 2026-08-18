@@ -24,7 +24,7 @@ vehicle or flight software.
 ## Running
 
 ```bash
-cargo xtask repo modelica-deps ensure
+cargo make modelica-deps
 cargo run -p rumoca --release -- \
   sim -c examples/interactive/reusable_booster/rumoca-scenario.toml
 ```

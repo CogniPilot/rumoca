@@ -36,7 +36,7 @@ accesses fail the build.
   configuration or behavior — in Rust **or** in editor/JS code. Pick a channel
   from the table above.
 - A child process that genuinely cannot accept argv gets a fixed-path file, not
-  an environment variable. Examples: `cargo xtask verify msl-parity` writes
+  an environment variable. Example: `rumoca-msl-tools parity` writes
   `target/msl/parity-config.json` for libtest; VS Code smoke jobs write
   `.code-workspace` settings that the extension forwards to `rumoca-lsp` flags.
 - A fixed-path per-invocation file MUST have one workspace-scoped exclusive

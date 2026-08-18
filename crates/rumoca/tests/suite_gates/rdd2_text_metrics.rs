@@ -4,7 +4,7 @@
 //! functions need no model corpus, no release binary and no filesystem -- they
 //! are string analysis over C text -- so gating them would mean the detectors'
 //! own correctness tests compiled only under a feature that nothing in CI or
-//! `xtask` ever enables. A pin that nothing exercises is not a pin. The
+//! the repository verification DAG ever enables. A pin that nothing exercises is not a pin. The
 //! measured ceilings that DO need a corpus live in `galec_review_surface.rs`,
 //! which is gated and reaches these functions through `super`.
 //!

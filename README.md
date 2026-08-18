@@ -124,6 +124,18 @@ The goal is to make model package trees belong to the **models themselves**, not
 ### Requirements
 
 - Rust toolchain from `rust-toolchain.toml` (nightly, `wasm32-unknown-unknown` target)
+- cargo-make 0.37.24 for migrated repository workflows
+
+With Cargo already installed, bootstrap the task runner with:
+
+```bash
+cargo install --locked cargo-make --version 0.37.24
+```
+
+Bash and Fish completions combine Cargo's native package/target completion with
+a small overlay for cargo-make tasks and grouped tool commands under
+`infra/cargo-make/completions/`; installation is documented in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Build
 
@@ -131,16 +143,17 @@ The goal is to make model package trees belong to the **models themselves**, not
 cargo build --workspace
 ```
 
-Nix is only a convenience wrapper. Every Cargo/xtask workflow works with the
-pinned Rust toolchain and required host packages installed normally. As an
+Nix is only a convenience wrapper. Cargo-make is included in every development
+shell, while equivalent native installations remain supported. As an
 alternative, a reproducible [Nix](https://nixos.org) flake lives at the repo
 root (`flake.nix`). `nix develop` provides the exact pinned Rust and native
-build toolchain without building Rumoca or realizing optional runtimes.
-Task-specific shells add those tools only when needed:
+build toolchain plus cargo-make, without building Rumoca or realizing optional
+runtimes. Task-specific shells add those tools only when needed:
 
 | Command | Additional tools |
 |---|---|
 | `nix develop .#wasm` | Node, Binaryen, and wasm-pack |
+| `nix develop .#vscode` | Node, Python, and maturin for VS Code and notebooks |
 | `nix develop .#python` | Python with JAX/CasADi and maturin |
 | `nix develop .#julia` | Julia (Linux) |
 | `nix develop .#modelica` | Pinned OpenModelica (Linux) |
@@ -186,7 +199,7 @@ The examples use pinned Modelica package archives for MSL and CMM. Fetch them
 with the developer helper:
 
 ```bash
-cargo xtask repo modelica-deps ensure
+cargo make modelica-deps
 ```
 
 The repository examples declare shared library roots in
@@ -281,37 +294,34 @@ The installer defaults to:
 pip install rumoca
 ```
 
-## Developer CLI
+## Development Tasks
 
-Contributor workflows are standardized through the `rum` developer CLI.
-
-Bootstrap it once from the repository root:
-
-```bash
-cargo xtask repo cli install
-```
-
-If you want the main Modelica parity gate right away:
+Cargo handles Rust-only dependency graphs directly. Cargo-make composes the
+repository's external toolchains:
 
 ```bash
-cargo xtask verify msl-parity
+cargo make vscode-{edit,test}
+cargo make playground-{build,edit,test}
+cargo make docs-{build,serve}
+cargo make verify-{lint,quick,full}
 ```
 
-To fetch the cached MSL and CogniPilot Modelica Models (CMM) libraries used by the examples and CI smoke tests, use the pins in `examples/modelica_dependencies.toml`:
+Install cargo-make natively with
+`cargo install --locked cargo-make --version 0.37.24`, or use any `nix develop`
+shell. Nix is optional.
+
+Fetch the pinned MSL and CMM libraries used by examples with their owning tool:
 
 ```bash
-cargo xtask repo modelica-deps ensure
-cargo xtask verify examples
+cargo make modelica-deps
 ```
 
-After that, the main command groups are:
+MSL/reference maintenance is owned by `rumoca-msl-tools`:
 
-- `cargo xtask verify full` for the full GitHub CI verification suite
-- `cargo xtask verify ...` for repo-wide verification and CI-facing gates
-- `cargo xtask vscode ...` for VS Code extension build, test, and edit workflows
-- `cargo xtask playground ...` for browser playground build, test, and edit workflows
-- `cargo xtask coverage ...` for coverage generation, reporting, and gating
-- `cargo xtask repo ...` for hooks, releases, completions, graphs, cached Modelica dependencies, and MSL reference-data maintenance
+```bash
+cargo make msl --help
+cargo make msl-parity
+```
 
 ## Documentation
 
@@ -330,26 +340,25 @@ books as subdirectories from the same CI artifact. Locally, build the same
 pieces with:
 
 ```bash
-cargo xtask playground build --variant full-web
-cargo xtask docs build
-cargo xtask docs serve
+cargo make playground-build --variant full-web
+cargo make docs-build
+cargo make docs-serve
 ```
 
 Common examples:
 
 ```bash
-cargo xtask verify full
-cargo xtask verify quick
-cargo xtask verify docs
-cargo xtask verify template-runtimes
-cargo xtask verify msl-parity
-cargo xtask vscode test
-cargo xtask playground test
-cargo xtask playground build --variant core
-cargo xtask playground build --dev --variant sim-diffsol
-cargo xtask playground build --variant full-web --rayon --pack
-cargo xtask repo msl promote-quality-baseline
-cargo xtask help verify
+cargo make verify-full
+cargo make verify-quick
+cargo make verify-docs
+cargo test -p rumoca --no-default-features --features template-runtime-tests,fmu-packaging --test suite_template_runtime
+cargo make msl-parity
+cargo make vscode-test
+cargo make playground-test
+cargo make playground-build --variant core
+cargo make playground-build --dev --variant sim-diffsol
+cargo make playground-build --variant full-web --rayon --pack
+cargo make msl promote-quality-baseline
 ```
 
 For npm-package workflows, use:
@@ -362,7 +371,7 @@ npm run build:release:sim-diffsol:pack
 ```
 
 Rust-only workflows such as `cargo build`, `cargo check`, `cargo test`, and
-`cargo xtask --help` do not require Node/npm. Package, playground, VS Code, and
+`cargo make` do not require Node/npm. Package, playground, VS Code, and
 browser-asset workflows do require Node/npm; CI uses Node 20, so local package
 validation should use Node 20 as well. Check local setup with:
 
@@ -371,13 +380,13 @@ node --version
 npm --version
 ```
 
-`cargo xtask verify quick` runs the fast local gates: lint, workspace tests, binary
-builds, and template runtime checks. `cargo xtask verify full` mirrors the main CI
+`cargo make verify-quick` runs the fast local gates: lint, architecture checks,
+workspace tests, and doctests. `cargo make verify-full` composes the broader CI
 verification suite, including example smoke tests, coverage, docs,
 editor/WASM gates, and the slow full MSL parity gate. The full suite assumes
 the local coverage/editor prerequisites are installed (`cargo-llvm-cov`,
 Node 20/npm for package/web tasks, and wasm Rust tooling).
-`cargo xtask verify template-runtimes` wraps the
+`cargo test -p rumoca --no-default-features --features template-runtime-tests,fmu-packaging --test suite_template_runtime` wraps the
 equivalent Cargo command for opt-in example-template runtime checks:
 `cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime backend_template_runtime_regression:: -- --nocapture`.
 
@@ -413,14 +422,14 @@ example over Remote/SSH).
 Maintainer reproduction commands for Linux release artifacts:
 
 ```bash
-cargo xtask vscode package --target linux-x64
-cargo xtask vscode package --target linux-arm64
+cargo make vscode-package --target linux-x64
+cargo make vscode-package --target linux-arm64
 ```
 
 On Debian/Ubuntu, the first run can install `musl-tools` for you:
 
 ```bash
-cargo xtask vscode package --target linux-x64 --install-musl-tools
+cargo make vscode-package --target linux-x64 --install-musl-tools
 ```
 
 - Extension docs: `packages/vscode/README.md`

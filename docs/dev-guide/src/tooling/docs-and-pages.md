@@ -21,9 +21,9 @@ step (`.github/workflows/ci.yml`, "Prepare GitHub Pages content").
 Both books are mdBook projects (`docs/user-guide`, `docs/dev-guide`).
 
 ```bash
-cargo xtask docs build       # build both books
-cargo xtask docs serve       # build and host both books locally
-cargo xtask verify docs        # the docs CI gate
+cargo make docs-build        # build both books
+cargo make docs-serve        # build and host both books locally
+cargo make verify-docs       # rustdoc + both books
 ```
 
 ## Repository Web Layout
@@ -40,7 +40,7 @@ cargo xtask verify docs        # the docs CI gate
 
 Do not check generated/minified vendor JavaScript into the tree. Browser
 dependencies are normal npm dependencies and are staged into ignored/generated
-outputs by package-local builds or `cargo xtask` commands.
+outputs by package-local builds or cargo-make workflows.
 
 ## Live Examples
 
@@ -75,8 +75,7 @@ How it works:
 - **Package discovery** probes `<site>/pkg/<subdir>/` (deployed layout)
   and `<repo>/packages/rumoca/dist/<subdir>/` (local repo-root serve), overridable with
   `window.RUMOCA_LIVE_PKG_BASE`. The WASM download happens lazily on first
-  interaction. `cargo xtask docs serve` builds the missing local package
-  before serving unless `--skip-wasm-build` is passed.
+  interaction. `cargo make docs-serve` builds the local package before serving.
 - **Visualizations**: a `viz-radial` fence annotation adds a built-in
   animated cross-section for 1-D array states; a following
   `js,rumoca-viz` fence becomes an *editable* visualization script that
@@ -95,14 +94,14 @@ Keep embedded models validated — simulate them with the native CLI before
 committing, and give them an `experiment` annotation so browser runs have
 sensible defaults.
 
-Local testing with the WASM parts active: run `cargo xtask docs serve` and
+Local testing with the WASM parts active: run `cargo make docs-serve` and
 open the printed guide URL. A manual browser smoke test
 covering the live widgets lives at
 `packages/playground/tests/book_live_smoke.mjs`.
 
 ## Updating the Pages Artifact
 
-`cargo xtask docs build` runs inside the WASM CI job for both books after
-`cargo xtask repo modelica-deps ensure`; broken book builds therefore block
+`cargo make docs-build` runs inside the WASM CI job after
+`cargo make modelica-deps`; broken book builds therefore block
 the Pages deployment rather than shipping. The symlinked `live/` assets are
 copied into each book's output with hashed filenames automatically.

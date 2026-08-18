@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { runTests } from "@vscode/test-electron";
 
-// Read a required `--flag value` argument passed by `cargo xtask` (the
+// Read a required `--flag value` argument passed by the editor gate (the
 // harness's argv channel; editor configuration travels in the workspace file).
 function argPath(name) {
   const idx = process.argv.indexOf(name);

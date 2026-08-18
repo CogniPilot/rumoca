@@ -54,7 +54,13 @@ members = [
     "crates/rumoca-tool-fmt",
     "crates/rumoca-tool-lsp",
     "crates/rumoca-tool-lsp-galec",
-    "crates/xtask",
+    "crates/rumoca-repo-policy",
+    "crates/rumoca-modelica-cache",
+    "crates/rumoca-crate-graph",
+    "crates/rumoca-release",
+    "crates/rumoca-review",
+    "crates/rumoca-kani",
+    "crates/rumoca-coverage",
     # Bindings
     "crates/rumoca-bind-wasm",
     "crates/rumoca-bind-wasm-diffsol",
@@ -132,6 +138,13 @@ rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }
 rumoca-tool-fmt = { path = "crates/rumoca-tool-fmt" }
 rumoca-tool-lsp = { path = "crates/rumoca-tool-lsp", default-features = false }
 rumoca-tool-lsp-galec = { path = "crates/rumoca-tool-lsp-galec", default-features = false }
+rumoca-repo-policy = { path = "crates/rumoca-repo-policy" }
+rumoca-modelica-cache = { path = "crates/rumoca-modelica-cache" }
+rumoca-crate-graph = { path = "crates/rumoca-crate-graph" }
+rumoca-release = { path = "crates/rumoca-release" }
+rumoca-review = { path = "crates/rumoca-review" }
+rumoca-kani = { path = "crates/rumoca-kani" }
+rumoca-coverage = { path = "crates/rumoca-coverage" }
 rumoca-bind-wasm = { path = "crates/rumoca-bind-wasm" }
 rumoca-bind-python = { path = "crates/rumoca-bind-python" }
 rumoca-test-msl = { path = "crates/rumoca-test-msl" }

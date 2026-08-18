@@ -1,11 +1,10 @@
 # Rumoca Specification Index
 
-Contributor-facing workflow commands referenced by the active specs are standardized through the
-`rum` developer CLI. The main groups are:
-
-- `cargo xtask verify ...`
-- `cargo xtask coverage ...`
-- `cargo xtask repo ...`
+Contributor-facing workflows use the repository's cargo-make DAG. Run
+`cargo make --list-all-steps` to discover verification, coverage, editor,
+documentation, and repository-maintenance tasks. Purpose-named Cargo packages
+implement complex leaves; no generic Rust task-runner CLI owns workflow
+composition.
 
 For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 

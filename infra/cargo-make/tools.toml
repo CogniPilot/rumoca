@@ -1,0 +1,86 @@
+# Stable repository-tool entry points. These tasks are intentionally grouped by
+# owner instead of mirroring every owner subcommand into cargo-make.
+
+# completion-words: parity omc-simulation-reference triage parity-manifest compatibility-report compare-balance band-table transition-diff pr-comment debug-model plot-compare omc-structure rerun flamegraph hotspots modelica-test-catalog promote-quality-baseline --help --version
+[tasks.msl]
+description = "Run an MSL/reference tool subcommand"
+category = "Repository tools"
+command = "cargo"
+args = ["run", "--package", "rumoca-test-msl", "--bin", "rumoca-msl-tools", "--", "${@}"]
+
+# completion-words: run report gate --help --version
+[tasks.coverage]
+description = "Run a coverage generation, report, or gate subcommand"
+category = "Repository tools"
+command = "cargo"
+args = ["run", "--package", "rumoca-coverage", "--", "${@}"]
+
+# completion-words: --format --output --include-dev --include-build --layout --shared-view --display --help --version
+[tasks.crate-graph]
+description = "Render the workspace crate dependency graph"
+category = "Repository tools"
+command = "cargo"
+args = ["run", "--package", "rumoca-crate-graph", "--bin", "rumoca-crate-graph", "--", "${@}"]
+
+# completion-words: scan packet --help --version
+[tasks.review]
+description = "Run a repository review tool subcommand"
+category = "Repository tools"
+command = "cargo"
+args = ["run", "--package", "rumoca-review", "--bin", "rumoca-review", "--", "${@}"]
+
+# completion-words: --dry-run --allow-dirty --commit --tag --push --help --version
+[tasks.release]
+description = "Run a release-management subcommand"
+category = "Repository tools"
+command = "cargo"
+args = ["run", "--package", "rumoca-release", "--bin", "rumoca-release", "--", "${@}"]
+
+# completion-words: --shard --help --version
+[tasks.kani]
+description = "Validate and run the repository-pinned Kani proofs"
+category = "Repository tools"
+command = "cargo"
+args = ["run", "--package", "rumoca-kani", "--", "${@}"]
+
+# completion-words: --max-total-secs --target --max-len --help
+[tasks.fuzz]
+description = "Run a bounded parser fuzzing session"
+category = "Repository tools"
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/infra/fuzz"
+script = '''
+set -eu
+max_total_secs=60
+target=parse_modelica
+max_len=8192
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --max-total-secs) max_total_secs="$2"; shift 2 ;;
+    --target) target="$2"; shift 2 ;;
+    --max-len) max_len="$2"; shift 2 ;;
+    --help)
+      cat <<'EOF'
+Run a bounded libFuzzer session for Rumoca's standalone fuzz crate
+
+Usage: cargo make fuzz [OPTIONS]
+
+Options:
+  --max-total-secs <SECONDS>  Wall-clock budget [default: 60]
+  --target <NAME>             Fuzz target [default: parse_modelica]
+  --max-len <BYTES>           Generated-input length cap [default: 8192]
+  --help                      Print help
+EOF
+      exit 0
+      ;;
+    *) echo "unknown fuzz argument: $1" >&2; exit 2 ;;
+  esac
+done
+cargo fuzz --version >/dev/null 2>&1 || {
+  echo '`cargo fuzz` is unavailable; install it with `cargo install cargo-fuzz`.' >&2
+  exit 1
+}
+cargo fuzz run "$target" -- \
+  "-max_total_time=$max_total_secs" \
+  -rss_limit_mb=2048 \
+  "-max_len=$max_len"
+'''

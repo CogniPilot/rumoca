@@ -13,7 +13,7 @@
 //! * a **`--trace` target** (the `tracing` feature) for debug output;
 //! * a **fixed-path config/marker file** when a child process (a libtest
 //!   harness, a node script behind nested npm, a VS Code extension host) cannot
-//!   take argv — e.g. `cargo xtask verify msl-parity` writes
+//!   take argv — e.g. `cargo make msl-parity` writes
 //!   `target/msl/parity-config.json` for the MSL harness.
 //!
 //! Why enforce zero rather than maintain an allowlist: AI agents (and humans)
@@ -169,7 +169,7 @@ code are both scanned). The policy is \
 literal zero — do not add a new environment variable. Use a documented CLI flag \
 (the discoverable `--help` UI), a baked-in constant, or a `--trace` target (for \
 debug output) instead; when a child process cannot take argv, write a fixed-path \
-config/marker file (see how `cargo xtask verify msl-parity` produces \
+config/marker file (see how `cargo make msl-parity` produces \
 target/msl/parity-config.json). A genuinely unavoidable host/CI exception is a \
 deliberate policy change to REGISTERED_ENV_VARS in \
 crates/rumoca/tests/architecture_hardening_test/env_var_registry.rs, with rationale.\n\

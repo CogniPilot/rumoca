@@ -133,7 +133,7 @@ name = "architecture_hardening_test"
 path = "tests/architecture_hardening_test/main.rs"
 
 # Repo-inspection policy/budget gates. Deliberately separate from `suite_core`:
-# these link no `rumoca` library, so `cargo xtask verify quick` runs them
+# these link no `rumoca` library, so `cargo make verify-quick` runs them
 # without paying for a whole-compiler link.
 [[test]]
 name = "suite_gates"

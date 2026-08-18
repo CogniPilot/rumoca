@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const root = process.cwd();
-// During the staged VS Code smoke build, `cargo xtask` runs this from a temp
+// During the staged VS Code smoke build, the repository workflow runs this from a temp
 // copy and leaves the real repo root in a marker file (argv can't thread
 // through the nested npm scripts). Fall back to the in-repo layout otherwise.
 const repoRootMarker = path.join(root, '.rumoca-smoke-repo-root');

@@ -144,31 +144,40 @@ Then check the "Rumoca Modelica" output channel in VS Code.
 ## Building the Extension from Source
 
 ```bash
-# one-time bootstrap from repo root
-cargo xtask repo cli install
+# one-time task-runner bootstrap from repo root
+cargo install --locked cargo-make --version 0.37.24
 
 # run the extension verification gate
-cargo xtask vscode test
-
-# build/package/install the extension locally
-cargo xtask vscode build
+cargo make vscode-test
 
 # package a target-specific VSIX with bundled release binaries
-cargo xtask vscode package --target linux-x64
+cargo make vscode-package --target linux-x64
 
 # development loop with watch mode + Extension Development Host
-cargo xtask vscode edit
+cargo make vscode-edit
 ```
 
-`cargo xtask vscode package` is the maintainer path for release-style VSIX artifacts. On Debian/Ubuntu,
+When using Nix, enter `nix develop .#vscode` first. The first launch prepares
+`examples/.venv` with the local Rumoca build, may compile its larger Rust
+dependency graph, and installs the official Python and Jupyter extensions in a
+persistent isolated profile under `target/vscode-edit`. Later launches reuse
+the profile and validated Python environment without invoking pip or maturin.
+The TypeScript watcher is tied to the cargo-make task and exits with it, so editor
+relaunches do not accumulate background esbuild processes.
+Notebook preparation is part of the default dependency graph and runs only
+when its Cargo, Python, or requirements inputs changed. Use
+`cargo make vscode-notebooks-refresh` to force those leaves. Native toolchains
+remain supported; Nix is optional.
+
+`cargo make vscode-package` is the maintainer path for release-style VSIX artifacts. On Debian/Ubuntu,
 you can let it install `musl-tools` on the first Linux packaging run:
 
 ```bash
-cargo xtask vscode package --target linux-x64 --install-musl-tools
+cargo make vscode-package --target linux-x64 --install-musl-tools
 ```
 
-If you need the lower-level manual steps, `cargo xtask vscode build` and `cargo xtask vscode package` wrap the
-same TypeScript, Cargo, and VSIX packaging flow that lives under `packages/vscode/`.
+The cargo-make workflow composes the TypeScript, Cargo, Python, and VSIX tools
+while each native tool retains ownership of its own dependency graph.
 
 ## License
 

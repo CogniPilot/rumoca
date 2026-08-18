@@ -4,6 +4,13 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { patchWasmPackageJson } from "./patch-wasm-pkg.mjs";
+import {
+  buildFingerprint,
+  outputsAreFresh,
+  outputsExist,
+  readFingerprint,
+  writeFingerprint,
+} from "./build-freshness.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,9 +33,11 @@ const parseArgs = (argv) => {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === "--profile") args.profile = argv[++i];
+    if (arg === "--") continue;
+    else if (arg === "--profile") args.profile = argv[++i];
     else if (arg === "--variant") args.variant = argv[++i];
     else if (arg === "--rayon") args.rayon = true;
+    else if (arg === "--dev") args.profile = "dev";
     else if (arg === "--no-patch") args.patch = false;
     else if (arg === "--pack") args.pack = true;
     else if (arg === "--optimize") args.optimize = true;
@@ -141,8 +150,116 @@ const ensureWebVendorAssets = async () => {
   } catch {
     run("npm", ["ci"], { cwd: webDir });
   }
+  const inputs = [
+    path.join(webDir, "build.mjs"),
+    path.join(webDir, "package.json"),
+    path.join(webDir, "package-lock.json"),
+    path.join(webDir, "runtime", "modelica_language.js"),
+    path.join(webDir, "viz", "visualization_shared.js"),
+    path.join(webDir, "viz", "results_app.js"),
+    path.join(webDir, "viz", "markdown_renderer.js"),
+    path.join(webDir, "viz", "results_mount.js"),
+  ];
+  const outputs = [
+    path.join(webDir, "vendor", "web_deps.js"),
+    path.join(webDir, "vendor", "results_report.js"),
+    path.join(webDir, "vendor", "monaco", "vs", "loader.js"),
+  ];
+  if (await outputsAreFresh(inputs, outputs)) {
+    console.log("Fresh shared web assets");
+    return;
+  }
   run("npm", ["run", "build"], { cwd: webDir });
 };
+
+const cargoBuildWasmArtifacts = (args, features, env) => {
+  const packages = [{ name: "rumoca-bind-wasm", features }];
+  if (args.variant === "full-web") {
+    packages.push(
+      { name: "rumoca-bind-wasm-diffsol", features: [] },
+      { name: "rumoca-bind-wasm-galec", features: [] },
+    );
+  }
+
+  // Match wasm-pack's Cargo invocation package-by-package. Combining all three
+  // packages in one workspace build changes feature unification and causes
+  // wasm-pack to invalidate otherwise fresh compiler artifacts immediately.
+  for (const packageBuild of packages) {
+    const cargoArgs = ["build", "--lib"];
+    if (args.profile === "release") cargoArgs.push("--release");
+    if (packageBuild.features.length > 0) {
+      cargoArgs.push("--features", packageBuild.features.join(","));
+    }
+    run("cargo", cargoArgs, {
+      cwd: path.join(repoRoot, "crates", packageBuild.name),
+      env: { ...env, CARGO_BUILD_TARGET: "wasm32-unknown-unknown" },
+    });
+  }
+};
+
+const wasmArtifactPaths = (args) => {
+  const profileDir = args.profile === "dev" ? "debug" : "release";
+  const artifactDir = path.join(repoRoot, "target", "wasm32-unknown-unknown", profileDir);
+  const artifacts = [path.join(artifactDir, "rumoca_bind_wasm.wasm")];
+  if (args.variant === "full-web") {
+    artifacts.push(
+      path.join(artifactDir, "rumoca_bind_wasm_diffsol.wasm"),
+      path.join(artifactDir, "rumoca_bind_wasm_galec.wasm"),
+    );
+  }
+  return artifacts;
+};
+
+const packageOutputPaths = (pkgDir, args) => {
+  const outputs = [
+    "package.json",
+    "rumoca_bind_wasm.js",
+    "rumoca_bind_wasm_bg.wasm",
+    "rumoca_bind_wasm.d.ts",
+    "README.md",
+    "rumoca_package_meta.json",
+    ...runtimeFiles,
+  ].map((file) => path.join(pkgDir, file));
+  if (args.variant === "full-web") {
+    outputs.push(
+      path.join(pkgDir, "rumoca_bind_wasm_diffsol.js"),
+      path.join(pkgDir, "rumoca_bind_wasm_diffsol_bg.wasm"),
+      path.join(pkgDir, "rumoca_bind_wasm_galec.js"),
+      path.join(pkgDir, "rumoca_bind_wasm_galec_bg.wasm"),
+    );
+  }
+  outputs.push(
+    path.join(repoRoot, "packages", "playground", "vendor", "web_deps.js"),
+  );
+  return outputs;
+};
+
+const packageFingerprint = async (args, features, env, artifacts) =>
+  buildFingerprint({
+    repoRoot,
+    files: [
+      ...artifacts,
+      path.join(__dirname, "build.mjs"),
+      path.join(__dirname, "build-freshness.mjs"),
+      path.join(__dirname, "patch-wasm-pkg.mjs"),
+      path.join(__dirname, "README.md"),
+      path.join(repoRoot, "Cargo.toml"),
+      path.join(repoRoot, "crates", "rumoca-bind-wasm", "Cargo.toml"),
+      path.join(webDir, "vendor", "web_deps.js"),
+      path.join(webDir, "vendor", "results_report.js"),
+      ...runtimeFiles.map(runtimeFileSource),
+    ],
+    configuration: {
+      profile: args.profile,
+      variant: args.variant,
+      rayon: args.rayon,
+      patch: args.patch,
+      optimize: args.optimize,
+      features,
+      rustflags: env.RUSTFLAGS || "",
+    },
+    toolVersion: runCapture("wasm-pack", ["--version"]).trim(),
+  });
 
 const copyEditorWorkers = async (pkgDir) => {
   for (const file of runtimeFiles) {
@@ -263,6 +380,37 @@ const main = async () => {
   const pkgDir = path.join(pkgRoot, subdir);
   const outDirArg = pkgOutDirArg(subdir);
 
+  const env = { ...process.env };
+  if (args.rayon) {
+    const threadFlags = "-C target-feature=+atomics,+bulk-memory,+mutable-globals";
+    appendRustflags(env, [threadFlags]);
+  }
+
+  await ensureWebVendorAssets();
+  cargoBuildWasmArtifacts(args, features, env);
+  const artifacts = wasmArtifactPaths(args);
+  if (!(await outputsExist(artifacts))) {
+    throw new Error(`Cargo did not produce the expected WASM artifacts: ${artifacts.join(", ")}`);
+  }
+  const fingerprint = await packageFingerprint(args, features, env, artifacts);
+  const fingerprintFile = path.join(pkgDir, ".rumoca-build-fingerprint.json");
+  const packageOutputs = packageOutputPaths(pkgDir, args);
+  if (
+    (await readFingerprint(fingerprintFile)) === fingerprint &&
+    (await outputsExist(packageOutputs))
+  ) {
+    console.log(`Fresh playground package: ${path.relative(repoRoot, pkgDir)}`);
+    if (args.pack) {
+      await packTarball({
+        cwd: __dirname,
+        packageDir: path.relative(__dirname, pkgDir),
+        tarballDestDir: pkgRoot,
+        dev: args.profile === "dev",
+      });
+    }
+    return;
+  }
+
   const stagedCleanup = await ensureLicenseInBindCrate();
   try {
     const wasmPackArgs = [
@@ -287,14 +435,8 @@ const main = async () => {
       wasmPackArgs.push("--", "--features", features.join(","));
     }
 
-    const env = { ...process.env };
     const nowUtc = buildTimeUtcNow();
-    if (args.rayon) {
-      const threadFlags = "-C target-feature=+atomics,+bulk-memory,+mutable-globals";
-      appendRustflags(env, [threadFlags]);
-    }
 
-    await ensureWebVendorAssets();
     run("wasm-pack", wasmPackArgs, { env });
     await copyEditorWorkers(pkgDir);
     await generateEditorVendor();
@@ -314,6 +456,7 @@ const main = async () => {
     if (args.patch) {
       await patchWasmPackageJson(pkgDir, args.variant, runtimeFiles);
     }
+    await writeFingerprint(fingerprintFile, fingerprint);
     if (args.pack) {
       await packTarball({
         cwd: __dirname,

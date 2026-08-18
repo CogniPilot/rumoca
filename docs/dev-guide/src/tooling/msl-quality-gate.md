@@ -7,7 +7,7 @@ Rumoca's main MSL baseline is the MSL 4.1.0 root-example set selected by
 Run the gate with:
 
 ```bash
-cargo xtask verify msl-parity
+cargo make msl-parity
 ```
 
 The raw test command is:
@@ -32,7 +32,7 @@ cold GitHub runners repeatedly reload MSL for the compile reference; the CI
 gate still checks Rumoca stage counts and OMC simulation trace parity.
 
 CI compares the current run against the resolved MSL quality baseline.
-`cargo xtask verify msl-parity` downloads the latest promoted
+`rumoca-msl-tools parity` downloads the latest promoted
 `msl_quality_baseline.json` from the stable `msl-quality-baseline` GitHub
 release asset when available, caches it under `target/msl/baselines/`, and
 falls back to `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json`
@@ -56,7 +56,7 @@ count drops below the committed baseline for the same target set.
   snapshot JSON.
 
 On pull requests, CI also generates
-`target/msl/results/msl_pr_comment.md` with `cargo xtask repo msl pr-comment` and
+`target/msl/results/msl_pr_comment.md` with `rumoca-msl-tools pr-comment` and
 publishes it as a sticky PR comment. The comment embeds the package pass-rate,
 MLS contract coverage, and OMC trace-accuracy markdown tables so reviewers can
 inspect the MSL gate without downloading artifacts first. Its top summary also
@@ -79,7 +79,7 @@ For commit-to-commit regression diffs, run both worktrees with the same focused
 target JSON, then generate machine-readable buckets with:
 
 ```bash
-cargo xtask repo msl parity-manifest \
+cargo make msl parity-manifest \
   --rumoca-results-file <worktree>/target/msl/results/msl_results.json \
   --omc-simulation-reference-file <worktree>/target/msl/results/omc_simulation_reference.json \
   --output-file <worktree>/target/msl/results/parity_fail_manifest.json
@@ -128,7 +128,7 @@ so re-running the tool over an unchanged results directory rewrites the same
 table and leaves `msl_band_table_previous.json` alone. Only a new comparator
 output rotates. A focused (Tier 1) run derives its reading and writes nothing —
 its 20-model table is not the cohort's — and `persist_band_table` refuses outright
-to rotate a `full` table aside for a `partial` one. `cargo xtask verify msl-parity
+to rotate a `full` table aside for a `partial` one. `rumoca-msl-tools parity
 --clean-results` preserves both tables for the same reason: wiping them would make
 every run a first certification, with no diff and no departures.
 
@@ -175,19 +175,19 @@ tables so a local re-run keeps its predecessor.
 # Persist / re-derive the table for a results directory (--check validates only,
 # including that the table on disk belongs to that directory). With no
 # --results-dir, the tool reads the directory the parity config names.
-cargo xtask repo msl band-table --results-dir target/msl/results
+cargo make msl band-table --results-dir target/msl/results
 
 # ENTERED / LEFT / BAND-CHANGED / COVERAGE-DROPPED between two certifications.
 # Directories written before the artifact existed are still diffable: the table is
 # derived on the fly from sim_trace_comparison.json + msl_results.json.
-cargo xtask repo msl transition-diff \
+cargo make msl transition-diff \
   --before target/msl/results-baseline \
   --after  target/msl/results
 ```
 
 ## OMC reference pool and compile-speed comparison
 
-`cargo xtask repo msl omc-simulation-reference` generates the OMC simulation baseline
+`rumoca-msl-tools omc-simulation-reference` generates the OMC simulation baseline
 (`omc_simulation_reference.json`) that the trace gate compares rumoca against,
 and emits the rumoca-vs-OMC compile-speed report. It runs a pool of persistent
 `omc --interactive=zmq` worker sessions (the OMC analogue of the rumoca warm
@@ -220,7 +220,7 @@ so only matching results are timed:
 The plot is rendered two ways from that one JSON:
 
 - **Local**: `omc-simulation-reference` writes `msl_speed_scaling.html` (uPlot).
-- **PR comment**: `cargo xtask repo msl pr-comment` reads the JSON and renders the table
+- **PR comment**: `rumoca-msl-tools pr-comment` reads the JSON and renders the table
   plus a mermaid `xychart`. GitHub cannot execute JS, so the PR plot is mermaid,
   not the uPlot viewer — and it is produced only by `pr-comment`, not on every
   OMC run.
@@ -230,6 +230,6 @@ The plot is rendered two ways from that one JSON:
 ```bash
 # Scope to a regex; reuses cached OMC + existing rumoca traces, then writes
 # msl_speed_comparison.json + msl_speed_scaling.html for just that subset.
-cargo xtask repo msl omc-simulation-reference \
+cargo make msl omc-simulation-reference \
   --model-regex 'Mechanics\.Translational\.Examples'
 ```

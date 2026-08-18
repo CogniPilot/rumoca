@@ -94,13 +94,13 @@ by exactly one of them:
 
 ```yaml
 - name: Run lint gate
-  run: cargo xtask verify lint
+  run: cargo make verify-lint
 ```
 
-`cargo xtask verify lint` runs the workspace rustfmt check and the
+`cargo make verify-lint` runs the workspace rustfmt check and the
 traversal-policy checks, then clippy over the whole workspace with all targets
 and all features under `-D warnings`
-(`xtask::test_cmd::run_workspace_clippy`).
+(`infra/cargo-make/verify.toml`).
 
 ## Exceptions
 

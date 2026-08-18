@@ -169,7 +169,7 @@ pub(super) fn print_trace_gate_status(
     // ledger looking complete. There is now no path out of this function that
     // stays quiet.
     println!(
-        "MSL trace gate: {PARITY_UNMEASURED_HEADLINE} (no readable bands at {}). Run `cargo run -p rumoca-test-msl --bin rumoca-msl-tools -- omc-simulation-reference ...` to produce them.",
+        "MSL trace gate: {PARITY_UNMEASURED_HEADLINE} (no readable bands at {}). Run `cargo make msl omc-simulation-reference ...` to produce them.",
         omc_simulation_reference_path().display()
     );
 }

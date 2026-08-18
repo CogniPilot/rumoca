@@ -1,9 +1,9 @@
 // Browser smoke test for the mdBook live examples (docs/user-guide/live/).
 //
-// Not part of the `cargo xtask playground test` gate because it depends on the
+// Not part of the `cargo make playground-test` gate because it depends on the
 // Monaco CDN. Run it manually when touching the live runner:
 //
-//   cargo xtask docs serve --port 8731
+//   cargo make docs-serve --port 8731
 //   node packages/playground/tests/book_live_smoke.mjs \
 //     --base-url http://127.0.0.1:8731 --browser-binary google-chrome
 //

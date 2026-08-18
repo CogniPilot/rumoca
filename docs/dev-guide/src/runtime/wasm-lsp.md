@@ -46,10 +46,10 @@ completion and diagnostics behave identically everywhere.
 ## Build and Test
 
 ```bash
-cargo xtask playground build  # wasm-pack build into packages/rumoca/dist/<profile>/
-cargo xtask playground test   # CI gate: build + browser smoke tests (Playwright)
-cargo xtask vscode test       # VS Code extension gate
-cargo xtask docs serve        # local books with live examples and WASM package
+cargo make playground-build   # wasm-pack build into packages/rumoca/dist/<profile>/
+cargo make playground-test    # CI gate: build + browser smoke tests (Playwright)
+cargo make vscode-test        # VS Code extension gate
+cargo make docs-serve         # local books with live examples and WASM package
 ```
 
 The Pages deployment copies the WASM package, the playground, and both

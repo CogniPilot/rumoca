@@ -1,0 +1,17 @@
+[package]
+name = "rumoca-coverage"
+description = "LLVM coverage artifact analysis and regression policy for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -20,7 +20,7 @@ Scenarios:
 - `rumoca-scenario.kalman_filter_step_test.toml`: MSL-backed Kalman filter step test.
 
 MSL-backed scenarios use `source_roots` that point at the pinned cache under
-`target/msl/`. Run `cargo xtask repo modelica-deps ensure` first.
+`target/msl/`. Run `cargo make modelica-deps` first.
 
 The Neural ODE scenario uses a modest default hidden width for report size.
 Edit `nHidden` in `examples/models/NeuralODETensor.mo` to re-instantiate a

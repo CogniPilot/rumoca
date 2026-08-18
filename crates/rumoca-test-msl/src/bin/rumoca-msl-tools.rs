@@ -1,9 +1,6 @@
 //! MSL/OMC reference, baseline, and parity-maintenance tooling.
 //!
-//! This bin owns the full `msl` command surface. `xtask`'s `repo msl` subcommand
-//! is a thin passthrough that shells out to `cargo run -p rumoca-test-msl --bin
-//! rumoca-msl-tools -- <args>`, so the heavy compiler stack these tools link is
-//! never compiled for a plain `cargo xtask` invocation.
+//! This bin owns the full MSL command surface, including the parity gate.
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -11,7 +8,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use rumoca_test_msl::{msl_flamegraph, msl_tools, repo_root};
+use rumoca_test_msl::{msl_flamegraph, msl_hotspots, msl_tools, parity_gate, repo_root};
 
 #[derive(Debug, Parser)]
 #[command(name = "rumoca-msl-tools")]
@@ -28,6 +25,9 @@ struct Cli {
 // declaration order; match arms are by name, so the order is purely for help
 // readability.
 enum MslCommand {
+    /// Run the MSL/OMC parity harness and quality gate
+    Parity(Box<parity_gate::MslParityArgs>),
+
     // -- Generate OMC baselines (the reference data the gates compare against) --
     /// Generate baseline: OMC simulation + rumoca-vs-OMC trace & compile-speed comparison
     OmcSimulationReference(msl_tools::omc_simulation_reference::Args),
@@ -59,6 +59,8 @@ enum MslCommand {
     Rerun(msl_tools::rerun::Args),
     /// One model: cargo-flamegraph profile of compile or simulation
     Flamegraph(msl_flamegraph::MslFlamegraphArgs),
+    /// Profile the slowest compile and simulation entries in the latest parity results
+    Hotspots,
 
     // -- Catalog & baseline maintenance --
     /// Catalog MSL-shipped ModelicaTest cases by semantic feature area
@@ -70,6 +72,7 @@ enum MslCommand {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        MslCommand::Parity(args) => parity_gate::run(&repo_root(), &args),
         MslCommand::OmcSimulationReference(args) => msl_tools::omc_simulation_reference::run(args),
         MslCommand::Triage(args) => msl_tools::triage::run(args),
         MslCommand::ParityManifest(args) => msl_tools::parity_manifest::run(args),
@@ -83,6 +86,7 @@ fn main() -> Result<()> {
         MslCommand::OmcStructure(args) => msl_tools::omc_structure_diff::run(args),
         MslCommand::Rerun(args) => msl_tools::rerun::run(args),
         MslCommand::Flamegraph(args) => msl_flamegraph::run(args, &repo_root()),
+        MslCommand::Hotspots => msl_hotspots::run(&repo_root()),
         MslCommand::ModelicaTestCatalog(args) => msl_tools::modelica_test_catalog::run(args),
         MslCommand::PromoteQualityBaseline(args) => msl_tools::promote_quality_baseline::run(args),
     }

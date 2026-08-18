@@ -21,7 +21,7 @@ this page is the orientation map.
 | Interactive I/O | `rumoca-input`, `rumoca-input-keyboard`, `rumoca-input-gamepad`, `rumoca-signal-frame`, `rumoca-transport-udp`, `rumoca-transport-websocket`, `rumoca-web` | Devices, signals, transports, viewer |
 | Tools | `rumoca-tool-fmt`, `rumoca-tool-lint`, `rumoca-tool-lsp` | Formatter, linter, language server logic |
 | Bindings | `rumoca` (CLI), `rumoca-bind-wasm`, `rumoca-bind-python` | User-facing entry points |
-| Testing/dev | `rumoca-test-msl`, `xtask` | MSL gates, developer CLI |
+| Testing/dev | `rumoca-test-msl`, focused tooling crates, cargo-make | MSL gates and repository workflows |
 
 ## The Rules That Matter Daily
 

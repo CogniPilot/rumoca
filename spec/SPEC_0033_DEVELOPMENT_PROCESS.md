@@ -5,7 +5,8 @@ ACCEPTED
 
 ## Summary
 Development MUST follow governing specs, fix the first divergent layer, and
-verify focused behavior before broad gates.
+verify focused behavior before broad gates. Repository automation MUST migrate
+toward a declarative cargo-make task graph while Cargo owns Rust freshness.
 
 ## Specification
 
@@ -79,7 +80,7 @@ Failure classifications:
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Run the smallest focused check that proves changed behavior first | local workflow | Fast evidence before broad gates |
-| Capability changes follow the §6a two-tier cadence | local workflow | Focused proof and cohort proof are different claims |
+| Capability changes follow the §6b two-tier cadence | local workflow | Focused proof and cohort proof are different claims |
 | Required PR gates are selected by SPEC_0025 | PR workflow | One review source |
 | Commands not run MUST be reported with reason | final updates/PRs | Exposes residual risk |
 | Work is not done while temporary probes or symptom patches remain | all changes | Prevents cleanup debt |
@@ -88,9 +89,30 @@ Failure classifications:
 | Repository-launched Cargo MUST derive `CARGO_BUILD_JOBS` and `RAYON_NUM_THREADS` from host topology unless explicitly set | developer tooling | Avoids nested oversubscription |
 | Automatic Cargo budgets MUST reserve zero physical cores below 4 logical CPUs, one below 8, and at most two otherwise | developer tooling | Balance runner throughput and foreground capacity |
 | Long-running isolated workers MUST exit when their parent control channel closes and MUST enforce a bounded resident-memory policy | worker orchestration | Interrupted gates must not leave orphaned or unbounded processes |
-| Nix MUST remain optional; shells only provision prerequisites and exclude first-party outputs by default | developer tooling | Cargo/xtask remains canonical |
+| Nix MUST remain optional; shells only provision prerequisites and exclude first-party outputs by default | developer tooling | Native and Nix workflows stay equivalent |
 
-### 6a. Two-Tier Verification Cadence
+### 6a. Repository Task Orchestration
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Cargo-make MUST own the dependency graph for each migrated repository workflow | `Makefile.toml`, `infra/cargo-make/` | Dependencies remain declarative and inspectable |
+| Migrated workflows MUST invoke Cargo directly for Rust builds without outer freshness conditions | cargo-make tasks | Cargo owns complete Rust fingerprints |
+| Cargo-make MUST NOT duplicate Cargo's crate graph in source-file lists or manually enumerated transitive crate dependencies | cargo-make tasks | The workspace manifest and Cargo fingerprints remain the single source of truth |
+| Public cargo-make tasks MUST represent meaningful multi-tool workflows, repository-wide policy aggregates, or explicitly documented high-frequency contributor entry points; ordinary Cargo commands MUST NOT otherwise receive one-for-one public aliases | cargo-make task surface | Keeps discovery small while making the common path easy to complete |
+| A Rust-only shortcut MUST be listed by the default task and replace a frequently documented top-level intent; advanced arguments and rare maintenance subcommands stay on the owner-grouped cargo-make entry point | cargo-make task surface | Gives shortcuts an auditable promotion threshold and prevents namespace creep |
+| Implementation-only freshness and staging nodes MUST be private | cargo-make task surface | Users see workflows rather than internal graph vertices |
+| Non-Rust setup/build leaves MUST declare their real inputs and outputs and MUST be skipped when those outputs are current | cargo-make tasks | Repeated setup stays a warm no-op |
+| Tests, watchers, servers, and interactive launchers MAY run unconditionally only when explicitly selected | cargo-make tasks | Active work is distinct from cached preparation |
+| Shell-like repository coordination previously implemented in xtask MUST move into cargo-make | developer tooling | cargo-make replaces the ad hoc Bash/Python-style task runner role |
+| Computation, parsing, validation, reporting, or other substantive algorithms previously implemented in xtask MUST move into cohesive owner crates | owning Cargo package | Algorithms retain types, unit tests, and explicit ownership |
+| Migrated workflows MUST NOT invoke `cargo xtask` | cargo-make tasks | Prevents a second hidden task graph |
+| Complex task nodes MUST live in purpose-named Cargo packages or external script files | owning package, `infra/` | Logic stays testable and independently compiled |
+| A generic Rust task runner (`xtask`, `rumoca-dev`, or equivalent) MUST NOT remain behind cargo-make | developer tooling | Prevents the imperative task graph from surviving behind a new front end |
+| Repository workflow composition MUST use cargo-make; focused Rust tools implement leaf behavior only | developer tooling | Keeps orchestration declarative while preserving typed implementations where they add value |
+| The VS Code development graph MUST keep Cargo freshness checks separate from conditional staging, npm, extension-install, maturin, and pip leaves | `infra/cargo-make/vscode.toml` | Editor relaunches must neither duplicate Cargo's DAG nor repeat expensive cross-tool setup |
+| Native cargo-make installation and optional Nix provisioning MUST both remain documented | contributor setup | Nix remains optional |
+
+### 6b. Two-Tier Verification Cadence
 
 | Tier | Cadence | Required evidence |
 |---|---|---|
@@ -140,11 +162,13 @@ Failure classifications:
 
 ```bash
 # Tier 1 — fixed 20-model canary; the harness marks this snapshot partial.
-CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo xtask verify msl-parity \
+CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 \
+  cargo make msl parity \
   --sim-targets-file infra/verification/msl-canary-20.json
 
 # Tier 2 — full cohort; CI shards it as `--shard m/n` plus `--merge-shards DIR`.
-CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo xtask verify msl-parity
+CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 \
+  cargo make msl-parity
 ```
 
 #### Tier 2 parity-number acceptance contract
@@ -173,4 +197,4 @@ All rows are mandatory; otherwise the gate reports `parity unmeasured`.
 - [SPEC_0025](SPEC_0025_PR_REVIEW_PROCESS.md) — PR review and gate reporting.
 - [SPEC_0029](SPEC_0029_CRATE_BOUNDARIES.md) — crate boundary ownership.
 - [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) — normative trace-evidence
-  catalog bound by §6a.
+  catalog bound by §6b.

@@ -1919,7 +1919,7 @@ fn resolve_results_dir(repo_root: &Path, dir: PathBuf) -> PathBuf {
 
 /// The results directory the harness is configured to use.
 ///
-/// `cargo xtask verify msl-parity --results-dir DIR` writes that choice into
+/// `cargo make msl parity --results-dir DIR` writes that choice into
 /// `target/msl/parity-config.json`; reading it here means the tool inspects the
 /// run the harness just produced instead of a stale `target/msl/results`.
 fn default_results_dir(repo_root: &Path) -> PathBuf {

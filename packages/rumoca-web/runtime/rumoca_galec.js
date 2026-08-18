@@ -57,7 +57,7 @@ async function requireGalecAddon(pkgBase) {
   } catch (err) {
     throw new Error(
       "the GALEC / eFMI codegen addon could not be loaded; rebuild the " +
-        `package (cargo xtask playground build). (${err && err.message ? err.message : err})`,
+        `package (cargo make playground-build). (${err && err.message ? err.message : err})`,
     );
   }
 }

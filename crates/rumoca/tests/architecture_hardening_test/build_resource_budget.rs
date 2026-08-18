@@ -38,7 +38,7 @@ use std::path::PathBuf;
 /// target because people rerun it by name and its failure has to be readable on
 /// its own. Adding an entry here is a deliberate, reviewable act: it means one
 /// more whole-compiler link in every `cargo test -p rumoca`.
-/// FMI conformance shares `suite_template_runtime`; the xtask command's
+/// FMI conformance shares `suite_template_runtime`; the cargo-make task's
 /// `--no-default-features` invocation is the proof that it does not need the
 /// simulator, transports, inputs, or viewer.
 const EXPECTED_RUMOCA_TEST_TARGETS: &[&str] = &[

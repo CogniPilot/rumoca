@@ -354,16 +354,16 @@
       "glob": "^13.0.0"
     },
     "minimatch@3.1.5": {
-      "brace-expansion": "1.1.16"
+      "brace-expansion": "1.1.18"
     },
     "minimatch@5.1.9": {
-      "brace-expansion": "2.1.2"
+      "brace-expansion": "2.1.4"
     },
-    "minimatch@10.2.4": {
-      "brace-expansion": "5.0.8"
+    "brace-expansion@5.0.8": {
+      ".": "5.0.9"
     },
     "fast-uri@3.1.2": {
-      ".": "3.1.4"
+      ".": "3.1.5"
     }
   }
 }

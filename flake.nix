@@ -50,7 +50,7 @@
         kaniVersion = "0.67.0";
         kaniSupported = system == "x86_64-linux";
         kaniRustToolchain = fenix.packages.${system}.fromToolchainFile {
-          file = ./rust-toolchain-kani.toml;
+          file = ./infra/rust-toolchains/kani.toml;
           sha256 = "sha256-P39FCgpfDT04989+ZTNEdM/k/AE869JKSB4qjatYTSs=";
         };
         kaniCli = pkgs.rustPlatform.buildRustPackage {
@@ -306,6 +306,13 @@
           buildInputs = commonArgs.buildInputs;
           shellHook = ''
             export PATH="''${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+            rumoca_dev_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+            if [ -n "''${BASH_VERSION:-}" ] \
+              && [ -n "$rumoca_dev_root" ] \
+              && [ -f "$rumoca_dev_root/infra/cargo-make/completions/cargo-make.bash" ]; then
+              source "$rumoca_dev_root/infra/cargo-make/completions/cargo-make.bash"
+            fi
+            unset rumoca_dev_root
           '';
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
@@ -318,13 +325,26 @@
         };
         mkDevShell =
           extraPackages:
-          craneLib.devShell (commonDevShellArgs // { packages = [ pkgs.pkg-config ] ++ extraPackages; });
+          craneLib.devShell (
+            commonDevShellArgs
+            // {
+              packages = [
+                pkgs.bashInteractive
+                pkgs.cargo-make
+                pkgs.pkg-config
+              ] ++ extraPackages;
+            }
+          );
         templateRuntimeShell =
           extraPackages:
           craneLib.devShell (
             commonDevShellArgs
             // {
-              packages = [ pkgs.pkg-config ] ++ extraPackages;
+              packages = [
+                pkgs.bashInteractive
+                pkgs.cargo-make
+                pkgs.pkg-config
+              ] ++ extraPackages;
               LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
                 [
                   pkgs.gfortran.cc.lib
@@ -339,6 +359,11 @@
           pkgs.binaryen
           pkgs.nodejs_22
           pkgs.wasm-pack
+        ];
+        vscodeShell = templateRuntimeShell [
+          pkgs.maturin
+          pkgs.nodejs_22
+          pkgs.python312
         ];
         pythonShell = templateRuntimeShell [
           ciPython
@@ -385,8 +410,8 @@
             pkgs.wasm-pack
           ]
         );
-        # xtask itself is NOT built here: after the light-xtask split it carries no
-        # compiler deps and compiles per-job in seconds, so build-once buys nothing.
+        # Lightweight repository workflow tools are NOT built here: they carry
+        # no compiler deps and compile per job in seconds, so build-once buys nothing.
         # The MSL merge and ModelicaTest jobs run reporting through the
         # compiler-linked `rumoca-msl-tools` bin, so the MSL artifact bundle
         # includes it and those jobs invoke the prebuilt binary instead of
@@ -435,6 +460,7 @@
         devShells.default = mkDevShell [ ];
         devShells.full = fullShell;
         devShells.wasm = wasmShell;
+        devShells.vscode = vscodeShell;
         devShells.python = pythonShell;
         devShells.julia = juliaShell;
         devShells.modelica = modelicaShell;

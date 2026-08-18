@@ -1169,7 +1169,7 @@ function summarizeInteractiveFailure(recentLines: string[]): string | undefined 
 
     const missingSourceRoot = combined.match(/source-root path does not exist:\s*([^\n]+)/);
     if (missingSourceRoot) {
-        return `missing Modelica source root: ${missingSourceRoot[1].trim()}. Run cargo xtask repo modelica-deps ensure for the example dependencies.`;
+        return `missing Modelica source root: ${missingSourceRoot[1].trim()}. Run cargo make modelica-deps for the example dependencies.`;
     }
 
     const unexpectedArg = combined.match(/unexpected argument ['"]([^'"]+)['"]/);

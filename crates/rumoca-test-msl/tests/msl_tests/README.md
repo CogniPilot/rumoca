@@ -7,14 +7,14 @@ This directory contains helper includes for `tests/msl_tests.rs`.
 > **The `RUMOCA_MSL_*` environment variables named throughout the rest of this
 > file no longer exist.** SPEC_0018 mandates zero `RUMOCA_*` env vars, and the
 > harness is now driven exclusively by the JSON config that
-> `cargo xtask verify msl-parity` writes (`MslParityConfig` in
+> `cargo make msl-parity` writes (`MslParityConfig` in
 > `tests/balance_pipeline/balance_pipeline_config.rs`). Read every
-> `RUMOCA_MSL_FOO=bar` below as the corresponding `--foo bar` xtask flag. The
+> `RUMOCA_MSL_FOO=bar` below as the corresponding `--foo bar` parity flag. The
 > sections added under "Gate knobs" are current.
 
 ## Gate knobs (current)
 
-| Knob | xtask flag | Config field |
+| Knob | parity flag | Config field |
 |---|---|---|
 | Include ModelicaTest sources | `--include-modelica-test` | `include_modelica_test` |
 | Require every selected target to simulate | `--require-selected-targets-success` | `require_selected_targets_success` |
@@ -79,7 +79,7 @@ of the `modelicatest-gate` CI job
 uploaded artifact), or regenerate it locally:
 
 ```
-cargo xtask verify msl-parity \
+cargo make msl parity \
   --results-dir target/msl/modelicatest-survey \
   --include-modelica-test --sim-match ModelicaTest. --sim-set full
 rumoca-msl-tools modelica-test-catalog \
@@ -107,7 +107,7 @@ grows the list; never lower it to make a red gate green.
   `--require-selected-targets-success` until the cohort actually passes.
 - `cross-backend-msl` — the `msl-external-tests` checked C Solve and CasADi
   suites, kept off the pull-request critical path.
-- `parser-fuzz` — `cargo xtask verify fuzz --max-total-secs 900` over the
+- `parser-fuzz` — `cargo fuzz run parse_modelica -- -max_total_time=900` over the
   standalone `infra/fuzz/` cargo-fuzz crate.
 
 ## Split of Responsibilities
@@ -168,7 +168,7 @@ grows the list; never lower it to make a red gate green.
   - `target/msl/results/msl_package_pass_rates_compact.txt`
   These reports include parse, flatten, DAE, Solve-IR, initial-condition
   solve, and simulation pass rates by package.
-- `cargo xtask verify msl-parity --results-dir <path>` redirects the harness
+- `cargo make msl parity --results-dir <path>` redirects the harness
   JSON, markdown, trace, and debug artifacts for that invocation. CI uses this
   to keep the focused ModelicaTest semantic gate from overwriting the full MSL
   quality gate artifacts used in the PR summary comment.
@@ -190,8 +190,8 @@ grows the list; never lower it to make a red gate green.
   DAE/IR-DAE, solve/IR-Solve, initial-condition solve, and simulation. The CI
   gate treats any increase in an early-stage cumulative count as an improvement
   and fails only when a cumulative stage count drops below the resolved
-  promoted baseline for the same fixed target set. `cargo xtask verify
-  msl-parity` downloads the latest promoted baseline from the
+  promoted baseline for the same fixed target set. `cargo make msl-parity`
+  downloads the latest promoted baseline from the
   `msl-quality-baseline` GitHub release asset and falls back to the checked-in
   JSON when offline. An explicitly reviewed checked-in full baseline may use
   `omc_context_migration` to declare the exact old and new OMC versions and
@@ -219,7 +219,7 @@ grows the list; never lower it to make a red gate green.
 - Successful baseline `test_msl_all` runs write current quality snapshot:
   - `target/msl/results/msl_quality_current.json`
 - Checked-in fallback baseline updates are explicit/manual:
-  - `cargo xtask repo msl promote-quality-baseline`
+  - `cargo make msl promote-quality-baseline`
 - Alternate simulation sets:
   - unset or `RUMOCA_MSL_SIM_SET=full` to keep all models from the selected list
   - `RUMOCA_MSL_SIM_SET=short` for the first N models in the selected list
@@ -274,7 +274,7 @@ grows the list; never lower it to make a red gate green.
   and can be adjusted with `RUMOCA_MSL_COMPILE_PERF_FREQ` and
   `RUMOCA_MSL_SIM_PERF_FREQ`.
 - Canonical full-run entry point:
-  - `cargo xtask verify msl-parity`
+  - `cargo make msl-parity`
   - raw test equivalent:
     `cargo test --release --package rumoca-test-msl --features msl-full-test --test msl_tests balance_pipeline::balance_pipeline_core::test_msl_all -- --nocapture`
 
@@ -362,7 +362,7 @@ the metric cannot drift again without a failing test.
 ### Single-model drill-down
 
 ```
-cargo run -p rumoca-test-msl --bin rumoca-msl-tools -- \
+cargo make msl \
     debug-model --model '<Model>'
 ```
 

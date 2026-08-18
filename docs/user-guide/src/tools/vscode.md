@@ -26,7 +26,7 @@ source_roots = [
 ```
 
 The Rumoca repository examples include `examples/rumoca-workspace.toml`. Run
-`cargo xtask repo modelica-deps ensure` first so those target directories exist.
+`cargo make modelica-deps` first so those target directories exist.
 
 ## Settings Panel
 

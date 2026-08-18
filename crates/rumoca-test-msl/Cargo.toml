@@ -20,12 +20,15 @@ tensor-scaling-bin = []
 name = "rumoca-sim-worker"
 path = "src/bin/rumoca-sim-worker.rs"
 
-# MSL/OMC reference, parity, and profiling tooling (moved out of the `xtask`
-# crate so xtask carries no compiler deps). These bins link the compiler stack
-# this crate already depends on.
+# MSL/OMC reference, parity, profiling, and editor integration tooling. These
+# bins link the compiler stack this crate already depends on.
 [[bin]]
 name = "rumoca-msl-tools"
 path = "src/bin/rumoca-msl-tools.rs"
+
+[[bin]]
+name = "rumoca-editor-gate"
+path = "src/bin/rumoca-editor-gate.rs"
 
 [[bin]]
 name = "rumoca-msl-profile"
@@ -41,15 +44,18 @@ required-features = ["tensor-scaling-bin"]
 anyhow = { workspace = true }
 clap = { workspace = true }
 indexmap = { workspace = true }
+lsp-types = { workspace = true }
 mimalloc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
+sha2 = "0.10"
+ureq = "2.9"
 rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
 rumoca-ir-solve = { workspace = true }
 rumoca-eval-dae = { workspace = true }
 rumoca-sim = { workspace = true, features = ["solver-diffsol", "strict-ir-validation", "report"] }
 rumoca-worker = { workspace = true }
-# Used by the MSL tooling moved from xtask (zmq: OMC worker pool; nix: process
+# Used by the MSL tooling (zmq: OMC worker pool; nix: process
 # signals; blake3/regex/walkdir/tempfile: caching, parsing, fs scans).
 blake3 = { workspace = true }
 nix = { version = "0.29", features = ["signal"] }
@@ -59,7 +65,6 @@ walkdir = "2.5"
 zmq = "0.10"
 
 [dev-dependencies]
-ureq = "2.9"
 dirs = "5.0"
 rayon = { workspace = true }
 ntest = "0.9"

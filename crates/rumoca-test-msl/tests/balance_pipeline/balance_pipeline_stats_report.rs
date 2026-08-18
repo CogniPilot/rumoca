@@ -113,11 +113,11 @@ fn print_profiler_follow_ups(summary: &MslSummary) {
     );
     if let Some((model_name, seconds)) = hottest_compile_model(summary) {
         println!("  - Hottest compile model: {model_name} ({seconds:.2}s)");
-        println!("    cargo xtask repo msl flamegraph --model {model_name} --mode compile");
+        println!("    cargo make msl flamegraph --model {model_name} --mode compile");
     }
     if let Some((model_name, seconds)) = hottest_sim_model(summary) {
         println!("  - Hottest sim model: {model_name} ({seconds:.2}s)");
-        println!("    cargo xtask repo msl flamegraph --model {model_name} --mode simulate");
+        println!("    cargo make msl flamegraph --model {model_name} --mode simulate");
     }
     println!();
 }

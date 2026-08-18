@@ -1120,15 +1120,13 @@ fn truncate_detail(value: &str) -> String {
 }
 
 fn reproduction_command(model_name: &str) -> String {
-    format!("cargo run --bin xtask -- repo msl rerun --model '{model_name}'")
+    format!("cargo make msl rerun --model '{model_name}'")
 }
 
 /// Single-model drill-down for an ED001 failure with its typed balance
 /// breakdown and last successful Flat artifact.
 fn balance_reproduction_command(model_name: &str) -> String {
-    format!(
-        "cargo run -p rumoca-test-msl --bin rumoca-msl-tools -- debug-model --model '{model_name}'"
-    )
+    format!("cargo make msl debug-model --model '{model_name}'")
 }
 
 /// Build the measured ED001 cohort, backfilling rows that predate the

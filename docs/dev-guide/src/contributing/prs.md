@@ -7,7 +7,7 @@ Read it before opening your first PR. The short practical version:
 
 ## Before Opening
 
-- `cargo xtask verify quick` passes locally (use `verify full` when your
+- `cargo make verify-quick` passes locally (use `cargo make verify-full` when your
   change can affect MSL behavior).
 - The change follows the owning spec; if it required bending one, the spec
   change is part of the discussion, not an afterthought.

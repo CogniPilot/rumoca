@@ -35,7 +35,7 @@ Scheduled Execution are not advertised by this target.
   inventory, and a Wasmtime lifecycle/trace against the checked native kernel.
 - Lifecycle and setter negative controls prove rejected calls are transactional.
 - CI pins `wit-bindgen`, `wasm-tools`, the Rust target, and the upstream commit.
-- Focused gate: `cargo xtask verify template-runtimes --backend wasm` runs
+- Focused gate: `cargo make verify-template-runtimes --backend wasm` runs
   `fmi_ls_wasm_component_validates_and_executes_pinned_lifecycle` and
   `fmi_ls_wasm_vendored_contract_matches_pinned_upstream_bytes`.
 

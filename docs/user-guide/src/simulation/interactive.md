@@ -24,7 +24,7 @@ and viewer presentation.
 Native run:
 
 ```bash
-cargo xtask repo modelica-deps ensure
+cargo make modelica-deps
 cargo run -p rumoca --release -- \
   sim -c examples/interactive/quadrotor/rumoca-scenario.acro.toml
 ```
@@ -51,7 +51,7 @@ cargo run -p rumoca --release -- \
 Native run:
 
 ```bash
-cargo xtask repo modelica-deps ensure
+cargo make modelica-deps
 cargo run -p rumoca --release -- \
   sim -c examples/interactive/fixedwing/rumoca-scenario.toml
 ```
@@ -65,7 +65,7 @@ cargo run -p rumoca --release -- \
 Native run:
 
 ```bash
-cargo xtask repo modelica-deps ensure
+cargo make modelica-deps
 cargo run -p rumoca --release -- \
   sim -c examples/interactive/reusable_booster/rumoca-scenario.toml
 ```

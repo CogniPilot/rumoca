@@ -1,11 +1,11 @@
 //! Per-invocation configuration for the MSL parity harness.
 //!
 //! `cargo test` cannot forward custom CLI arguments to a libtest harness, so
-//! `cargo xtask verify msl-parity` writes this configuration to a fixed path
+//! `cargo make msl-parity` writes this configuration to a fixed path
 //! (`<workspace>/target/msl/parity-config.json`) before invoking the gate, and
 //! the harness reads it once here. This keeps the user-facing surface a set of
-//! documented `xtask` flags while the on-disk file is purely a private
-//! xtask->harness channel (the libtest equivalent of an argv).
+//! documented parity flags while the on-disk file is purely a private
+//! gate-to-harness channel (the libtest equivalent of an argv).
 //!
 //! Every field is optional: an absent or empty file yields the documented
 //! defaults (a full root-examples parity run), so a bare
@@ -25,7 +25,7 @@ use std::sync::OnceLock;
 /// CWD to the `[workspace]` root and take `crates/rumoca-test-msl`. This equals
 /// the baked value for in-tree `cargo test` (whose CWD is the crate dir, one hop
 /// under the workspace root) and is correct for the prebuilt binary (whose CWD
-/// the xtask sets to the workspace root). Falls back to the compile-time manifest
+/// the gate sets to the workspace root). Falls back to the compile-time manifest
 /// dir if the CWD isn't inside a rumoca workspace.
 pub(crate) fn msl_crate_manifest_dir() -> PathBuf {
     fn workspace_crate_from(start: &std::path::Path) -> Option<PathBuf> {
@@ -54,7 +54,7 @@ pub(crate) fn msl_workspace_root() -> PathBuf {
     workspace_root_from_manifest_dir(&msl_crate_manifest_dir().to_string_lossy())
 }
 
-/// Fixed config path shared with `cargo xtask verify msl-parity`.
+/// Fixed config path shared with `cargo make msl-parity`.
 pub(crate) fn parity_config_path() -> PathBuf {
     msl_cache_dir().join("parity-config.json")
 }

@@ -43,7 +43,7 @@ use CogniPilot Modelica Models.
 The easiest setup is:
 
 ```bash
-cargo xtask repo modelica-deps ensure
+cargo make modelica-deps
 ```
 
 That downloads the pinned archives into `target/msl/` and `target/cmm/`, which

@@ -67,11 +67,19 @@ For interactive simulation, prefer release builds:
 cargo run -p rumoca --release -- --help
 ```
 
-The repository includes an `xtask` developer CLI used by CI and local
-development (`cargo xtask verify quick`, `cargo xtask vscode test`, …). It is
-documented in the
+Repository development uses Cargo directly for Rust work and cargo-make for
+multi-tool workflows (`cargo make vscode-test`, `cargo make verify-quick`, …).
+Both are documented in the
 [Rumoca Dev Guide](https://cognipilot.github.io/rumoca/dev-guide/) book and
 `CONTRIBUTING.md`.
+
+With Cargo already installed, install the pinned workflow runner once:
+
+```bash
+cargo install --locked cargo-make --version 0.37.24
+```
+
+The optional Nix development shells already provide that version.
 
 ## Modelica Library Dependencies
 
@@ -79,7 +87,7 @@ The repository examples use pinned Modelica dependencies declared in
 `examples/modelica_dependencies.toml`. Fetch them with:
 
 ```bash
-cargo xtask repo modelica-deps ensure
+cargo make modelica-deps
 ```
 
 This downloads the Modelica Standard Library (MSL) and the CogniPilot

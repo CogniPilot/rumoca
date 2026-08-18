@@ -4,196 +4,154 @@ Contributions are welcome.
 
 ## Setup
 
-Install the `xtask` developer CLI launcher once:
+Install the pinned repository workflow runner once:
 
 ```bash
-cargo xtask repo cli install
+cargo install --locked cargo-make --version 0.37.24
 ```
 
-That installs the `xtask` launcher, installs shell completions for the detected shell, and uses your cargo bin directory, usually `~/.cargo/bin`.
-If that directory is not already on `PATH`, `xtask` will print shell-specific fixups.
-
-If you want `xtask` to write the persistent PATH update for you:
+Nix is optional. `nix develop` supplies cargo-make and the default native
+Rust toolchain, while named shells add optional tools:
 
 ```bash
-cargo xtask repo cli install --path
+nix develop .#wasm
+nix develop .#vscode
+nix develop .#python
+nix develop .#modelica
+nix develop .#docs
+nix develop .#full
 ```
 
-Then install the repo hooks:
+Native installations work identically. Node/npm is required for browser and VS
+Code workflows, Python 3 plus maturin for notebooks, and mdBook for docs.
+
+Repository completion delegates ordinary Cargo syntax, workspace packages, and
+binary targets to Cargo's native completion engine. A small static overlay adds
+public `cargo make` tasks and grouped tool commands without invoking Cargo on
+the `cargo make` completion path. Re-source it after changing make tasks:
 
 ```bash
-cargo xtask repo hooks install
+source "$PWD/infra/cargo-make/completions/cargo-make.bash"
+```
+
+Fish users can source `infra/cargo-make/completions/cargo-make.fish`. The Nix
+shell sources Bash completion automatically. Cargo's native completion requires
+the pinned nightly toolchain used by this repository.
+
+Install the repository hooks without another task runner:
+
+```bash
+chmod +x .githooks/pre-commit .githooks/pre-push
+git config core.hooksPath .githooks
 ```
 
 ## Command Layout
 
-The canonical top-level command groups are:
-
-- `cargo xtask verify full` for the full local/CI verification suite
-- `cargo xtask verify quick` for the same verification surface except the long full-MSL parity gate
-- `cargo xtask verify ...` for local and CI verification gates
-- `cargo xtask vscode ...` for VS Code extension workflows
-- `cargo xtask playground ...` for browser playground workflows
-- `cargo xtask python ...` for Python binding workflows
-- `cargo xtask coverage ...` for coverage generation, reporting, and gating
-- `cargo xtask repo ...` for hooks, completions, releases, graphs, policy helpers, and MSL reference-data maintenance
-
-## Local Prerequisites
-
-Rust-only workflows do not require Node/npm:
+Cargo owns Rust dependency resolution and freshness. Use ordinary `cargo build`,
+`cargo check`, `cargo test`, and `cargo run -p ...` commands for Rust-only
+work. Cargo-make owns the small set of multi-tool workflows:
 
 ```bash
-cargo build
-cargo check
-cargo test
-cargo xtask --help
+cargo make vscode-{edit,test}
+cargo make playground-{build,edit,test}
+cargo make docs-{build,serve}
+cargo make verify-{lint,quick,full}
+cargo make vscode-package --target linux-x64
 ```
 
-Nix is only a convenience wrapper: all canonical build and verification logic
-remains in Cargo/xtask and works with equivalent Rust, native, and task-specific
-packages installed through the host system. If you choose Nix, the default
-`nix develop` shell contains only the pinned Rust and native build toolchain; it
-does not build Rumoca. Select optional tools with a named shell:
+Run `cargo make` for this concise list. Internal dependency nodes are private
+and intentionally absent from completion.
+
+Purpose-specific Rust tools remain grouped behind stable cargo-make entry
+points; arguments after the task name go to the owning tool:
 
 ```bash
-nix develop .#wasm      # Node, Binaryen, wasm-pack
-nix develop .#python    # Python, JAX/CasADi, maturin
-nix develop .#julia     # Julia (Linux)
-nix develop .#modelica  # OpenModelica (Linux)
-nix develop .#fmi       # FMI validation/template tools
-nix develop .#docs      # mdBook and docs WASM tools
-nix develop .#full      # all optional development tools
+cargo make modelica-deps
+cargo make msl-parity
+cargo make msl --help
+cargo make coverage --help
+cargo make crate-graph --format dot
+cargo make review scan --help
+cargo make release --help
 ```
 
-Use `cargo run -p rumoca -- ...` while developing the compiler. Building the
-store-native package remains an explicit `nix build .#rumoca` operation.
+The cargo-make DAG does not alias ordinary `cargo build/check/test` commands.
+It provides one stable front door for repository workflows and focused tool
+owners while keeping implementation nodes private.
 
-Package, playground, VS Code, and browser-asset workflows do require Node/npm.
-CI uses Node 20, so local package validation should use Node 20 as well:
+## VS Code and notebooks
+
+`cargo make vscode-edit` builds the language-server binaries through Cargo,
+stages only changed binaries, refreshes npm assets only when lockfiles or
+sources changed, and launches an isolated extension-development profile. It
+also installs the official Python and Jupyter extensions and prepares
+`examples/.venv` with the local Rumoca binding. A warm relaunch reuses all of
+those outputs. Python uses its own `target/python` Cargo cache so switching
+between normal Rust work and notebook preparation does not invalidate the
+large Python/Zenoh dependency graph.
+
+Force the notebook leaves only when needed:
 
 ```bash
-node --version
-npm --version
+cargo make vscode-notebooks-refresh
 ```
 
-Commands that may install npm dependencies or run npm package builds include:
+The VS Code Nix shell is convenient but not required:
 
 ```bash
-cargo xtask web build
-cargo xtask playground test
-cargo xtask vscode build
-cargo xtask vscode package --target linux-x64
+nix develop .#vscode --command cargo make vscode-edit
 ```
 
-Cargo builds must remain Rust-only. If a selected package/web command reports a
-missing `node` or `npm`, install Node 20 using your platform package manager,
-Volta, nvm, or the official Node installer, then retry that command.
+## Kani bounded verification
 
-### Kani bounded verification
-
-The SPEC_0037 verification track carries bounded-verification harnesses in
-`rumoca-ir-dae` and `rumoca-solver`. Each property is written once as a plain
-function with two drivers: `#[cfg(kani)]` proof harnesses and, under
-`#[cfg(not(kani))]`, a `proptest` fallback stating the identical property.
-
-The official Linux flake pins Kani 0.67.0 and its matching Rust nightly in a
-dedicated shell, leaving the ordinary development toolchain unchanged. Run the
-required proof set with:
+The dedicated Kani shell pins Kani 0.67.0 and its matching Rust toolchain. The
+purpose-specific verifier validates `infra/verification/kani-proofs.json`, runs
+each manifest harness independently, and writes
+`target/verification/kani-summary.json`:
 
 ```bash
-nix develop .#kani --command cargo xtask verify kani
+nix develop .#kani --command cargo make kani
 ```
 
-The command rejects any other Kani version and drives the solver harnesses from
-the checked-in `infra/verification/kani-proofs.json` manifest. Add a harness to that
-manifest in the same change that makes it required; every entry MUST declare its
-production kernel, symbolic inputs, enumeration barrier, counterexample meaning,
-bounds, and a non-empty `assumptions` list (SPEC_0037) — the gate rejects
-entries without one. GitHub CI runs this exact
-gate with a bounded Linux job and uploads the versioned, per-harness result at
-`target/verification/kani-summary.json`.
+Ordinary `cargo test -p rumoca-solver` runs validation fallbacks; only a
+successful pinned Kani run is proof evidence.
 
-The gate verifies one Kani harness at a time as required by SPEC_0037. Cargo's
-build jobs still use the repository's normal host-aware resource budget.
+## Verification
 
-Ordinary `cargo test -p rumoca-solver` still runs the `proptest` fallbacks. A
-green fallback is validation evidence, never proof evidence; only a successful
-`cargo xtask verify kani` run under the pinned verifier is Kani proof evidence.
-
-## Common Commands
-
-Typical local verification:
+Use the smallest command that covers the change:
 
 ```bash
-cargo xtask verify full
-cargo xtask verify lint
-cargo xtask verify workspace
-cargo xtask verify quick
-cargo xtask verify template-runtimes
+cargo fmt --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+cargo make verify-lint
+cargo make verify-quick
+cargo make verify-full
 ```
 
-`cargo xtask verify quick` runs the same verification surface as GitHub CI except
-for the slow full-MSL parity gate. `cargo xtask verify full` includes that parity
-run. Because those commands include coverage, VS Code, and wasm gates, they
-expect the same local prerequisites that CI installs: `cargo-llvm-cov`, Node
-20/npm for package/web tasks, and the wasm Rust target/tooling.
-`cargo xtask verify template-runtimes` wraps
-Cargo-native opt-in example-template execution checks such as
-`cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime backend_template_runtime_regression:: -- --nocapture`.
-
-Editor validation:
+The Cargo-native template runtime suite is:
 
 ```bash
-cargo xtask vscode test
-cargo xtask playground test
+cargo test -p rumoca --no-default-features \\
+  --features template-runtime-tests,fmu-packaging \\
+  --test suite_template_runtime -- --nocapture
 ```
 
-Extension packaging:
+The MSL parity gate is owned by the MSL harness package:
 
 ```bash
-cargo xtask vscode build
-cargo xtask vscode package --target linux-x64
-```
-
-MSL/reference maintenance:
-
-```bash
-cargo xtask verify msl-parity
-cargo xtask repo msl omc-reference
-cargo xtask repo msl flamegraph --model Modelica.Electrical.Digital.Examples.DFFREG --mode compile
-cargo xtask repo msl promote-quality-baseline
+cargo make msl-parity
+cargo make msl \\
+  flamegraph --model Modelica.Electrical.Digital.Examples.DFFREG --mode compile
 ```
 
 Verification-surface classification:
 
-- `cargo xtask verify workspace` includes the two required
-  `rumoca/msl-sim-tests` MSL simulation regressions. It needs the pinned MSL
-  tree at `target/msl/ModelicaStandardLibrary-4.1.0`, which the CI workspace
-  job stages before running.
+- `msl-sim-tests` selects the required MSL simulation regressions.
 - `backend-stress-tests` is an opt-in 30-model diagnostic survey, not a
-  correctness gate: it reports per-model failures and only requires one
-  end-to-end comparison for each selected backend.
+  correctness gate.
 - `msl-external-tests` contains opt-in MSL corpus cross-checks for generated
-  backends. Nightly CI surveys the checked C Solve and CasADi targets under the
-  Nix development shell. FMI 2/3 packaging is intentionally absent until it is
-  rebuilt against the checked kernel. `fmu_target_discovery` is a manual
-  target-list maintenance workflow, not a pass/fail verification gate.
-
-```bash
-nix develop .#full --command cargo test --release -p rumoca-test-msl \
-  --features backend-stress-tests --test backend_stress_test -- --nocapture
-nix develop .#default --command cargo test --release -p rumoca-test-msl \
-  --features msl-external-tests --test c_ode_msl_test -- --nocapture
-```
-
-Command discovery:
-
-```bash
-cargo xtask help
-cargo xtask help verify
-cargo xtask help repo msl
-cargo xtask help repo cli install
-```
+  backends.
 
 ## Parser Grammar Regeneration
 
@@ -231,7 +189,8 @@ Project specifications live under [`spec/`](spec/).
 ## Practical Expectations
 
 - Run the smallest verification gate that actually covers your change.
-- Prefer `cargo xtask` commands over ad hoc local scripts so local and CI workflows stay aligned.
+- Use `cargo make` for multi-tool workflows and each focused Cargo package for
+  Rust-only tooling so local and CI workflows stay aligned.
 - Keep contributor-facing command examples in docs synchronized with the actual CLI.
 - Include a PR size budget in the pull-request body:
   - production lines added/deleted,

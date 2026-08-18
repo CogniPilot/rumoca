@@ -1,0 +1,23 @@
+[package]
+name = "rumoca-repo-policy"
+description = "Static repository policy checks for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rumoca-traversal-policy-check"
+path = "src/bin/rumoca-traversal-policy-check.rs"
+
+[[bin]]
+name = "rumoca-rust-file-lines"
+path = "src/bin/rumoca-rust-file-lines.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+syn = { workspace = true }
+
+[lints]
+workspace = true

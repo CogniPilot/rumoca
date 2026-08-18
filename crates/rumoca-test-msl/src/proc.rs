@@ -1,5 +1,4 @@
-//! Small process helpers shared by the MSL tooling (copied from `xtask`'s own
-//! copies; `xtask` keeps its versions for the light commands that stay there).
+//! Small process helpers shared by the MSL tooling.
 
 use std::process::{Command, Stdio};
 
@@ -24,6 +23,41 @@ pub fn run_status(mut command: Command) -> Result<()> {
         bail!("command failed (status={status}): {rendered}");
     }
     Ok(())
+}
+
+/// Run a command while capturing output and include it in any failure.
+pub fn run_status_quiet(mut command: Command) -> Result<()> {
+    let rendered = format!("{command:?}");
+    let output = command
+        .output()
+        .with_context(|| format!("failed to run command: {rendered}"))?;
+    if !output.status.success() {
+        bail!(
+            "command failed (status={}): {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            rendered,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// Capture a command's UTF-8-lossy stdout and fail on a non-zero status.
+pub fn run_capture(mut command: Command) -> Result<String> {
+    let rendered = format!("{command:?}");
+    let output = command
+        .output()
+        .with_context(|| format!("failed to run command: {rendered}"))?;
+    if !output.status.success() {
+        bail!(
+            "command failed (status={}): {}\n{}",
+            output.status,
+            rendered,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// True if `program --version` runs successfully (a cheap availability probe).

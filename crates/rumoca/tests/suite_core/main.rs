@@ -10,7 +10,7 @@
 //!   feature (`suite_galec_fmu`, `suite_template_runtime`, `suite_msl_sim`,
 //!   `suite_examples_smoke`);
 //! - a repo-inspection policy/budget check that links no `rumoca` library ->
-//!   `suite_gates`, which stays a small binary so `xtask verify quick` can run
+//!   `suite_gates`, which stays a small binary so `cargo make verify-quick` can run
 //!   the fast gates without linking the compiler;
 //! - anything else -> a normal module below `tests/suite_core/`, declared at
 //!   the top of this file.

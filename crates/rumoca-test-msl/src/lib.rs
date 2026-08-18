@@ -1,10 +1,12 @@
 //! MSL/OMC reference, parity, and profiling tooling for the rumoca test
-//! infrastructure. These modules link the compiler stack and were moved out of
-//! the `xtask` crate so that `xtask` stays dependency-light (parses args and
-//! shells out; see the `rumoca-msl-tools` / `rumoca-msl-profile` bins).
+//! infrastructure. The parity gate lives here with the harness and its result
+//! schema instead of behind a repository task runner.
 
+pub mod editor_gate;
 pub mod msl_flamegraph;
+pub mod msl_hotspots;
 pub mod msl_tools;
+pub mod parity_gate;
 pub mod proc;
 pub mod resource_budget;
 pub mod web_assets;
@@ -25,8 +27,7 @@ pub fn repo_root() -> PathBuf {
                 let manifest = dir.join("Cargo.toml");
                 manifest.is_file()
                     && std::fs::read_to_string(&manifest)
-                        .map(|s| s.contains("[workspace]"))
-                        .unwrap_or(false)
+                        .is_ok_and(|contents| contents.contains("[workspace]"))
             })
             .map(std::path::Path::to_path_buf)
     }

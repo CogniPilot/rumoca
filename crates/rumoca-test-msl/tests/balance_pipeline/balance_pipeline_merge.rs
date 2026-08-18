@@ -1135,7 +1135,7 @@ fn merge_shard_parity_artifacts(dir: &Path, results_dir: &Path) -> Result<(), St
 
 /// Fan-in entry: load the shard partials, merge them, and run the real quality
 /// gate once on the merged full-set summary. Invoked by
-/// `cargo xtask verify msl-parity --merge-shards <dir>` (which is a "full-shaped"
+/// `cargo make msl parity --merge-shards <dir>` (which is a "full-shaped"
 /// run so `should_skip_msl_quality_gate()` is false and the baseline ratchet
 /// actually runs).
 #[cfg(feature = "msl-full-test")]

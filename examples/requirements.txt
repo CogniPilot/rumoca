@@ -5,9 +5,11 @@
 #   pip install -r requirements.txt          # rumoca comes from PyPI
 #
 # Developers:
-#   `cargo xtask vscode edit` sets up examples/.venv automatically, running
+#   `cargo make vscode-edit` sets up examples/.venv automatically, running
 #   `maturin develop --extras notebook` first so the LOCAL rumoca build overrides
-#   the PyPI one, then installing the rest of this file.
+#   the PyPI one, then installing the rest of this file. Cargo decides whether
+#   Rust inputs changed; later launches skip maturin and pip when their artifacts
+#   are current. Use `cargo make vscode-notebooks-refresh` to force a refresh.
 
 rumoca[notebook]   # the compiler + the %%modelica Jupyter magic (pulls IPython)
 ipykernel          # lets VSCode/Jupyter launch this venv as a notebook kernel

@@ -1,9 +1,7 @@
 //! Browser vendor-asset builder used by the MSL plot/speed-report tooling.
 //!
-//! This is a copy of `xtask`'s `web_assets` module. `xtask` keeps its own copy
-//! for the light web/playground commands that stay there; duplicating this
-//! self-contained (no compiler deps) helper is the sanctioned alternative to a
-//! shared util crate, which `xtask` must not depend on (SPEC_0029 §7).
+//! The browser reports share their generated vendor assets with the repository
+//! web package rather than carrying a second checked-in copy.
 
 use anyhow::{Context, Result, bail, ensure};
 use std::path::{Path, PathBuf};

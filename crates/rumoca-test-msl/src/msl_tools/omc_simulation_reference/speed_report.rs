@@ -65,7 +65,7 @@ pub(super) fn write_and_print_speed_comparison(
     //    an `_about` block defining every metric (see [`metric_definitions`]).
     //  * `msl_speed_scaling.html` — a self-contained local scalability plot
     //    using the same embedded uPlot backend as `plot-compare`.
-    // The PR-comment table + mermaid plot are rendered by `cargo xtask repo msl
+    // The PR-comment table + mermaid plot are rendered by `rumoca-msl-tools
     // pr-comment` from the JSON, so the PR plot is a deliberate step, not a
     // side effect of every run. Rich per-stage IR lives in `debug-model`.
     write_pretty_json(
