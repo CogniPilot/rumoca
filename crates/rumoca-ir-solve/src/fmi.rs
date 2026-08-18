@@ -8,8 +8,8 @@
 //! scalar variables and FMI 3 aggregate value references are derived views of
 //! this one checked object.
 //!
-//! One ordered inventory holds every addressable declaration. Almost every
-//! entry is backed by one Solve storage run; a delay-bearing kernel also
+//! One ordered inventory holds every addressable declaration. Every nonempty
+//! numeric entry is backed by one Solve storage run; a delay-bearing kernel also
 //! publishes the maximum-step-duration local named [`MAX_STEP_DURATION_NAME`],
 //! which is an ordinary entry of that same inventory whose value the component
 //! derives rather than reads from storage. Each entry names its one backing
@@ -63,8 +63,6 @@ pub enum FmiComponentError {
     InvalidSolve(String),
     #[error("FMI declaration count {variables} does not match Solve storage count {storage}")]
     VariableCount { variables: usize, storage: usize },
-    #[error("FMI variable `{name}` has a zero-extent tensor shape")]
-    ZeroExtentShape { name: String, span: Span },
     #[error("FMI variable `{name}` has {actual} scalars but its shape requires {expected}")]
     ScalarCount {
         name: String,
@@ -93,8 +91,7 @@ impl FmiComponentError {
     #[must_use]
     pub const fn span(&self) -> Option<Span> {
         match self {
-            Self::ZeroExtentShape { span, .. }
-            | Self::ScalarCount { span, .. }
+            Self::ScalarCount { span, .. }
             | Self::DuplicateName { span, .. }
             | Self::StorageTypeMismatch { span, .. }
             | Self::NonAddressableStorage { span, .. } => Some(*span),
@@ -125,9 +122,11 @@ pub struct FmiMetadata {
 impl FmiMetadata {
     /// The one ordered value-reference inventory both FMI versions project.
     ///
-    /// One entry per checked Solve storage run in storage order, followed by
-    /// the derived maximum-step-duration local when the kernel is
-    /// delay-bearing. Entry `index` holds value reference `index + 1`.
+    /// One entry per addressable checked Solve storage run in storage order,
+    /// followed by the derived maximum-step-duration local when the kernel is
+    /// delay-bearing. Zero-scalar declarations are checked against their runs
+    /// but own no value reference. Entry `index` holds value reference
+    /// `index + 1`.
     #[must_use]
     pub fn variables(&self) -> &[FmiVariable] {
         &self.variables
@@ -406,10 +405,15 @@ fn checked_storage_inventory(
             input,
             *run,
             declarations[index],
-            value_reference_fmi3(index)?,
+            value_reference_fmi3(inventory.variables.len())?,
         )?;
+        if run.scalar_count == 0 {
+            continue;
+        }
         if variable.role() == Some(SolveVariableStorageRole::State) {
-            inventory.state_variable_indices.push(index);
+            inventory
+                .state_variable_indices
+                .push(inventory.variables.len());
             inventory.state_scalar_count = inventory
                 .state_scalar_count
                 .checked_add(run.scalar_count)
@@ -486,12 +490,6 @@ fn checked_variable(
 }
 
 fn checked_scalar_count(input: &FmiVariableInput) -> Result<usize, FmiComponentError> {
-    if input.dimensions.contains(&0) {
-        return Err(FmiComponentError::ZeroExtentShape {
-            name: input.name.clone(),
-            span: input.declaration,
-        });
-    }
     let expected = input
         .dimensions
         .iter()

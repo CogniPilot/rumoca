@@ -461,6 +461,32 @@ impl MeHostState {
         self.adopt_owned(time, Some(adopted))
     }
 
+    /// Move onto an integrator endpoint and commit the component's checked
+    /// manifold projection as the one accepted point.
+    pub(super) fn adopt_projected_point(
+        &mut self,
+        time: f64,
+        states: &[f64],
+    ) -> Result<bool, MeSessionError> {
+        let time = canonical_coordinate(time);
+        let mut projected = try_copied(states, "projected accepted point states")?;
+        let moved = {
+            let mut kernel = self.kernel.borrow_mut();
+            kernel
+                .set_time(MeTime::at(time))
+                .and_then(|()| kernel.set_continuous_states(&projected))
+                .and_then(|()| kernel.project_continuous_states(&mut projected))
+                .and_then(|changed| kernel.set_continuous_states(&projected).map(|()| changed))
+        };
+        let changed = match moved {
+            Ok(changed) => changed,
+            Err(error) => return self.anchor().settle(Err(MeSessionError::from(error))),
+        };
+        self.time = time;
+        self.states = projected;
+        Ok(changed)
+    }
+
     /// Move the session and the component onto `time`, keeping the accepted
     /// state vector.
     pub(super) fn adopt_time(&mut self, time: f64) -> Result<(), MeSessionError> {
@@ -812,10 +838,13 @@ impl AcceptedAnchor<'_> {
         states: &[f64],
         read: impl FnOnce(&Rc<RefCell<SolveMeKernel>>) -> Result<Vec<f64>, MeError>,
     ) -> Result<Vec<f64>, MeSessionError> {
+        let mut projected = try_copied(states, "projected observation states")?;
         {
             let mut kernel = self.kernel.borrow_mut();
             kernel.set_time(MeTime::at(time))?;
-            kernel.set_continuous_states(states)?;
+            kernel.set_continuous_states(&projected)?;
+            kernel.project_continuous_states_for_observation(&mut projected)?;
+            kernel.set_continuous_states(&projected)?;
         }
         Ok(read(self.kernel)?)
     }

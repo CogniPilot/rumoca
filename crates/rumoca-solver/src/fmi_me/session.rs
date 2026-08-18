@@ -917,10 +917,19 @@ impl MeSimulationSession<'_, '_> {
     ) -> Result<(), MeSessionError> {
         let accepted = step.accepted();
         self.materialize_nominals_before(accepted.time(), cursor)?;
-        // The component moves with the session, so the endpoint is one point
-        // from here on and every excursion below returns to exactly it.
+        // Establish the raw endpoint as the accepted anchor before observing
+        // its continuous-left neighbor. A failed observation must restore this
+        // accepted endpoint, while the plugin's native interval is still live.
         self.host.adopt_point(accepted.time(), accepted.states())?;
         let mut pending = self.capture_endpoint_event_left(accepted.time())?;
+        let projected = self
+            .host
+            .adopt_projected_point(accepted.time(), accepted.states())?;
+        if projected {
+            let point = self.host.checked_point()?;
+            self.run_with_derivatives(|backend| backend.truncate_reset(&point))?;
+            self.host.retained_interval = None;
+        }
         let reaches_time_event = self.host.endpoint_reaches_cached_event(accepted.time());
         if reaches_time_event {
             self.publish_event_left(pending.take())?;
@@ -1029,13 +1038,13 @@ impl MeSimulationSession<'_, '_> {
         // coordinate/value pairing (review finding [368]).
         self.materialize_event_left(application.left(), event_time)?;
         self.host
-            .adopt_point(event_time, application.application().states())?;
+            .adopt_projected_point(event_time, application.application().states())?;
         // Only now is the uncompleted trial endpoint discarded. No sample is
         // requested after this point. The plugin re-establishes its history
         // through the retained capability, so this is an activated host call
         // and the application point is restored on both its exits.
-        let point = application.application();
-        self.run_with_derivatives(|backend| backend.truncate_reset(point))?;
+        let point = self.host.checked_point()?;
+        self.run_with_derivatives(|backend| backend.truncate_reset(&point))?;
         self.host.retained_interval = None;
         let completed = self.host.completed_integrator_step()?;
         if completed.terminate_simulation {

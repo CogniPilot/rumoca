@@ -7,7 +7,6 @@
 //! (review finding \[337\]§1).
 
 use super::MeSessionError;
-use crate::fmi_me::integrator::accepted_step_roundoff;
 
 /// The plain host request a checked [`MeSessionOptions`] is built from.
 ///
@@ -60,10 +59,9 @@ impl MeSessionOptions {
             )));
         }
         if let Some(stop) = input.stop_time {
-            let roundoff = accepted_step_roundoff(input.start_time, 0.0);
-            if !stop.is_finite() || stop - input.start_time <= roundoff {
+            if !stop.is_finite() || stop < input.start_time {
                 return Err(reject(format!(
-                    "the defined experiment end {stop} must be finite and strictly after the \
+                    "the defined experiment end {stop} must be finite and must not precede the \
                      start {}",
                     input.start_time
                 )));
@@ -326,6 +324,17 @@ mod tests {
         let mut infinite_start = input(Some(1.0), true);
         infinite_start.start_time = f64::INFINITY;
         assert!(MeSessionOptions::new(infinite_start).is_err());
+    }
+
+    #[test]
+    fn an_initialization_only_experiment_has_equal_finite_bounds() {
+        let checked = MeSessionOptions::new(input(Some(0.0), true))
+            .expect("equal bounds request one settled initialization observation");
+        assert_eq!(
+            checked.start_time(),
+            checked.stop_time().expect("defined stop")
+        );
+        assert_eq!(trace_capacity(&checked), 1);
     }
 
     #[test]

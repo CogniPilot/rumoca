@@ -70,6 +70,12 @@ impl SolveMeKernel {
         settled_guess: &mut Option<Vec<f64>>,
         indicators: &mut [f64],
     ) -> Result<(), MeError> {
+        // Solve retains relation roots that are useful during initialization
+        // and event iteration but are not continuously monitored FMI
+        // indicators. The checked root plan keeps the complete positional
+        // vector while neutralizing those non-search rows, so the common host
+        // cannot turn a parameter-static or purely algebraic relation into a
+        // spurious state event.
         match settled_guess {
             Some(guess)
                 if self
@@ -77,7 +83,7 @@ impl SolveMeKernel {
                     .derivative_settled_coordinate_can_refresh_roots() =>
             {
                 self.runtime
-                    .eval_root_conditions_after_derivative_settle_into(
+                    .eval_root_search_conditions_after_derivative_settle_into(
                         time,
                         params,
                         guess,
@@ -87,9 +93,21 @@ impl SolveMeKernel {
                     )
                     .map_err(MeError::from)
             }
-            _ => self
+            Some(guess) => self
                 .runtime
-                .eval_root_conditions_into(
+                .eval_root_search_conditions_with_guess_into(
+                    time,
+                    &self.states,
+                    params,
+                    guess,
+                    ALGEBRAIC_REFRESH_TOL,
+                    UPDATE_MAX_ITERS,
+                    indicators,
+                )
+                .map_err(MeError::from),
+            None => self
+                .runtime
+                .eval_root_search_conditions_into(
                     time,
                     &self.states,
                     params,
@@ -818,8 +836,26 @@ impl SolveMeKernel {
         &mut self,
         states: &mut [f64],
     ) -> Result<bool, MeError> {
+        let before = states.to_vec();
+        let projected = self.project_continuous_states_for_observation(states)?;
+        let changed = projected && runtime_values_changed(&before, states, self.tolerance);
+        if !changed {
+            // A correction below the component's certified runtime tolerance
+            // is the same accepted point. Keeping the native endpoint avoids
+            // discarding multistep history for roundoff-sized projections.
+            states.copy_from_slice(&before);
+        }
+        self.last_projection_changed = changed;
+        Ok(changed)
+    }
+
+    /// Project an off-point observation without making its correction the
+    /// accepted-step fact consumed by `completed_integrator_step`.
+    pub(crate) fn project_continuous_states_for_observation(
+        &self,
+        states: &mut [f64],
+    ) -> Result<bool, MeError> {
         if !self.runtime.requires_state_manifold_projection() {
-            self.last_projection_changed = false;
             return Ok(false);
         }
         let time = self.time;
@@ -837,12 +873,11 @@ impl SolveMeKernel {
             &mut solver_y,
             &self.params,
             time,
-            self.tolerance,
+            ALGEBRAIC_REFRESH_TOL,
         )?;
         states.copy_from_slice(&solver_y[..self.state_count]);
         solver_y[..self.state_count].copy_from_slice(states);
         *self.solver_y_guess.borrow_mut() = solver_y;
-        self.last_projection_changed = changed;
         Ok(changed)
     }
 
