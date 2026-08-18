@@ -184,7 +184,8 @@ SPEC_0037's per-phase obligation, not this crate's.
 | FS-EQN-005 | Lemma 6 above. |
 | FS-EQN-006 | Nothing until slice 4 exists. |
 | FS-SIM-009 | Already a *consequence* in slice 1 rather than an oracle result — see `tests/semantics.rs`. A candidate for re-tiering from `OracleImplied` once machine-checked. |
-| FS-SIM-010, FS-SIM-011 | Neither. Both are solver-session divergences; a semantics model has nothing to say about them. |
+| FS-SIM-010 | Nothing. Its once-per-initial-event result is selected by the oracle where MLS §8.6 leaves internal iteration mechanics open. |
+| FS-SIM-011 | Neither. It is a solver-session divergence; a semantics model has nothing to say about it. |
 
 ### The `MachineChecked` status proposal
 

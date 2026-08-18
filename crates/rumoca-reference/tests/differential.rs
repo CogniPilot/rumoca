@@ -149,12 +149,6 @@ fn hand_written_models_agree_between_reference_and_pipeline() {
     for case in cases() {
         let reference = reference_trace(&case);
         for mode in SESSIONS {
-            if EXPECTED_DIVERGENCES
-                .iter()
-                .any(|(model, session)| *model == case.name && *session == mode)
-            {
-                continue;
-            }
             found.extend(disagreements(&case, &reference, mode));
         }
     }
@@ -162,24 +156,10 @@ fn hand_written_models_agree_between_reference_and_pipeline() {
         found.is_empty(),
         "the reference and the pipeline disagree about what these models \
          mean:\n{}\n\nOne side is wrong. Do not widen this assertion and do not \
-         add a row to EXPECTED_DIVERGENCES without a registry entry: adjudicate \
-         against the specification first.",
+         add an exclusion: adjudicate against the specification first.",
         found.join("\n")
     );
 }
-
-/// Comparisons this harness skips, and why each one is skipped.
-///
-/// The remaining entry is the diffsol session. The rk-like session agrees with
-/// the reference, which makes this a session divergence rather than a
-/// semantics disagreement.
-///
-/// * `LiteralWhenNeverFires` — registry row **FS-SIM-010**
-///   (`RecordedDivergence`), whose latitude note states it directly: "omc
-///   leaves `when true then y = pre(y) + 1` at 0; the diffsol session applies
-///   its initial-event update two or three times."
-const EXPECTED_DIVERGENCES: &[(&str, SimSolverMode)] =
-    &[("LiteralWhenNeverFires", SimSolverMode::Bdf)];
 
 /// Pins the shared dynamic-time-event behavior on both numerical plugins.
 #[test]
@@ -205,39 +185,6 @@ fn the_diffsol_session_fires_a_self_rescheduling_time_event() {
     assert!(
         (pipeline_value_at(&bdf, "count", 0.9) - 4.0).abs() <= VALUE_TOLERANCE,
         "the diffsol plugin agrees with the ME runtime and the reference"
-    );
-}
-
-/// Pins the FS-SIM-010 divergence rather than hiding it behind the skip above.
-///
-/// This test asserts what the diffsol session *does*, so it fails when the
-/// divergence is fixed — that is the `PinsDivergence` polarity the registry
-/// uses, and it is what stops a skipped comparison from quietly becoming a
-/// claim of compliance.
-#[test]
-fn the_diffsol_session_still_activates_a_literal_true_when() {
-    let case = cases()
-        .into_iter()
-        .find(|entry| entry.name == "LiteralWhenNeverFires")
-        .expect("the literal-true case is in the case list");
-    let reference = reference_trace(&case);
-    assert_eq!(
-        reference.final_value("y"),
-        Some(Value::Real(0.0)),
-        "§8.3.5.1 gives the buffer of `when true then` a true start value, so \
-         it has no rising edge and the body never runs"
-    );
-    let rk_like = pipeline_trace(&case, SimSolverMode::RkLike);
-    assert!(
-        pipeline_value_at(&rk_like, "y", 1.0).abs() <= VALUE_TOLERANCE,
-        "the rk-like session agrees with the reference and with omc"
-    );
-    let bdf = pipeline_trace(&case, SimSolverMode::Bdf);
-    assert!(
-        (pipeline_value_at(&bdf, "y", 1.0) - 1.0).abs() <= VALUE_TOLERANCE,
-        "FS-SIM-010: the diffsol session applies the initial event to a \
-         literal-true activation. When this assertion fails the divergence has \
-         been fixed — remove it and the EXPECTED_DIVERGENCES row together."
     );
 }
 

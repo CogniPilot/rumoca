@@ -210,15 +210,6 @@
 //!   solver mode explicitly rather than asserting whatever the default happens
 //!   to be. [`the_diffsol_session_agrees_on_a_scheduled_instant`] pins the part
 //!   of that session the schedule *does* reach.
-//! * **The diffsol session applies the initial event more than once**
-//!   (pre-existing). Every `when` that legitimately runs at `t = 0` runs two or
-//!   three times there on `SimSolverMode::Bdf`: `when true then y = pre(y) + 1`
-//!   reads `y = 3` at `t = 0` before the activation buffers existed and `y = 2`
-//!   after, where `omc` leaves `0`. The count moved because the buffer removes
-//!   one of the applications, not because the multiple application was addressed
-//!   — it is the diffsol initial-event boundary running its update more than
-//!   once, and it is why every assertion below that reads `t = 0` on both
-//!   sessions reads a *level* (fired / did not fire) rather than a count.
 //! * **A scalar `initial()` inside a larger condition enables the whole
 //!   condition** (pre-existing). MLS §8.6 enables a when-clause during
 //!   initialization in exactly two spellings, `when initial() then` and
