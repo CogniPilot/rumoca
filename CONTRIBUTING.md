@@ -49,6 +49,25 @@ cargo test
 cargo xtask --help
 ```
 
+Nix is only a convenience wrapper: all canonical build and verification logic
+remains in Cargo/xtask and works with equivalent Rust, native, and task-specific
+packages installed through the host system. If you choose Nix, the default
+`nix develop` shell contains only the pinned Rust and native build toolchain; it
+does not build Rumoca. Select optional tools with a named shell:
+
+```bash
+nix develop .#wasm      # Node, Binaryen, wasm-pack
+nix develop .#python    # Python, JAX/CasADi, maturin
+nix develop .#julia     # Julia (Linux)
+nix develop .#modelica  # OpenModelica (Linux)
+nix develop .#fmi       # FMI validation/template tools
+nix develop .#docs      # mdBook and docs WASM tools
+nix develop .#full      # all optional development tools
+```
+
+Use `cargo run -p rumoca -- ...` while developing the compiler. Building the
+store-native package remains an explicit `nix build .#rumoca` operation.
+
 Package, playground, VS Code, and browser-asset workflows do require Node/npm.
 CI uses Node 20, so local package validation should use Node 20 as well:
 
@@ -161,9 +180,9 @@ Verification-surface classification:
   target-list maintenance workflow, not a pass/fail verification gate.
 
 ```bash
-nix develop --command cargo test --release -p rumoca-test-msl \
+nix develop .#full --command cargo test --release -p rumoca-test-msl \
   --features backend-stress-tests --test backend_stress_test -- --nocapture
-nix develop --command cargo test --release -p rumoca-test-msl \
+nix develop .#default --command cargo test --release -p rumoca-test-msl \
   --features msl-external-tests --test c_ode_msl_test -- --nocapture
 ```
 

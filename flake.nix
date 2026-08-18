@@ -27,7 +27,8 @@
         pkgs = import nixpkgs {
           inherit system;
           config.allowUnfreePredicate =
-            package: builtins.elem (nixpkgs.lib.getName package) [
+            package:
+            builtins.elem (nixpkgs.lib.getName package) [
               "cuda_cccl"
               "cuda_cudart"
               "cuda_nvcc"
@@ -109,7 +110,9 @@
         ciPython = pkgs.python312.withPackages (ps: [
           ps.casadi
           ps.ipython
-          (ps.jax.overridePythonAttrs (_: { doCheck = false; }))
+          (ps.jax.overridePythonAttrs (_: {
+            doCheck = false;
+          }))
           ps.numpy
           ps.pandas
           ps.pip
@@ -299,21 +302,89 @@
             '';
           }
         );
+        commonDevShellArgs = {
+          buildInputs = commonArgs.buildInputs;
+          shellHook = ''
+            export PATH="''${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+          '';
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
+            [
+              pkgs.stdenv.cc.cc.lib
+              pkgs.zlib
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
+          );
+        };
+        mkDevShell =
+          extraPackages:
+          craneLib.devShell (commonDevShellArgs // { packages = [ pkgs.pkg-config ] ++ extraPackages; });
         templateRuntimeShell =
           extraPackages:
-          craneLib.devShell {
-            inputsFrom = [ rumoca ];
-            packages = extraPackages;
-            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
-              [
-                pkgs.gfortran.cc.lib
-                pkgs.stdenv.cc.cc.lib
-                pkgs.zlib
-              ]
-              ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
-            );
-          };
+          craneLib.devShell (
+            commonDevShellArgs
+            // {
+              packages = [ pkgs.pkg-config ] ++ extraPackages;
+              LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
+                [
+                  pkgs.gfortran.cc.lib
+                  pkgs.stdenv.cc.cc.lib
+                  pkgs.zlib
+                ]
+                ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
+              );
+            }
+          );
+        wasmShell = mkDevShell [
+          pkgs.binaryen
+          pkgs.nodejs_22
+          pkgs.wasm-pack
+        ];
+        pythonShell = templateRuntimeShell [
+          ciPython
+          pkgs.maturin
+        ];
+        juliaShell = templateRuntimeShell (pkgs.lib.optionals pkgs.stdenv.isLinux [ ciJulia ]);
+        modelicaShell = templateRuntimeShell (pkgs.lib.optionals pkgs.stdenv.isLinux [ openModelicaCli ]);
+        fmiShell = templateRuntimeShell (
+          [
+            ciPython
+            pkgs.cmake
+            pkgs.curl
+            pkgs.jre_headless
+            pkgs.libxml2
+            pkgs.nodejs_22
+            pkgs.unzip
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ openModelicaCli ]
+        );
+        docsShell = mkDevShell [
+          pkgs.binaryen
+          pkgs.mdbook
+          pkgs.nodejs_22
+          pkgs.wasm-pack
+        ];
+        fullShell = templateRuntimeShell (
+          pkgs.lib.optionals pkgs.stdenv.isLinux [
+            ciJulia
+            openModelicaCli
+          ]
+          ++ [
+            ciPython
+            pkgs.binaryen
+            pkgs.cargo-expand
+            pkgs.cargo-llvm-cov
+            pkgs.cargo-nextest
+            pkgs.hyperfine
+            pkgs.jq
+            pkgs.libxml2
+            pkgs.maturin
+            pkgs.mdbook
+            pkgs.nodejs_22
+            pkgs.ripgrep
+            pkgs.wasm-pack
+          ]
+        );
         # xtask itself is NOT built here: after the light-xtask split it carries no
         # compiler deps and compiles per-job in seconds, so build-once buys nothing.
         # The MSL merge and ModelicaTest jobs run reporting through the
@@ -357,98 +428,40 @@
           openmodelica-cli = openModelicaCli;
         };
 
-        devShells.default = craneLib.devShell {
-          inputsFrom = [ rumoca ];
-          packages =
-            pkgs.lib.optionals pkgs.stdenv.isLinux [
-              ciJulia
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-              openModelicaCli
-            ]
-            ++ [
-              # Keep both compilers directly runnable from the reproducible
-              # development shell. `inputsFrom` supplies Rumoca's build
-              # inputs, but does not put the built CLI on PATH.
-              rumoca
-              ciPython
-              pkgs.binaryen
-              pkgs.cargo-expand
-              pkgs.cargo-llvm-cov
-              pkgs.cargo-nextest
-              pkgs.hyperfine
-              pkgs.jq
-              pkgs.libxml2
-              pkgs.maturin
-              pkgs.mdbook
-              pkgs.nodejs_22
-              pkgs.ripgrep
-              pkgs.wasm-pack
-            ];
-          shellHook = ''
-            export PATH="''${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
-          '';
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
-            [
-              pkgs.gfortran.cc.lib
-              pkgs.stdenv.cc.cc.lib
-              pkgs.zlib
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
-          );
-        };
+        # Keep the default shell source-independent: it supplies only the
+        # pinned Rust/native build environment. Optional runtimes are exposed
+        # through named shells, and the packaged compiler remains an explicit
+        # `nix build .#rumoca` operation.
+        devShells.default = mkDevShell [ ];
+        devShells.full = fullShell;
+        devShells.wasm = wasmShell;
+        devShells.python = pythonShell;
+        devShells.julia = juliaShell;
+        devShells.modelica = modelicaShell;
+        devShells.fmi = fmiShell;
+        devShells.docs = docsShell;
         # Python wheel packaging must depend only on the build and smoke-test
         # toolchain.  In particular, it must not inherit optional template
         # runtimes such as JAX, whose platform support is narrower than the
         # wheel matrix (currently excluding x86_64-darwin).
-        devShells.ci-python-wheel = craneLib.devShell {
-          inputsFrom = [ rumoca ];
-          packages = [
-            pkgs.maturin
-            pkgs.python312
-          ];
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
-            [
-              pkgs.stdenv.cc.cc.lib
-              pkgs.zlib
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
-          );
-        };
+        devShells.ci-python-wheel = mkDevShell [
+          pkgs.maturin
+          pkgs.python312
+        ];
         # WASM packaging needs the workspace build inputs plus the JavaScript
         # and optimization tools. Keep the interactive shell's Rumoca, OMC,
         # Julia, Python, and documentation closures out of this CI boundary.
-        devShells.ci-wasm = craneLib.devShell {
-          inputsFrom = [ rumoca ];
-          packages = [
-            pkgs.binaryen
-            pkgs.nodejs_22
-            pkgs.wasm-pack
-          ];
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
-            [
-              pkgs.stdenv.cc.cc.lib
-              pkgs.zlib
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
-          );
-        };
-        devShells.${if kaniSupported then "kani" else null} = pkgs.mkShell {
-          inputsFrom = [ rumoca ];
-          packages = [ kani ];
-          KANI_HOME = kaniHome;
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
-            [
-              pkgs.stdenv.cc.cc.lib
-              pkgs.zlib
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
-          );
-        };
+        devShells.ci-wasm = wasmShell;
+        devShells.${if kaniSupported then "kani" else null} = pkgs.mkShell (
+          commonDevShellArgs
+          // {
+            packages = [
+              pkgs.pkg-config
+              kani
+            ];
+            KANI_HOME = kaniHome;
+          }
+        );
         devShells.ci-template-core = templateRuntimeShell [ ];
         devShells.ci-template-cuda = templateRuntimeShell (
           pkgs.lib.optionals pkgs.stdenv.isLinux [
@@ -456,26 +469,11 @@
             pkgs.cudaPackages.cuda_nvcc
           ]
         );
-        devShells.ci-template-fmi = templateRuntimeShell (
-          [
-            ciPython
-            pkgs.cmake
-            pkgs.curl
-            pkgs.jre_headless
-            pkgs.libxml2
-            pkgs.nodejs_22
-            pkgs.unzip
-          ]
-          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ openModelicaCli ]
-        );
-        devShells.ci-template-modelica = templateRuntimeShell (
-          pkgs.lib.optionals pkgs.stdenv.isLinux [ openModelicaCli ]
-        );
+        devShells.ci-template-fmi = fmiShell;
+        devShells.ci-template-modelica = modelicaShell;
         devShells.ci-template-wasm = templateRuntimeShell [ pkgs.wasm-tools ];
         devShells.ci-template-python = templateRuntimeShell [ ciPython ];
-        devShells.ci-template-julia = templateRuntimeShell (
-          pkgs.lib.optionals pkgs.stdenv.isLinux [ ciJulia ]
-        );
+        devShells.ci-template-julia = juliaShell;
       }
     );
 }

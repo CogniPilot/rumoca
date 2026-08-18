@@ -858,11 +858,11 @@ jobs:
       # fixed correctness threshold.
       - name: C Solve MSL suite
         continue-on-error: true
-        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test c_ode_msl_test -- --nocapture
+        run: nix develop .#default --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test c_ode_msl_test -- --nocapture
 
       - name: CasADi MSL suite
         continue-on-error: true
-        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test casadi_msl_test -- --nocapture
+        run: nix develop .#python --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test casadi_msl_test -- --nocapture
 
   parser-fuzz:
     name: Parser fuzzing

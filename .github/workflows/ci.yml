@@ -1796,7 +1796,7 @@ jobs:
       - name: Prepare GitHub Pages content
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: |
-          nix develop --command bash <<'EOF'
+          nix develop .#wasm --command bash <<'EOF'
           set -euo pipefail
           if [ -d packages/rumoca/dist/release-full-web ]; then
             PKG_SUBDIR="release-full-web"

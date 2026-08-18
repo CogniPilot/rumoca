@@ -88,6 +88,7 @@ Failure classifications:
 | Repository-launched Cargo MUST derive `CARGO_BUILD_JOBS` and `RAYON_NUM_THREADS` from host topology unless explicitly set | developer tooling | Avoids nested oversubscription |
 | Automatic Cargo budgets MUST reserve zero physical cores below 4 logical CPUs, one below 8, and at most two otherwise | developer tooling | Balance runner throughput and foreground capacity |
 | Long-running isolated workers MUST exit when their parent control channel closes and MUST enforce a bounded resident-memory policy | worker orchestration | Interrupted gates must not leave orphaned or unbounded processes |
+| Nix MUST remain optional; shells only provision prerequisites and exclude first-party outputs by default | developer tooling | Cargo/xtask remains canonical |
 
 ### 6a. Two-Tier Verification Cadence
 

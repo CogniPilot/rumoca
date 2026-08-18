@@ -131,10 +131,26 @@ The goal is to make model package trees belong to the **models themselves**, not
 cargo build --workspace
 ```
 
-Alternatively, a reproducible [Nix](https://nixos.org) flake lives at the repo
-root (`flake.nix`): `nix develop` drops you into a shell with the exact pinned
-toolchain plus Node/Python, `nix build` produces the `rumoca` CLI, and
-`nix flake check` runs the same build + clippy + rustfmt gate CI uses.
+Nix is only a convenience wrapper. Every Cargo/xtask workflow works with the
+pinned Rust toolchain and required host packages installed normally. As an
+alternative, a reproducible [Nix](https://nixos.org) flake lives at the repo
+root (`flake.nix`). `nix develop` provides the exact pinned Rust and native
+build toolchain without building Rumoca or realizing optional runtimes.
+Task-specific shells add those tools only when needed:
+
+| Command | Additional tools |
+|---|---|
+| `nix develop .#wasm` | Node, Binaryen, and wasm-pack |
+| `nix develop .#python` | Python with JAX/CasADi and maturin |
+| `nix develop .#julia` | Julia (Linux) |
+| `nix develop .#modelica` | Pinned OpenModelica (Linux) |
+| `nix develop .#fmi` | FMI template and validation tools |
+| `nix develop .#docs` | mdBook and documentation WASM tools |
+| `nix develop .#full` | All optional development tools |
+
+Run Rumoca from source with `cargo run -p rumoca -- ...`; `nix build .#rumoca`
+produces the explicit reproducible package, and `nix flake check` runs the
+build, clippy, and rustfmt gates used by CI.
 
 ### Common commands
 
