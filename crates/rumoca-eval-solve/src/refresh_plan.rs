@@ -1260,28 +1260,40 @@ fn parameter_static_refresh_targets<A: RefreshProgramAccess + ?Sized>(
     block: &A,
     state_count: usize,
 ) -> BTreeSet<usize> {
-    let mut static_targets = BTreeSet::new();
+    // Begin with the complete algebraic candidate set and remove every target
+    // whose dependency closure reaches time, a state, or a non-candidate.
+    // This greatest-fixed-point direction is load-bearing for parameter-only
+    // algebraic loops: a closed simultaneous block can be static even though
+    // none of its members is independently orderable from parameters first.
+    let mut static_targets = plan
+        .causal_rows()
+        .iter()
+        .map(AlgebraicRefreshRow::target_index)
+        .collect::<BTreeSet<_>>();
     loop {
-        let mut changed = false;
-        for refresh_row in plan.causal_rows().iter() {
-            if static_targets.contains(&refresh_row.target_index()) {
-                continue;
-            }
-            let Some(row) = block.source_program(refresh_row.source()) else {
-                continue;
-            };
-            if parameter_static_refresh_row(
-                row,
-                refresh_row.target_index(),
-                state_count,
-                &static_targets,
-            ) {
-                static_targets.insert(refresh_row.target_index());
-                changed = true;
-            }
-        }
-        if !changed {
+        let rejected = plan
+            .causal_rows()
+            .iter()
+            .filter(|refresh_row| static_targets.contains(&refresh_row.target_index()))
+            .filter(|refresh_row| {
+                block
+                    .source_program(refresh_row.source())
+                    .is_none_or(|row| {
+                        !parameter_static_refresh_row(
+                            row,
+                            refresh_row.target_index(),
+                            state_count,
+                            &static_targets,
+                        )
+                    })
+            })
+            .map(AlgebraicRefreshRow::target_index)
+            .collect::<Vec<_>>();
+        if rejected.is_empty() {
             return static_targets;
+        }
+        for target in rejected {
+            static_targets.remove(&target);
         }
     }
 }

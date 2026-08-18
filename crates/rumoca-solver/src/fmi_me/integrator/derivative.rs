@@ -37,7 +37,13 @@ pub(in crate::fmi_me) trait MeDerivativeComponent {
 
     /// `fmi3SetTime` + `fmi3SetContinuousStates` +
     /// `fmi3GetContinuousStateDerivatives`.
-    fn derivatives_into(&self, time: f64, states: &[f64], out: &mut [f64]) -> Result<(), MeError>;
+    fn derivatives_into(
+        &self,
+        time: f64,
+        states: &[f64],
+        event_boundary: Option<f64>,
+        out: &mut [f64],
+    ) -> Result<(), MeError>;
 
     /// `fmi3SetTime` + `fmi3SetContinuousStates` +
     /// `fmi3GetDirectionalDerivative`.
@@ -45,6 +51,7 @@ pub(in crate::fmi_me) trait MeDerivativeComponent {
         &self,
         time: f64,
         states: &[f64],
+        event_boundary: Option<f64>,
         seed: &[f64],
         out: &mut [f64],
     ) -> Result<(), MeError>;
@@ -61,9 +68,15 @@ impl MeDerivativeComponent for KernelDerivatives {
         self.state_count
     }
 
-    fn derivatives_into(&self, time: f64, states: &[f64], out: &mut [f64]) -> Result<(), MeError> {
+    fn derivatives_into(
+        &self,
+        time: f64,
+        states: &[f64],
+        event_boundary: Option<f64>,
+        out: &mut [f64],
+    ) -> Result<(), MeError> {
         let mut kernel = self.kernel.borrow_mut();
-        kernel.set_time(MeTime::at(time))?;
+        kernel.set_time(MeTime::new(time, event_boundary))?;
         kernel.set_continuous_states(states)?;
         kernel.continuous_state_derivatives_into(out)
     }
@@ -72,11 +85,12 @@ impl MeDerivativeComponent for KernelDerivatives {
         &self,
         time: f64,
         states: &[f64],
+        event_boundary: Option<f64>,
         seed: &[f64],
         out: &mut [f64],
     ) -> Result<(), MeError> {
         let mut kernel = self.kernel.borrow_mut();
-        kernel.set_time(MeTime::at(time))?;
+        kernel.set_time(MeTime::new(time, event_boundary))?;
         kernel.set_continuous_states(states)?;
         kernel.get_directional_derivative(seed, out)
     }
@@ -91,6 +105,7 @@ impl MeDerivativeComponent for KernelDerivatives {
 struct DerivativeCell {
     component: Box<dyn MeDerivativeComponent>,
     active: Cell<bool>,
+    event_boundary: Cell<Option<f64>>,
     pending: RefCell<Option<MeIntegrationError>>,
 }
 
@@ -126,7 +141,7 @@ impl DerivativeCell {
     ) -> Result<(), MeIntegrationError> {
         self.require_active("a state-derivative evaluation")?;
         self.component
-            .derivatives_into(time, states, out)
+            .derivatives_into(time, states, self.event_boundary.get(), out)
             .map_err(MeIntegrationError::from)
     }
 
@@ -139,7 +154,7 @@ impl DerivativeCell {
     ) -> Result<(), MeIntegrationError> {
         self.require_active("a directional-derivative evaluation")?;
         self.component
-            .directional_derivative_into(time, states, seed, out)
+            .directional_derivative_into(time, states, self.event_boundary.get(), seed, out)
             .map_err(MeIntegrationError::from)
     }
 }
@@ -274,6 +289,7 @@ impl MeDerivativeController {
             shared: Rc::new(DerivativeCell {
                 component,
                 active: Cell::new(false),
+                event_boundary: Cell::new(None),
                 pending: RefCell::new(None),
             }),
         }
@@ -291,7 +307,18 @@ impl MeDerivativeController {
     /// The returned guard deactivates on drop, so "the host deactivates on
     /// every exit" is structural rather than a discipline every call site has
     /// to remember.
+    #[cfg(test)]
     pub(in crate::fmi_me) fn activate(&self) -> MeDerivativeActivation<'_> {
+        self.activate_until(None)
+    }
+
+    /// Open one activation window while preserving a scheduled event's left
+    /// limit through every derivative callback made by the numerical plugin.
+    pub(in crate::fmi_me) fn activate_until(
+        &self,
+        event_boundary: Option<f64>,
+    ) -> MeDerivativeActivation<'_> {
+        self.shared.event_boundary.set(event_boundary);
         self.shared.active.set(true);
         MeDerivativeActivation {
             shared: &self.shared,
@@ -325,6 +352,7 @@ pub(in crate::fmi_me) struct MeDerivativeActivation<'host> {
 impl Drop for MeDerivativeActivation<'_> {
     fn drop(&mut self) {
         self.shared.active.set(false);
+        self.shared.event_boundary.set(None);
     }
 }
 
@@ -348,7 +376,13 @@ impl MeDerivativeComponent for ClosureDerivatives {
         self.state_count
     }
 
-    fn derivatives_into(&self, time: f64, states: &[f64], out: &mut [f64]) -> Result<(), MeError> {
+    fn derivatives_into(
+        &self,
+        time: f64,
+        states: &[f64],
+        _event_boundary: Option<f64>,
+        out: &mut [f64],
+    ) -> Result<(), MeError> {
         let values = (self.derivative)(time, states);
         if values.len() != out.len() {
             return Err(MeError::Contract {
@@ -367,6 +401,7 @@ impl MeDerivativeComponent for ClosureDerivatives {
         &self,
         _time: f64,
         _states: &[f64],
+        _event_boundary: Option<f64>,
         _seed: &[f64],
         _out: &mut [f64],
     ) -> Result<(), MeError> {

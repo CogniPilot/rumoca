@@ -173,6 +173,9 @@ fn numeric_attribute<'dae>(
     let Some(expression) = expression else {
         return Ok(None);
     };
+    if variable.scalar_count() == 0 {
+        return Ok(Some(Vec::new()));
+    }
     if !matches!(
         variable.value_type().scalar_type(),
         dae::ScalarType::Real | dae::ScalarType::Integer
@@ -239,13 +242,12 @@ fn solve_value_kind(
         dae::ScalarType::Integer => Ok(SolveVariableValueKind::Integer),
         dae::ScalarType::Boolean => Ok(SolveVariableValueKind::Boolean),
         dae::ScalarType::Enumeration => Ok(SolveVariableValueKind::Enumeration),
-        kind @ (dae::ScalarType::String | dae::ScalarType::Record) => {
-            Err(FmiLoweringError::UnsupportedScalarType {
-                variable: variable.name().to_string(),
-                kind,
-                span: variable.declaration().span(),
-            })
-        }
+        dae::ScalarType::String => Ok(SolveVariableValueKind::String),
+        kind @ dae::ScalarType::Record => Err(FmiLoweringError::UnsupportedScalarType {
+            variable: variable.name().to_string(),
+            kind,
+            span: variable.declaration().span(),
+        }),
     }
 }
 

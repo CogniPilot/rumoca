@@ -8,9 +8,9 @@
 use std::{cell::Cell, rc::Rc};
 
 use diffsol::{
-    BacktrackingLineSearch, BdfState, Closure, ConstantClosure, DefaultDenseMatrix,
+    BacktrackingLineSearch, BdfState, Closure, ConstantClosure, DefaultDenseMatrix, DiffsolError,
     NewtonNonlinearSolver, OdeBuilder, OdeSolverMethod, OdeSolverProblem, OdeSolverState,
-    OdeSolverStopReason, UnitCallable, VectorHost,
+    OdeSolverStopReason, UnitCallable, VectorHost, error::OdeSolverError,
 };
 use rumoca_solver::fmi_me::{
     MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeIntegrationError,
@@ -186,6 +186,46 @@ impl DiffsolBdfIntegrator {
             Ok(())
         })
     }
+
+    fn reset_in_place(
+        &mut self,
+        point: &MeContinuousPoint,
+        derivatives: Rc<MeDerivativeHandle>,
+    ) -> Result<(), MeIntegrationError> {
+        self.require_width(point, derivatives.as_ref(), MeNumericalFailure::Reset)?;
+        let values = derivatives
+            .derivatives(point.time(), point.states())
+            .map_err(MeIntegrationError::from)?;
+        self.require_solver_mut()?
+            .with_dependent_mut(|problem, method| {
+                let mut fresh = BdfState::<Vector>::new_without_initialise(problem)
+                    .map_err(|error| numerical(MeNumericalFailure::Reset, error))?;
+                {
+                    let state = fresh.as_mut();
+                    state.y.as_mut_slice().copy_from_slice(point.states());
+                    state.dy.as_mut_slice().copy_from_slice(&values);
+                    *state.t = point.time();
+                }
+                fresh.set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
+                fresh
+                    .set_problem(problem)
+                    .map_err(|error| numerical(MeNumericalFailure::Reset, error))?;
+                method.set_state(fresh);
+                match method.set_stop_time(point.time()) {
+                    Ok(())
+                    | Err(DiffsolError::OdeSolverError(OdeSolverError::StopTimeAtCurrentTime)) => {
+                        Ok(())
+                    }
+                    Err(error) => Err(numerical(MeNumericalFailure::Reset, error)),
+                }
+            })?;
+        if derivatives.has_failed() {
+            return Err(MeIntegrationError::DerivativeRefused);
+        }
+        self.derivatives = Some(derivatives);
+        self.accepted_interval = None;
+        Ok(())
+    }
 }
 
 impl MeIntegratorBackend for DiffsolBdfIntegrator {
@@ -302,7 +342,7 @@ impl MeIntegratorBackend for DiffsolBdfIntegrator {
                 "the host has not initialized the derivative capability",
             )
         })?;
-        self.rebuild(point, derivatives, MeNumericalFailure::Reset)
+        self.reset_in_place(point, derivatives)
     }
 }
 

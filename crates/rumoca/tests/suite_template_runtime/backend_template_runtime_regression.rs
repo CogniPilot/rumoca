@@ -591,7 +591,7 @@ fn rust_fixed_ode_checked_target_executes_without_heap_allocation() {
         .find(|file| file.path.ends_with(".rs"))
         .expect("fixed Rust ODE target emits a Rust module");
     let generated_module = directory.path().join("generated.rs");
-    fs::copy(&module.path, &generated_module)
+    fs::copy(directory.path().join(&module.path), &generated_module)
         .expect("copy fixed Rust ODE module beside its normal module root");
     let harness = directory.path().join("main.rs");
     fs::write(

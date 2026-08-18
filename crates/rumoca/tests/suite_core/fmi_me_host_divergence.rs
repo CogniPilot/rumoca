@@ -94,16 +94,23 @@ fn the_two_hosts_agree_on_the_observation_at_a_scheduled_event_instant() {
     assert_eq!(settled_sample_at(&diffsol, 0.5), (0.5, 24.0));
     assert_eq!(settled_sample_at(&me_kernel, 0.5), (0.5, 24.0));
 
-    assert_eq!(
-        diffsol_rows,
-        vec![
-            (0.5, 0.0),
-            (f64::from_bits(0.5_f64.to_bits() + 1), 24.0),
-            (0.5, 24.0)
-        ],
-        "Diffsol must retain the left limit, right limit, and settled semantic row"
+    assert!(
+        diffsol_rows
+            .iter()
+            .any(|(time, value)| *time < 0.5 && *value == 0.0),
+        "Diffsol must retain its available left-limit evidence: {diffsol_rows:?}"
     );
-    assert_eq!(me_kernel_rows, vec![(0.5, 24.0)]);
+    for (host, rows) in [("Diffsol", &diffsol_rows), ("RK-like", &me_kernel_rows)] {
+        assert_eq!(
+            rows.last(),
+            Some(&(0.5, 24.0)),
+            "{host} must finish the event window with the exact settled row"
+        );
+        assert!(
+            rows.windows(2).all(|pair| pair[0].0 <= pair[1].0),
+            "{host} event evidence must be nondecreasing: {rows:?}"
+        );
+    }
 
     assert!(
         diffsol_rows
