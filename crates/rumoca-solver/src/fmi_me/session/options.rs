@@ -58,14 +58,14 @@ impl MeSessionOptions {
                 input.start_time
             )));
         }
-        if let Some(stop) = input.stop_time {
-            if !stop.is_finite() || stop < input.start_time {
-                return Err(reject(format!(
-                    "the defined experiment end {stop} must be finite and must not precede the \
-                     start {}",
-                    input.start_time
-                )));
-            }
+        if let Some(stop) = input.stop_time
+            && (!stop.is_finite() || stop < input.start_time)
+        {
+            return Err(reject(format!(
+                "the defined experiment end {stop} must be finite and must not precede the \
+                 start {}",
+                input.start_time
+            )));
         }
         for (label, value) in [
             ("relative tolerance", input.relative_tolerance),
