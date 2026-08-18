@@ -769,6 +769,7 @@ jobs:
         with:
           token: ${{ github.token }}
           persist-credentials: true
+          fetch-depth: 0
 
       - name: Install system dependencies
         run: |
