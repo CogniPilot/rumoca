@@ -301,16 +301,17 @@ fn native_simulation_updates_condition_memory_after_clocked_sample_time() {
     )
     .expect("clocked sample(time) model should simulate");
 
-    let y = trace_values(&sim, "ramp.y");
+    let initial_y = settled_trace_value_at_time(&sim, "ramp.y", 0.0);
     assert!(
-        (y[0] - 0.0).abs() <= 1.0e-12,
+        (initial_y - 0.0).abs() <= 1.0e-12,
         "MLS Appendix B B.1d condition memory should select the true branch at initialization; got {}",
-        y[0]
+        initial_y
     );
+    let first_tick_y = settled_trace_value_at_time(&sim, "ramp.y", 0.1);
     assert!(
-        (y[1] - 0.1).abs() <= 1.0e-12,
+        (first_tick_y - 0.1).abs() <= 1.0e-12,
         "MLS §16.5.1 sample(time) should refresh before dependent if-expression projection at the first clock tick; got {}",
-        y[1]
+        first_tick_y
     );
     assert_first_clock_assignment_reads_same_tick_input(&sim, "native");
 }
@@ -333,16 +334,17 @@ fn rk_like_simulation_updates_condition_memory_after_clocked_sample_time() {
     )
     .expect("clocked sample(time) model should simulate with RK-like solver");
 
-    let y = trace_values(&sim, "ramp.y");
+    let initial_y = settled_trace_value_at_time(&sim, "ramp.y", 0.0);
     assert!(
-        (y[0] - 0.0).abs() <= 1.0e-12,
+        (initial_y - 0.0).abs() <= 1.0e-12,
         "RK-like condition memory should select the true branch at initialization; got {}",
-        y[0]
+        initial_y
     );
+    let first_tick_y = settled_trace_value_at_time(&sim, "ramp.y", 0.1);
     assert!(
-        (y[1] - 0.1).abs() <= 1.0e-12,
+        (first_tick_y - 0.1).abs() <= 1.0e-12,
         "RK-like sample(time) should refresh before dependent projection at the first clock tick; got {}",
-        y[1]
+        first_tick_y
     );
     assert_first_clock_assignment_reads_same_tick_input(&sim, "RK-like");
 }
@@ -845,12 +847,7 @@ end ClockedConnectedInput;
     assert_eq!(y, u, "AssignClock passes its clocked input through");
     for tick in 0..=3 {
         let expected = tick as f64 * 0.1;
-        let index = sim
-            .times
-            .iter()
-            .rposition(|time| (time - expected).abs() <= 1.0e-12)
-            .unwrap_or_else(|| panic!("trace must contain clock tick {expected}"));
-        let value = y[index];
+        let value = settled_trace_value_at_time(&sim, "assignClock.y", expected);
         assert!(
             (value - expected).abs() <= 1.0e-12,
             "tick {tick} must hold the ramp value sampled at its own tick; got {value}"
@@ -1009,11 +1006,11 @@ fn collect_when_chain_builtins(
 }
 
 fn assert_first_clock_assignment_reads_same_tick_input(sim: &rumoca_sim::SimResult, backend: &str) {
-    let y = trace_values(sim, "assignClock.y");
+    let first_tick_y = settled_trace_value_at_time(sim, "assignClock.y", 0.1);
     assert!(
-        (y[1] - 0.1).abs() <= 1.0e-12,
+        (first_tick_y - 0.1).abs() <= 1.0e-12,
         "{backend} clocked assignments must read upstream values propagated during the same tick; got {}",
-        y[1]
+        first_tick_y
     );
 }
 
@@ -1047,4 +1044,14 @@ fn trace_values<'a>(sim: &'a rumoca_sim::SimResult, name: &str) -> &'a [f64] {
         .position(|candidate| candidate == name)
         .unwrap_or_else(|| panic!("trace should contain `{name}`; names={:?}", sim.names));
     &sim.data[idx]
+}
+
+fn settled_trace_value_at_time(sim: &rumoca_sim::SimResult, name: &str, time: f64) -> f64 {
+    let values = trace_values(sim, name);
+    let index = sim
+        .times
+        .iter()
+        .rposition(|candidate| (candidate - time).abs() <= 1.0e-12)
+        .unwrap_or_else(|| panic!("trace must contain `{name}` at time {time}"));
+    values[index]
 }
