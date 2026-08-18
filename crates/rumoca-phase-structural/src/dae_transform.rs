@@ -156,10 +156,10 @@ pub fn prepare_for_solve(model: &dae::Dae) -> Result<PreparedDae<'_>, Structural
 /// [`prepare_for_solve`], paired with an owned [`ReductionReport`] of every
 /// round this call actually traversed.
 ///
-/// [`ReductionRecorder`] is the only [`ReductionObserver`] this crate builds
+/// `ReductionRecorder` is the only `ReductionObserver` this crate builds
 /// besides the no-op `()` `prepare_for_solve` uses, so this function and
 /// `prepare_for_solve` are the two instantiations of one generic seam,
-/// [`prepare_for_solve_with_observer`]. Its observer type is erased from both
+/// `prepare_for_solve_with_observer`. Its observer type is erased from both
 /// public signatures: a caller of this function receives the owned data one
 /// recorder already extracted, never the borrowed callback protocol that
 /// produced it.
@@ -669,7 +669,7 @@ fn reduce_holonomic_constraint_with_enumeration(
 }
 
 /// The observed core [`reduce_holonomic_constraint_with_enumeration`] and
-/// [`prepare_for_solve_with_observer`] both delegate to.
+/// `prepare_for_solve_with_observer` both delegate to.
 fn reduce_holonomic_constraint_with_observer(
     model: &dae::Dae,
     mut perturb_enumeration: impl FnMut(&mut Vec<HolonomicConstraint>),

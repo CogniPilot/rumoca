@@ -6,7 +6,7 @@
 //! anything back into the reduction it is watching — that is a type-level
 //! guarantee, not a promise. `()` is the production observer: its `observe`
 //! body is empty, so [`crate::prepare_for_solve`] allocates and clones
-//! nothing for this seam. [`ReductionRecorder`] is the one observer that does
+//! nothing for this seam. `ReductionRecorder` is the one observer that does
 //! real work, turning each borrowed event into an owned [`ReductionRecord`]
 //! for [`crate::inspect_prepare_for_solve`], the sole crate-external surface.
 //! Everything else in this module — the trait, the borrowed event types, the
@@ -233,7 +233,7 @@ impl From<Lane> for ReductionLane {
     }
 }
 
-/// The owned twin of [`Identity`]: one attempted candidate's lane-specific
+/// The owned twin of `Identity`: one attempted candidate's lane-specific
 /// identity, with every borrow resolved to an owned value.
 #[derive(Clone, Debug)]
 pub enum ReductionIdentity {
@@ -274,7 +274,7 @@ impl From<Identity<'_>> for ReductionIdentity {
     }
 }
 
-/// The owned twin of [`AttemptOutcome`].
+/// The owned twin of `AttemptOutcome`.
 #[derive(Clone, Debug)]
 pub enum ReductionOutcome {
     Sorted,
@@ -303,7 +303,7 @@ impl From<AttemptOutcome<'_>> for ReductionOutcome {
     }
 }
 
-/// The owned twin of [`StoppedOutcome`].
+/// The owned twin of `StoppedOutcome`.
 #[derive(Clone, Debug)]
 pub enum ReductionStop {
     Borrowed,
@@ -334,7 +334,7 @@ impl From<StoppedOutcome<'_>> for ReductionStop {
 }
 
 /// One recorded fact from a traced [`crate::inspect_prepare_for_solve`] call,
-/// the owned twin of [`ReductionEvent`].
+/// the owned twin of `ReductionEvent`.
 #[derive(Clone, Debug)]
 pub enum ReductionRecord {
     Round {
@@ -375,7 +375,7 @@ pub struct ReductionReport {
     pub records: Vec<ReductionRecord>,
 }
 
-/// The one [`ReductionObserver`] outside `()` used in this crate: it clones
+/// The one `ReductionObserver` outside `()` used in this crate: it clones
 /// and classifies each borrowed event into an owned [`ReductionRecord`],
 /// which is exactly the work `()` skips on every other call.
 #[derive(Default)]
