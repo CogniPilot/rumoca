@@ -204,6 +204,20 @@ fn numeric_attribute<'dae>(
     Ok(Some(values))
 }
 
+/// Evaluate one numeric declaration attribute through the phase-owned DAE
+/// evaluator and apply the declaration's scalar-broadcast rule.
+pub fn numeric_attribute_values<'dae>(
+    view: dae::DaeView<'dae>,
+    variable: dae::VariableView<'dae>,
+    expression: Option<dae::ExprId<'dae>>,
+) -> Result<Option<Vec<f64>>, FmiLoweringError> {
+    numeric_attribute(
+        &mut rumoca_eval_dae::NumericEvaluator::new(view),
+        variable,
+        expression,
+    )
+}
+
 const fn solve_role(role: dae::VariableRole) -> SolveVariableStorageRole {
     match role {
         dae::VariableRole::Parameter => SolveVariableStorageRole::Parameter,

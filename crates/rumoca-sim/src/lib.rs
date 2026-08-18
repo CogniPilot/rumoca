@@ -541,7 +541,6 @@ pub fn build_tunable_parameter_meta(
     solve_model: &solve::SolveModel,
 ) -> Result<Vec<TunableParameterMeta>, SimulationDiagnosticError> {
     dae_model.inspect(|view| {
-        let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
         let mut result = Vec::new();
         for (_, variable) in view.variables().filter(|(_, variable)| {
             variable.role() == dae::VariableRole::Parameter && variable.is_tunable()
@@ -550,7 +549,6 @@ pub fn build_tunable_parameter_meta(
                 dae_model,
                 view,
                 solve_model,
-                &mut evaluator,
                 variable,
             )?);
         }
@@ -562,11 +560,10 @@ fn tunable_variable_meta<'dae>(
     dae_model: &dae::Dae,
     view: dae::DaeView<'dae>,
     solve_model: &solve::SolveModel,
-    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
     variable: dae::VariableView<'dae>,
 ) -> Result<Vec<TunableParameterMeta>, SimulationDiagnosticError> {
-    let minimum = evaluated_attribute(evaluator, variable, variable.minimum())?;
-    let maximum = evaluated_attribute(evaluator, variable, variable.maximum())?;
+    let minimum = evaluated_attribute(view, variable, variable.minimum())?;
+    let maximum = evaluated_attribute(view, variable, variable.maximum())?;
     let mut result = Vec::with_capacity(variable.scalar_count());
     for scalar in 0..variable.scalar_count() {
         let name = variable
@@ -605,31 +602,16 @@ fn tunable_variable_meta<'dae>(
 }
 
 fn evaluated_attribute<'dae>(
-    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
+    view: dae::DaeView<'dae>,
     variable: dae::VariableView<'dae>,
     expression: Option<dae::ExprId<'dae>>,
 ) -> Result<Option<Vec<f64>>, SimulationDiagnosticError> {
-    let Some(expression) = expression else {
-        return Ok(None);
-    };
-    let mut values = evaluator
-        .expression(expression)
-        .map_err(numeric_evaluation_error)?;
-    if values.len() == 1 && variable.scalar_count() > 1 {
-        values.resize(variable.scalar_count(), values[0]);
-    }
-    if values.len() != variable.scalar_count() {
-        return Err(runtime_preparation(
-            format!(
-                "numeric attribute for `{}` contains {} scalars; expected {}",
-                variable.name(),
-                values.len(),
-                variable.scalar_count()
-            ),
-            variable.declaration().span(),
-        ));
-    }
-    Ok(Some(values))
+    rumoca_phase_solve::fmi::numeric_attribute_values(view, variable, expression).map_err(|error| {
+        SimulationDiagnosticError::RuntimePreparation {
+            message: error.to_string(),
+            span: error.span(),
+        }
+    })
 }
 
 fn parameter_slot(
@@ -644,12 +626,6 @@ fn parameter_slot(
         ));
     };
     Ok(index)
-}
-
-fn numeric_evaluation_error(
-    error: rumoca_eval_dae::NumericEvaluationError,
-) -> SimulationDiagnosticError {
-    runtime_preparation(error.to_string(), error.span())
 }
 
 fn runtime_preparation(message: String, span: Span) -> SimulationDiagnosticError {

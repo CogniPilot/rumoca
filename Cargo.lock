@@ -4874,7 +4874,6 @@ dependencies = [
  "rumoca-codec",
  "rumoca-compile",
  "rumoca-core",
- "rumoca-eval-dae",
  "rumoca-eval-solve",
  "rumoca-exec-cranelift",
  "rumoca-input",

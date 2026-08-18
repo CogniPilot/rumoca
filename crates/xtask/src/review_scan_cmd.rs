@@ -446,8 +446,7 @@ fn line_trips_target_encoder_boundary(path: &str, line: &str) -> bool {
 fn line_trips_eval_dae_backend_boundary(path: &str, line: &str) -> bool {
     let is_backend_or_runtime = path.starts_with("crates/rumoca-exec-")
         || path.starts_with("crates/rumoca-solver")
-        || path.starts_with("crates/rumoca-sim/")
-        || path.starts_with("crates/rumoca-phase-codegen/");
+        || path.starts_with("crates/rumoca-sim/");
     is_backend_or_runtime && line.contains("rumoca-eval-dae")
 }
 

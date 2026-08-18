@@ -72,20 +72,19 @@ pub(super) fn host_driven_input_seeds(
     model: &dae::Dae,
 ) -> Result<std::collections::HashMap<String, f64>, SimulationDiagnosticError> {
     model.inspect(|view| {
-        let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
         let mut seeds = std::collections::HashMap::new();
         for (_, variable) in view
             .variables()
             .filter(|(_, variable)| variable.role() == dae::VariableRole::Input)
         {
-            seed_host_driven_input(&mut evaluator, variable, &mut seeds)?;
+            seed_host_driven_input(view, variable, &mut seeds)?;
         }
         Ok(seeds)
     })
 }
 
 fn seed_host_driven_input<'dae>(
-    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
+    view: dae::DaeView<'dae>,
     variable: dae::VariableView<'dae>,
     seeds: &mut std::collections::HashMap<String, f64>,
 ) -> Result<(), SimulationDiagnosticError> {
@@ -95,7 +94,9 @@ fn seed_host_driven_input<'dae>(
     let Some(start) = variable.start() else {
         return Ok(());
     };
-    let values = evaluator.expression(start).map_err(evaluation_error)?;
+    let values = rumoca_phase_solve::fmi::numeric_attribute_values(view, variable, Some(start))
+        .map_err(fmi_metadata_error)?
+        .expect("a supplied numeric start evaluates to values");
     for scalar in 0..variable.scalar_count() {
         let name = variable.scalar_name(scalar).ok_or_else(|| {
             preparation_error(
@@ -184,17 +185,12 @@ pub(crate) fn lower_correlated_for_simulation_with_stage_timing_and_param_overri
     Ok((lowered, timings))
 }
 
-fn evaluation_error(error: rumoca_eval_dae::NumericEvaluationError) -> SimulationDiagnosticError {
-    if error.kind() == rumoca_eval_dae::NumericEvaluationErrorKind::InvalidOverride {
-        SimulationDiagnosticError::InvalidOverride {
-            message: error.to_string(),
-        }
-    } else {
-        let span = error.span();
-        SimulationDiagnosticError::RuntimePreparation {
-            message: error.to_string(),
-            span: (!span.is_dummy()).then_some(span),
-        }
+fn fmi_metadata_error(
+    error: rumoca_phase_solve::fmi::FmiLoweringError,
+) -> SimulationDiagnosticError {
+    SimulationDiagnosticError::RuntimePreparation {
+        message: error.to_string(),
+        span: error.span(),
     }
 }
 
