@@ -36,7 +36,7 @@ pub(super) const EVENT_ITERATION_LIMIT: usize = 256;
 /// Returning this instead of mutating a half-built session is what lets the
 /// session be constructed with an already-valid root policy: there is no
 /// intermediate in which a stateful session holds a placeholder
-/// (review finding [337]§2).
+/// (review finding \[337\]§2).
 pub(super) struct InitializationOutcome {
     pub(super) states: Vec<f64>,
     /// The complete positive finite nominal vector. Empty exactly when
@@ -54,7 +54,7 @@ pub(super) struct InitializationOutcome {
 ///
 /// `terminateSimulation` short-circuits: the component is never asked to enter
 /// Continuous-Time Mode afterwards, and no getter runs once the session has
-/// concluded it is Terminated (review findings [337]§3, [343]).
+/// concluded it is Terminated (review findings \[337\]§3, \[343\]).
 pub(super) fn run_fmi_initialization(
     kernel: &mut SolveMeKernel,
     options: &MeSessionOptions,
@@ -160,7 +160,7 @@ pub(super) struct MeHostState {
     /// SPEC_0044 §6 requires every left-limit observation to be materialized
     /// *while* that interval still exists. Tracking it is what lets the host
     /// sample the left coordinate instead of relabelling the exact event
-    /// observation (review finding [368]). It is cleared by a truncate and by
+    /// observation (review finding \[368\]). It is cleared by a truncate and by
     /// any plugin history restart, because both destroy the extension.
     pub(super) retained_interval: Option<(f64, f64)>,
     pub(super) next_event_time: Option<f64>,
@@ -179,7 +179,7 @@ pub(super) struct MeHostState {
     /// accepted point, the event refresh, the input caches, the lifecycle —
     /// name different states and nothing here can re-establish that, so every
     /// later mutating or evaluating call is refused rather than served from
-    /// split authority (review findings [373], [382]). It is a [`Cell`] because
+    /// split authority (review findings \[373\], \[382\]). It is a [`Cell`] because
     /// an excursion closes on the `&self` observation paths.
     pub(super) usability: Cell<Option<MeSessionLoss>>,
 }
@@ -220,7 +220,7 @@ impl MeHostState {
     ///
     /// The caller adopts `event_time` first, so the component is already there:
     /// the lifecycle transition never moves the component away from the point
-    /// the host names (review finding [373]).
+    /// the host names (review finding \[373\]).
     pub(super) fn run_event_mode(
         &mut self,
         cause: MeEventCause,
@@ -294,7 +294,7 @@ impl MeHostState {
     ///
     /// The values were read while the component was still in a state where the
     /// getters are legal, so this uses the atomic slice-record operation rather
-    /// than an infallible copy into the closure form (review finding [366]§4).
+    /// than an infallible copy into the closure form (review finding \[366\]§4).
     pub(super) fn record_initialization(
         &mut self,
         time: f64,
@@ -312,7 +312,7 @@ impl MeHostState {
     ///
     /// The master algorithm uses this to avoid *generating* a candidate the
     /// SPEC_0050 matrix does not authorize, rather than relying on the recorder
-    /// to invent a suppression for it (review finding [350]§1).
+    /// to invent a suppression for it (review finding \[350\]§1).
     pub(super) fn already_published_at(&self, time: f64) -> bool {
         self.trace
             .last_time()
@@ -327,7 +327,7 @@ impl MeHostState {
     /// component at — the checked `MeRootApplication::left()` for a located
     /// root, the canonical predecessor of an exact hard stop — so the row
     /// coordinate and the observed point are the same point by construction
-    /// (review finding [368]). The settled value takes the exact event instant,
+    /// (review finding \[368\]). The settled value takes the exact event instant,
     /// so the axis stays nondecreasing.
     ///
     /// At `startTime`, at any instant whose left coordinate would fall behind
@@ -336,7 +336,7 @@ impl MeHostState {
     /// separately. The host then generates no candidate rather than
     /// manufacturing an out-of-domain or duplicate one: the row already
     /// standing at or behind that coordinate *is* the left evidence
-    /// (review finding [343]§1).
+    /// (review finding \[343\]§1).
     pub(super) fn event_left_coordinate(&self, candidate: f64, event_time: f64) -> Option<f64> {
         admissible_event_left_coordinate(
             candidate,
@@ -351,7 +351,7 @@ impl MeHostState {
     ///
     /// The host therefore knows, *before* the completed-step callback, that this
     /// endpoint is an event, and can make its left evidence durable first
-    /// (review finding [370]). The coincidence rule is the master loop's:
+    /// (review finding \[370\]). The coincidence rule is the master loop's:
     /// `|delta| <= roundoff`.
     pub(super) fn endpoint_reaches_cached_event(&self, endpoint: f64) -> bool {
         endpoint_reaches_event(self.next_event_time, endpoint)
@@ -365,7 +365,7 @@ impl MeHostState {
     ///
     /// The recorder still makes one atomic decision-and-commit; what this
     /// avoids is running the FMI getters after the component has moved on
-    /// (review finding [370]).
+    /// (review finding \[370\]).
     pub(super) fn record_observed(
         &mut self,
         role: TraceObservationRole,
@@ -455,7 +455,7 @@ impl MeHostState {
     /// is moved before the session commits, so every exit leaves the two naming
     /// one point: a failed reservation leaves both on the previous point, and a
     /// failed component move is restored to the previous point under the typed
-    /// precedence rule (ME-BUF-001, review findings [368], [373]).
+    /// precedence rule (ME-BUF-001, review findings \[368\], \[373\]).
     pub(super) fn adopt_point(&mut self, time: f64, states: &[f64]) -> Result<(), MeSessionError> {
         let adopted = try_copied(states, "adopted point states")?;
         self.adopt_owned(time, Some(adopted))
@@ -541,7 +541,7 @@ impl MeHostState {
     /// inside, including one an inactive sampler deliberately left to its
     /// caller, is caught here, the excursion is closed through the same
     /// [`AcceptedAnchor`] the returning exit uses, and only then does the
-    /// **original** payload resume unwinding (review finding [390]).
+    /// **original** payload resume unwinding (review finding \[390\]).
     pub(super) fn settle_caught_excursion<T>(
         &self,
         body: impl FnOnce() -> Result<T, MeSessionError>,
@@ -564,7 +564,7 @@ impl MeHostState {
     /// committed by [`unwound_loss`] — one write, deciding the accepted-point
     /// outcome *before* anything is recorded, so a plugin-history loss the same
     /// unwind already recorded downstack cannot hide a failed restoration
-    /// (review findings [387], [388], [390]).
+    /// (review findings \[387\], \[388\], \[390\]).
     pub(super) fn settle_unwound_excursion(&self) {
         let restored = self.anchor().restore().is_ok();
         self.usability
@@ -581,7 +581,7 @@ impl MeHostState {
     ///
     /// The first loss is the cause; a later one is its consequence, and the
     /// more specific coordinate loss must not be overwritten by the mutating
-    /// step that contained it (review finding [382]).
+    /// step that contained it (review finding \[382\]).
     pub(super) fn mark_unusable(&self, loss: MeSessionLoss) {
         record_usability_loss(&self.usability, loss);
     }
@@ -593,7 +593,7 @@ impl MeHostState {
     /// policy, and the plugin's history would name different states, and the
     /// session would go on answering from whichever the caller happened to
     /// reach. The typed failure is returned unchanged and the session records
-    /// only *why* it stopped being usable (review finding [382]).
+    /// only *why* it stopped being usable (review finding \[382\]).
     pub(super) fn guard_mutation<T>(
         &self,
         loss: MeSessionLoss,
@@ -668,7 +668,7 @@ pub(super) fn record_usability_loss(usability: &Cell<Option<MeSessionLoss>>, los
 /// over a restored point is an ordinary typed failure of a still-correlated
 /// session. The attempted failure is neither discarded nor rendered into prose;
 /// it travels inside [`MeSessionError::AcceptedPointLost`] as typed data
-/// (review finding [373]).
+/// (review finding \[373\]).
 fn close_excursion<T>(
     accepted_time: f64,
     restoration: Result<(), MeError>,
@@ -696,7 +696,7 @@ fn close_excursion<T>(
 /// the same unwind's sampler may already have recorded downstack. Every other
 /// recorded loss belongs to an earlier, different transaction and is the cause
 /// rather than the consequence, so it stays exactly where it is
-/// (review findings [382], [390]).
+/// (review findings \[382\], \[390\]).
 fn unwound_loss(recorded: Option<MeSessionLoss>, restored: bool) -> MeSessionLoss {
     match (recorded, restored) {
         (Some(existing), true) => existing,
@@ -753,7 +753,7 @@ fn observe_current(kernel: &Rc<RefCell<SolveMeKernel>>) -> Result<Vec<f64>, MeEr
 /// evaluation, a whole root scan and its refinement, a plugin call that
 /// evaluates derivatives at trial points — runs inside one of these and is
 /// closed by [`Self::settle`] on **every** exit, success or failure
-/// (review finding [373]).
+/// (review finding \[373\]).
 pub(super) struct AcceptedAnchor<'host> {
     kernel: &'host Rc<RefCell<SolveMeKernel>>,
     usability: &'host Cell<Option<MeSessionLoss>>,
@@ -837,7 +837,7 @@ mod tests {
 
     /// All four ways an excursion can close. A restored point keeps the
     /// excursion's own answer, whatever it was; a lost point outranks it and
-    /// keeps it as typed data (review finding [373]).
+    /// keeps it as typed data (review finding \[373\]).
     #[test]
     fn the_excursion_precedence_rule_is_exhaustive_and_loses_nothing() {
         // Observation succeeded, restoration succeeded: the value survives and
@@ -904,7 +904,7 @@ mod tests {
     /// be decided before anything is written rather than losing to a
     /// numerical-step loss the same unwind already recorded downstack; a loss
     /// from an earlier, different transaction is the cause rather than the
-    /// consequence and still wins (review findings [382], [390]).
+    /// consequence and still wins (review findings \[382\], \[390\]).
     #[test]
     fn the_unwinding_exit_decides_the_accepted_point_before_the_history_loss() {
         assert_eq!(unwound_loss(None, true), MeSessionLoss::NumericalStep);
@@ -929,7 +929,7 @@ mod tests {
 
     /// The host knows an endpoint is an event before the callback exactly when
     /// the endpoint reaches the cached `nextEventTime`, under the master loop's
-    /// own coincidence rule (review finding [370]).
+    /// own coincidence rule (review finding \[370\]).
     #[test]
     fn an_endpoint_reaching_the_cached_next_event_time_is_known_to_be_an_event() {
         assert!(endpoint_reaches_event(Some(0.5), 0.5));
@@ -945,7 +945,7 @@ mod tests {
 
     /// The checked left point of a located root is the row coordinate, so the
     /// rule has to admit an arbitrary refined coordinate, not only the
-    /// canonical predecessor of the event instant (review finding [368]).
+    /// canonical predecessor of the event instant (review finding \[368\]).
     #[test]
     fn a_refined_left_coordinate_is_admitted_on_its_own_merits() {
         assert_eq!(
@@ -976,7 +976,7 @@ mod tests {
     }
 
     /// The row already standing at or behind the candidate is the left
-    /// evidence; a second row there is not authorized (review finding [343]§1).
+    /// evidence; a second row there is not authorized (review finding \[343\]§1).
     #[test]
     fn a_candidate_behind_published_evidence_or_the_experiment_start_is_declined() {
         assert_eq!(

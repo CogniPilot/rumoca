@@ -42,7 +42,7 @@ pub(super) enum TraceObservationRole {
 /// instant it was reached, so handing a copyable decision to a sibling would
 /// let it be applied after the tail changed. [`MeTraceRecorder::record_with`]
 /// is the only mutation entry, and it reaches and applies the decision without
-/// ever exposing it (review finding [350]§2).
+/// ever exposing it (review finding \[350\]§2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TraceDecision {
     /// Evaluate and append a new row.
@@ -58,7 +58,7 @@ enum TraceDecision {
 /// Host-recorder machinery, and therefore host-private: the recorder's concrete
 /// failure shape is not part of the common solver API. The session maps an
 /// allocation violation onto the public allocation category and every invariant
-/// violation onto the public host-contract category (review finding [366]§3).
+/// violation onto the public host-contract category (review finding \[366\]§3).
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub(super) enum MeTraceViolation {
     #[error("trace channel names must be unique; '{name}' appears more than once")]
@@ -101,7 +101,7 @@ pub(super) enum MeTraceViolation {
 /// It encodes exactly the three authorized cases and nothing else. `None` is a
 /// typed rejection, never a repair and never an invented suppression: the
 /// master algorithm is responsible for not generating a candidate the catalog
-/// does not describe (review finding [350]§1).
+/// does not describe (review finding \[350\]§1).
 ///
 /// | existing \ incoming | Initialization | Nominal  | EventLeft | Settled |
 /// |---|---|---|---|---|
@@ -268,7 +268,7 @@ impl MeTraceRecorder {
     /// reserves, and commits in one call, so a caller that already owns the
     /// values never has to copy them into a fresh `Vec` through an infallible
     /// allocation just to satisfy the closure signature (ME-INT-003, review
-    /// finding [366]§4). The split decide/commit protocol stays private.
+    /// finding \[366\]§4). The split decide/commit protocol stays private.
     pub(super) fn record_slice(
         &mut self,
         role: TraceObservationRole,

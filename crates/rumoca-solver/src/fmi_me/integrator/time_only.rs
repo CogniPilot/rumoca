@@ -10,7 +10,7 @@
 //! proves that each request starts at the coordinate it was last left on, and
 //! it remembers the accepted interval so its sampler rejects a coordinate
 //! outside it — the same coverage obligation a state-carrying plugin owes
-//! (review finding [336]§7).
+//! (review finding \[336\]§7).
 
 use super::{
     MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeIntegrationError,

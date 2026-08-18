@@ -14,7 +14,7 @@
 //!
 //! Nothing in this module is part of the solver-plugin API: SPEC_0044 §6 makes
 //! the policy, the application, the root-search types, and the scan capability
-//! host-private with no unchecked constructor (review finding [367]).
+//! host-private with no unchecked constructor (review finding \[367\]).
 
 use super::{
     integrator::{MeAcceptedStep, MeContinuousPoint, MeStepProposal, accepted_step_roundoff},
@@ -51,7 +51,7 @@ impl IndicatorDomain {
 /// accepted step, so a large accepted interval is simply sampled at many
 /// checked coordinates. The resolution is a distinct session option, never the
 /// output cadence: changing trace density must not change event semantics
-/// (review finding [343]§3).
+/// (review finding \[343\]§3).
 #[derive(Debug, Clone)]
 pub(super) struct MeRootSearchPolicy {
     scan_resolution: f64,
@@ -67,7 +67,7 @@ impl MeRootSearchPolicy {
     /// The nominal vector must be the component's complete continuous-state
     /// width, and every entry finite and positive: a missing or invalid nominal
     /// is a typed construction failure, never a substituted `1.0`
-    /// (review finding [336]§2).
+    /// (review finding \[336\]§2).
     pub(super) fn new(
         scan_resolution: f64,
         location_tolerance: f64,
@@ -310,7 +310,7 @@ pub(super) trait RootScanTarget {
     /// The session's wall-clock budget, consulted once per sampled coordinate.
     ///
     /// An exhausted budget is a typed abort, not permission to sample coarser
-    /// (review finding [351]§4).
+    /// (review finding \[351\]§4).
     fn check_budget(&self) -> Result<(), MeSessionError>;
 }
 
@@ -320,11 +320,11 @@ pub(super) trait RootScanTarget {
 /// SPEC_0044 §6's aggregate table puts complete-interval sampling inside the
 /// accepted-step construction contract, and a plugin cannot prove that about
 /// itself. This is therefore the only constructor of an accepted step, and the
-/// host is its only caller (review findings [351]§1, [366]§1).
+/// host is its only caller (review findings \[351\]§1, \[366\]§1).
 ///
 /// The validation runs for **every** proposal, including models with no event
 /// indicators at all: the sampler contract does not disappear because a model
-/// has no roots (review findings [336]§4, [337]§4). The zero-state case is
+/// has no roots (review findings \[336\]§4, \[337\]§4). The zero-state case is
 /// vacuous.
 pub(super) fn accept_step<T: RootScanTarget>(
     target: &mut T,
@@ -364,7 +364,7 @@ struct ScanSample {
 ///
 /// Storage is O(1): the grid is an index range, not a materialized vector, so
 /// the promised resolution is never silently weakened to fit an allocation
-/// (review finding [336]§1). A step count the host cannot represent is a typed
+/// (review finding \[336\]§1). A step count the host cannot represent is a typed
 /// resource failure, not a coarser scan.
 struct ScanGrid {
     start: f64,
@@ -542,7 +542,7 @@ struct RefinedBracket {
 /// earliest domain change observable at the checked policy resolution.
 ///
 /// The winning indicator's own refined left coordinate is retained (review
-/// finding [336]§3): event-left evidence is never moved back to the coarse
+/// finding \[336\]§3): event-left evidence is never moved back to the coarse
 /// bracket's lower point, which can be a whole scan resolution earlier.
 fn refine_bracket<T: RootScanTarget>(
     target: &mut T,
@@ -613,7 +613,7 @@ fn refine_bracket<T: RootScanTarget>(
 ///
 /// Exhausting the host-owned iteration budget without attaining the checked
 /// location tolerance is the typed `RootApplicationUnavailable` failure
-/// SPEC_0044 §6 requires, not a plausible application (review finding [336]§5).
+/// SPEC_0044 §6 requires, not a plausible application (review finding \[336\]§5).
 fn refine_indicator<T: RootScanTarget>(
     target: &mut T,
     policy: &MeRootSearchPolicy,

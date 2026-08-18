@@ -1,6 +1,6 @@
 //! Failure atomicity of the common host's component excursions and of its
-//! retained derivative capability (review findings [373], [374], [377], [378],
-//! [381], [382]).
+//! retained derivative capability (review findings \[373\], \[374\], \[377\], \[378\],
+//! \[381\], \[382\]).
 //!
 //! Every ablation here injects a real component failure — the fixture's
 //! algebraic branch has no real solution at a negative continuous state, so the
@@ -21,7 +21,7 @@ use crate::fmi_me as me;
 /// The branch has no real solution for `x < 0`, so every output observation and
 /// every event-indicator evaluation the host performs at a negative continuous
 /// state is a typed component failure raised by the component's own checked
-/// numerics. That is the injected getter and indicator failure [373] asks for,
+/// numerics. That is the injected getter and indicator failure \[373\] asks for,
 /// with no stubbed component and no test-only branch inside the host.
 ///
 /// `with_indicator` decides which excursion the poisoned coordinate reaches
@@ -44,7 +44,7 @@ fn algebraic_branch_component(with_indicator: bool) -> solve::SolveModel {
 }
 
 /// The same component with one declared input, so an input write has a
-/// correlated owner set to fall out of step ([382]).
+/// correlated owner set to fall out of step (\[382\]).
 fn branch_component_with_input() -> solve::SolveModel {
     let mut model = nonlinear_right_limit_seed_model();
     model.problem.solve_layout.compiled_parameter_len = 1;
@@ -54,7 +54,7 @@ fn branch_component_with_input() -> solve::SolveModel {
 }
 
 /// The same component with one scheduled time event, so Event Mode's refresh
-/// has a correlated owner set to fall out of step ([382]).
+/// has a correlated owner set to fall out of step (\[382\]).
 fn branch_component_with_event() -> solve::SolveModel {
     let mut model = nonlinear_right_limit_seed_model();
     model.problem.events.scheduled_time_events = vec![0.05];
@@ -76,38 +76,38 @@ enum PluginFault {
     /// exact gap an off-point failure has to survive.
     PoisonsTheInterior,
     /// Evaluate derivatives at a trial coordinate the session never adopted and
-    /// then fail the advance, which is [374]'s "a backend error must not strand
+    /// then fail the advance, which is \[374\]'s "a backend error must not strand
     /// a trial component point".
     FailsAfterATrialEvaluation,
     /// Provoke a component derivative failure, use every plugin-visible method
     /// on the retained handle to try to erase or replace it, and then report
-    /// success ([377], [378], [381]).
+    /// success (\[377\], \[378\], \[381\]).
     SuppressesTheComponentFailure,
     /// Ask the component for a derivative from inside `sample`, where the
     /// capability is inactive, catch and ignore the opaque refusal, and return
     /// `Ok`. The next host interaction must still surface the misuse rather
-    /// than clear it ([381]).
+    /// than clear it (\[381\]).
     HidesAnInactiveRequest,
     /// Fail every `initialize` after the first, so a reset, an Event Mode
     /// refresh, and an input write each lose their plugin history after the
-    /// component has already moved ([382]).
+    /// component has already moved (\[382\]).
     FailsEveryInitializeAfterTheFirst,
     /// Evaluate derivatives at a trial coordinate the session never adopted and
-    /// then **panic** out of the host call, which is [388]'s "unwinding must not
+    /// then **panic** out of the host call, which is \[388\]'s "unwinding must not
     /// bypass restoration and the usability record".
     PanicsAfterATrialEvaluation,
     /// Panic out of `sample`, strictly inside the accepted interval so both
     /// sampler wrappers can be reached: the scan's when the component declares
-    /// an indicator, the session's event-left capture when it does not ([388]).
+    /// an indicator, the session's event-left capture when it does not (\[388\]).
     ///
     /// `after_interior_samples` is how many interior samples the plugin serves
     /// correctly first. One is what makes the scan variant hostile rather than
     /// vacuous: the scan evaluates its indicators at each sampled coordinate, so
     /// surviving one coordinate leaves the component standing off the accepted
-    /// point when the next sample unwinds ([390]).
+    /// point when the next sample unwinds (\[390\]).
     PanicsInsideTheSampler { after_interior_samples: usize },
     /// Ignore the request's coordinates entirely and report an endpoint far past
-    /// every bound it carries ([398], [399]).
+    /// every bound it carries (\[398\], \[399\]).
     ///
     /// Before the correlated shape this was the forgery: a plugin built its own
     /// `MeAdvanceRequest` around the endpoint it wanted and returned a proposal
@@ -115,14 +115,14 @@ enum PluginFault {
     /// plugin had chosen. There is now no request to forge, and the endpoint is
     /// checked against the bound the session is actually serving.
     IgnoresTheRequestAndCrossesTheBound,
-    /// Return, verbatim, the endpoint an *earlier* call produced ([399]).
+    /// Return, verbatim, the endpoint an *earlier* call produced (\[399\]).
     ///
     /// The replay is a real one: the plugin caches the first accepted endpoint
     /// and hands the same numbers back on the second request, when the session
     /// already stands on that coordinate.
     ReplaysThePreviousCandidate,
     /// Report a candidate whose state vector is not the component's width
-    /// ([399]).
+    /// (\[399\]).
     ///
     /// The arity comes from the linked component, so a plugin asserting its own
     /// cannot widen or narrow the checked point.
@@ -152,11 +152,11 @@ enum HostilePanic {
     /// `completed_interior_samples` records how many interior coordinates the
     /// sampler had already served, so an ablation can prove the scan really did
     /// evaluate indicators at one of them, and therefore really did move the
-    /// component off the accepted point, before the unwind started ([390]).
+    /// component off the accepted point, before the unwind started (\[390\]).
     InTheSampler { completed_interior_samples: usize },
 }
 
-/// The original payload, or a failure of [388]'s no-stringification rule.
+/// The original payload, or a failure of \[388\]'s no-stringification rule.
 fn resumed_payload(caught: Box<dyn std::any::Any + Send>) -> HostilePanic {
     let Some(hostile) = caught.downcast_ref::<HostilePanic>() else {
         panic!("the host resumed something other than the plugin's own payload");
@@ -175,7 +175,7 @@ struct FaultyPlugin {
     /// it, so the counter a hostile sampler needs is an ordinary `Cell`.
     interior_samples: Cell<usize>,
     /// The endpoint an earlier `advance` produced, kept so a replaying plugin
-    /// can hand exactly those numbers back on a later request ([399]).
+    /// can hand exactly those numbers back on a later request (\[399\]).
     replayed: Option<(f64, f64)>,
 }
 
@@ -202,7 +202,7 @@ impl FaultyPlugin {
     }
 
     /// Do everything the plugin-visible surface allows to hide a component
-    /// failure the host must see ([377], [378]).
+    /// failure the host must see (\[377\], \[378\]).
     fn suppress_a_component_failure(&self, time: f64) -> Result<(), me::MeIntegrationError> {
         let handle = self.handle()?;
         // 1. Provoke the component failure through the *fallible* entry only,
@@ -409,7 +409,7 @@ fn retained_branch_component(model: &solve::SolveModel) -> me::session::MeRetain
 /// Ablation: an **output-getter** failure during the endpoint's event-left
 /// observation.
 ///
-/// Before [373] the host restored the accepted point only after `read_outputs`
+/// Before \[373\] the host restored the accepted point only after `read_outputs`
 /// succeeded, so this returned with `MeHostState.time/states` naming the
 /// endpoint while the component still stood at the off-point coordinate.
 #[test]
@@ -478,7 +478,7 @@ fn an_event_indicator_failure_inside_the_scan_restores_the_accepted_point() {
 }
 
 /// Ablation: a **backend** failure after it evaluated derivatives at a trial
-/// coordinate ([374]).
+/// coordinate (\[374\]).
 ///
 /// The retained capability must be deactivated and the component must be back
 /// on the accepted point, so the error strands neither.
@@ -520,7 +520,7 @@ fn a_backend_failure_strands_neither_a_trial_point_nor_an_active_capability() {
 }
 
 /// Ablation: a hostile backend tries to suppress the component's typed failure
-/// through the plugin-visible handle surface ([377], [378]).
+/// through the plugin-visible handle surface (\[377\], \[378\]).
 ///
 /// It catches and drops the fallible refusal, probes every other public entry,
 /// and returns a generic library failure. The host must still report the
@@ -559,7 +559,7 @@ fn a_backend_cannot_suppress_the_component_failure_it_provoked() {
 }
 
 /// Ablation: a backend makes an inactive request from inside `sample`, catches
-/// and ignores the opaque refusal, and returns `Ok` ([381]).
+/// and ignores the opaque refusal, and returns `Ok` (\[381\]).
 ///
 /// The host must surface the typed misuse at its next interaction rather than
 /// clear it and proceed.
@@ -589,7 +589,7 @@ fn an_ignored_inactive_request_surfaces_at_the_next_host_interaction() {
 }
 
 /// Ablation: a backend **panics** after evaluating derivatives at a trial
-/// coordinate the session never adopted ([388]).
+/// coordinate the session never adopted (\[388\]).
 ///
 /// RAII closes the activation window on an unwind, but nothing else on the exit
 /// path runs, so before the fix the component was left standing on the trial
@@ -659,7 +659,7 @@ fn a_backend_panic_that_also_loses_the_accepted_point_records_that_loss() {
     assert_split_session_is_refused(&mut session, me::session::MeSessionLoss::AcceptedPoint);
 }
 
-/// Ablation: the plugin's native continuous extension **panics** ([388], [390]).
+/// Ablation: the plugin's native continuous extension **panics** (\[388\], \[390\]).
 ///
 /// `sample` runs with the capability closed, so the unwind itself cannot have
 /// moved the component; whoever called the sampler may already have, and that
@@ -737,7 +737,7 @@ fn a_sampler_panic_restores_the_accepted_point_and_ends_the_session() {
 }
 
 /// Ablation: a backend ignores the request entirely and reports an endpoint far
-/// past every bound the session is actually serving ([398], [399]).
+/// past every bound the session is actually serving (\[398\], \[399\]).
 ///
 /// This is the closed form of the forgery. The plugin cannot build, retain, or
 /// return a `MeAdvanceRequest`, so it cannot supply the bound its own endpoint
@@ -784,7 +784,7 @@ fn a_candidate_that_ignores_the_request_cannot_cross_the_actual_bound() {
 }
 
 /// Ablation: a backend hands back, verbatim, the endpoint an earlier call
-/// produced ([399]).
+/// produced (\[399\]).
 ///
 /// The first request is served honestly and the session adopts `t=0.1`. On the
 /// next request, which starts at exactly that coordinate, the plugin returns
@@ -830,7 +830,7 @@ fn a_replayed_candidate_is_refused_against_the_request_that_follows_it() {
 }
 
 /// Ablation: a backend reports a candidate of the wrong continuous-state width
-/// ([399]).
+/// (\[399\]).
 ///
 /// The candidate cannot assert an arity: the width is taken from the linked
 /// component, so a two-state vector for a one-state component is refused before
@@ -900,7 +900,7 @@ fn a_sampler_that_contradicts_its_own_endpoint_never_becomes_an_accepted_step() 
     assert_split_session_is_refused(&mut session, me::session::MeSessionLoss::NumericalStep);
 }
 
-/// Every public entry a split session must refuse ([382]).
+/// Every public entry a split session must refuse (\[382\]).
 fn assert_split_session_is_refused(
     session: &mut me::session::MeSimulationSession<'_, 'static>,
     expected: me::session::MeSessionLoss,
@@ -925,7 +925,7 @@ fn assert_split_session_is_refused(
 }
 
 /// Ablation: a restart loses the plugin's history after the component and every
-/// host cache have already been rebuilt ([382]§3).
+/// host cache have already been rebuilt (\[382\]§3).
 #[test]
 fn a_restart_that_loses_the_plugin_history_ends_the_session() {
     let model = algebraic_branch_component(false);
@@ -952,7 +952,7 @@ fn a_restart_that_loses_the_plugin_history_ends_the_session() {
 }
 
 /// Ablation: Event Mode's refresh loses the plugin's history after the
-/// component has already settled the event ([382]§1).
+/// component has already settled the event (\[382\]§1).
 #[test]
 fn an_event_refresh_that_loses_the_plugin_history_ends_the_session() {
     let model = branch_component_with_event();
@@ -980,7 +980,7 @@ fn an_event_refresh_that_loses_the_plugin_history_ends_the_session() {
 }
 
 /// Ablation: an input write loses the plugin's history after the component has
-/// already taken the new value ([382]§2).
+/// already taken the new value (\[382\]§2).
 #[test]
 fn an_input_write_that_loses_the_plugin_history_ends_the_session() {
     let model = branch_component_with_input();
@@ -1007,7 +1007,7 @@ fn an_input_write_that_loses_the_plugin_history_ends_the_session() {
 }
 
 /// The successful counterparts: every correlated owner becomes visible
-/// together, and a benign rejection leaves an ordinary live session ([382]).
+/// together, and a benign rejection leaves an ordinary live session (\[382\]).
 #[test]
 fn a_successful_input_and_restart_keep_every_owner_correlated() {
     let model = branch_component_with_input();

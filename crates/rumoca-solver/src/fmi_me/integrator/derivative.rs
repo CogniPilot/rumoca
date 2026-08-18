@@ -108,7 +108,7 @@ impl DerivativeCell {
     ///
     /// Every public handle entry funnels through here, so no failure reaches a
     /// backend un-latched and none reaches it with its identity attached
-    /// (review findings [377], [378]). The first failure wins: a later one is a
+    /// (review findings \[377\], \[378\]). The first failure wins: a later one is a
     /// consequence of it.
     fn refuse(&self, error: MeIntegrationError) -> MeDerivativeRefused {
         let mut pending = self.pending.borrow_mut();
@@ -173,7 +173,7 @@ impl std::fmt::Debug for MeDerivativeHandle {
 /// inactive-capability misuse, allocation — is latched inside the host-private
 /// cell, and only the common host may read or consume it. A backend therefore
 /// cannot erase the host's failure, cannot substitute its own for it, and
-/// cannot reconstruct it from this marker (review findings [377], [378]).
+/// cannot reconstruct it from this marker (review findings \[377\], \[378\]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("a retained derivative evaluation was refused; the host owns the typed cause")]
 pub struct MeDerivativeRefused;
@@ -196,7 +196,7 @@ impl MeDerivativeHandle {
     /// A failure is **latched, not returned**: every public entry on this type
     /// records the typed cause in the host-private cell before control returns
     /// to the backend, so catching or ignoring the refusal cannot bypass the
-    /// host's precedence (review finding [378]).
+    /// host's precedence (review finding \[378\]).
     pub fn derivatives(&self, time: f64, states: &[f64]) -> Result<Vec<f64>, MeDerivativeRefused> {
         let width = self.state_count();
         let mut values = Vec::new();
@@ -243,7 +243,7 @@ impl MeDerivativeHandle {
     /// this. It is **non-consuming and identity-free**: consumption authority
     /// is host-private, so a backend cannot take, clear, or replace the typed
     /// failure the host is about to join with the backend's own result
-    /// (review finding [377]).
+    /// (review finding \[377\]).
     #[must_use]
     pub fn has_failed(&self) -> bool {
         self.shared.pending.borrow().is_some()
@@ -307,7 +307,7 @@ impl MeDerivativeController {
     ///
     /// Consumption is host-only: this is the sole way the latch is ever
     /// emptied, and no plugin-visible method can reach it (review finding
-    /// [377]).
+    /// \[377\]).
     #[must_use]
     pub(in crate::fmi_me) fn take_error(&self) -> Option<MeIntegrationError> {
         self.shared.pending.borrow_mut().take()
@@ -439,7 +439,7 @@ mod tests {
         ));
     }
 
-    /// [377]/[378]: the plugin-visible surface can observe that a refusal
+    /// \[377\]/\[378\]: the plugin-visible surface can observe that a refusal
     /// happened, but it cannot take, clear, or replace the typed cause. Only
     /// the host-private controller empties the latch.
     #[test]

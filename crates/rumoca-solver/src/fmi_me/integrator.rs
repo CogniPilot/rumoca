@@ -15,13 +15,13 @@
 //! provenance. Its advance returns a [`MeStepCandidate`]: raw numbers, with no
 //! request, no previous point, no component width, and no checked coordinate.
 //! The host lends the actual [`MeAdvanceRequest`] for that one call and then
-//! **consumes** it into the host-private [`MeStepProposal`] while checking the
+//! **consumes** it into the host-private `MeStepProposal` while checking the
 //! candidate against it, so the proposal holds the request's own coordinates by
 //! construction and the accepted proof holds the proposal. Forging a foreign
 //! request, replaying an earlier one, crossing a bound, and asserting a
 //! component width are therefore all unrepresentable rather than merely
 //! rejected, and no token, identifier, or second correlation fact exists to be
-//! guessed or compared (review findings [398], [399], [400]).
+//! guessed or compared (review findings \[398\], \[399\], \[400\]).
 
 use super::MeError;
 
@@ -70,7 +70,7 @@ pub fn accepted_interval_contains(start: f64, end: f64, time: f64) -> bool {
 
 /// The kind of numerical failure a plugin's own library reported.
 ///
-/// SPEC_0044 §6 ME-INT-003 and review finding [340]§5: a backend's failure
+/// SPEC_0044 §6 ME-INT-003 and review finding \[340\]§5: a backend's failure
 /// identity is typed data. Rendered diagnostic text may accompany a category,
 /// but the category — not the prose — is what a host, a worker bucket, or a
 /// census switches on.
@@ -159,7 +159,7 @@ pub enum MeIntegrationError {
     ///
     /// It carries no cause on purpose: the typed one is latched host-side and
     /// the host substitutes it before this variant can reach a caller
-    /// (review findings [377], [378]).
+    /// (review findings \[377\], \[378\]).
     #[error("a retained derivative evaluation was refused; the host owns the typed cause")]
     DerivativeRefused,
 
@@ -205,7 +205,7 @@ impl MeIntegrationError {
 /// The checked, host-issued numerical configuration a plugin is built with.
 ///
 /// SPEC_0044 §6 ME-INT-001 limits a plugin's component capability to the
-/// derivative source, and review findings [334]§5 / [340]§1-2 forbid a plugin
+/// derivative source, and review findings \[334\]§5 / \[340\]§1-2 forbid a plugin
 /// from reading component nominal policy or the public [`crate::SimOptions`]
 /// (which carries output cadence, experiment coordinates, timeout, pacing, and
 /// solver selection). Everything numerically relevant a solver legitimately
@@ -296,7 +296,7 @@ impl MeNumericalSetup {
 ///
 /// Owned once, here, so the session and the checked request cannot disagree
 /// about which bound is binding: the session uses it to decide whether a soft
-/// observation is reachable, and [`MeAdvanceRequest::new`] uses it to prove it.
+/// observation is reachable, and `MeAdvanceRequest::new` uses it to prove it.
 #[must_use]
 pub fn reachable_bound(
     current_time: f64,
@@ -319,7 +319,7 @@ pub fn reachable_bound(
 /// `-0.0 == 0.0` numerically but has different bits, and every same-coordinate
 /// rule in SPEC_0050 and SPEC_0044 §6 is a bitwise rule. Mapping negative zero
 /// onto positive zero at checked construction is what keeps "one FMI time" and
-/// "one coordinate" the same statement (review finding [350]§5).
+/// "one coordinate" the same statement (review finding \[350\]§5).
 #[must_use]
 pub fn canonical_coordinate(time: f64) -> f64 {
     if time == 0.0 { 0.0 } else { time }
@@ -330,7 +330,7 @@ pub fn canonical_coordinate(time: f64) -> f64 {
 ///
 /// Only the host constructs one. `state_count` is the linked component's own
 /// continuous-state width, so no caller can assert an arity the component does
-/// not have (review finding [399]); a plugin reads points the host issues and
+/// not have (review finding \[399\]); a plugin reads points the host issues and
 /// returns raw [`MeStepCandidate`] numbers instead of minting them.
 ///
 /// An external crate cannot build one at all:
@@ -411,7 +411,7 @@ impl MeContinuousPoint {
 /// It is host-issued in the strict sense: the constructor is private, the type
 /// is **not** `Clone`, and a plugin only ever sees one behind a borrow that
 /// expires with its `advance` call. So a plugin can neither build a request,
-/// retain one, nor return one (review findings [398], [399]).
+/// retain one, nor return one (review findings \[398\], \[399\]).
 ///
 /// ```compile_fail
 /// let _ = rumoca_solver::fmi_me::MeAdvanceRequest::new;
@@ -528,12 +528,12 @@ impl MeAdvanceRequest {
     /// The **least** host-issued public coordinate within `roundoff` of
     /// `accepted_time`, if any.
     ///
-    /// Review finding [334]§2: selecting in insertion order lets a hard stop
+    /// Review finding \[334\]§2: selecting in insertion order lets a hard stop
     /// and a yield that are distinct but within roundoff snap to the later
     /// coordinate. The binding coordinate is always the earliest one the step
     /// could legally have reached. Three fixed comparisons, no allocation and
     /// no sort, because this runs once per accepted step (review finding
-    /// [351]§6).
+    /// \[351\]§6).
     fn binding_public_coordinate(&self, accepted_time: f64, roundoff: f64) -> Option<f64> {
         let mut binding: Option<f64> = None;
         let mut consider = |candidate: f64| {
@@ -583,7 +583,7 @@ fn require_later_bound(
 /// would otherwise have to disbelieve. Constructing one is therefore
 /// unrestricted, and useless as an attack: the host validates every field
 /// against the actual request it retained before any of it becomes a checked
-/// coordinate (review findings [398], [399]).
+/// coordinate (review findings \[398\], \[399\]).
 ///
 /// It is the one aggregate an external plugin may build:
 ///
@@ -644,10 +644,10 @@ impl MeStepCandidate {
 /// the request by value, so the proposal holds the actual host-issued
 /// coordinates the plugin was serving and there is no correlation token,
 /// identifier, or pointer identity anywhere to be forged, guessed, or checked
-/// (review finding [400]).
+/// (review finding \[400\]).
 ///
 /// It is host-private and has no public constructor at all: a plugin cannot
-/// mint one, name one, or receive one (review finding [399]).
+/// mint one, name one, or receive one (review finding \[399\]).
 ///
 /// ```compile_fail
 /// let _: Option<rumoca_solver::fmi_me::MeStepProposal> = None;
@@ -657,7 +657,7 @@ impl MeStepCandidate {
 /// at all: that the plugin's native continuous extension really covers this
 /// interval. The host proves it and mints the sole checked
 /// [`MeAcceptedStep`]. There is therefore exactly one type named as the proof,
-/// and it is complete (review finding [366]§1).
+/// and it is complete (review finding \[366\]§1).
 #[derive(Debug)]
 pub(super) struct MeStepProposal {
     request: MeAdvanceRequest,
@@ -766,12 +766,12 @@ impl MeStepProposal {
 /// The sole checked accepted step (SPEC_0044 §6 aggregate table).
 ///
 /// Its construction contract is complete: every candidate-side obligation the
-/// host-private [`MeStepProposal`] proved, **plus** complete-interval sampling.
+/// host-private `MeStepProposal` proved, **plus** complete-interval sampling.
 /// It exists only after the host has sampled the plugin's native continuous
 /// extension at both endpoints and required componentwise agreement with the
 /// checked points under the session's own state-consistency bound, and it is
 /// the only value root scanning and endpoint commitment consume. A plugin
-/// cannot mint one at all (review finding [366]§1):
+/// cannot mint one at all (review finding \[366\]§1):
 ///
 /// ```compile_fail
 /// let _ = rumoca_solver::fmi_me::MeAcceptedStep::from_validated_proposal;
@@ -779,7 +779,7 @@ impl MeStepProposal {
 ///
 /// It holds the proposal, which holds the consumed request, so the host's
 /// correlation to the one request it issued survives acceptance by containment
-/// (review findings [399], [400]).
+/// (review findings \[399\], \[400\]).
 #[derive(Debug)]
 pub struct MeAcceptedStep {
     proposal: MeStepProposal,
@@ -834,7 +834,7 @@ impl MeAcceptedStep {
 /// Snap a public endpoint that matches a host-issued coordinate within roundoff
 /// onto the **least** such coordinate.
 ///
-/// Review finding [334]§2: selecting in insertion order lets a hard stop and a
+/// Review finding \[334\]§2: selecting in insertion order lets a hard stop and a
 /// yield that are distinct but within roundoff snap to the later coordinate.
 /// The binding coordinate is always the earliest one the step could legally
 /// have reached, so canonicalization takes the least match.
@@ -862,7 +862,7 @@ fn normalize_endpoint(
 /// truncate/reset. Four operations, no fifth. In particular there is no
 /// backend-identity operation: a solver family label is not one of the
 /// capabilities ME-INT-001 admits, and a diagnostic that needed one would put
-/// solver identity back into the common trait (review finding [399]).
+/// solver identity back into the common trait (review finding \[399\]).
 ///
 /// Implementors receive no event-indicator callback, no lifecycle transition,
 /// no output schedule, and no trace. They see only the host-issued coordinates
@@ -905,7 +905,7 @@ pub trait MeIntegratorBackend {
     /// numbers, never a proof and never anything naming a request. The host
     /// immediately binds that candidate to the request above and validates it
     /// there; only the host mints the checked [`MeAcceptedStep`]
-    /// (review findings [398], [399]).
+    /// (review findings \[398\], \[399\]).
     fn advance(
         &mut self,
         request: &MeAdvanceRequest,
@@ -916,7 +916,7 @@ pub trait MeIntegratorBackend {
     /// `time` always lies inside the closed accepted interval, and `states` is
     /// exactly the component's continuous-state width. The plugin writes that
     /// fixed-width slice **completely** with finite values and can therefore
-    /// never change the checked state shape (review finding [334]§3). The host
+    /// never change the checked state shape (review finding \[334\]§3). The host
     /// poisons the slice before every call and rejects a successful partial or
     /// non-finite write. The plugin never learns why the host wants the sample,
     /// and its retained handle is deactivated for the whole call: a native
@@ -1060,7 +1060,7 @@ mod tests {
     }
 
     /// A candidate is raw numbers, so every claim it might have made is proved
-    /// against the *actual* request instead (review findings [398], [399]).
+    /// against the *actual* request instead (review findings \[398\], \[399\]).
     #[test]
     fn a_candidate_cannot_assert_its_own_component_state_arity() {
         // Wider, narrower, and empty: the linked component's width decides.
@@ -1103,7 +1103,7 @@ mod tests {
 
     /// Provenance is containment: the proposal reports the consumed request's
     /// own coordinates, so there is nothing to compare and nothing that could
-    /// disagree (review finding [400]).
+    /// disagree (review finding \[400\]).
     #[test]
     fn a_binding_reports_the_consumed_requests_own_coordinates() {
         let served = MeAdvanceRequest::new(point(0.25, &[1.0]), Some(0.75), 2.0, None, None)

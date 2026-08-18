@@ -15,7 +15,7 @@ use crate::{
 /// Component, integrator, timeout, allocation, discard, root-application, and
 /// trace failures stay distinct all the way to a facade client's own error
 /// enum; nothing is rendered into a neighbouring variant's prose. Standard
-/// termination is not a failure at all: it is a successful [`SimTermination`].
+/// termination is not a failure at all: it is a successful `SimTermination`.
 #[derive(Debug, thiserror::Error)]
 pub enum MeSessionError {
     /// A standard component operation failed.

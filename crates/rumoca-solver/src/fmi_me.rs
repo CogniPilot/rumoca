@@ -85,7 +85,7 @@ pub(crate) mod lifecycle;
 /// Host-private root policy. SPEC_0044 §6 makes the scan/location policy, the
 /// root application, and the domain classification host-private with no
 /// unchecked constructor: none of it belongs in the solver-plugin API
-/// (review finding [367]).
+/// (review finding \[367\]).
 mod root;
 pub mod session;
 #[cfg(test)]
@@ -93,7 +93,7 @@ mod tests;
 /// Host-private trace policy. Roles, the recorder, and its violation type all
 /// stay inside the master algorithm; the session maps a recorder failure onto
 /// the public allocation and host-contract categories
-/// (SPEC_0044 §6, review findings [335]§4, [366]§3).
+/// (SPEC_0044 §6, review findings \[335\]§4, \[366\]§3).
 mod trace;
 mod validation;
 

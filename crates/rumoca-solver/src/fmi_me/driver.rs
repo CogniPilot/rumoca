@@ -69,7 +69,7 @@ pub fn batch_session_options(
 /// An open live session has **no** defined FMI stop metadata: SPEC_0044 §7
 /// requires undefined stop plus exact public yield boundaries, and changing a
 /// defined experiment requires reset or reconstruction rather than a mutated
-/// horizon (review finding [337]§8). `scan_scale` is the coordinate span the
+/// horizon (review finding \[337\]§8). `scan_scale` is the coordinate span the
 /// default scan resolution is derived from; it is not an experiment end.
 pub fn live_session_options(
     start_time: f64,
