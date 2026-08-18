@@ -640,6 +640,14 @@ impl MeSimulationSession<'_, '_> {
         &mut self,
         body: impl FnOnce(&mut dyn MeIntegratorBackend) -> Result<T, MeIntegrationError>,
     ) -> Result<T, MeSessionError> {
+        self.run_with_derivatives_until(None, body)
+    }
+
+    fn run_with_derivatives_until<T>(
+        &mut self,
+        event_boundary: Option<f64>,
+        body: impl FnOnce(&mut dyn MeIntegratorBackend) -> Result<T, MeIntegrationError>,
+    ) -> Result<T, MeSessionError> {
         if let Some(stale) = self.host.derivatives.take_error() {
             // An inactive request cannot move the component, so this needs no
             // restoration transaction and must not open a window.
@@ -648,7 +656,7 @@ impl MeSimulationSession<'_, '_> {
         let Self { host, backend, .. } = self;
         host.settle_caught_excursion(|| {
             let outcome = {
-                let window = host.derivatives.activate();
+                let window = host.derivatives.activate_until(event_boundary);
                 let outcome = body(backend.as_mut());
                 drop(window);
                 outcome
@@ -777,7 +785,9 @@ impl MeSimulationSession<'_, '_> {
         request: MeAdvanceRequest,
         cursor: &mut MeOutputCursor,
     ) -> Result<(), MeSessionError> {
-        let candidate = self.run_with_derivatives(|backend| backend.advance(&request))?;
+        let event_boundary = self.host.next_event_time;
+        let candidate =
+            self.run_with_derivatives_until(event_boundary, |backend| backend.advance(&request))?;
         let proposal = MeStepProposal::bind(request, candidate, self.host.state_count)?;
         self.consume_accepted_step(proposal, cursor)
     }
