@@ -226,7 +226,7 @@ fn derive_program(
                 registers: vec![None; primal.register_types().len()],
                 available,
             };
-            directional.lower_all()
+            directional.derive_all()
         },
     )
 }
@@ -240,9 +240,9 @@ struct DirectionalBuilder<'primal, 'program> {
 }
 
 impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
-    fn lower_all(&mut self) -> Result<(), SolveProgramConstructionError> {
+    fn derive_all(&mut self) -> Result<(), SolveProgramConstructionError> {
         for operation in self.primal.operations() {
-            self.lower(operation.operation(), operation.provenance())?;
+            self.derive(operation.operation(), operation.provenance())?;
         }
         Ok(())
     }
@@ -338,7 +338,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn lower(
+    fn derive(
         &mut self,
         operation: &SolveOperation,
         provenance: Span,
@@ -382,7 +382,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             } => {
                 let operand = self.get(*operand, provenance)?;
                 let value_type = self.primal.register_types()[destination.index()].clone();
-                let result = self.lower_unary(*operator, operand, &value_type, provenance)?;
+                let result = self.derive_unary(*operator, operand, &value_type, provenance)?;
                 self.bind(*destination, result, provenance)
             }
             SolveOperation::Binary {
@@ -394,7 +394,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 let lhs = self.get(*lhs, provenance)?;
                 let rhs = self.get(*rhs, provenance)?;
                 let value_type = self.primal.register_types()[destination.index()].clone();
-                let result = self.lower_binary(*operator, lhs, rhs, &value_type, provenance)?;
+                let result = self.derive_binary(*operator, lhs, rhs, &value_type, provenance)?;
                 self.bind(*destination, result, provenance)
             }
             SolveOperation::Compare {
@@ -458,7 +458,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 destinations,
                 if_true,
                 if_false,
-            } => self.lower_conditional(
+            } => self.derive_conditional(
                 *condition,
                 captures,
                 destinations,
@@ -472,7 +472,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 captures,
                 destinations,
                 transition,
-            } => self.lower_fold(
+            } => self.derive_fold(
                 domain,
                 initial,
                 captures,
@@ -487,14 +487,14 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 destination,
                 aggregate,
                 scalar,
-            } => self.lower_scale(*destination, *aggregate, *scalar, provenance),
+            } => self.derive_scale(*destination, *aggregate, *scalar, provenance),
             SolveOperation::BroadcastBinary {
                 destination,
                 operator,
                 aggregate,
                 scalar,
                 scalar_on_lhs,
-            } => self.lower_broadcast(
+            } => self.derive_broadcast(
                 *destination,
                 *operator,
                 *aggregate,
@@ -505,7 +505,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             SolveOperation::Transpose {
                 destination,
                 operand,
-            } => self.lower_linear_tensor_unary(
+            } => self.derive_linear_tensor_unary(
                 *destination,
                 *operand,
                 provenance,
@@ -515,17 +515,17 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 destination,
                 lhs,
                 rhs,
-            } => self.lower_matrix_multiply(*destination, *lhs, *rhs, provenance),
+            } => self.derive_matrix_multiply(*destination, *lhs, *rhs, provenance),
             SolveOperation::Cross {
                 destination,
                 lhs,
                 rhs,
-            } => self.lower_cross(*destination, *lhs, *rhs, provenance),
+            } => self.derive_cross(*destination, *lhs, *rhs, provenance),
             SolveOperation::Reduce {
                 destination,
                 operator,
                 operand,
-            } => self.lower_reduce(*destination, *operator, *operand, provenance),
+            } => self.derive_reduce(*destination, *operator, *operand, provenance),
             SolveOperation::Identity { destination } => {
                 let value_type = self.primal.register_types()[destination.index()].clone();
                 let [rows, columns] = value_type.dimensions() else {
@@ -545,7 +545,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             SolveOperation::Diagonal {
                 destination,
                 operand,
-            } => self.lower_linear_tensor_unary(
+            } => self.derive_linear_tensor_unary(
                 *destination,
                 *operand,
                 provenance,
@@ -555,7 +555,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 destination,
                 axis,
                 operands,
-            } => self.lower_concatenate(*destination, *axis, operands, provenance),
+            } => self.derive_concatenate(*destination, *axis, operands, provenance),
             SolveOperation::Fill { destination, value } => {
                 let dimensions = self.primal.register_types()[destination.index()]
                     .dimensions()
@@ -573,33 +573,35 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             SolveOperation::ConstructAggregate {
                 destination,
                 elements,
-            } => self.lower_construct(*destination, elements, provenance),
+            } => self.derive_construct(*destination, elements, provenance),
             SolveOperation::ProjectElement {
                 destination,
                 aggregate,
                 indices,
-            } => self.lower_project_element(*destination, *aggregate, indices.to_vec(), provenance),
+            } => {
+                self.derive_project_element(*destination, *aggregate, indices.to_vec(), provenance)
+            }
             SolveOperation::ProjectElementDynamic {
                 destination,
                 aggregate,
                 indices,
-            } => self.lower_project_element_dynamic(*destination, *aggregate, indices, provenance),
+            } => self.derive_project_element_dynamic(*destination, *aggregate, indices, provenance),
             SolveOperation::ProjectSlice {
                 destination,
                 aggregate,
                 origin,
-            } => self.lower_project_slice(*destination, *aggregate, origin.to_vec(), provenance),
+            } => self.derive_project_slice(*destination, *aggregate, origin.to_vec(), provenance),
             SolveOperation::ProjectView {
                 destination,
                 aggregate,
                 axes,
-            } => self.lower_project_view(*destination, *aggregate, axes, provenance),
+            } => self.derive_project_view(*destination, *aggregate, axes, provenance),
             SolveOperation::SelectElement {
                 destination,
                 aggregate,
                 indices,
                 out_of_range,
-            } => self.lower_select_element(
+            } => self.derive_select_element(
                 *destination,
                 *aggregate,
                 indices,
@@ -611,13 +613,13 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 aggregate,
                 value,
                 indices,
-            } => self.lower_update_element(*destination, *aggregate, *value, indices, provenance),
+            } => self.derive_update_element(*destination, *aggregate, *value, indices, provenance),
             SolveOperation::UpdateSlice {
                 destination,
                 aggregate,
                 value,
                 origin,
-            } => self.lower_update_slice(
+            } => self.derive_update_slice(
                 *destination,
                 *aggregate,
                 *value,
@@ -629,12 +631,12 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 aggregate,
                 value,
                 axes,
-            } => self.lower_update_view(*destination, *aggregate, *value, axes, provenance),
+            } => self.derive_update_view(*destination, *aggregate, *value, axes, provenance),
             SolveOperation::Call {
                 owner,
                 arguments,
                 destinations,
-            } => self.lower_call(*owner, arguments, destinations, provenance),
+            } => self.derive_call(*owner, arguments, destinations, provenance),
         }
     }
 
@@ -642,7 +644,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
     // unary operator; keeping primal and tangent clauses adjacent makes the
     // construction proof reviewable as one total match.
     #[allow(clippy::too_many_lines)]
-    fn lower_unary(
+    fn derive_unary(
         &mut self,
         operator: SolveUnaryOperator,
         operand: Directional<ProgramRegister<'program>>,
@@ -854,7 +856,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
     // SPEC_0021: Exception - exhaustive tangent relation over every checked
     // binary operator, including the scalar AD singular-value guards.
     #[allow(clippy::too_many_lines)]
-    fn lower_binary(
+    fn derive_binary(
         &mut self,
         operator: SolveBinaryOperator,
         lhs: Directional<ProgramRegister<'program>>,
@@ -1156,7 +1158,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         Ok(())
     }
 
-    fn lower_conditional(
+    fn derive_conditional(
         &mut self,
         condition: SolveRegisterId,
         captures: &[SolveRegisterId],
@@ -1175,7 +1177,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind_expanded(destinations, &values, provenance)
     }
 
-    fn lower_fold(
+    fn derive_fold(
         &mut self,
         domain: &StructuredIndexDomain,
         initial: &[SolveRegisterId],
@@ -1197,7 +1199,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind_expanded(destinations, &values, provenance)
     }
 
-    fn lower_scale(
+    fn derive_scale(
         &mut self,
         destination: SolveRegisterId,
         aggregate: SolveRegisterId,
@@ -1232,7 +1234,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         )
     }
 
-    fn lower_broadcast(
+    fn derive_broadcast(
         &mut self,
         destination: SolveRegisterId,
         operator: SolveBinaryOperator,
@@ -1288,7 +1290,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         )
     }
 
-    fn lower_linear_tensor_unary(
+    fn derive_linear_tensor_unary(
         &mut self,
         destination: SolveRegisterId,
         operand: SolveRegisterId,
@@ -1308,7 +1310,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind(destination, Directional { primal, tangent }, provenance)
     }
 
-    fn lower_matrix_multiply(
+    fn derive_matrix_multiply(
         &mut self,
         destination: SolveRegisterId,
         lhs: SolveRegisterId,
@@ -1343,7 +1345,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         )
     }
 
-    fn lower_cross(
+    fn derive_cross(
         &mut self,
         destination: SolveRegisterId,
         lhs: SolveRegisterId,
@@ -1371,7 +1373,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         )
     }
 
-    fn lower_reduce(
+    fn derive_reduce(
         &mut self,
         destination: SolveRegisterId,
         operator: SolveReductionOperator,
@@ -1393,7 +1395,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind(destination, Directional { primal, tangent }, provenance)
     }
 
-    fn lower_concatenate(
+    fn derive_concatenate(
         &mut self,
         destination: SolveRegisterId,
         axis: u32,
@@ -1423,7 +1425,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind(destination, Directional { primal, tangent }, provenance)
     }
 
-    fn lower_construct(
+    fn derive_construct(
         &mut self,
         destination: SolveRegisterId,
         elements: &[SolveRegisterId],
@@ -1461,7 +1463,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind(destination, Directional { primal, tangent }, provenance)
     }
 
-    fn lower_project_element(
+    fn derive_project_element(
         &mut self,
         destination: SolveRegisterId,
         aggregate: SolveRegisterId,
@@ -1490,7 +1492,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             .collect()
     }
 
-    fn lower_project_element_dynamic(
+    fn derive_project_element_dynamic(
         &mut self,
         destination: SolveRegisterId,
         aggregate: SolveRegisterId,
@@ -1512,7 +1514,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind(destination, Directional { primal, tangent }, provenance)
     }
 
-    fn lower_project_slice(
+    fn derive_project_slice(
         &mut self,
         destination: SolveRegisterId,
         aggregate: SolveRegisterId,
@@ -1556,7 +1558,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             .collect()
     }
 
-    fn lower_project_view(
+    fn derive_project_view(
         &mut self,
         destination: SolveRegisterId,
         aggregate: SolveRegisterId,
@@ -1575,7 +1577,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind(destination, Directional { primal, tangent }, provenance)
     }
 
-    fn lower_select_element(
+    fn derive_select_element(
         &mut self,
         destination: SolveRegisterId,
         aggregate: SolveRegisterId,
@@ -1602,7 +1604,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind(destination, Directional { primal, tangent }, provenance)
     }
 
-    fn lower_update_element(
+    fn derive_update_element(
         &mut self,
         destination: SolveRegisterId,
         aggregate: SolveRegisterId,
@@ -1631,7 +1633,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind(destination, Directional { primal, tangent }, provenance)
     }
 
-    fn lower_update_slice(
+    fn derive_update_slice(
         &mut self,
         destination: SolveRegisterId,
         aggregate: SolveRegisterId,
@@ -1662,7 +1664,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind(destination, Directional { primal, tangent }, provenance)
     }
 
-    fn lower_update_view(
+    fn derive_update_view(
         &mut self,
         destination: SolveRegisterId,
         aggregate: SolveRegisterId,
@@ -1691,7 +1693,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         self.bind(destination, Directional { primal, tangent }, provenance)
     }
 
-    fn lower_call(
+    fn derive_call(
         &mut self,
         owner: SolvePureCallOwnerId,
         arguments: &[SolveRegisterId],

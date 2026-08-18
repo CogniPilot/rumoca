@@ -89,7 +89,7 @@ impl SolveMeKernel {
         } else {
             EventUpdateRowFilter::All
         };
-        self.apply_discrete_event_updates(application_time, event, row_filter)
+        self.apply_discrete_event_updates(application_time, event, row_filter, None)
     }
 
     fn apply_event_right_limit(
@@ -111,6 +111,7 @@ impl SolveMeKernel {
             advance_states_to_event_probe(&mut self.states, &derivatives, event_time, right_time);
         }
         self.time = right_time;
+        let iteration_y = self.current_solver_y()?;
         let event_pre_y = if let Some(event_pre_y) = self.boundary_event_pre_y.clone() {
             event_pre_y
         } else {
@@ -127,7 +128,7 @@ impl SolveMeKernel {
         } else {
             EventUpdateRowFilter::All
         };
-        self.apply_discrete_event_updates(right_time, event, row_filter)?;
+        self.apply_discrete_event_updates(right_time, event, row_filter, Some(iteration_y))?;
         self.set_post_event_eval_time(Some(right_time));
         Ok(())
     }

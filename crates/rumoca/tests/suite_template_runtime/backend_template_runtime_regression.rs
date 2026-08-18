@@ -552,7 +552,7 @@ fn rust_ode_checked_target_compiles_and_executes() {
         .find(|file| file.path.ends_with(".rs"))
         .expect("Rust ODE target emits a Rust module");
     let generated_module = directory.path().join("generated.rs");
-    fs::copy(&module.path, &generated_module)
+    fs::copy(directory.path().join(&module.path), &generated_module)
         .expect("copy Rust ODE module beside its normal module root");
     let harness = directory.path().join("main.rs");
     fs::write(

@@ -222,15 +222,16 @@ fn solve_value_kind(
 ) -> Result<SolveVariableValueKind, FmiLoweringError> {
     match variable.value_type().scalar_type() {
         dae::ScalarType::Real => Ok(SolveVariableValueKind::Real),
-        kind @ (dae::ScalarType::Integer
-        | dae::ScalarType::Boolean
-        | dae::ScalarType::Enumeration
-        | dae::ScalarType::String
-        | dae::ScalarType::Record) => Err(FmiLoweringError::UnsupportedScalarType {
-            variable: variable.name().to_string(),
-            kind,
-            span: variable.declaration().span(),
-        }),
+        dae::ScalarType::Integer => Ok(SolveVariableValueKind::Integer),
+        dae::ScalarType::Boolean => Ok(SolveVariableValueKind::Boolean),
+        dae::ScalarType::Enumeration => Ok(SolveVariableValueKind::Enumeration),
+        kind @ (dae::ScalarType::String | dae::ScalarType::Record) => {
+            Err(FmiLoweringError::UnsupportedScalarType {
+                variable: variable.name().to_string(),
+                kind,
+                span: variable.declaration().span(),
+            })
+        }
     }
 }
 

@@ -11,7 +11,7 @@
 //! produce an [`MeComponentHost`], and every session derived from that host
 //! carries the same borrow. A second host, a reset, or a mutation behind a live
 //! session is therefore a compile error rather than a runtime hazard
-//! (review finding [341]§1).
+//! (review finding \[341\]§1).
 
 mod error;
 mod host_state;
@@ -390,7 +390,7 @@ impl MeSimulationSession<'_, '_> {
 
     /// Whether `name` is a declared **input** of this component.
     ///
-    /// Review finding [343]: causality comes from the model description's input
+    /// Review finding \[343\]: causality comes from the model description's input
     /// inventory, not from the mere existence of a value reference.
     #[must_use]
     pub fn has_input(&self, name: &str) -> bool {
@@ -403,10 +403,10 @@ impl MeSimulationSession<'_, '_> {
     /// The name and value-reference rejections, and `fmi3SetFloat64`'s own
     /// atomic batch rejection, all happen without mutating anything, so they
     /// return their typed failure and leave an ordinary live session
-    /// (ME-BUF-001, review finding [386]). Only once the component holds the
+    /// (ME-BUF-001, review finding \[386\]). Only once the component holds the
     /// new value must the host's state vector, the visible input cache, the
     /// retained indicators, and the plugin's history catch up with it, so a
-    /// failure from there on ends the session (review finding [382]).
+    /// failure from there on ends the session (review finding \[382\]).
     pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), MeSessionError> {
         self.require_live()?;
         if !self.has_input(name) {
@@ -455,7 +455,7 @@ impl MeSimulationSession<'_, '_> {
     /// Every piece of session-owned evidence and every cache is discarded
     /// together: trace rows, inputs, termination, the time-event cache, the
     /// event streak, the timeout budget, and the plugin's history
-    /// (review finding [337]§5).
+    /// (review finding \[337\]§5).
     pub fn reset(&mut self, start_time: f64) -> Result<(), MeSessionError> {
         self.require_usable()?;
         // Rejecting an inadmissible restart coordinate moves nothing, so it
@@ -577,7 +577,7 @@ impl MeSimulationSession<'_, '_> {
     /// states and nothing here can re-establish that, so the session is an
     /// explicit non-reusable failed session. Metadata inspection and consuming
     /// the already durable trace stay available; every mutating or evaluating
-    /// call is refused (review findings [373], [382]).
+    /// call is refused (review findings \[373\], \[382\]).
     fn require_usable(&self) -> Result<(), MeSessionError> {
         match self.host.usability_loss() {
             Some(loss) => Err(MeSessionError::SessionNotReusable { loss }),
@@ -609,12 +609,12 @@ impl MeSimulationSession<'_, '_> {
     /// Run exactly one plugin call that may evaluate the component.
     ///
     /// This is the whole activation policy of SPEC_0044 §6's retained-handle
-    /// ruling, owned once, in the order [377] fixes:
+    /// ruling, owned once, in the order \[377\] fixes:
     ///
     /// 1. surface any already-latched failure and stop, because it is a
     ///    request the backend made from outside every host wrapper: the
     ///    capability was inactive, so nothing was evaluated and nothing moved,
-    ///    and it must be reported rather than cleared (review finding [381]);
+    ///    and it must be reported rather than cleared (review finding \[381\]);
     /// 2. open the window by guard, for this call and nothing else;
     /// 3. execute the one plugin call;
     /// 4. close the window **infallibly**, including on a backend error or a
@@ -622,10 +622,10 @@ impl MeSimulationSession<'_, '_> {
     /// 5. join the newly latched failure ahead of whatever the backend
     ///    returned, so a generic library error — or an `Ok` — can never hide
     ///    the typed component, discard, or misuse failure that caused it
-    ///    (review findings [340]§4, [377], [378]); and
+    ///    (review findings \[340\]§4, \[377\], \[378\]); and
     /// 6. restore the accepted point fallibly under the dual-failure rule,
     ///    because the plugin evaluated derivatives at trial coordinates the
-    ///    session never adopted (review finding [373]).
+    ///    session never adopted (review finding \[373\]).
     ///
     /// A backend that panics exits through the same steps rather than around
     /// them: the window is closed by its guard, and steps 5 and 6 are the one
@@ -635,7 +635,7 @@ impl MeSimulationSession<'_, '_> {
     /// It is never rendered into prose and never converted into a library error,
     /// so an embedding that catches it sees exactly what its plugin threw and
     /// holds a session that refuses every later evaluation
-    /// (review findings [388], [390]).
+    /// (review findings \[388\], \[390\]).
     fn run_with_derivatives<T>(
         &mut self,
         body: impl FnOnce(&mut dyn MeIntegratorBackend) -> Result<T, MeIntegrationError>,
@@ -669,7 +669,7 @@ impl MeSimulationSession<'_, '_> {
     /// The session stands on its own accepted point here, so nothing above this
     /// call moved the component and nothing below it could: the sampler's own
     /// unwind has only the plugin's interior history to lose, and that loss is
-    /// committed before the payload resumes (review findings [388], [390]).
+    /// committed before the payload resumes (review findings \[388\], \[390\]).
     fn sample_states(&self, time: f64, states: &mut [f64]) -> Result<(), MeSessionError> {
         match caught_sample(self.backend.as_ref(), &self.host.derivatives, time, states) {
             Ok(sampled) => sampled,
@@ -687,7 +687,7 @@ impl MeSimulationSession<'_, '_> {
     ///
     /// Coincidence is `|delta| <= roundoff` in both directions; a coordinate
     /// that lies *strictly* behind the session is a typed contract failure, not
-    /// a coincidence to be processed backward (review finding [337]§1).
+    /// a coincidence to be processed backward (review finding \[337\]§1).
     fn resolve_without_advance(
         &mut self,
         yield_time: f64,
@@ -748,7 +748,7 @@ impl MeSimulationSession<'_, '_> {
     /// rollback proof, so any failure through the proposal proof, the scan and
     /// its refinement, truncation, the completed-step callback, Event Mode, or
     /// trace publication ends the session while returning the original typed
-    /// failure (review finding [387]).
+    /// failure (review finding \[387\]).
     fn advance_one_accepted_step(
         &mut self,
         yield_time: f64,
@@ -771,7 +771,7 @@ impl MeSimulationSession<'_, '_> {
     /// from instead. Every coordinate the candidate reports (its start,
     /// direction, finiteness, bounds, and state arity) is proved during that
     /// move, against the linked component's own width, before any later stage
-    /// may consume it (review findings [398], [399], [400]).
+    /// may consume it (review findings \[398\], \[399\], \[400\]).
     fn take_one_numerical_step(
         &mut self,
         request: MeAdvanceRequest,
@@ -820,9 +820,9 @@ impl MeSimulationSession<'_, '_> {
     /// scan the resulting host-issued proof for the earliest domain change.
     ///
     /// Endpoint validation is unconditional: a model with no event indicators
-    /// still owes the accepted-step sampler contract (review finding [336]§4),
+    /// still owes the accepted-step sampler contract (review finding \[336\]§4),
     /// and only the validated [`MeSampledStep`] can be scanned at all
-    /// (review finding [351]§1).
+    /// (review finding \[351\]§1).
     fn consume_accepted_step(
         &mut self,
         proposal: MeStepProposal,
@@ -864,13 +864,13 @@ impl MeSimulationSession<'_, '_> {
     /// Prove the plugin's sampler covers the proposed interval.
     ///
     /// Wrapped in one excursion because the whole validation is component work
-    /// away from the accepted point (review finding [373]), and in the caught
+    /// away from the accepted point (review finding \[373\]), and in the caught
     /// form because a sampler that unwinds out of the middle of it leaves that
-    /// obligation to exactly this transaction (review finding [390]).
+    /// obligation to exactly this transaction (review finding \[390\]).
     /// The proposal carries the consumed request, so the proof that leaves this
     /// call is a proof about the request the session actually served: the
     /// correlation travels through acceptance inside the value rather than
-    /// alongside it (review findings [399], [400]).
+    /// alongside it (review findings \[399\], \[400\]).
     fn accept_proposal(&self, proposal: MeStepProposal) -> Result<MeAcceptedStep, MeSessionError> {
         self.host.settle_caught_excursion(|| {
             let policy = self.host.policy()?;
@@ -884,10 +884,10 @@ impl MeSimulationSession<'_, '_> {
     /// coordinate: the scan deliberately walks the component forward, and it is
     /// the exit — at the first domain change, at a component error, at an
     /// exhausted budget, at a failed reservation — that owes the accepted point
-    /// back (review finding [373]). A sampler that unwinds after an interior
+    /// back (review finding \[373\]). A sampler that unwinds after an interior
     /// indicator evaluation already moved the component leaves through the same
     /// obligation, so this is the transaction that catches it, restores, and
-    /// only then resumes (review finding [390]).
+    /// only then resumes (review finding \[390\]).
     fn scan_with_retained(
         &self,
         step: &MeAcceptedStep,
@@ -909,7 +909,7 @@ impl MeSimulationSession<'_, '_> {
     /// immediately when the endpoint reaches the cached `nextEventTime` (the
     /// host already knows that is an event) and otherwise only if the callback
     /// returns `enterEventMode`. No FMI getter runs retroactively
-    /// (review findings [368], [370]).
+    /// (review findings \[368\], \[370\]).
     fn commit_accepted_endpoint(
         &mut self,
         step: &MeAcceptedStep,
@@ -1056,7 +1056,7 @@ impl MeSimulationSession<'_, '_> {
     /// already observed and published pre-callback by
     /// [`Self::commit_accepted_endpoint`], and an event the session stands on
     /// without an intervening accepted step has no retained interval to sample
-    /// (review finding [370]).
+    /// (review finding \[370\]).
     fn process_event_boundary(
         &mut self,
         cause: MeEventCause,
@@ -1084,7 +1084,7 @@ impl MeSimulationSession<'_, '_> {
     /// Not only the continuous refresh: a failure in the discrete iteration or
     /// in re-entering Continuous-Time Mode leaves the component in a mode the
     /// host is no longer tracking, so it ends the session too
-    /// (review finding [387]).
+    /// (review finding \[387\]).
     fn enter_event_mode_and_settle(
         &mut self,
         cause: MeEventCause,
@@ -1137,7 +1137,7 @@ impl MeSimulationSession<'_, '_> {
     /// The row carries the coordinate the session is actually on. If that
     /// coordinate is already published — the start row, or the settled row of an
     /// event at this instant — the schedule requests nothing new and no
-    /// candidate is generated at all (review finding [350]§1).
+    /// candidate is generated at all (review finding \[350\]§1).
     fn materialize_reached_observation(&mut self, now: f64) -> Result<(), MeSessionError> {
         if self.host.already_published_at(now) {
             return Ok(());
@@ -1162,7 +1162,7 @@ impl MeSimulationSession<'_, '_> {
     /// nominals, and the plugin's history must become the post-event model
     /// together. Any failure inside ends the session instead of leaving one of
     /// them on the pre-event model (SPEC_0044 §6's atomic-refresh rule, review
-    /// finding [382]). The surrounding Event Mode transaction records the loss
+    /// finding \[382\]). The surrounding Event Mode transaction records the loss
     /// for the whole transition, this step included.
     fn refresh_after_event(
         &mut self,
@@ -1244,7 +1244,7 @@ impl MeSimulationSession<'_, '_> {
     ///
     /// ME-BUF-001 makes this and [`Self::verification_session_point`] one fact;
     /// an ablation asserts they agree after every failure
-    /// (review finding [373]).
+    /// (review finding \[373\]).
     pub(super) fn verification_component_point(&self) -> (u64, Vec<u64>) {
         let (_, time, states, _) = self.host.kernel.borrow().verification_observable_state();
         (time, states)
@@ -1299,9 +1299,9 @@ impl MeSimulationSession<'_, '_> {
 /// reservation.
 ///
 /// Owned once, here, so every host path that claims typed allocation failure
-/// actually has one (review finding [351]§5). These are the *host's* buffers,
+/// actually has one (review finding \[351\]§5). These are the *host's* buffers,
 /// so exhaustion is [`MeSessionError::Allocation`] and never a component
-/// failure (review finding [370]§3).
+/// failure (review finding \[370\]§3).
 pub(super) fn try_filled(
     entries: usize,
     value: f64,
@@ -1339,7 +1339,7 @@ fn continues_at(next_event_time: Option<f64>, event_time: f64) -> bool {
 
 /// The left-limit evidence of an accepted endpoint, observed before
 /// `fmi3CompletedIntegratorStep` and retained only if that endpoint turns out to
-/// be an event (review finding [370]).
+/// be an event (review finding \[370\]).
 struct PendingEventLeft {
     coordinate: f64,
     values: Vec<f64>,
@@ -1361,7 +1361,7 @@ enum LoopStep {
 /// the whole scan runs inside one
 /// [`MeHostState::settle_caught_excursion`] transaction, so restoration and the
 /// loss it implies are the caller's single obligation on every exit (returned
-/// or unwound) rather than a per-coordinate one (review findings [373], [390]).
+/// or unwound) rather than a per-coordinate one (review findings \[373\], \[390\]).
 struct SessionScanTarget<'a> {
     kernel: &'a Rc<RefCell<SolveMeKernel>>,
     derivatives: &'a MeDerivativeController,
@@ -1374,7 +1374,7 @@ impl RootScanTarget for SessionScanTarget<'_> {
     /// sampler that unwinds here must reach the enclosing scan transaction with
     /// nothing yet decided: it resumes the original payload untouched and lets
     /// that one transaction restore the point and record the loss its outcome
-    /// implies (review finding [390]).
+    /// implies (review finding \[390\]).
     fn sample_states(&mut self, time: f64, states: &mut [f64]) -> Result<(), MeSessionError> {
         match caught_sample(self.backend, self.derivatives, time, states) {
             Ok(sampled) => sampled,
@@ -1418,7 +1418,7 @@ impl RootScanTarget for SessionScanTarget<'_> {
 /// numerical-history loss itself, while a sampler reached from inside a scan
 /// leaves both decisions to the one enclosing transaction, so a failed
 /// restoration is never hidden behind an already-written numerical step
-/// (review findings [381], [387], [388], [390]).
+/// (review findings \[381\], \[387\], \[388\], \[390\]).
 fn caught_sample(
     backend: &dyn MeIntegratorBackend,
     derivatives: &MeDerivativeController,

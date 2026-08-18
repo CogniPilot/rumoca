@@ -884,6 +884,7 @@ impl SolveMeKernel {
         event_time: f64,
         _event: RuntimeEventStop,
         row_filter: EventUpdateRowFilter,
+        iteration_y: Option<Vec<f64>>,
     ) -> Result<(), MeError> {
         let event_entry_y = self
             .pending_event_pre_y
@@ -894,7 +895,9 @@ impl SolveMeKernel {
             .pending_event_pre_p
             .take()
             .unwrap_or_else(|| self.params.clone());
-        let mut solver_y = self.event_iteration_solver_y(&event_entry_y)?;
+        let mut solver_y = iteration_y
+            .map(Ok)
+            .unwrap_or_else(|| self.event_iteration_solver_y(&event_entry_y))?;
         let pending_root_overrides = self.take_pending_event_root_overrides();
         let root_overrides = pending_root_overrides.as_slice();
         let runtime = Rc::clone(&self.runtime);

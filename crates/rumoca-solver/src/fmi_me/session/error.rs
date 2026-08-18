@@ -1,5 +1,5 @@
 //! The typed failure and usability vocabulary of the one master algorithm
-//! (SPEC_0044 §6 ME-INT-003, review findings [373], [382]).
+//! (SPEC_0044 §6 ME-INT-003, review findings \[373\], \[382\]).
 //!
 //! Split out of [`super`] so the master algorithm stays readable inside the
 //! SPEC_0021 file limits. It is not a second owner: every value here is
@@ -34,7 +34,7 @@ pub enum MeSessionError {
     ///
     /// ME-INT-003 lists allocation as a category of its own. A host buffer or
     /// trace row that cannot be reserved is a host storage failure, so it is
-    /// never attributed to the FMI component (review finding [370]§3).
+    /// never attributed to the FMI component (review finding \[370\]§3).
     #[error("the host could not reserve {entries} entries for {context}")]
     Allocation {
         context: &'static str,
@@ -61,7 +61,7 @@ pub enum MeSessionError {
     ///
     /// SPEC_0044 §6 guarantees every adjacent sampled interval is bounded by
     /// the checked resolution, so the host reports a typed resource failure
-    /// rather than silently scanning coarser (review finding [336]§1).
+    /// rather than silently scanning coarser (review finding \[336\]§1).
     #[error(
         "a scan of [{start}, {end}] at resolution {resolution} needs more coordinates than the \
          host can represent"
@@ -83,7 +83,7 @@ pub enum MeSessionError {
     /// SPEC_0044 §6 ME-INT-001 admits exactly four plugin operations and no
     /// backend-identity one, so a solver label cannot be asked for here, and a
     /// common enum of solver families would put the same identity back into the
-    /// common crate through the back door (review finding [399]).
+    /// common crate through the back door (review finding \[399\]).
     #[error("a component with {state_count} continuous states {mismatch}")]
     PluginArity {
         state_count: usize,
@@ -97,7 +97,7 @@ pub enum MeSessionError {
     /// be closed, that fact is gone, so this failure takes precedence over
     /// whatever the excursion was attempting: a getter, indicator, sampler,
     /// budget, or backend failure is carried here as typed data rather than
-    /// rendered into prose or dropped (review finding [373]).
+    /// rendered into prose or dropped (review finding \[373\]).
     #[error("the component could not be restored to the accepted point t={time}: {restoration}")]
     AcceptedPointLost {
         time: f64,
@@ -112,7 +112,7 @@ pub enum MeSessionError {
     /// A mutating step that failed after one correlated owner had already moved
     /// is terminal: nothing here can re-establish the correlation it destroyed,
     /// so the session is an explicit non-reusable failed session rather than an
-    /// apparently live one (review findings [373], [382]).
+    /// apparently live one (review findings \[373\], \[382\]).
     #[error("the session is not reusable: {loss}")]
     SessionNotReusable { loss: MeSessionLoss },
 }
@@ -142,7 +142,7 @@ impl MeSessionError {
 ///
 /// A category, never a solver name: a host or a worker bucket switches on the
 /// *rule*, which is identical for every backend, and the common crate stays
-/// free of backend identity (review finding [399]).
+/// free of backend identity (review finding \[399\]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MePluginArity {
     /// Zero continuous states, yet a numerical plugin was supplied. ME-ZERO-001
@@ -174,7 +174,7 @@ impl std::fmt::Display for MePluginArity {
 ///
 /// A category, never prose: a host, a worker bucket, or a census switches on
 /// this rather than on a rendered message, and a lifecycle, policy, or plugin
-/// loss is never mislabelled as a coordinate loss (review finding [382]).
+/// loss is never mislabelled as a coordinate loss (review finding \[382\]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeSessionLoss {
     /// The component could not be returned to the session's accepted point.
@@ -195,7 +195,7 @@ pub enum MeSessionLoss {
     /// the plugin, the component, the host, the output cursor, and the
     /// published evidence can be at different points and restoring the
     /// component's coordinate alone does not restore the rest
-    /// (review finding [387]).
+    /// (review finding \[387\]).
     ///
     /// [`MeIntegratorBackend`]: crate::fmi_me::MeIntegratorBackend
     NumericalStep,
@@ -223,7 +223,7 @@ impl std::fmt::Display for MeSessionLoss {
 /// Map a latched capability failure onto the public categories.
 ///
 /// A component evaluation additionally records the Continuous-Time Mode stage
-/// that raised it (review finding [340]§4); an inactive-capability misuse is
+/// that raised it (review finding \[340\]§4); an inactive-capability misuse is
 /// the plugin's own typed contract failure and keeps that identity.
 pub(super) fn latched_failure(error: MeIntegrationError) -> MeSessionError {
     match error {
@@ -247,9 +247,9 @@ impl From<TimeoutExceeded> for MeSessionError {
 /// SPEC_0044 §6 ME-INT-003 requires allocation failures to stay typed and
 /// distinguishable; every other recorder violation is the host breaking its own
 /// trace contract. Neither needs the recorder's concrete shape on the public
-/// API (review finding [366]§3). The recorder is host storage, so its
+/// API (review finding \[366\]§3). The recorder is host storage, so its
 /// allocation failure maps to the host's own allocation category rather than to
-/// the component's (review finding [370]§3).
+/// the component's (review finding \[370\]§3).
 impl From<MeTraceViolation> for MeSessionError {
     fn from(value: MeTraceViolation) -> Self {
         match value {
@@ -270,7 +270,7 @@ mod tests {
     /// ME-INT-003 keeps allocation a category of its own, and the recorder is
     /// *host* storage. Attributing its exhaustion to the FMI component would
     /// both lose the category and blame the wrong party
-    /// (review finding [370]§3).
+    /// (review finding \[370\]§3).
     #[test]
     fn a_recorder_allocation_failure_is_a_host_allocation_not_a_component_failure() {
         let violation = MeTraceViolation::Allocation {

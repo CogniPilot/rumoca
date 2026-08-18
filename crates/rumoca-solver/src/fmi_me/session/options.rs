@@ -4,7 +4,7 @@
 //! Split out of [`super`] so the master algorithm stays readable inside the
 //! SPEC_0021 file limits. Every aggregate here has private fields and a checked
 //! constructor, so an unproven host option can never enter the session
-//! (review finding [337]§1).
+//! (review finding \[337\]§1).
 
 use super::MeSessionError;
 use crate::fmi_me::integrator::accepted_step_roundoff;
@@ -13,7 +13,7 @@ use crate::fmi_me::integrator::accepted_step_roundoff;
 ///
 /// Public fields make the request ordinary data; the aggregate below is the
 /// only thing the master algorithm ever reads, and it exists only after every
-/// value has been proven (review finding [337]§1).
+/// value has been proven (review finding \[337\]§1).
 #[derive(Debug, Clone)]
 pub struct MeSessionOptionsInput {
     pub start_time: f64,
@@ -25,7 +25,7 @@ pub struct MeSessionOptionsInput {
     pub output_interval: f64,
     /// The width bound on one adjacent sampled interval inside an accepted
     /// step. SPEC_0044 §6 makes this a distinct session option so trace
-    /// density cannot change event semantics (review finding [343]§3).
+    /// density cannot change event semantics (review finding \[343\]§3).
     pub root_scan_resolution: f64,
     /// The bracket width a located root must be refined to.
     pub root_location_tolerance: f64,
@@ -171,7 +171,7 @@ impl MeSessionOptions {
     }
 }
 
-/// What an [`MeSimulationSession::advance_to`] call stopped on.
+/// What a [`super::MeSimulationSession::advance_to`] call stopped on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeAdvanceOutcome {
     /// The requested yield boundary was reached exactly.
@@ -192,7 +192,7 @@ pub struct MeOutputCursor {
 
 impl MeOutputCursor {
     /// Build the cursor, proving the schedule is a finite strictly increasing
-    /// coordinate sequence (review finding [337]§1).
+    /// coordinate sequence (review finding \[337\]§1).
     pub fn new(times: Vec<f64>) -> Result<Self, MeSessionError> {
         for (index, time) in times.iter().copied().enumerate() {
             if !time.is_finite() {
