@@ -419,7 +419,8 @@ end PreviousCounter;
         },
     )
     .expect("clock-owned previous history should be runtime computable");
-    assert_eq!(trace_values(&result, "x"), &[1.0, 2.0, 3.0]);
+    let settled_x = [0.0, 0.1, 0.2].map(|time| settled_trace_value_at_time(&result, "x", time));
+    assert_eq!(settled_x, [1.0, 2.0, 3.0]);
 }
 
 #[test]
@@ -462,7 +463,8 @@ end SampledAlgorithmCounter;
         },
     )
     .expect("scheduled algorithm history should be runtime computable");
-    assert_eq!(trace_values(&result, "x"), &[1.0, 2.0, 3.0]);
+    let settled_x = [0.0, 0.1, 0.2].map(|time| settled_trace_value_at_time(&result, "x", time));
+    assert_eq!(settled_x, [1.0, 2.0, 3.0]);
 }
 
 /// MLS §16.3 `Clock(intervalCounter, resolution)`: the rational constructor is
