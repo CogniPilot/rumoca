@@ -545,7 +545,7 @@ fn relation_can_vary(expression: &Expression, scope: &EventScope<'_>) -> bool {
 /// defect (#90), and it is **fixed**: seeding the activation buffer from the
 /// settled initialization values (`when` condition memory, commit 4032af2a)
 /// removed the manufactured edge, so both sessions now leave `when time >= 0`
-/// unfired as OpenModelica does. `crates/rumoca/tests/time_event_when_activation.rs`
+/// unfired as OpenModelica does. `crates/rumoca/tests/suite_core/time_event_when_activation.rs`
 /// pins the pair.
 ///
 /// What this bound still does not reach is the `Bdf` session, where

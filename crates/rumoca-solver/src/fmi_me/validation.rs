@@ -177,3 +177,50 @@ fn unsupported(reason: String) -> MeError {
 fn evaluation(message: String) -> MeError {
     MeError::Evaluation { message }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block(rows: Vec<Vec<solve::LinearOp>>) -> solve::ComputeBlock {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("unprojectable_derivative.mo"),
+            1,
+            2,
+        );
+        let block = solve::ScalarProgramBlock::with_source_span(
+            rows,
+            span.require_provenance("FMI ME validation fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture program is computable");
+        solve::ComputeBlock::from_scalar_program_block(block)
+    }
+
+    #[test]
+    fn linked_component_rejects_an_unprojectable_derivative_dependency_by_name() {
+        let mut model = solve::SolveModel::default();
+        model.problem.solve_layout.state_scalar_count = 1;
+        model.problem.solve_layout.algebraic_scalar_count = 1;
+        model.problem.solve_layout.solver_maps.names = vec!["x".to_owned(), "a".to_owned()];
+        model.problem.continuous.derivative_rhs = block(vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]]);
+        model.initial_y = vec![0.0, 0.0];
+
+        let error = validate_explicit_solve_model(&model)
+            .expect_err("an unproduced derivative dependency must be rejected");
+        let MeError::UnsupportedModel { reason } = error else {
+            panic!("the missing projection owner must be an unsupported-model error");
+        };
+        assert!(
+            reason.contains("der(x)") && reason.contains("'a'") && reason.contains("y[1]"),
+            "the rejection must name the derivative and missing coordinate: {reason}"
+        );
+        assert!(
+            reason.contains("retired"),
+            "the rejection must state that no implicit fallback remains: {reason}"
+        );
+    }
+}

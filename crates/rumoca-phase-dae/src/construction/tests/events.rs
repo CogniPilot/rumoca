@@ -16,7 +16,7 @@
 //!
 //! These tests pin the classification, not the numerics: the simulated
 //! behaviour and its OpenModelica falsification live in
-//! `crates/rumoca/tests/time_event_when_activation.rs`.
+//! `crates/rumoca/tests/suite_core/time_event_when_activation.rs`.
 
 use rumoca_core::Reference;
 
@@ -176,7 +176,7 @@ fn time_relation_in_discrete_binding_owns_its_scheduled_instant() {
 /// with it. The distinction matters for the falling orderings: whether a `when`
 /// already true at `t = 0` is activated there is a separate, unrelated defect
 /// (see the divergence record in
-/// `crates/rumoca/tests/time_event_when_activation.rs`), and this test must not
+/// `crates/rumoca/tests/suite_core/time_event_when_activation.rs`), and this test must not
 /// be read as blessing that behaviour. The falling arms are asserted here only
 /// because a relation that changes value at `t = 0.5` owns the instant `0.5`
 /// whatever any `when` later does with it.
