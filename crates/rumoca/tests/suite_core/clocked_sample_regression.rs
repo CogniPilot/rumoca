@@ -843,11 +843,17 @@ end ClockedConnectedInput;
     let y = trace_values(&sim, "assignClock.y");
     let u = trace_values(&sim, "assignClock.u");
     assert_eq!(y, u, "AssignClock passes its clocked input through");
-    for (index, value) in y.iter().enumerate() {
-        let expected = index as f64 * 0.1;
+    for tick in 0..=3 {
+        let expected = tick as f64 * 0.1;
+        let index = sim
+            .times
+            .iter()
+            .rposition(|time| (time - expected).abs() <= 1.0e-12)
+            .unwrap_or_else(|| panic!("trace must contain clock tick {expected}"));
+        let value = y[index];
         assert!(
             (value - expected).abs() <= 1.0e-12,
-            "tick {index} must hold the ramp value sampled at its own tick; got {value}"
+            "tick {tick} must hold the ramp value sampled at its own tick; got {value}"
         );
     }
 }
