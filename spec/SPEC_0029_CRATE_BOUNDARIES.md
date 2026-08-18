@@ -127,8 +127,9 @@ Evaluation crates are aligned to IR ownership: `rumoca-eval-ast`,
 `rumoca-eval-flat`, and `rumoca-eval-dae`. `rumoca-eval-solve` evaluates the
 shared typed Solve program vocabulary and both checked Solve roots, including
 tensor-kernel selection and `SolveAlgorithmBlock` lifecycle execution (pending:
-2026-08-08 plan, M3-4); it MUST NOT depend on a Tier 4/5 crate. The numerical
-simulation state machine and driver remain in `rumoca-solver::runtime`.
+2026-08-08 plan, M3-4); it MUST NOT depend on a Tier 4/5 crate. The state
+machine and driver stay in `rumoca-solver::runtime`. SPEC_0038 moves the FMI 3
+ME master driver to `rumoca-solver::fmi_me`; `runtime` keeps its Solve helpers.
 `rumoca-eval-galec` remains an independent Algorithm Code oracle and MUST NOT
 delegate to Solve lowering or evaluation.
 
@@ -201,7 +202,7 @@ Its root API MUST stay minimal:
 
 CI enforcement:
 - Violations MUST fail CI.
-- The workspace test `crates/rumoca/tests/architecture_hardening_test.rs::test_session_root_facade_exports_are_minimal`
+- The workspace test `crates/rumoca/tests/architecture_hardening_test/main.rs::test_session_root_facade_exports_are_minimal`
   enforces this root export policy.
 
 ### 10. Session-Owned Source-Root And Class-Graph State
@@ -246,12 +247,13 @@ IR capability probes. Unsupported capabilities report
 `unsupported-feature:<feature_id>`. JIT/device adapters consume Solve IR or
 generated artifacts through stable execution ABIs and equivalence tests.
 
-FMI deployment is the checked-export case, not a textual projection directly
-from DAE or Solve. `rumoca-ir-fmi` owns the private invariant-bearing FMI
-component aggregate, `rumoca-phase-fmi` constructs it from checked DAE metadata
-and the corresponding checked Solve kernel, and `rumoca-phase-codegen` owns the
-generated FMI 2/3 lifecycle and ABI adapter text. Those adapters consume the
-checked aggregate and MUST NOT repeat Modelica, DAE, or Solve lowering.
+FMI deployment is a checked export, not a textual DAE or Solve projection.
+Pending SPEC_0038 absorption, `rumoca-ir-solve::fmi` will own the checked
+component beside its kernel; no parallel FMI IR crate will remain.
+`rumoca-phase-solve::fmi` will be the real feature-scoped constructor from
+matching DAE metadata and Solve kernel. Non-FMI consumers MUST NOT enable its
+FMI-only dependencies. Codegen retains FMI 2/3 lifecycle and ABI text and MUST
+NOT repeat Modelica, DAE, or Solve lowering.
 
 Each target manifest selects one proven-valid canonical or checked export IR.
 `rumoca-phase-codegen` exposes a typed, read-only semantic view for each
@@ -335,10 +337,9 @@ Tier 2 — IR data: rumoca-ir-*
 Tier 1 — Foundation: rumoca-core
 ```
 
+Within Tier 3, phases MUST compose through IR/evaluation crates rather than depend on other phases.
+Shared prerequisite analyses are the sole reasoned, bidirectionally gated
+exception; test fixtures are outside this production rule.
+
 Input-boundary and simulation-composition ownership is
 [SPEC_0041 §5](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#5-input-and-simulation-composition-catalog-spec_0029-dependency-tiers).
-
-## Related Specs
-
-- [SPEC_0041](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md) — helper, session, and layer ownership catalog.
-- [SPEC_0021](SPEC_0021_CODE_COMPLEXITY.md) — maintainability and deterministic-collection rules.

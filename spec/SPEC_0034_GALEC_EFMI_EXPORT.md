@@ -12,8 +12,10 @@ the `.alg` language server).
 Rumoca exports eFMI Algorithm Code from checked GALEC and Production Code from
 its checked `SolveAlgorithmBlock` executable refinement (pending: 2026-08-08
 plan, M3-4 — the refinement is not built yet, so Production C/H is still
-rendered from the Algorithm Code view); GALEC is never a canonical Modelica IR
-stage and MiniJinja never performs semantic lowering.
+rendered from the Algorithm Code view). This target-specific path is
+DAE → GALEC → Solve; it does not interpose GALEC on numerical `SolveProblem`
+construction. GALEC is never a canonical Modelica IR stage and MiniJinja never
+performs semantic lowering.
 
 ## Pipeline Placement
 
@@ -30,7 +32,7 @@ DAE
 ## Module Layout and Dependency Direction
 
 ```text
-rumoca-compile -> rumoca-phase-galec -> rumoca-ir-dae/solve
+rumoca-compile -> rumoca-phase-galec -> rumoca-ir-dae
                                       -> rumoca-ir-galec
 rumoca-phase-solve -> rumoca-ir-galec -> rumoca-ir-solve
 rumoca-phase-parse-galec -> rumoca-ir-galec
@@ -77,8 +79,8 @@ rumoca -> generic artifact/checksum/container graph + vendored schemas
 | GAL-032 | Rumoca may claim only DO-178C project support. Evidence requires deterministic C, end-to-end traceability, requirements tests, target/tool/runtime assumptions and identities, structural-coverage inputs, and a DO-330 qualification versus independent-output-verification choice. Artifacts never claim compliance or a software level. | evidence bundle | Certification is project-level. |
 | GAL-033 | Target-stronger operations and bounded selection are fully checked before rendering. | Solve construction | Preserve tensors through legalization. |
 | GAL-034 | C storage follows checked lexical scopes and storage classes, never names or text. | Solve construction | Bound stack lifetimes. |
-| GAL-035 | Whole-tensor storage, reaching definitions, and alias rules are checked call facts, never template inference. | DAE + Solve lowering | Remove redundant copies. |
-| GAL-036 | One aggregate source call becomes one action with exact result cardinality and semantic identities. | DAE + Solve lowering | Preserve readable dataflow. |
+| GAL-035 | Whole-tensor storage, reaching definitions, and alias rules are checked call facts, never template inference. | GALEC → Solve refinement | Remove redundant copies. |
+| GAL-036 | One aggregate source call becomes one action with exact result cardinality and semantic identities. | GALEC → Solve refinement | Preserve readable dataflow. |
 | GAL-037 | C renders checked aggregate operations without constructing, scalarizing, fusing, or rescheduling them. | Solve view + templates | Bound source growth. |
 | GAL-038 | Independent GALEC, Solve, and C execution are compared over all lifecycle-visible effects. | evaluator/codegen tests | Avoid self-confirming defects. |
 
@@ -152,7 +154,7 @@ are normative by reference from them.
 | Full-container schema/checksum/id validation plus malformed-container negatives | GAL-021 |
 | `--target galec` CLI smoke + real template-CI render | GAL-011/012 |
 | Generated-C compile check (`cc -Wall -Werror`, temp dir) when C output exists | GAL-012/024 |
-| Differential execution: checked source semantics ↔ `rumoca-eval-galec` ↔ generated C/eFMI, including signal/error cases | GAL-027 |
+| Differential execution: checked source semantics ↔ `rumoca-eval-galec` ↔ Solve evaluator ↔ generated C/eFMI, including signal/error cases | GAL-027/038 |
 | Correlated-operation construction rejects malformed references/extents; GALEC renders only the conforming expansion; C renders the correlated native operation; differential tests cover every in-range index and the out-of-range fallback | GAL-026/033 |
 | Lexical-scope fixtures, sanitizer execution, and tensor/RDD2 stack budgets | GAL-026/030/034 |
 | Call fixtures cover reaching definitions, aliasing, computed tensors, differential execution, and stack use | GAL-026/030/035 |
@@ -165,8 +167,9 @@ are normative by reference from them.
 
 ## Non-Goals
 
-- GALEC does not replace DAE/Solve; export does not change Modelica semantics
-  or authorize target-specific canonical-DAE rewrites.
+- GALEC does not replace canonical DAE or numerical `SolveProblem`; the
+  eFMI/embedded-C path refines checked DAE → GALEC → `SolveAlgorithmBlock`
+  without changing Modelica semantics or authorizing canonical-DAE rewrites.
 - No Behavioral Model (ch. 4; an eFMU is valid without one), FMU embedding, or
   Binary Code representation.
 - The parser never accepts Modelica input — GALEC only (GAL-014).

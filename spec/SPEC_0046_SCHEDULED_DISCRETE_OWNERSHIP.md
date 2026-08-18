@@ -50,6 +50,9 @@ governed: the Solve grammar, type algebra, profiles, and identity ladder
 ([SPEC_0045](SPEC_0045_SOLVE_EXECUTABLE_VOCABULARY_AND_PROFILES.md)); target
 refinement and prepared products
 ([SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md)).
+SPEC_0048 alone owns target-refinement direction. This spec changes C55/C57's
+internal scheduled semantics only; it cannot introduce direct DAE →
+`SolveAlgorithmBlock`, Solve → GALEC, or parallel production lowering.
 
 Provenance: the accepted ownership decisions consolidated by this
 specification and its normative catalog.

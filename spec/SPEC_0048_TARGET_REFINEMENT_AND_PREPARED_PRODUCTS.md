@@ -5,24 +5,19 @@ DRAFT
 
 ## Summary
 
-One per-invocation build session seals each issued Solve root exactly once,
-prepares one closed product plan with total coverage, and hands a passive
-emitter exactly one issued variant.
+One build session seals each issued Solve root once, prepares one closed
+total-coverage product plan, and hands a passive emitter one issued variant.
 
 ## Specification
 
 **Sections.** 1 governance · 2 prepared artifacts · 3 build session and plans ·
-4 expansion boundary · 5 eFMI siblings · 6 state and gates · 7 reversal gates.
+4 expansion boundary · 5 eFMI refinement chain · 6 state and gates · 7 reversal gates.
 
 ### 1. Governance, Scope, And Acceptance-Time Amendment Map
 
-This DRAFT proposes the amendments below and claims none today. On acceptance
-it amends SPEC_0007 Stage 4 with lockstep SPEC_0040 C13/C14/C20 (scalar programs
-exist only at the final emitter, as an issued plan); SPEC_0032 §§2/4/5 (the
-shared `rumoca-eval-solve` scalar-fallback license narrows to the final
-expansion boundary); SPEC_0034 Summary, pipeline, GAL-027, and GAL-038 (TRP-030
-replaces independently lowered AlgorithmCode bodies); and DRAFT SPEC_0036 with
-SPEC_0043 product-root rows.
+This DRAFT claims none today. On acceptance it amends SPEC_0007 Stage 4 with
+lockstep SPEC_0040 C13/C14/C20 and TRP-051's C51–C57 consumer edges; SPEC_0032 §§2/4/5; SPEC_0034 Summary, pipeline,
+GAL-027, and GAL-038; and DRAFT SPEC_0036 with SPEC_0043 product-root rows.
 
 **Direct clause conflicts** are enumerated clause by clause in
 [SPEC_0047 §8](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#8-acceptance-time-amendment-map); every row there is amended atomically in this vote.
@@ -31,7 +26,7 @@ It further amends SPEC_0029 §5 and §12 with the exact SPEC_0041 §4 ownership
 rows TRP-032 splits, also enumerated in SPEC_0047 §8.
 
 Governed: prepared artifacts, the build session, typed manifests, product plans,
-the expansion boundary, budgets, digests, and the eFMI sibling contract.
+the expansion boundary, budgets, digests, and the eFMI refinement-chain contract.
 Grammar, type algebra, profiles, and the identity ladder are
 [SPEC_0045](SPEC_0045_SOLVE_EXECUTABLE_VOCABULARY_AND_PROFILES.md).
 
@@ -54,7 +49,7 @@ Grammar, type algebra, profiles, and the identity ladder are
 | TRP-012 | `target.toml` EXTENDS the existing deny-unknown manifest schema with the product-tagged typed fields of [§4.8](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs), including `CoverageMode::{NativeRequired, HybridMigration}` — a new axis, distinct from the existing `execution_mode`. It is not a parallel universal schema, and no dtype strings appear. | `rumoca-compile` | Free text fails open |
 | TRP-049 | Every advertised product MUST discharge the closure obligations of its row in [SPEC_0047 §5](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#5-product-closure-matrix) through the one §4.24/§4.25/§4.26 checker flow, and MUST map Solve typed failures and status effects by the declared relation of [SPEC_0047 §6](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#6-failure-and-status-mapping) — the GENERAL contract for every product's transport, C and Rust disposition included, not only the eFMI leg §4.32 governs. No cell is blank. | preparation | Closure is per product |
 | TRP-050 | `ProductKind` × `RootKind` is a CLOSED typed schema ([§4.33](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs)): each variant declares which fields are REQUIRED and which FORBIDDEN. Every field is a type, never a label; no variant has a default. | `rumoca-compile` | Variants differ in obligation |
-| TRP-047 | Manifest obligations are PRODUCT-TAGGED: a Solve-executable or Production-C product REQUIRES numeric, value, operation/effect, environment, and emission profiles; a Flat, DAE, or AC-only export FORBIDS root and preparation fields; a co-issued eFMI package carries tagged sibling inputs. OMISSION of a capability key canonically means DENY, never unknown. | `rumoca-compile` | Silence denies |
+| TRP-047 | Manifest obligations are PRODUCT-TAGGED: a Solve-executable or Production-C product REQUIRES numeric, value, operation/effect, environment, and emission profiles; a Flat, DAE, or AC-only export FORBIDS root and preparation fields; an eFMI Production Code package carries tagged upstream Algorithm Code and refinement inputs. OMISSION of a capability key canonically means DENY, never unknown. | `rumoca-compile` | Silence denies |
 | TRP-033 | The `NumericProfile` request is the closed schema of [§4.21](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs), or a compiler-known named profile expanding to exactly those normalized fields. The source Modelica `Integer` default is SIGNED; an unsigned SEMANTIC representation comes ONLY from an explicit checked conversion — never from a range refinement (SEV-018) and never from a target-wide reinterpretation. | `rumoca-compile` | No silent reinterpretation |
 | TRP-037 | Unsigned machine STORAGE for a semantically signed value is a prepared physical-layout optimization at the `PreparedDigest` layer: the value stays semantic `I32`, and the layout carries the [§4.23](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs) round-trip and no-reinterpretation receipt or is not selected. It is the unsigned special case of TRP-044. | preparation | Storage is not semantics |
 | TRP-044 | EVERY prepared layout refinement — field offset and order, alignment, address space, AoS versus SoA, enum mapping, empty-field mapping, and storage representation — is a checked relation that preserves the semantic type and all values, carries its receipt, and moves `PreparedDigest`. A refinement without a valid receipt is not selected. | preparation | Layout refines, never redefines |
@@ -72,7 +67,7 @@ Grammar, type algebra, profiles, and the identity ladder are
 | TRP-016 | `NativeRequired` rejects incomplete coverage; `HybridMigration` is explicit, recorded, and never silent. | preparation | Fallback must be visible |
 | TRP-017 | There is no universal target program: the factors in [§4.10](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs) compose into sealed product-specific plans, and a common base is promoted only when three different products share an IDENTICAL mandatory invariant and checker flow. | preparation | Invariants, not counts |
 | TRP-018 | The emitter sees one sealed plan and no candidates; renderer construction takes ONLY that plan plus packaging facts, and no context offers both compact and scalarized alternatives. | `rumoca-phase-codegen` | Template choice unverifiable |
-| TRP-019 | The executable COMPUTATIONAL KERNEL semantics of C, Rust, WASM, and native products end at a profile-bound Solve root. A lifecycle product MAY additionally bind checked FMI component metadata, the eFMI AC sibling, and package facts — these enter prepared, artifact, and package identity, NEVER a forged `RootDigest`. Flat, DAE, and Algorithm-Code exports stay at their lowest valid IR. Distinct product and root kinds, enumerated in [SPEC_0047 §5](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#5-product-closure-matrix): Simulation `SolveProblem`, Simulation C-ODE, FMI component, Embedded C, and AlgorithmBlock eFMI PC. Products sharing a root kind say so; none borrows another's name. | `rumoca-compile` | Kernels end at the root |
+| TRP-019 | The executable COMPUTATIONAL KERNEL semantics of C, Rust, WASM, and native products end at a profile-bound Solve root. A lifecycle product MAY additionally bind checked FMI component metadata, the upstream eFMI Algorithm Code package, and package facts — these enter prepared, artifact, and package identity, NEVER a forged `RootDigest`. Flat, DAE, and Algorithm-Code exports stay at their lowest valid IR. Distinct product and root kinds, enumerated in [SPEC_0047 §5](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#5-product-closure-matrix): Simulation `SolveProblem`, Simulation C-ODE, FMI component, Embedded C, and AlgorithmBlock eFMI PC. Products sharing a root kind say so; none borrows another's name. | `rumoca-compile` | Kernels end at the root |
 | TRP-038 | Two products share a root ONLY when their semantic root KIND, complete semantic inputs, normalized arithmetic and sensitivity profile, AND lifecycle contract are all identical. Any difference — notably a Simulation versus AlgorithmBlock lifecycle — yields distinct roots that MUST NOT be substituted for one another, even when their issued expression and function correlations match. | `rumoca-compile` | Lifecycle is root identity |
 
 ### 4. Final Expansion Boundary And Budgets
@@ -83,12 +78,13 @@ Grammar, type algebra, profiles, and the identity ladder are
 | TRP-021 | Prohibited: a stored semantic scalar graph, per-coordinate metadata DERIVED from tensor extent, and implicit scalar fallback; checked interval and range ownership replaces them. Backend-private structures — liveness bitsets over genuine definitions, for instance — MAY scale with those definitions, carrying zero semantic and wire authority (TRP-003). | construction | Extent-derived is the defect |
 | TRP-022 | Every product whose `RootKind` is NOT `None` carries a checked work, code-size, and resource budget plus ONE admitted execution path from the complete §4.18 union; bounded unrolling is explicit under TRP-014, constrained by TRP-015. A `None`-root product prepares nothing and carries neither. | preparation | Budgets bind executables |
 
-### 5. eFMI Co-Issued Siblings
+### 5. eFMI Refinement Chain
 
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
-| TRP-030 | **eFMI siblings are co-issued from one checked semantic construction; AlgorithmCode owns a closed final-language projection, never a second semantic lowerer.** Both issue under the correlation and checksum obligations of [§4.19](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs); neither is lowered from the other, and neither validates its own construction. | see TRP-032 | Neither validates itself |
-| TRP-032 | TRP-030's ownership splits three ways: the ONE shared expression and function relation construction plus the profile-bound Solve root closure belong to `rumoca-phase-solve`; the GALEC admissibility and lifecycle PROJECTION belongs to `rumoca-phase-galec`, which owns projection and container authority only; the atomic sibling-package orchestration — one construction transaction, the correlation web, and checksum binding — belongs to the build session in `rumoca-compile`. **`rumoca-phase-galec` owns no expression or function lowering.** | three crates | No second Solve compiler |
+| TRP-030 | **The eFMI chain is untouched DAE → closed Algorithm Code → profile-bound `SolveAlgorithmBlock`.** GALEC is the restriction boundary; the second step is its checked executable refactoring. Both satisfy [§4.19](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs); direct DAE → AlgorithmBlock and Solve → GALEC paths are forbidden. | see TRP-032 | Restrict before executable refinement |
+| TRP-032 | `rumoca-phase-galec` solely owns DAE → GALEC expression, function, lifecycle, and admissibility lowering. `rumoca-phase-solve` consumes that checked package and owns GALEC → profile-bound Solve refinement. `rumoca-compile` owns atomic package orchestration, correlations, and checksums. Numerical DAE → `SolveProblem` remains separate and cannot shortcut Algorithm Code. | three crates | One ordered refinement chain |
+| TRP-051 | Acceptance amends only GALEC/Production consumer edges in SOLVE-C51–C57: phase-galec constructs checked Algorithm Code once from DAE/structural proofs, then phase-solve refines it. SPEC_0046 exclusively owns C55/C57 scheduled semantics; current or successor semantics travel the same chain. | target refinement | Direction and event semantics have separate owners |
 | TRP-031 | Untouched DAE keeps an independent GALEC/eFMI admissibility receipt; `eval-galec` checks the projection, a definitional Solve evaluator checks Solve, compiled C checks refinement, and OMC remains the independent frontend leg. The AC-to-PC numeric relation is DECLARED per [§4.32](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs): `eval-galec` is PARAMETERIZED by that mapping, which gives AlgorithmCode no `RootDigest` and creates no dependence on the Solve evaluator. | oracles | Four legs, no self-proof |
 
 ### 6. Current State, Gates, And Rejected Alternatives

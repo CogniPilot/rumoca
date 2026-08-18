@@ -30,6 +30,12 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 | FMI CS embeds an FMI 3 ME host plus a selected integrator | CS runtime | Reuse integration semantics |
 | `rumoca-solver` implements the FMI 3 ME importer/host contract | solver facade | Solver code never consumes `SolveModel` directly |
 | Numerical methods implement an internal FMI 3 ME-host integrator contract | solver implementations | Solver choice does not change model semantics |
+| Private `MeRuntimeHost` implements `MeSimulationSession`'s sole FMI 3 ME master algorithm | solver facade | The session remains the semantic owner; initialization, Event Mode, discrete-state iteration, output scheduling, and trace roles cannot fork by numerical method |
+| Numerical plugins implement only `MeIntegratorBackend` | solver implementations | A new solver supplies numerical advance/reset; it cannot invoke FMI lifecycle transitions, schedule observations, or construct traces |
+| `MeSimulationSession` is the incremental master algorithm | solver facade | Batch simulation, live stepping, inputs, reset, events, timeouts, and observation ordering share one state machine |
+| `FmiComponent` is the only linked or packaged component source | checked FMI projection | Runtime and emitted metadata share one inventory |
+| Component operations are exact FMI 3.0.2 semantic projections | FMI component | Private extensions cannot become solver dependencies |
+| Integrator boundary values use checked constructors and private fields | solver facade | Invalid outcomes never enter the master algorithm |
 | Native in-process calls may be zero-copy | FMI host | Preserve current performance |
 | Repeated directional seeds may reuse a bitwise-identical settled coordinate | FMI component | Avoid redundant algebraic projection |
 | Root evaluation may warm-start its complete checked refresh plan from a bitwise-identical derivative-settled coordinate | FMI component | Keep roots on the same algebraic branch without omitting root dependencies |
@@ -66,58 +72,26 @@ event-indicator, time, continuous-state, and discrete-state operations. They
 MUST NOT inspect Solve rows, layouts, opcodes, events, or private runtime
 objects.
 
-The in-process implementation may statically link and devirtualize this
-interface, use borrowed slices, and batch variable access. Those optimizations
-MUST preserve the FMI 3 ME state machine and observable results; "in process"
-does not define a second interface.
+The sole-host state machine, checked integrator aggregates, event-domain rule,
+cutover deletion inventory, and required differential evidence are cataloged in
+[SPEC_0044 §§6-8](SPEC_0044_FMI_EXECUTION_CATALOG.md#6-common-me-host-and-integrator-contract).
+Those rows are normative by reference. A concrete numerical solver implements
+only that one-step contract; it never owns an FMI lifecycle transition, output
+schedule, trace policy, or component-private Modelica state.
 
-#### Strict FMI 3 ME surface
+The component-facing surface is an exact semantic projection of FMI 3.0.2 ME.
+Host conveniences derive only from standard calls and the checked
+`modelDescription`; no convenience reveals Solve rows, relation memory,
+projection artifacts, internal delay samples or storage layout, or event
+ownership. A namespaced annotation may identify a normal FMI variable carrying
+an importer numerical bound derived from current Modelica expressions; that
+value is not a private component operation or a view of delay storage. The
+strict surface and removal disposition are cataloged in
+[SPEC_0044 §8](SPEC_0044_FMI_EXECUTION_CATALOG.md#8-strict-fmi-component-surface).
 
-The component-facing interface MUST be a semantic projection of the normative
-FMI 3.0.2 Model Exchange functions and `modelDescription.xml`. A Rust method
-MUST NOT be named or documented as an FMI operation while omitting a standard
-argument, return value, capability flag, lifecycle effect, or XML-declared
-ordering rule. Native batching and static dispatch may change representation,
-but not the information available to either side of the boundary.
-
-Importer orchestration and numerical policy live in a separate ME-host layer.
-That layer may provide conveniences such as "next integration stop", root
-localization, trace recording, timeout enforcement, and solver reset, but each
-convenience MUST be derived only from standard FMI calls, their returned
-values, and `modelDescription.xml`. It MUST NOT call a private component
-operation to reveal Modelica relations, `pre()` state, event ownership, delay
-storage, Solve rows, or a constraint projection.
-
-The current linked-kernel extensions are disposed as follows during phase 2:
-
-| Current surface | Required disposition |
-|---|---|
-| `MeTime::event_boundary` | Remove; `fmi3SetTime` carries only `time`. Continuous-Time Mode keeps relations frozen until the importer enters Event Mode. |
-| `MeEventEntry` arguments to `enter_event_mode` | Remove; `fmi3EnterEventMode` has no arguments. Event cause is importer state, not component input. |
-| `MeStepCompletion` | Replace with the complete `fmi3CompletedIntegratorStep` contract: `noSetFMUStatePriorToCurrentPoint`, `enterEventMode`, and `terminateSimulation`, gated by `needsCompletedIntegratorStep`. |
-| `project_continuous_states` | Remove from Continuous-Time Mode. A DAE projection may change states only through Event Mode / `fmi3UpdateDiscreteStates`, reported by `valuesOfContinuousStatesChanged`. |
-| `next_event_stop` | Make host-only derivation of `nextEventTimeDefined` / `nextEventTime` returned by `fmi3UpdateDiscreteStates`; the component does not expose a second scheduling query. |
-| `event_indicator_crossings` | Make importer-owned classification over `fmi3GetEventIndicators` results. |
-| `capture_pre_event_state` / `arm_state_event` | Remove from the host boundary. The component updates its own discrete/relation state when standard Event Mode is entered. |
-| `max_step_size` | Remove as a component capability. Delay history is updated through `fmi3CompletedIntegratorStep`; any accuracy step cap is importer numerical policy. |
-| `observe`, output recorders, and initial-observation queues | Keep only as host conveniences composed from legal `fmi3Get{VariableType}` calls at the current FMI state; they are not component operations. |
-| `restart_from_fmu_state` | Keep only as explicit host composition of standard reset/state operations, subject to advertised FMU-state capabilities. |
-| `extend_stop_time` | Remove. An extendable live session instantiates without a defined stop time or resets and re-enters Initialization Mode with a new experiment. |
-| fixed-list directional derivative helper | Make host-only preparation of the standard value-reference lists passed to `fmi3GetDirectionalDerivative`. |
-
-The linked model description is the same checked artifact used to emit a
-packaged FMU's `modelDescription.xml`. It MUST include the FMI version,
-instantiation token, `<ModelExchange>` capabilities (including
-`needsCompletedIntegratorStep`), typed model variables and value references,
-continuous-state derivative ordering, event-indicator ordering, clocks,
-dependencies, units, dimensions, causality, variability, initial/start data,
-and `ModelStructure` required by the implemented model. Packaged XML MUST
-validate against the official FMI 3 schema, and linked-versus-packaged tests
-MUST prove that the importer sees the same metadata and call results.
-
-SPEC_0029 §12 and SPEC_0041 §4 assign the checked FMI aggregate, its lowering,
-the shared FMI runtime, and the concrete-solver boundary. A concrete numerical
-solver consumes only `rumoca-solver`'s generic FMI ME importer/host contract.
+Native static dispatch, borrowed slices, and batching MAY optimize this
+interface but MUST preserve its state machine and observable results. In-process
+execution is a deployment form, not another model or solver interface.
 
 Automatic integrator selection is importer numerical policy. Its exact
 capability decision and failure-preservation obligations are cataloged in
@@ -258,6 +232,7 @@ passes. Those catalog rows are normative by reference.
 
 - [SPEC_0007](SPEC_0007_IR_PIPELINE.md)
 - [SPEC_0034](SPEC_0034_GALEC_EFMI_EXPORT.md)
+- [Modelica 3.7 §3.7.2.1 `delay`](https://specification.modelica.org/maint/3.7/MLS.html)
 - [FMI validation tools](https://fmi-standard.org/validation/)
 - [FMI 3.0.2 specification](https://fmi-standard.org/docs/3.0.2/)
 - [eFMI resources and compliance tools](https://www.efmi-standard.org/resources/)

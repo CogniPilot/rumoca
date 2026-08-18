@@ -31,14 +31,15 @@ spec, it's not a rule — propose a spec change first.
 | Diagnostics, spans, error codes, tracing | [SPEC_0008](spec/SPEC_0008_PHASE_ERRORS.md) |
 | Tool config (`rumoca-tool-*`) | [SPEC_0018](spec/SPEC_0018_TOOL_CONFIG.md) |
 | Function length, nesting, file size, deterministic collections, code-size policy | [SPEC_0021](spec/SPEC_0021_CODE_COMPLEXITY.md) |
-| Development workflow, bug triage, root-cause proof, upstream-first fixes | [SPEC_0033](spec/SPEC_0033_DEVELOPMENT_PROCESS.md) |
+| Development workflow, bug triage, root-cause proof, upstream-first fixes | [SPEC_0033](spec/SPEC_0033_DEVELOPMENT_PROCESS.md); trace-evidence rows in [SPEC_0050](spec/SPEC_0050_TRACE_EVIDENCE_CATALOG.md) |
 | Opening a PR (branch naming, workflow, metrics, verification commands, MSL gates, done criteria) | [SPEC_0025](spec/SPEC_0025_PR_REVIEW_PROCESS.md) |
 
 ## Rules of thumb
 
 - Active specs (`ACCEPTED` / `REFERENCE`) are mandatory. Archived specs are
   historical context only.
-- A `REFERENCE` annex (`SPEC_0040`–`SPEC_0043`) holds the lookup catalog for its
+- A `REFERENCE` annex (`SPEC_0040`–`SPEC_0044`, `SPEC_0047`, `SPEC_0049`, or
+  `SPEC_0050`) holds the lookup catalog for its
   parent spec. Its rows are normative by reference from the parent section that
   links them; read the parent first, then the catalog row it cites.
 - If you cannot find the spec for what you're about to change, stop and ask

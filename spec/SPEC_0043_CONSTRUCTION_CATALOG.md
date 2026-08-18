@@ -69,7 +69,7 @@ valid LOC reductions.
 The gate makes exceedance loud without blocking a landing: any measured value is
 legal once its ledger row records it, and only crossing a 250-line step forces
 the row to be rewritten. Measured, checked, and stated as an acceptance contract
-in `crates/rumoca/tests/dae_loc_trigger_test.rs`.
+in `crates/rumoca/tests/suite_gates/dae_loc_trigger_test.rs`.
 
 ### 2. Reservation Owner Catalog (SPEC_0036 §Storage and Forward References)
 
@@ -239,11 +239,11 @@ validation, superseded fallbacks, and compatibility are prohibited.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| `FmiComponent::construct` consumes one checked `SolveProblem` and matching DAE-derived declaration inputs | `rumoca-ir-fmi` | Metadata cannot detach from its executable kernel |
+| `FmiComponent::construct` consumes one checked `SolveModel` into a private `Arc` and matching phase-solve FMI inputs satisfying SPEC_0044 §8 | `rumoca-ir-solve::fmi` | Metadata cannot detach from its executable kernel or duplicate FMI semantic ownership |
 | Source identity, tensor extent, scalar names, storage role/type/run, attributes, state count, and value-reference bounds are checked before construction returns | `FmiComponent::construct` | FMI adapters receive no malformed parallel metadata |
-| The checked component is non-cloneable and transfers its exact Solve kernel by value to rendering | FMI component/codegen boundary | Rendering cannot silently select a second kernel |
+| The checked component is non-cloneable. Runtime borrows its checked views; codegen may consume it only into a nonconstructible checked codegen view that retains the FMI metadata and clones the read-only `Arc<SolveModel>` solely for `'static` lazy-render objects. Rendering obtains `SolveArtifacts` only from that same `SolveModel`, never from a second argument. No API returns an owned bare Solve root or permits foreign metadata pairing | FMI component boundary | One shared kernel supports bounded lazy rendering without an ownership escape or a second aggregate |
 | FMI 2 scalar variables and FMI 3 tensor variables derive from the same checked storage runs | Version adapters | Version projection cannot repeat equation lowering |
-| Unsupported source types fail in `rumoca-phase-fmi` before target rendering | FMI lowering | No plausible default representation |
+| Unsupported source types fail in `rumoca-phase-solve::fmi` before target rendering | FMI lowering | No plausible default representation |
 
 ### 9. Solve Algorithm Block Construction Catalog (pending: 2026-08-08 plan, M3-4)
 

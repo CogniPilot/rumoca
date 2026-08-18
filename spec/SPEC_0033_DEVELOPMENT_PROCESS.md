@@ -62,8 +62,8 @@ verify focused behavior before broad gates.
 | Focused or partial MSL snapshots MUST NOT be promoted | baseline workflow | Prevents baseline drift |
 | Commit-to-commit comparisons MUST use the same focused target list | regression triage | Makes deltas meaningful |
 | External compatibility corpora MUST pin an immutable revision and run as bounded parallel gates | CI workflows | Keeps evidence reproducible without creating a serial CI long pole |
-| A compiler-contract cutover MAY reset incomparable floors only through a one-shot migration naming both contracts, evidence commit, exact stage counts, target count, and post-cutover failure and diagnostic censuses; the resolver MUST fail closed on any mismatch | baseline workflow | A stricter typed refusal differs from an unchecked compile, but an unaudited reset could hide regression |
-| After a compiler-stage contract cutover, ordinary ratchets MUST compare against the reviewed post-cutover floor and MUST NOT reuse the migration to excuse later regressions | baseline workflow | Migration provenance cannot become a standing waiver |
+| A compiler- or runtime-contract cutover MAY reset incomparable floors only through a one-shot migration naming both contracts, evidence commit, exact stage counts, target count, and post-cutover failure and diagnostic censuses; the resolver MUST fail closed on any mismatch | baseline workflow | A stricter contract can change classification, but an unaudited reset could hide regression |
+| Post-cutover ratchets MUST use the reviewed floor; migration cannot excuse later regressions | baseline workflow | Waivers are one-shot |
 | A comparator-policy change MUST increment the gate schema and pin old/new strict-high counts, reviewed-boundary count, and exclusion-artifact digest; unrelated ratchets MUST remain monotonic | baseline workflow | An oracle-boundary change alters the denominator; an unaudited reset could hide regression or counterexamples |
 
 Failure classifications:
@@ -98,7 +98,7 @@ Failure classifications:
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| Verification commands MUST run under `CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4` | local and agent workflows | Fixed budget keeps concurrent workers from oversubscribing the host; naming only the first two leaves the derived rayon pool free to reclaim every core |
+| Verification MUST use `CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4` | local and agent workflows | Fixed concurrency budget |
 | A capability change is complete only with Tier 1 focused suites green | all capability work | Focused proof precedes every broader claim |
 | A capability change is complete only with its Tier 1 canary delta recorded in durable review evidence | PR / verification record | Deltas must outlive the session that produced them |
 | The canary target set is the fixed 20-model list in `infra/verification/msl-canary-20.json` | canary runs | A moving target set makes deltas meaningless |
@@ -109,6 +109,7 @@ Failure classifications:
 | Tier 2 is the sole source of cohort parity claims | reports, PRs, specs | One cohort number, one origin |
 | A parity claim MUST come from the OMC trace comparator's agreement bands; `sim_ok` alone is completion, never parity | reports, PRs, specs | A trace nobody compared can be plausibly wrong |
 | Initialization parity MUST use each trace's last row at the exact common start time; nearby positive-time rows remain trajectory behavior | trace comparator | Separates initialization from later events |
+| Trace production, publication, and malformed-evidence rejection MUST satisfy [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) | trace producers/comparator | Detailed rows remain normative by reference |
 | The comparator's candidate set MUST be every `sim_ok` trace | `rumoca_model_is_trace_candidate` | Completion picks candidates; comparison decides parity |
 | Every candidate MUST be compared or recorded under `skipped`, `missing_trace`, or `trace_nonidentifiable` with a typed reason | `sim_trace_comparison.json` | An uncompared trace must name the exact proof boundary |
 | `trace_nonidentifiable` MUST be reported separately, excluded from the pointwise-comparison denominator, and MUST NOT count as strict-high, passing, supported, or certified | comparator and all consumers | Inapplicable pointwise evidence cannot become affirmative evidence |
@@ -125,7 +126,7 @@ Failure classifications:
 | A full Tier 2 gate MUST classify every `sim_ok` as strict-high, tracked exclusion, or typed `trace_nonidentifiable` | harness gate | Every completion needs parity or a reviewed boundary |
 | Every non-high result without such a boundary MUST be triaged as a refinement counterexample or harness defect | review evidence, issue/PR | Wrong traces falsify the claim |
 | A counterexample MUST yield a general semantic fix or typed profile rejection | compiler/runtime owners | Model exceptions cannot establish correctness |
-| Discovery of an actionable counterexample is a stop-the-line event: merges, releases, and unrelated compiler/runtime capability work MUST remain blocked until the actionable count returns to zero | campaign planning, PR/release gates | A known false success invalidates the compiler's simulation claim and outranks breadth or schedule |
+| Any actionable counterexample blocks merges, releases, and unrelated capability work until its count is zero | campaign planning, PR/release gates | False success outranks breadth |
 | The actionable counterexample count MUST be zero before compile-frontier or unrelated capability work resumes | campaign planning, review evidence | False success outranks breadth work |
 | Counterexample closure MUST be recorded per model as strict-high, typed refusal, or reasoned comparator exclusion | review evidence, issue/PR | Aggregates cannot close false success |
 | Every closed counterexample MUST retain a focused regression for the semantic defect, and the originating model MUST remain in the next complete Tier 2 comparison | focused suites, cohort sweep | A repaired proof obligation must not silently regress or disappear from evidence |
@@ -170,3 +171,5 @@ All rows are mandatory; otherwise the gate reports `parity unmeasured`.
 - [SPEC_0022](SPEC_0022_MLS_COMPILER_COMPLIANCE.md) — MLS compliance catalog.
 - [SPEC_0025](SPEC_0025_PR_REVIEW_PROCESS.md) — PR review and gate reporting.
 - [SPEC_0029](SPEC_0029_CRATE_BOUNDARIES.md) — crate boundary ownership.
+- [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) — normative trace-evidence
+  catalog bound by §6a.

@@ -114,7 +114,7 @@ Checked typed programs, arithmetic profiles, exact values, wire replay,
 | TRP-103 | No premature universal, and no unshared base (governance) | TWO branches. ABSENCE: while fewer than three genuinely different products share an IDENTICAL mandatory invariant and checker flow, no universal `TargetProgram` type and no promoted common base exists. PRESENCE: if a common base DOES exist, its ENTIRE mandatory invariant and checker flow is exactly shared by at least three genuinely different products — a base sharing only part of that flow, or carrying a target-name branch or catch-all, FAILS | TRP-017 |
 | TRP-104 | Coverage mode behavior | `NativeRequired` REJECTS an incomplete coverage plan with no fallback taken; `HybridMigration` admits one only with the fallback EXPLICIT and RECORDED in the receipt. A silent fallback under either mode FAILS | TRP-016 |
 | TRP-105 | Product schema exhaustive matrix | ONE matrix over the §10 schema. LEGAL pairs: each R field present and each F field absent; kernel semantics end at the profile-bound root while lifecycle metadata enters only prepared/artifact/package identity; each product carries its budget and ONE §4.18 execution path where `RootKind` is not `None`, and neither where it is. NEGATIVES: every ILLEGAL `ProductKind` × `RootKind` pair, every unknown variant, every missing R field, and every present F field REJECTS, and no field carries a default. BUDGETS: for EACH of the work, code-size, and resource budgets, mutated INDEPENDENTLY, two cases CROSS THE LIMIT with a defined consequence — (a) an UNDER-LIMIT positive that admits the intended selection, and (b) an OVER-LIMIT case that either REJECTS candidate and plan selection or selects the EXPLICITLY ADMITTED fallback. Instrumentation that merely reads, records, or compares a budget field does NOT discharge this row. CLOSURE: every §4.1 family, §4.24 key, SPEC_0049 key, §4.25 environment, §4.2 layout, and every admitted status or failure is an explicit admit or explicit typed rejection, each status exercised through its exact §6 product transport with its declared multiplicity | TRP-019, TRP-022, TRP-049, TRP-050 |
-| TRP-106 | One construction, projection only | A fixture proves ONE `rumoca-phase-solve` expression and function construction feeds both siblings, and a SOURCE SCAN proves `rumoca-phase-galec` contains no expression or function lowering — only projection and container authority. A second lowering path there FAILS | TRP-032 |
+| TRP-106 | One ordered GALEC-first refinement | A fixture proves `rumoca-phase-galec` lowers untouched DAE exactly once to checked Algorithm Code and `rumoca-phase-solve` consumes that exact package to construct `SolveAlgorithmBlock`; source scans reject direct DAE → AlgorithmBlock, Solve → GALEC, and a second GALEC expression/function lowerer; an exact-clause audit covers every C51–C57 GALEC/Production consumer edge and proves C55/C57 internal semantics remain solely SPEC_0046-owned | TRP-032, TRP-051 |
 | SEV-157 | Complex is not admitted | A Complex rank-0 value, a Complex tensor, a Complex type declaration, a Complex literal, a Complex wire record, a Complex operation leaf, and a Complex capability declaration each REJECT at construction or decode — BEFORE any backend is consulted. A rejection arriving from a backend instead FAILS this row | SEV-017 |
 | SEV-158 | Execution reuse is not selected | While no execution-CSE implementation exists the gate asserts `NotImplemented`/`NotSelected` for EXECUTION REUSE ONLY: no execution is eliminated and no owner is hoisted. It does NOT forbid a `TermKey` intern table or shared term STORAGE, which SEV-046 keeps a separate decision. Once execution reuse exists, every §4.7 obligation is discharged per elimination, each carries translation evidence mapping it to a dominating exact-context owner, and its preregistered budgets apply | SEV-049 |
 | SEV-159 | Superseded scalar vocabulary deleted (governance) | A SOURCE and WIRE SCAN proves zero `ScalarOp`/`LinearOp` definitions, discriminants, wire tags, constructors, readers, or writers survive, and that no borrowed scalar view is `Serialize`. A residual definition FAILS even with no behavioral difference | SEV-006 |
@@ -197,11 +197,11 @@ names, which are unstable across construction (SEV-044, SEV-047).
 |---|---|---|
 | **Regions-first with a complete projected body** — checked Solve regions mechanically project a COMPLETE GALEC-language AlgorithmCode body, yielding a syntactically valid `.alg`. Centralizes executable semantics in one place and may reduce construction cost | Makes the auditor-facing, profile-neutral AC projection DOWNSTREAM of a profile-bound root; risks losing direct source, lifecycle, and effect identity; and weakens the independent `eval-galec` leg unless exact reverse correlations and projection validation are supplied | Rejected only if TRP-030's gates beat it; TRP-041 reopens |
 | Regions-first with a body-free AlgorithmCode reference (separate, weaker variant) | A body-free `.alg` is not valid Algorithm Code | Rejected outright |
-| AC-first (current): independently lowered AlgorithmCode bodies | A second semantic compiler for the same expressions | Rejected; TRP-041 reopens |
-| Shared-construction correlated siblings | Requires exact bidirectional correlation and a preregistered projection-overhead budget | **Chosen** (TRP-030) |
+| Independently co-lowered Algorithm Code and `SolveAlgorithmBlock` bodies from DAE | Two semantic compilers can disagree before correlation | Rejected; TRP-041 reopens |
+| AC-first checked refinement: DAE → GALEC → `SolveAlgorithmBlock` | Requires a total checked GALEC-to-Solve refinement and exact forward correlation | **Chosen** (TRP-030) |
 
-The correlated-sibling hybrid wins over the complete-projection alternative
-ONLY if the specified correlation obligations (§4.19), the four-leg
+The GALEC-first refinement chain wins over the complete Solve-to-GALEC
+projection alternative ONLY if the specified correlation obligations (§4.19), the four-leg
 discriminator (SEV-135a, SEV-135b), and the preregistered code-size and construction-time
 budgets are met. If they are not, the complete-projection design is the better
 answer and TRP-041 is the route back.
@@ -249,7 +249,7 @@ Each row is bound by the parent rule naming it.
 | §4.18 | TRP-014 | `DirectCompact`, `Loop`, `BoundedUnroll`, `Kernel`, `Composite`, `CheckedDispatch`. The recorded plan carries its budget and coverage receipt |
 | §4.22 | TRP-012, TRP-035 | Final-emission policy: `Loop`, `BoundedUnroll { max_elements, max_instructions }`, or `Kernel { contract, fallback }`, each optionally scoped by compiler-decidable predicates over op, rank, static shape, alignment, and alias. `AlwaysUnroll` is INADMISSIBLE; finite unrolling is represented only by `BoundedUnroll` |
 | §4.23 | TRP-037 | Unsigned-storage receipt: proven nonnegative domain of the semantic signed value, the exact storage representation, a total round-trip proof that load-after-store returns the same semantic value, and a no-reinterpretation obligation — no arithmetic, comparison, or ABI edge observes the unsigned encoding |
-| §4.19 | TRP-030 | One shared checked expression and function construction over untouched DAE plus GALEC admissibility and lifecycle facts; co-issued auditor-visible `AlgorithmCodePackage` carrying the final GALEC-language body projection; co-issued profile-bound `SolveAlgorithmBlock` consumed by Production and embedded C; exact source, statement, effect, and value correlations both ways; package checksum graph binding AC identity, `RootDigest`, and PC artifacts |
+| §4.19 | TRP-030 | One checked DAE → `AlgorithmCodePackage` expression, function, lifecycle, and admissibility lowering; one total refinement from that exact package to the profile-bound `SolveAlgorithmBlock` consumed by Production and embedded C; exact forward source, statement, effect, and value correlations plus checked refinement receipts; package checksum graph binding AC identity, `RootDigest`, and PC artifacts |
 
 #### §4.20 Current Type Signatures And Proposed Deltas
 
@@ -305,7 +305,7 @@ rejection recorded in the product's own profiles.
 | FMI component | `SolveProblem` | Kernel semantics end at that root; checked FMI metadata binds into prepared, artifact, and package identity only (TRP-019) |
 | Embedded C | `SolveAlgorithmBlock` | A distinct PRODUCT; it does NOT collapse into eFMI Production Code and carries no eFMI container obligations |
 | eFMI Algorithm Code | `None` | No `RootDigest` (§10). Admissibility receipt only; MAY reject families it does not model, per SEV-147's selected-mapping scope |
-| eFMI Production Code | `SolveAlgorithmBlock` | As Embedded C, plus the §4.32 AC-to-PC refinement and the co-issuance obligations of §4.19 |
+| eFMI Production Code | `SolveAlgorithmBlock` | As Embedded C, plus the §4.32 AC-to-PC refinement and §4.19 chain obligations |
 
 Seven products share `RootKind = SolveProblem` per §10: the five language and
 backend products above — Hosted Rust, `no_std` Rust, Native/Cranelift, WASM,
@@ -450,16 +450,23 @@ activates in round 1, so this fixture proves no `k >= 2` behavior.
 Bound by SPEC_0048 §1. Each clause was verified against its source before
 listing; on acceptance the voted series amends all of them atomically.
 
-SPEC_0007
-line 270 states `SolveAlgorithmBlock` is constructed ONLY FROM checked Algorithm
-Code; TRP-030 states neither sibling lowers from the other, so that clause and
-its bound SPEC_0040 SOLVE-C34 (method ownership) and SOLVE-C38 (injective
-mapping to Algorithm Code identity) are amended to co-issuance from one shared
-construction with bidirectional correlation. SPEC_0034 GAL-004 ("checked
-construction closes the package after lowering") and GAL-005 ("accepted
-constructs lower to semantic operations", owner `rumoca-phase-galec`) assign
-expression lowering to phase-galec and are amended to projection-and-
-admissibility only, per TRP-032.
+SPEC_0007 line 270 states `SolveAlgorithmBlock` is constructed ONLY FROM checked
+Algorithm Code. TRP-030 preserves that ordering: its bound SPEC_0040 SOLVE-C34
+(method ownership), SOLVE-C38 (injective mapping to Algorithm Code identity),
+SPEC_0036 construction rule, and SPEC_0043 §9 link remain unchanged. SPEC_0034
+GAL-004 ("checked construction closes the package after lowering") and GAL-005
+("accepted constructs lower to semantic operations", owner
+`rumoca-phase-galec`) remain the DAE → GALEC expression/function lowering
+authority; TRP-032 adds the checked GALEC → Solve refinement and forbids a
+parallel DAE → AlgorithmBlock shortcut.
+
+Binding TRP-051 amends only the GALEC/Production consumer edges in SPEC_0040
+SOLVE-C51–C57. Numerical owners and all compactness/causal obligations remain.
+SPEC_0046 alone may replace C55/C57's internal scheduled semantics; until its
+acceptance the current EXCHANGE/HOLD-FALLBACK contract remains, and afterward
+its total-next contract travels the same DAE → GALEC → Solve chain. Thus the
+two DRAFTs have orthogonal amendment authority and either acceptance order is
+defined.
 
 The scalar-program conflicts are enumerated, not promised: SPEC_0040 SOLVE-C03
 (flow-action calls in "Solve-IR scalar programs"), SOLVE-C25 (scalar root
@@ -468,13 +475,9 @@ SOLVE-C43 and SOLVE-C50 (`ScalarProgramBlock` owner table and its immutable
 execution certificate), and SOLVE-C45 (scalar-view projections over one pure
 aggregate-call occurrence) all presume a stored scalar program that TRP-020/021
 and TRP-035 confine to post-seal emission; each is amended to the final-emitter
-projection. Their SPEC_0043 §9 counterparts — the `ScalarProgramBlock`
+projection. Their SPEC_0043 §4 counterparts — the `ScalarProgramBlock`
 function-conditional table row and the scalar-program execution-certificate row
-— are amended in lockstep. SPEC_0036 "Solve Algorithm Block Construction" states
-`SolveAlgorithmBlock::construct` is the sole authority for the GALEC-DERIVED
-executable root and "consumes one checked `AlgorithmCodePackage`"; TRP-030
-co-issues the siblings from one shared construction, so that clause and its
-SPEC_0043 §9 link are amended together.
+— are amended in lockstep.
 
 ### 9. Complex Contract (SPEC_0035 Narrowing)
 
@@ -499,17 +502,17 @@ Until then §4.1 does not admit Complex at all, and every Complex use rejects.
 
 | SPEC_0041 §4 row | Amended to |
 |---|---|
-| *"Compilation/session orchestration"* (`rumoca-compile`) | Gains atomic sibling-package orchestration: one construction transaction, the correlation web, and checksum binding |
-| *"DAE → `SolveProblem`; checked Algorithm Code → `SolveAlgorithmBlock` lowering"* (`rumoca-phase-solve`) | Gains the shared expression and function relation construction plus profile-bound root closure |
-| *"Checked DAE pure-function graph → shared typed Solve program regions and pure-call owners"* (`rumoca-phase-solve`) | Same shared construction; the AC sibling references it rather than re-lowering |
-| *"DAE/Solve → checked GALEC lowering"* (`rumoca-phase-galec`) | Narrows to projection and container authority, with NO expression or function lowering |
+| *"Compilation/session orchestration"* (`rumoca-compile`) | Gains atomic refinement-chain/package orchestration, the correlation web, and checksum binding |
+| *"DAE → `SolveProblem`; checked Algorithm Code → `SolveAlgorithmBlock` lowering"* (`rumoca-phase-solve`) | Keeps two explicit input paths; the AlgorithmBlock path consumes checked GALEC and never DAE |
+| *"Checked DAE pure-function graph → numerical `SolveProblem` typed program regions and pure-call owners"* (`rumoca-phase-solve`) | Remains numerical-root construction only; it does not feed or replace Algorithm Code |
+| *"DAE → checked GALEC Algorithm Code lowering"* (`rumoca-phase-galec`) | Owns the sole GALEC expression, function, lifecycle, and admissibility lowering; no Solve input, text, or packaging |
 
 ### 10. Product and Root Schema (§4.33)
 
 Bound by TRP-050.
 
 **`ProductKind`** (closed, ten variants): `HostedRust`, `NoStdRust`,
-`NativeCranelift`, `Wasm`, `Wgsl`, `SimulationCOde`, `FmiComponent`,
+`NativeCranelift`, `Wasm`, `Wgsl`, `SimulationCode`, `FmiComponent`,
 `EmbeddedC`, `EfmiAlgorithmCode`, `EfmiProductionCode`.
 
 **`RootKind`** (closed, independent): `SolveProblem`, `SolveAlgorithmBlock`,
@@ -519,7 +522,7 @@ Bound by TRP-050.
 
 | `ProductKind` | `RootKind` |
 |---|---|
-| `HostedRust`, `NoStdRust`, `NativeCranelift`, `Wasm`, `Wgsl`, `SimulationCOde`, `FmiComponent` | `SolveProblem` |
+| `HostedRust`, `NoStdRust`, `NativeCranelift`, `Wasm`, `Wgsl`, `SimulationCode`, `FmiComponent` | `SolveProblem` |
 | `EmbeddedC`, `EfmiProductionCode` | `SolveAlgorithmBlock` |
 | `EfmiAlgorithmCode` | `None` — no `RootDigest` |
 | Flat and DAE exports (not products of this schema) | `None` — no `RootDigest` |
@@ -540,7 +543,7 @@ an absent R rejects and a present F rejects.
 | Budgets (TRP-022) | R | R | F |
 | Receipt SELECTORS (manifest inputs) | R | R | F |
 | Issued RECEIPTS (preparation outputs) | R | R | F |
-| Sibling inputs (eFMI pairs) | F | R for `EfmiProductionCode` (it carries the AC sibling and correlation input), F for `EmbeddedC` | F |
+| Upstream AC/refinement inputs | F | R for `EfmiProductionCode` (it carries the checked AC package and correlation input), F for `EmbeddedC` | F |
 
 Candidates are REQUIRED exactly where `CoverageMode` is, which removes the
 earlier circular condition: both key off `RootKind`, never off each other.

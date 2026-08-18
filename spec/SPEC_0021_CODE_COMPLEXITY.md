@@ -138,7 +138,7 @@ fn check_expr(&mut self, expr: &ResolvedExpr) -> TypedExpr {
 | Action Required | >2000 | Split by concern |
 
 **Note:** Clippy has no file-level lint, so the >2000 row is enforced by the
-workspace test `crates/rumoca/tests/code_size_budget_test.rs`, which fails
+workspace test `crates/rumoca/tests/suite_gates/code_size_budget_test.rs`, which fails
 `cargo test --workspace` for any production Rust file over 2000 lines unless
 that file's text contains all three of `SPEC_0021`, `file-size`, and
 `split plan`. Use the script below for the earlier warning bands.
@@ -147,10 +147,12 @@ that file's text contains all three of `SPEC_0021`, `file-size`, and
 skipped outright; every other file needs the three-phrase marker above, written
 as a comment that states the split plan.
 
-### Module Decomposition (No Source-Path Complexity Bypass)
+### Module Decomposition (Content-Based Paths Only)
 
-`include!(...)` and `#[path = "..."]` MUST NOT be used as workarounds to bypass
-max-file-length or complexity checks in production modules.
+Rust module source-path attributes MUST NOT be used anywhere in the workspace,
+including production code, tests, build support, and generated test harnesses.
+`include!(...)` MUST NOT be used as a workaround to bypass max-file-length or
+complexity checks in production modules.
 
 Required approach:
 - Split large code into real Rust modules (`mod ...;`) with explicit boundaries.
@@ -161,9 +163,19 @@ Required approach:
 Allowed exception:
 - Generated code include patterns are allowed when generation tooling requires it.
 
+Test modules MUST use the ordinary content-based layout under their owning
+`suite_*` directory and be declared with `mod ...;` at the top of the umbrella.
+Shared test helpers MUST have one module owner; suites must be consolidated or
+given an explicit shared crate boundary instead of loading one source through
+multiple paths.
+
+The architecture gate scans every Rust source under `crates/` and rejects any
+module source-path attribute. That prohibition has no allowances or debt
+ceilings; the generated-code `include!` exception above is separate.
+
 Maintenance rule:
-- Existing source-path bypasses in touched areas should be treated as cleanup
-  debt and removed during maintainability work.
+- Existing source-path bypasses are architecture violations and MUST be removed,
+  not grandfathered as cleanup debt.
 
 ### Files Per Directory (Guideline)
 
