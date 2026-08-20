@@ -13,7 +13,9 @@ use super::model_fixture::{
     single_state_indicator_model, single_state_input_model, single_state_time_event_model,
 };
 use crate::fmi_me::MeFloat64Backing;
-use crate::fmi_me::lifecycle::{MeLifecycle, MeLifecycleCommand, MeState};
+use crate::fmi_me::lifecycle::{
+    MeConfigurationCapability, MeLifecycle, MeLifecycleCommand, MeState,
+};
 use crate::fmi_me::{
     MeError, MeEventCause, MeEventEntry, MeInstanceConfig, MeModelSource, MeStage, MeTime,
     SolveMeKernel,
@@ -35,12 +37,19 @@ struct ObservableKernelState {
 }
 
 fn instantiate(model: &rumoca_ir_solve::SolveModel) -> SolveMeKernel {
+    instantiate_with_configuration(model, MeConfigurationCapability::Absent)
+}
+
+fn instantiate_with_configuration(
+    model: &rumoca_ir_solve::SolveModel,
+    configuration: MeConfigurationCapability,
+) -> SolveMeKernel {
     let mut model = model.clone();
     model.problem.continuous.refresh_owners =
         rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
             .expect("verification fixture refresh owners construct");
     SolveMeKernel::instantiate(
-        MeModelSource::fixture(&model),
+        MeModelSource::configuration_fixture(&model, configuration),
         &MeInstanceConfig::new("solve-verification", TOLERANCE, START_TIME, STOP_TIME)
             .expect("verification instance configuration constructs"),
     )
@@ -69,20 +78,37 @@ fn run_to_continuous_time_mode(kernel: &mut SolveMeKernel) {
 fn drive_to_state(kernel: &mut SolveMeKernel, state: MeState) {
     match state {
         MeState::Instantiated => {}
+        MeState::ConfigurationMode => kernel
+            .enter_configuration_mode()
+            .expect("ConfigurationMode is reachable"),
         MeState::InitializationMode => kernel
             .enter_initialization_mode()
             .expect("InitializationMode is reachable"),
         MeState::EventMode => run_to_event_mode(kernel),
+        MeState::ReconfigurationMode => {
+            run_to_event_mode(kernel);
+            kernel
+                .enter_configuration_mode()
+                .expect("ReconfigurationMode is reachable");
+        }
         MeState::ContinuousTimeMode => run_to_continuous_time_mode(kernel),
         MeState::Terminated => kernel.terminate().expect("Terminated is reachable"),
     }
     assert_eq!(kernel.verification_observable_state().0, state);
 }
 
-fn kernel_in_state(state: MeState) -> SolveMeKernel {
+fn kernel_in_state_for_command(state: MeState, command: MeLifecycleCommand) -> SolveMeKernel {
     let model = single_state_model();
-    let mut kernel = instantiate(&model);
+    let mut kernel = instantiate_with_configuration(
+        &model,
+        MeConfigurationCapability::TunableStructuralParameter,
+    );
     drive_to_state(&mut kernel, state);
+    if state == MeState::EventMode && command == MeLifecycleCommand::EnterContinuousTimeMode {
+        kernel
+            .update_discrete_states()
+            .expect("the Event-Mode fixed point settles before continuous-time entry");
+    }
     kernel
 }
 
@@ -101,6 +127,8 @@ fn apply_lifecycle_command(
     command: MeLifecycleCommand,
 ) -> Result<(), MeError> {
     match command {
+        MeLifecycleCommand::EnterConfigurationMode => kernel.enter_configuration_mode(),
+        MeLifecycleCommand::ExitConfigurationMode => kernel.exit_configuration_mode(),
         MeLifecycleCommand::EnterInitializationMode => kernel.enter_initialization_mode(),
         MeLifecycleCommand::ExitInitializationMode => kernel.exit_initialization_mode(),
         MeLifecycleCommand::UpdateDiscreteStates => kernel.update_discrete_states().map(|_| ()),
@@ -114,37 +142,83 @@ fn apply_lifecycle_command(
     }
 }
 
-fn relation_rejects(state: MeState, command: MeLifecycleCommand) -> bool {
-    let mut lifecycle = MeLifecycle::instantiated();
-    lifecycle.restore_for_verification(state);
-    lifecycle.next(command).is_err()
-}
-
-/// ME-LIFE-001/002 facade clause: every lifecycle transition rejected by the
-/// pure relation is rejected by the production facade before any externally
-/// observable component state changes.
-fn property_rejected_facade_transition_preserves_state(
+fn expected_tunable_transition(
     state: MeState,
     command: MeLifecycleCommand,
-) {
-    if !relation_rejects(state, command) {
-        return;
+) -> Result<MeState, crate::fmi_me::lifecycle::MeLifecycleViolation> {
+    let mut lifecycle =
+        MeLifecycle::instantiated(MeConfigurationCapability::TunableStructuralParameter);
+    lifecycle.restore_for_verification(state);
+    lifecycle.next(command)
+}
+
+fn property_absent_configuration_capability_rejects_entry() {
+    let model = single_state_model();
+    let mut kernel = instantiate(&model);
+    for state in [MeState::Instantiated, MeState::EventMode] {
+        if state == MeState::EventMode {
+            run_to_event_mode(&mut kernel);
+        }
+        let before = observable_state(&kernel);
+        let checkpoint = kernel.fmu_state();
+        let error = kernel
+            .enter_configuration_mode()
+            .expect_err("a component without structural parameters rejects Configuration Mode");
+        assert!(matches!(error.kind(), MeError::Contract { .. }));
+        assert_eq!(observable_state(&kernel), before);
+        assert!(kernel.verification_matches_snapshot(&checkpoint));
     }
-    let mut kernel = kernel_in_state(state);
+}
+
+fn property_fixed_configuration_capability_admits_only_initial_entry() {
+    let model = single_state_model();
+    let mut kernel =
+        instantiate_with_configuration(&model, MeConfigurationCapability::FixedStructuralParameter);
+    kernel
+        .enter_configuration_mode()
+        .expect("a fixed structural parameter admits initial configuration");
+    kernel
+        .exit_configuration_mode()
+        .expect("initial configuration exits to Instantiated");
+    run_to_event_mode(&mut kernel);
     let before = observable_state(&kernel);
     let checkpoint = kernel.fmu_state();
-    let error = apply_lifecycle_command(&mut kernel, command)
-        .expect_err("the dynamic facade must reject an edge absent from the pure relation");
-    assert!(
-        matches!(error.kind(), MeError::Contract { .. }),
-        "an invalid lifecycle call is a host contract violation"
-    );
-    assert_eq!(
-        observable_state(&kernel),
-        before,
-        "a rejected lifecycle transition must not mutate observable kernel state"
-    );
+    let error = kernel
+        .enter_configuration_mode()
+        .expect_err("a fixed structural parameter does not admit reconfiguration");
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+    assert_eq!(observable_state(&kernel), before);
     assert!(kernel.verification_matches_snapshot(&checkpoint));
+}
+
+/// ME-LIFE-001/002 facade clause: the enabled production façade accepts every
+/// edge in the pure relation, reaches its exact target, and rejects every
+/// other edge before observable component state changes.
+fn property_facade_transition_relation_is_exact(state: MeState, command: MeLifecycleCommand) {
+    let mut kernel = kernel_in_state_for_command(state, command);
+    let before = observable_state(&kernel);
+    let checkpoint = kernel.fmu_state();
+    let result = apply_lifecycle_command(&mut kernel, command);
+    match expected_tunable_transition(state, command) {
+        Ok(expected) => {
+            result.expect("the dynamic façade accepts every guarded lifecycle edge");
+            assert_eq!(kernel.verification_observable_state().0, expected);
+        }
+        Err(_) => {
+            let error = result
+                .expect_err("the dynamic façade must reject an edge absent from the pure relation");
+            assert!(
+                matches!(error.kind(), MeError::Contract { .. }),
+                "an invalid lifecycle call is a host contract violation"
+            );
+            assert_eq!(
+                observable_state(&kernel),
+                before,
+                "a rejected lifecycle transition must not mutate observable kernel state"
+            );
+            assert!(kernel.verification_matches_snapshot(&checkpoint));
+        }
+    }
 }
 
 fn non_finite_from_index(index: u8) -> f64 {
@@ -468,7 +542,10 @@ fn property_terminated_facade_is_fail_closed(operation: ActiveFacadeOperation) {
 /// restoration out of Terminated.
 fn property_snapshot_restores_observable_state(target: MeState) {
     let model = single_state_input_model();
-    let mut kernel = instantiate(&model);
+    let mut kernel = instantiate_with_configuration(
+        &model,
+        MeConfigurationCapability::TunableStructuralParameter,
+    );
     let instantiated = kernel.fmu_state();
     if target != MeState::Terminated {
         drive_to_state(&mut kernel, target);
@@ -542,6 +619,9 @@ fn continue_after_restore(kernel: &mut SolveMeKernel, target: MeState, instantia
         MeState::Instantiated => kernel
             .enter_initialization_mode()
             .expect("the restored Instantiated continuation is legal"),
+        MeState::ConfigurationMode => kernel
+            .exit_configuration_mode()
+            .expect("the restored configuration continuation is legal"),
         MeState::InitializationMode => kernel
             .exit_initialization_mode()
             .expect("the restored initialization continuation settles"),
@@ -550,6 +630,9 @@ fn continue_after_restore(kernel: &mut SolveMeKernel, target: MeState, instantia
                 .update_discrete_states()
                 .expect("the restored pending event continuation settles");
         }
+        MeState::ReconfigurationMode => kernel
+            .exit_configuration_mode()
+            .expect("the restored reconfiguration continuation is legal"),
         MeState::ContinuousTimeMode => {
             kernel
                 .enter_event_mode(MeEventEntry {
@@ -752,12 +835,22 @@ mod tests {
     }
 
     #[test]
-    fn rejected_facade_transitions_preserve_state_exhaustively() {
+    fn facade_transition_relation_is_exact_exhaustively() {
         for state in super::MeState::ALL {
             for command in super::MeLifecycleCommand::ALL {
-                super::property_rejected_facade_transition_preserves_state(state, command);
+                super::property_facade_transition_relation_is_exact(state, command);
             }
         }
+    }
+
+    #[test]
+    fn absent_configuration_capability_rejects_both_entry_edges() {
+        super::property_absent_configuration_capability_rejects_entry();
+    }
+
+    #[test]
+    fn fixed_configuration_capability_admits_only_initial_entry() {
+        super::property_fixed_configuration_capability_admits_only_initial_entry();
     }
 
     #[test]

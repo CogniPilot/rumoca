@@ -263,6 +263,16 @@ impl SolveMeKernel {
             })
     }
 
+    pub fn enter_configuration_mode(&mut self) -> Result<(), MeError> {
+        self.require_lifecycle_transition(MeLifecycleCommand::EnterConfigurationMode)?;
+        self.commit_lifecycle_transition(MeLifecycleCommand::EnterConfigurationMode)
+    }
+
+    pub fn exit_configuration_mode(&mut self) -> Result<(), MeError> {
+        self.require_lifecycle_transition(MeLifecycleCommand::ExitConfigurationMode)?;
+        self.commit_lifecycle_transition(MeLifecycleCommand::ExitConfigurationMode)
+    }
+
     pub(crate) fn enter_initialization_mode(&mut self) -> Result<(), MeError> {
         self.require_lifecycle_transition(MeLifecycleCommand::EnterInitializationMode)
             .and_then(|()| self.enter_initialization_mode_inner())

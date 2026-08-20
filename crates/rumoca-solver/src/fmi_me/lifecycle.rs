@@ -7,18 +7,22 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MeState {
     Instantiated,
+    ConfigurationMode,
     InitializationMode,
     EventMode,
+    ReconfigurationMode,
     ContinuousTimeMode,
     Terminated,
 }
 
 impl MeState {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Instantiated,
+        Self::ConfigurationMode,
         Self::InitializationMode,
         Self::EventMode,
+        Self::ReconfigurationMode,
         Self::ContinuousTimeMode,
         Self::Terminated,
     ];
@@ -26,8 +30,10 @@ impl MeState {
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Instantiated => "Instantiated",
+            Self::ConfigurationMode => "ConfigurationMode",
             Self::InitializationMode => "InitializationMode",
             Self::EventMode => "EventMode",
+            Self::ReconfigurationMode => "ReconfigurationMode",
             Self::ContinuousTimeMode => "ContinuousTimeMode",
             Self::Terminated => "Terminated",
         }
@@ -36,6 +42,8 @@ impl MeState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MeLifecycleCommand {
+    EnterConfigurationMode,
+    ExitConfigurationMode,
     EnterInitializationMode,
     ExitInitializationMode,
     UpdateDiscreteStates,
@@ -46,7 +54,9 @@ pub(crate) enum MeLifecycleCommand {
 
 impl MeLifecycleCommand {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 8] = [
+        Self::EnterConfigurationMode,
+        Self::ExitConfigurationMode,
         Self::EnterInitializationMode,
         Self::ExitInitializationMode,
         Self::UpdateDiscreteStates,
@@ -57,6 +67,8 @@ impl MeLifecycleCommand {
 
     pub(crate) const fn name(self) -> &'static str {
         match self {
+            Self::EnterConfigurationMode => "enter_configuration_mode",
+            Self::ExitConfigurationMode => "exit_configuration_mode",
             Self::EnterInitializationMode => "enter_initialization_mode",
             Self::ExitInitializationMode => "exit_initialization_mode",
             Self::UpdateDiscreteStates => "update_discrete_states",
@@ -64,6 +76,35 @@ impl MeLifecycleCommand {
             Self::EnterEventMode => "enter_event_mode",
             Self::Terminate => "terminate",
         }
+    }
+}
+
+/// The structural-parameter capability that guards Configuration Mode.
+///
+/// The three variants encode both entry edges: every declared structural
+/// parameter admits pre-initialization configuration, while only a tunable
+/// structural parameter admits reconfiguration from Event Mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MeConfigurationCapability {
+    Absent,
+    FixedStructuralParameter,
+    TunableStructuralParameter,
+}
+
+impl MeConfigurationCapability {
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 3] = [
+        Self::Absent,
+        Self::FixedStructuralParameter,
+        Self::TunableStructuralParameter,
+    ];
+
+    const fn admits_initial_configuration(self) -> bool {
+        !matches!(self, Self::Absent)
+    }
+
+    const fn admits_reconfiguration(self) -> bool {
+        matches!(self, Self::TunableStructuralParameter)
     }
 }
 
@@ -82,12 +123,14 @@ pub(crate) struct MeLifecycleViolation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MeLifecycle {
     state: MeState,
+    configuration: MeConfigurationCapability,
 }
 
 impl MeLifecycle {
-    pub(crate) const fn instantiated() -> Self {
+    pub(crate) const fn instantiated(configuration: MeConfigurationCapability) -> Self {
         Self {
             state: MeState::Instantiated,
+            configuration,
         }
     }
 
@@ -103,14 +146,28 @@ impl MeLifecycle {
         use MeState as State;
 
         let next = match (self.state, command) {
+            (State::Instantiated, Command::EnterConfigurationMode)
+                if self.configuration.admits_initial_configuration() =>
+            {
+                State::ConfigurationMode
+            }
+            (State::ConfigurationMode, Command::ExitConfigurationMode) => State::Instantiated,
             (State::Instantiated, Command::EnterInitializationMode) => State::InitializationMode,
             (State::InitializationMode, Command::ExitInitializationMode) => State::EventMode,
             (State::EventMode, Command::UpdateDiscreteStates) => State::EventMode,
+            (State::EventMode, Command::EnterConfigurationMode)
+                if self.configuration.admits_reconfiguration() =>
+            {
+                State::ReconfigurationMode
+            }
+            (State::ReconfigurationMode, Command::ExitConfigurationMode) => State::EventMode,
             (State::EventMode, Command::EnterContinuousTimeMode) => State::ContinuousTimeMode,
             (State::ContinuousTimeMode, Command::EnterEventMode) => State::EventMode,
             (State::Instantiated, Command::Terminate)
+            | (State::ConfigurationMode, Command::Terminate)
             | (State::InitializationMode, Command::Terminate)
             | (State::EventMode, Command::Terminate)
+            | (State::ReconfigurationMode, Command::Terminate)
             | (State::ContinuousTimeMode, Command::Terminate) => State::Terminated,
             _ => {
                 return Err(MeLifecycleViolation {

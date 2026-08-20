@@ -17,6 +17,8 @@
 //! |---|---|
 //! | `SolveMeKernel::instantiate` | `fmi3InstantiateModelExchange` |
 //! | `SolveMeKernel::model_description` | model description + `fmi3GetNumberOfContinuousStates` / `fmi3GetNumberOfEventIndicators` |
+//! | `SolveMeKernel::enter_configuration_mode` | `fmi3EnterConfigurationMode` |
+//! | `SolveMeKernel::exit_configuration_mode` | `fmi3ExitConfigurationMode` |
 //! | `SolveMeKernel::enter_initialization_mode` | `fmi3EnterInitializationMode` |
 //! | `SolveMeKernel::exit_initialization_mode` | `fmi3ExitInitializationMode` |
 //! | `SolveMeKernel::enter_event_mode` | `fmi3EnterEventMode` |
@@ -107,6 +109,7 @@ enum MeModelSourceInner<'a> {
     Fixture {
         model: &'a rumoca_ir_solve::SolveModel,
         max_step_duration_value_reference: Option<u32>,
+        configuration: lifecycle::MeConfigurationCapability,
     },
 }
 
@@ -123,6 +126,7 @@ impl<'a> MeModelSource<'a> {
         Self(MeModelSourceInner::Fixture {
             model,
             max_step_duration_value_reference,
+            configuration: lifecycle::MeConfigurationCapability::Absent,
         })
     }
 
@@ -137,6 +141,21 @@ impl<'a> MeModelSource<'a> {
         Self(MeModelSourceInner::Fixture {
             model,
             max_step_duration_value_reference: max_step_duration_declared.then_some(1),
+            configuration: lifecycle::MeConfigurationCapability::Absent,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configuration_fixture(
+        model: &'a rumoca_ir_solve::SolveModel,
+        configuration: lifecycle::MeConfigurationCapability,
+    ) -> Self {
+        let max_step_duration_value_reference =
+            (!model.problem.events.delays.delay_time_rhs.is_empty()).then_some(1);
+        Self(MeModelSourceInner::Fixture {
+            model,
+            max_step_duration_value_reference,
+            configuration,
         })
     }
 
@@ -147,11 +166,23 @@ impl<'a> MeModelSource<'a> {
             &'a rumoca_ir_solve::SolveModel,
             Vec<rumoca_ir_solve::fmi::FmiEventIndicatorSource>,
             Option<u32>,
+            lifecycle::MeConfigurationCapability,
         ),
         rumoca_ir_solve::fmi::FmiComponentError,
     > {
         match self.0 {
             MeModelSourceInner::Correlated(view) => {
+                let configuration = match view.configuration_capability() {
+                    rumoca_ir_solve::fmi::FmiConfigurationCapability::Absent => {
+                        lifecycle::MeConfigurationCapability::Absent
+                    }
+                    rumoca_ir_solve::fmi::FmiConfigurationCapability::FixedStructuralParameter => {
+                        lifecycle::MeConfigurationCapability::FixedStructuralParameter
+                    }
+                    rumoca_ir_solve::fmi::FmiConfigurationCapability::TunableStructuralParameter => {
+                        lifecycle::MeConfigurationCapability::TunableStructuralParameter
+                    }
+                };
                 let (model, metadata, inventory) = view.into_parts();
                 Ok((
                     model,
@@ -159,18 +190,21 @@ impl<'a> MeModelSource<'a> {
                     metadata
                         .max_step_duration()
                         .map(rumoca_ir_solve::fmi::FmiVariable::value_reference_fmi3),
+                    configuration,
                 ))
             }
             #[cfg(test)]
             MeModelSourceInner::Fixture {
                 model,
                 max_step_duration_value_reference,
+                configuration,
             } => Ok((
                 model,
                 rumoca_ir_solve::fmi::FmiEventIndicatorInventory::derive(model)?
                     .sources()
                     .to_vec(),
                 max_step_duration_value_reference,
+                configuration,
             )),
         }
     }

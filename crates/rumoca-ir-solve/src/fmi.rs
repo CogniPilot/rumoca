@@ -49,6 +49,20 @@ pub use metadata::{
     FmiVariable, FmiVariableInput,
 };
 
+/// Configuration-Mode capability declared by the checked FMI component.
+///
+/// The ordinary Modelica-to-ME projection currently declares no structural
+/// FMI parameter, so its constructor yields [`Self::Absent`]. The enabled
+/// variants belong to the same aggregate for layered profiles that construct
+/// such a variable; the runtime consumes this typed fact rather than inferring
+/// capability from an ordinary tunable parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FmiConfigurationCapability {
+    Absent,
+    FixedStructuralParameter,
+    TunableStructuralParameter,
+}
+
 use crate::{
     ScalarSlot, SolveArtifacts, SolveModel, SolveProblem, SolveVariableDeclaration,
     SolveVariableStorageRole, SolveVariableStorageRun,
@@ -440,6 +454,14 @@ pub struct FmiRuntimeView<'component> {
 }
 
 impl<'component> FmiRuntimeView<'component> {
+    #[must_use]
+    pub const fn configuration_capability(&self) -> FmiConfigurationCapability {
+        // The sole current constructor has no structural FMI variable. This
+        // is an explicit absent capability, not a name-based inference from
+        // ordinary Modelica parameters.
+        FmiConfigurationCapability::Absent
+    }
+
     /// The checked executable root borrowed from the correlated component.
     /// No owned `SolveModel` can be recovered through this view.
     #[must_use]

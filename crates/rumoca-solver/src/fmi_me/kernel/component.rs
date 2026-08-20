@@ -549,9 +549,10 @@ impl SolveMeKernel {
         config: &MeInstanceConfig,
         execution_backend: Option<Rc<dyn crate::SolveExecutionBackend>>,
     ) -> Result<Self, MeError> {
-        let (model, event_indicator_sources, max_step_duration_value_reference) = source
-            .into_parts()
-            .map_err(|error| contract(error.to_string()))?;
+        let (model, event_indicator_sources, max_step_duration_value_reference, configuration) =
+            source
+                .into_parts()
+                .map_err(|error| contract(error.to_string()))?;
         let delay_bearing = !model.problem.events.delays.delay_time_rhs.is_empty();
         if max_step_duration_value_reference.is_some() != delay_bearing {
             return Err(contract(if delay_bearing {
@@ -587,7 +588,7 @@ impl SolveMeKernel {
             event_indicator_sources,
             instance_brand: Rc::new(()),
             instance_name: config.instance_name,
-            lifecycle: MeLifecycle::instantiated(),
+            lifecycle: MeLifecycle::instantiated(configuration),
             tolerance: config.tolerance,
             stop_time: config.stop_time,
             time: config.start_time,
