@@ -13,20 +13,20 @@
 use rustc_hash::FxHashMap;
 
 use crate::constant::{EvalContext, Value};
-use rumoca_core::eval_integer_div_builtin;
 use rumoca_ir_flat as flat;
 
-use rumoca_core::{ComponentPath, scoped_component_path_candidates};
+use rumoca_core::{ComponentPath, ExpressionVisitor, scoped_component_path_candidates};
 
 mod boolean_eval;
+mod enum_identity;
 
 pub use boolean_eval::try_eval_flat_expr_boolean;
+use enum_identity::EnumCanonicalizer;
+pub use enum_identity::canonicalize_enum_literal;
 
-const NAMED_CALL_ARG_PREFIX: &str = "__rumoca_named_arg__.";
-
-// Conditional tracing support (SPEC_0024)
+// Conditional tracing support (SPEC_0008)
 #[cfg(feature = "tracing")]
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// Build an EvalContext from known parameter values and functions.
 pub fn build_eval_context(
@@ -49,15 +49,45 @@ pub fn build_eval_context(
         eval_ctx.add_parameter(k.clone(), Value::Bool(*v));
     }
     for (k, v) in array_dims {
-        if v.len() == 1 {
-            let arr: Vec<Value> = (0..v[0]).map(|_| Value::Integer(0)).collect();
-            eval_ctx.add_parameter(k.clone(), Value::Array(arr));
-        }
+        eval_ctx.add_array_dimensions(k.clone(), v.clone());
     }
     for func in functions.values() {
         eval_ctx.add_function(func.clone());
     }
     eval_ctx
+}
+
+fn build_param_value_context(
+    ctx: &ParamEvalContext<'_>,
+    enum_canonicalizer: &EnumCanonicalizer,
+) -> EvalContext {
+    let mut eval_ctx = build_eval_context(
+        ctx.known_ints,
+        ctx.known_reals,
+        ctx.known_bools,
+        ctx.array_dims,
+        ctx.functions,
+    );
+    for (name, literal) in ctx.known_enums {
+        // An empty rendered name carries no enumeration identity and cannot key
+        // a lookup, so there is nothing to register for it.
+        let Some(identity) = enum_canonicalizer.canonicalize(literal) else {
+            continue;
+        };
+        let value = identity.to_value();
+        eval_ctx.add_parameter(name.clone(), value.clone());
+        eval_ctx.add_parameter(identity.to_flat_string(), value);
+    }
+    eval_ctx.set_lookup_scope(
+        ctx.var_context
+            .map(ComponentPath::from_flat_path)
+            .and_then(|path| path.parent()),
+    );
+    eval_ctx
+}
+
+fn eval_param_expr(expr: &rumoca_core::Expression, ctx: &ParamEvalContext<'_>) -> Option<Value> {
+    ParamEvaluator::new(ctx).eval_value(expr, ctx.var_context)
 }
 
 /// Context for compile-time parameter expression evaluation (MLS §4.4).
@@ -96,6 +126,72 @@ impl<'a> ParamEvalContext<'a> {
     }
 }
 
+/// Reusable evaluator for one stable parameter inventory.
+///
+/// Flatten evaluates many bindings against the same maps during each
+/// fixed-point pass. Preparing those maps once avoids rebuilding and cloning
+/// the complete parameter/function inventory for every expression.
+pub struct ParamEvaluator {
+    eval_ctx: EvalContext,
+    enum_canonicalizer: EnumCanonicalizer,
+}
+
+impl ParamEvaluator {
+    pub fn new(ctx: &ParamEvalContext<'_>) -> Self {
+        let enum_canonicalizer = EnumCanonicalizer::new(ctx.known_enums);
+        let eval_ctx = build_param_value_context(ctx, &enum_canonicalizer);
+        Self {
+            eval_ctx,
+            enum_canonicalizer,
+        }
+    }
+
+    fn set_var_context(&mut self, var_context: Option<&str>) {
+        self.eval_ctx.set_lookup_scope(
+            var_context
+                .map(ComponentPath::from_flat_path)
+                .and_then(|path| path.parent()),
+        );
+    }
+
+    fn eval_value(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        var_context: Option<&str>,
+    ) -> Option<Value> {
+        self.set_var_context(var_context);
+        register_enum_comparison_candidates(expr, &self.enum_canonicalizer, &mut self.eval_ctx);
+        crate::constant::eval_expr(expr, &self.eval_ctx).ok()
+    }
+
+    pub fn eval_integer(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        var_context: Option<&str>,
+    ) -> Option<i64> {
+        self.eval_value(expr, var_context)
+            .and_then(|value| value.as_integer())
+    }
+
+    pub fn eval_boolean(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        var_context: Option<&str>,
+    ) -> Option<bool> {
+        self.eval_value(expr, var_context)
+            .and_then(|value| value.as_bool())
+    }
+
+    pub fn eval_real(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        var_context: Option<&str>,
+    ) -> Option<f64> {
+        self.eval_value(expr, var_context)
+            .and_then(|value| value.to_real())
+    }
+}
+
 /// Try to evaluate a flat expression to an integer value with context and array dimensions.
 ///
 /// Same as try_eval_flat_expr_integer but also handles size() calls using array dimensions.
@@ -122,112 +218,7 @@ pub fn try_eval_integer_with_context(
     expr: &rumoca_core::Expression,
     ctx: &ParamEvalContext,
 ) -> Option<i64> {
-    let result = match expr {
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(n),
-            ..
-        } => Some(*n),
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(r),
-            ..
-        } => {
-            if r.fract() == 0.0 {
-                Some(*r as i64)
-            } else {
-                None
-            }
-        }
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => resolve_varref_integer(name.as_str(), ctx),
-        rumoca_core::Expression::FieldAccess { base, field, .. } => {
-            let base_name = flatten_field_access_path(base)?;
-            let field_name = format!("{base_name}.{field}");
-            resolve_varref_integer(&field_name, ctx)
-        }
-        rumoca_core::Expression::Unary { op, rhs, .. } => {
-            let val = try_eval_integer_with_context(rhs, ctx)?;
-            match op {
-                rumoca_core::OpUnary::Minus => Some(-val),
-                rumoca_core::OpUnary::Plus => Some(val),
-                _ => None,
-            }
-        }
-        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
-            let l = try_eval_integer_with_context(lhs, ctx)?;
-            let r = try_eval_integer_with_context(rhs, ctx)?;
-            rumoca_core::eval_ast_integer_binary(op, l, r)
-        }
-        rumoca_core::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => eval_integer_if_expression(branches, else_branch, ctx),
-        rumoca_core::Expression::BuiltinCall { function, args, .. } => {
-            #[cfg(feature = "tracing")]
-            debug!(function = ?function, arg_count = args.len(), "evaluating builtin call");
-            eval_builtin_integer_with_context(function, args, ctx)
-        }
-        rumoca_core::Expression::FunctionCall {
-            name, args, span, ..
-        } => {
-            #[cfg(feature = "tracing")]
-            debug!(function = %name, arg_count = args.len(), "evaluating user function call");
-            eval_user_func_integer(name, args, ctx, Some(*span))
-        }
-        _ => {
-            #[cfg(feature = "tracing")]
-            warn!(
-                expr_kind = std::any::type_name_of_val(expr),
-                "unhandled expression kind"
-            );
-            None
-        }
-    };
-
-    #[cfg(feature = "tracing")]
-    if result.is_some() {
-        debug!(result = ?result, "expression evaluated successfully");
-    }
-
-    result
-}
-
-fn flatten_field_access_path(expr: &rumoca_core::Expression) -> Option<String> {
-    match expr {
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => Some(name.to_string()),
-        rumoca_core::Expression::FieldAccess { base, field, .. } => {
-            let base_path = flatten_field_access_path(base)?;
-            Some(format!("{base_path}.{field}"))
-        }
-        _ => None,
-    }
-}
-
-fn eval_integer_if_expression(
-    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
-    else_branch: &rumoca_core::Expression,
-    ctx: &ParamEvalContext,
-) -> Option<i64> {
-    let mut unknown_branch_values: Vec<i64> = Vec::new();
-    for (cond, then_expr) in branches {
-        match try_eval_flat_expr_boolean_with_context(cond, ctx) {
-            Some(true) => return try_eval_integer_with_context(then_expr, ctx),
-            Some(false) => continue,
-            None => unknown_branch_values.push(try_eval_integer_with_context(then_expr, ctx)?),
-        }
-    }
-
-    let else_value = try_eval_integer_with_context(else_branch, ctx)?;
-    if unknown_branch_values.is_empty() {
-        return Some(else_value);
-    }
-    unknown_branch_values
-        .iter()
-        .all(|value| *value == else_value)
-        .then_some(else_value)
+    eval_param_expr(expr, ctx).and_then(|value| value.as_integer())
 }
 
 /// Try to evaluate a flat expression to a boolean value with full context.
@@ -239,370 +230,7 @@ pub fn try_eval_flat_expr_boolean_with_context(
     expr: &rumoca_core::Expression,
     ctx: &ParamEvalContext,
 ) -> Option<bool> {
-    match expr {
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Boolean(b),
-            ..
-        } => Some(*b),
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => resolve_varref_boolean(name.as_str(), ctx),
-        rumoca_core::Expression::Unary {
-            op: rumoca_core::OpUnary::Not,
-            rhs,
-            ..
-        } => try_eval_flat_expr_boolean_with_context(rhs, ctx).map(|v| !v),
-        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
-            try_eval_flat_expr_boolean_binary_with_context(op, lhs, rhs, ctx)
-        }
-        rumoca_core::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                match try_eval_flat_expr_boolean_with_context(cond, ctx) {
-                    Some(true) => return try_eval_flat_expr_boolean_with_context(then_expr, ctx),
-                    Some(false) => continue,
-                    None => return None,
-                }
-            }
-            try_eval_flat_expr_boolean_with_context(else_branch, ctx)
-        }
-        _ => None,
-    }
-}
-
-fn try_eval_flat_expr_boolean_binary_with_context(
-    op: &rumoca_core::OpBinary,
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    ctx: &ParamEvalContext,
-) -> Option<bool> {
-    match op {
-        rumoca_core::OpBinary::And => Some(
-            try_eval_flat_expr_boolean_with_context(lhs, ctx)?
-                && try_eval_flat_expr_boolean_with_context(rhs, ctx)?,
-        ),
-        rumoca_core::OpBinary::Or => Some(
-            try_eval_flat_expr_boolean_with_context(lhs, ctx)?
-                || try_eval_flat_expr_boolean_with_context(rhs, ctx)?,
-        ),
-        rumoca_core::OpBinary::Eq | rumoca_core::OpBinary::Neq => {
-            let is_eq = matches!(op, rumoca_core::OpBinary::Eq);
-
-            // Try integer comparison first.
-            if let (Some(l), Some(r)) = (
-                try_eval_integer_with_context(lhs, ctx),
-                try_eval_integer_with_context(rhs, ctx),
-            ) {
-                return Some(if is_eq { l == r } else { l != r });
-            }
-
-            // Then boolean comparison.
-            if let (Some(l), Some(r)) = (
-                try_eval_flat_expr_boolean_with_context(lhs, ctx),
-                try_eval_flat_expr_boolean_with_context(rhs, ctx),
-            ) {
-                return Some(if is_eq { l == r } else { l != r });
-            }
-
-            // Finally enum comparison (with scoped reference lookup).
-            if let (Some(l), Some(r)) = (
-                resolve_enum_value_with_context(lhs, ctx),
-                resolve_enum_value_with_context(rhs, ctx),
-            ) {
-                let l_norm = canonicalize_enum_literal(&l, ctx.known_enums);
-                let r_norm = canonicalize_enum_literal(&r, ctx.known_enums);
-                let equal = rumoca_core::enum_values_equal(&l_norm, &r_norm);
-                return Some(if is_eq { equal } else { !equal });
-            }
-
-            None
-        }
-        rumoca_core::OpBinary::Lt => Some(
-            try_eval_integer_with_context(lhs, ctx)? < try_eval_integer_with_context(rhs, ctx)?,
-        ),
-        rumoca_core::OpBinary::Le => Some(
-            try_eval_integer_with_context(lhs, ctx)? <= try_eval_integer_with_context(rhs, ctx)?,
-        ),
-        rumoca_core::OpBinary::Gt => Some(
-            try_eval_integer_with_context(lhs, ctx)? > try_eval_integer_with_context(rhs, ctx)?,
-        ),
-        rumoca_core::OpBinary::Ge => Some(
-            try_eval_integer_with_context(lhs, ctx)? >= try_eval_integer_with_context(rhs, ctx)?,
-        ),
-        _ => None,
-    }
-}
-
-fn lookup_scoped_copy<T: Copy>(
-    values: &FxHashMap<String, T>,
-    name: &str,
-    var_context: Option<&str>,
-) -> Option<T> {
-    let scope = var_context
-        .map(ComponentPath::from_flat_path)
-        .and_then(|path| path.parent())?;
-    let name_path = ComponentPath::from_flat_path(name);
-    for candidate in scoped_component_path_candidates(&name_path, &scope) {
-        if let Some(val) = values.get(&candidate).copied() {
-            return Some(val);
-        }
-    }
-    values.get(name).copied()
-}
-
-fn lookup_scoped_cloned<T: Clone>(
-    values: &FxHashMap<String, T>,
-    name: &str,
-    var_context: Option<&str>,
-) -> Option<T> {
-    let scope = var_context
-        .map(ComponentPath::from_flat_path)
-        .and_then(|path| path.parent())?;
-    let name_path = ComponentPath::from_flat_path(name);
-    for candidate in scoped_component_path_candidates(&name_path, &scope) {
-        if let Some(val) = values.get(&candidate) {
-            return Some(val.clone());
-        }
-    }
-    values.get(name).cloned()
-}
-
-fn is_unqualified_component_name(name: &str) -> bool {
-    ComponentPath::from_flat_path(name).len() == 1
-}
-
-fn resolve_varref_boolean(name_str: &str, ctx: &ParamEvalContext) -> Option<bool> {
-    if is_unqualified_component_name(name_str)
-        && let Some(val) = lookup_scoped_copy(ctx.known_bools, name_str, ctx.var_context)
-    {
-        return Some(val);
-    }
-
-    if let Some(val) = ctx.known_bools.get(name_str).copied() {
-        return Some(val);
-    }
-
-    if let Some(val) = lookup_scoped_copy(ctx.known_bools, name_str, ctx.var_context) {
-        return Some(val);
-    }
-
-    lookup_unique_suffix_copy(name_str, ctx.known_bools)
-}
-
-fn resolve_enum_value_with_context(
-    expr: &rumoca_core::Expression,
-    ctx: &ParamEvalContext,
-) -> Option<String> {
-    let rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    } = expr
-    else {
-        return None;
-    };
-    if !subscripts.is_empty() {
-        return None;
-    }
-
-    let name_str = name.to_string();
-    if is_unqualified_component_name(&name_str)
-        && let Some(enum_val) = lookup_scoped_cloned(ctx.known_enums, &name_str, ctx.var_context)
-    {
-        return Some(enum_val);
-    }
-
-    if let Some(enum_val) = ctx.known_enums.get(&name_str) {
-        return Some(enum_val.clone());
-    }
-
-    if let Some(enum_val) = lookup_scoped_cloned(ctx.known_enums, &name_str, ctx.var_context) {
-        return Some(enum_val);
-    }
-
-    if let Some(enum_val) = lookup_unique_suffix_cloned(&name_str, ctx.known_enums) {
-        return Some(enum_val);
-    }
-
-    try_extract_enum_value(expr).map(|literal| canonicalize_enum_literal(&literal, ctx.known_enums))
-}
-
-/// Resolve an unqualified variable reference in parent scopes (MLS §7.2).
-///
-/// For modification bindings like `G1(n=n)`, the RHS `n` references the outer scope
-/// where the modification was written. This function walks up the parent chain
-/// to find the value.
-fn resolve_in_enclosing_scope(
-    name: &str,
-    var_context: &str,
-    known_ints: &FxHashMap<String, i64>,
-) -> Option<i64> {
-    let scope = ComponentPath::from_flat_path(var_context).parent()?;
-    let name_path = ComponentPath::from_flat_path(name);
-    if let Some(candidate) = lowercase_type_ref_candidate(&name_path, &scope)
-        && let Some(val) = known_ints.get(&candidate).copied()
-    {
-        return Some(val);
-    }
-    for candidate in scoped_component_path_candidates(&name_path, &scope) {
-        if let Some(val) = known_ints.get(&candidate).copied() {
-            return Some(val);
-        }
-    }
-
-    known_ints.get(name).copied()
-}
-
-fn lowercase_type_ref_candidate(name: &ComponentPath, scope: &ComponentPath) -> Option<String> {
-    let first = name.parts().first()?;
-    if !first.starts_with(char::is_uppercase) {
-        return None;
-    }
-    let lowered = first[..1].to_lowercase() + &first[1..];
-    let mut parts = scope.parts().to_vec();
-    parts.push(lowered);
-    parts.extend(name.parts().iter().skip(1).cloned());
-    Some(parts.join("."))
-}
-
-/// Resolve a qualified name by stripping leading segments only when unambiguous.
-///
-/// Modification nesting can produce over-qualified bindings. For example,
-/// `MultiStarResistance(m=data.m)` contains `MultiStar(m=m)` internally.
-/// The inner binding for `multiStar.multiStar.m` becomes `multiStar.data.m`
-/// when the actual parameter is `data.m` at the top level.
-///
-/// The fallback is intentionally conservative: if more than one stripped
-/// suffix is known, the lookup fails instead of silently choosing a shorter or
-/// longer suffix. That avoids resolving `a.b.n` to `b.n` when both `b.n` and
-/// `n` are in scope.
-fn resolve_by_suffix_stripping(name: &str, known_ints: &FxHashMap<String, i64>) -> Option<i64> {
-    lookup_unique_suffix_copy(name, known_ints)
-}
-
-fn lookup_unique_suffix_copy<T: Copy>(name: &str, values: &FxHashMap<String, T>) -> Option<T> {
-    let mut found = None;
-    for suffix in ComponentPath::from_flat_path(name).suffixes_excluding_self() {
-        let candidate = suffix.to_flat_string();
-        if let Some(val) = values.get(&candidate).copied() {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(val);
-        }
-    }
-    found
-}
-
-fn lookup_unique_suffix_cloned<T: Clone>(name: &str, values: &FxHashMap<String, T>) -> Option<T> {
-    let mut found = None;
-    for suffix in ComponentPath::from_flat_path(name).suffixes_excluding_self() {
-        let candidate = suffix.to_flat_string();
-        if let Some(val) = values.get(&candidate).cloned() {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(val);
-        }
-    }
-    found
-}
-
-/// Resolve a VarRef to an integer value using all available strategies.
-///
-/// Tries in order: lexical/component scope for unqualified refs (MLS §7.2),
-/// direct integer lookup, real-to-integer conversion, parent scope resolution
-/// for qualified refs, and suffix stripping for over-qualified refs.
-fn resolve_varref_integer(name_str: &str, ctx: &ParamEvalContext) -> Option<i64> {
-    if is_unqualified_component_name(name_str)
-        && let Some(var_ctx) = ctx.var_context
-        && let Some(val) = resolve_in_enclosing_scope(name_str, var_ctx, ctx.known_ints)
-    {
-        return Some(val);
-    }
-
-    // Direct lookup in integers
-    if let Some(val) = ctx.known_ints.get(name_str).copied() {
-        return Some(val);
-    }
-    // Try real parameters that are whole numbers (e.g., Real m = 3)
-    if let Some(val) = ctx.known_reals.get(name_str).copied()
-        && val.fract() == 0.0
-        && val.is_finite()
-    {
-        return Some(val as i64);
-    }
-    // For modification bindings, try parent scope resolution (MLS §7.2)
-    if let Some(var_ctx) = ctx.var_context
-        && let Some(val) = resolve_in_enclosing_scope(name_str, var_ctx, ctx.known_ints)
-    {
-        return Some(val);
-    }
-    // Fallback: try stripping leading segments from qualified refs.
-    // Modification nesting can produce over-qualified bindings like
-    // "multiStar.data.m" when the actual parameter is "data.m".
-    resolve_by_suffix_stripping(name_str, ctx.known_ints)
-}
-
-/// Resolve a VarRef to a real value using all available strategies.
-fn resolve_varref_real(name_str: &str, ctx: &ParamEvalContext) -> Option<f64> {
-    if is_unqualified_component_name(name_str)
-        && let Some(var_ctx) = ctx.var_context
-        && let Some(scope) = ComponentPath::from_flat_path(var_ctx).parent()
-    {
-        let name_path = ComponentPath::from_flat_path(name_str);
-        for candidate in scoped_component_path_candidates(&name_path, &scope) {
-            if let Some(val) = ctx.known_reals.get(&candidate).copied() {
-                return Some(val);
-            }
-            if let Some(val) = ctx.known_ints.get(&candidate).copied() {
-                return Some(val as f64);
-            }
-        }
-    }
-
-    if let Some(val) = ctx.known_reals.get(name_str).copied() {
-        return Some(val);
-    }
-    if let Some(val) = ctx.known_ints.get(name_str).copied() {
-        return Some(val as f64);
-    }
-
-    if let Some(var_ctx) = ctx.var_context
-        && let Some(scope) = ComponentPath::from_flat_path(var_ctx).parent()
-    {
-        let name_path = ComponentPath::from_flat_path(name_str);
-        for candidate in scoped_component_path_candidates(&name_path, &scope) {
-            if let Some(val) = ctx.known_reals.get(&candidate).copied() {
-                return Some(val);
-            }
-            if let Some(val) = ctx.known_ints.get(&candidate).copied() {
-                return Some(val as f64);
-            }
-        }
-    }
-
-    lookup_unique_suffix_real(name_str, ctx)
-}
-
-fn lookup_unique_suffix_real(name: &str, ctx: &ParamEvalContext) -> Option<f64> {
-    let mut found = None;
-    for suffix in ComponentPath::from_flat_path(name).suffixes_excluding_self() {
-        let candidate = suffix.to_flat_string();
-        let value = ctx
-            .known_reals
-            .get(&candidate)
-            .copied()
-            .or_else(|| ctx.known_ints.get(&candidate).map(|val| *val as f64));
-        if let Some(value) = value {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(value);
-        }
-    }
-    found
+    eval_param_expr(expr, ctx).and_then(|value| value.as_bool())
 }
 
 /// Evaluate a flat expression to a real using scoped lookup context.
@@ -610,371 +238,7 @@ pub fn try_eval_real_with_context(
     expr: &rumoca_core::Expression,
     ctx: &ParamEvalContext,
 ) -> Option<f64> {
-    match expr {
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(v),
-            ..
-        } => Some(*v),
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(v),
-            ..
-        } => Some(*v as f64),
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => resolve_varref_real(name.as_str(), ctx),
-        rumoca_core::Expression::FieldAccess { base, field, .. } => {
-            let base_name = flatten_field_access_path(base)?;
-            resolve_varref_real(&format!("{base_name}.{field}"), ctx)
-        }
-        rumoca_core::Expression::Unary { op, rhs, .. } => {
-            let val = try_eval_real_with_context(rhs, ctx)?;
-            match op {
-                rumoca_core::OpUnary::Minus => Some(-val),
-                rumoca_core::OpUnary::Plus => Some(val),
-                _ => None,
-            }
-        }
-        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
-            let l = try_eval_real_with_context(lhs, ctx)?;
-            let r = try_eval_real_with_context(rhs, ctx)?;
-            match op {
-                rumoca_core::OpBinary::Add => Some(l + r),
-                rumoca_core::OpBinary::Sub => Some(l - r),
-                rumoca_core::OpBinary::Mul => Some(l * r),
-                rumoca_core::OpBinary::Div => (r != 0.0).then_some(l / r),
-                _ => None,
-            }
-        }
-        rumoca_core::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => eval_real_if_expression(branches, else_branch, ctx),
-        rumoca_core::Expression::BuiltinCall { function, args, .. } => {
-            eval_builtin_real_with_context(*function, args, ctx)
-        }
-        rumoca_core::Expression::FunctionCall {
-            name, args, span, ..
-        } => eval_real_function_call_with_context(name, args, *span, ctx),
-        _ => None,
-    }
-}
-
-fn eval_real_if_expression(
-    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
-    else_branch: &rumoca_core::Expression,
-    ctx: &ParamEvalContext,
-) -> Option<f64> {
-    let mut unknown_branch_values: Vec<f64> = Vec::new();
-    for (cond, then_expr) in branches {
-        match try_eval_flat_expr_boolean_with_context(cond, ctx) {
-            Some(true) => return try_eval_real_with_context(then_expr, ctx),
-            Some(false) => continue,
-            None => unknown_branch_values.push(try_eval_real_with_context(then_expr, ctx)?),
-        }
-    }
-
-    let else_value = try_eval_real_with_context(else_branch, ctx)?;
-    if unknown_branch_values.is_empty() {
-        return Some(else_value);
-    }
-    unknown_branch_values
-        .iter()
-        .all(|value| real_values_equivalent(*value, else_value))
-        .then_some(else_value)
-}
-
-fn real_values_equivalent(lhs: f64, rhs: f64) -> bool {
-    lhs.to_bits() == rhs.to_bits() || (lhs - rhs).abs() <= f64::EPSILON
-}
-
-fn eval_real_function_call_with_context(
-    name: &rumoca_core::Reference,
-    args: &[rumoca_core::Expression],
-    span: rumoca_core::Span,
-    ctx: &ParamEvalContext,
-) -> Option<f64> {
-    let short_name = name.last_segment();
-    if let Some(function) = rumoca_core::BuiltinFunction::from_name(short_name)
-        && let Some(value) = eval_builtin_real_with_context(function, args, ctx)
-    {
-        return Some(value);
-    }
-    if let Some(function) =
-        rumoca_core::BuiltinFunction::from_name(&short_name.to_ascii_lowercase())
-        && let Some(value) = eval_builtin_real_with_context(function, args, ctx)
-    {
-        return Some(value);
-    }
-    eval_user_func_real_with_span(name, args, ctx, Some(span))
-}
-
-fn eval_builtin_real_with_context(
-    function: rumoca_core::BuiltinFunction,
-    args: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext,
-) -> Option<f64> {
-    match function {
-        rumoca_core::BuiltinFunction::NoEvent | rumoca_core::BuiltinFunction::Delay => {
-            try_eval_real_with_context(args.first()?, ctx)
-        }
-        rumoca_core::BuiltinFunction::Smooth => try_eval_real_with_context(args.get(1)?, ctx),
-        rumoca_core::BuiltinFunction::Homotopy => try_eval_real_with_context(args.first()?, ctx),
-        rumoca_core::BuiltinFunction::Integer => {
-            try_eval_integer_with_context(args.first()?, ctx).map(|value| value as f64)
-        }
-        rumoca_core::BuiltinFunction::SemiLinear if args.len() >= 3 => {
-            let x = try_eval_real_with_context(&args[0], ctx)?;
-            let positive = try_eval_real_with_context(&args[1], ctx)?;
-            let negative = try_eval_real_with_context(&args[2], ctx)?;
-            Some(if x >= 0.0 { positive * x } else { negative * x })
-        }
-        function if args.len() == 1 => {
-            let arg = try_eval_real_with_context(&args[0], ctx)?;
-            rumoca_core::apply_scalar_unary_math(function, arg)
-        }
-        function if args.len() == 2 => {
-            let lhs = try_eval_real_with_context(&args[0], ctx)?;
-            let rhs = try_eval_real_with_context(&args[1], ctx)?;
-            rumoca_core::apply_scalar_binary_math(function, lhs, rhs)
-        }
-        _ => None,
-    }
-}
-
-/// Evaluate builtin function calls that return integer, with full context for scope resolution.
-fn eval_builtin_integer_with_context(
-    function: &rumoca_core::BuiltinFunction,
-    args: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext,
-) -> Option<i64> {
-    let known_ints = ctx.known_ints;
-    let array_dims = ctx.array_dims;
-    let result = match function {
-        rumoca_core::BuiltinFunction::Floor => {
-            let arg = args.first()?;
-            try_eval_real_with_context(arg, ctx).map(|v| v.floor() as i64)
-        }
-        rumoca_core::BuiltinFunction::Ceil => {
-            let arg = args.first()?;
-            try_eval_real_with_context(arg, ctx).map(|v| v.ceil() as i64)
-        }
-        rumoca_core::BuiltinFunction::Integer => {
-            let arg = args.first()?;
-            try_eval_integer_with_context(arg, ctx)
-                .or_else(|| try_eval_real_with_context(arg, ctx).map(|v| v as i64))
-        }
-        rumoca_core::BuiltinFunction::Abs => {
-            let arg = args.first()?;
-            try_eval_integer_with_context(arg, ctx).map(|v| v.abs())
-        }
-        rumoca_core::BuiltinFunction::Div if args.len() >= 2 => {
-            let x = try_eval_integer_with_context(&args[0], ctx)?;
-            let y = try_eval_integer_with_context(&args[1], ctx)?;
-            eval_integer_div_builtin(x, y)
-        }
-        rumoca_core::BuiltinFunction::Mod if args.len() >= 2 => {
-            let x = try_eval_integer_with_context(&args[0], ctx)?;
-            let y = try_eval_integer_with_context(&args[1], ctx)?;
-            (y != 0).then(|| eval_integer_mod_builtin(x, y))
-        }
-        rumoca_core::BuiltinFunction::Rem if args.len() >= 2 => {
-            let x = try_eval_integer_with_context(&args[0], ctx)?;
-            let y = try_eval_integer_with_context(&args[1], ctx)?;
-            (y != 0).then_some(x % y)
-        }
-        rumoca_core::BuiltinFunction::Max => {
-            #[cfg(feature = "tracing")]
-            debug!("evaluating max() builtin");
-            eval_max_min_integer_with_context(args, ctx, true)
-        }
-        rumoca_core::BuiltinFunction::Min => {
-            #[cfg(feature = "tracing")]
-            debug!("evaluating min() builtin");
-            eval_max_min_integer_with_context(args, ctx, false)
-        }
-        rumoca_core::BuiltinFunction::Sum => {
-            #[cfg(feature = "tracing")]
-            debug!("evaluating sum() builtin");
-            eval_sum_product_integer_with_dims(args, known_ints, array_dims, true)
-        }
-        rumoca_core::BuiltinFunction::Product => {
-            #[cfg(feature = "tracing")]
-            debug!("evaluating product() builtin");
-            eval_sum_product_integer_with_dims(args, known_ints, array_dims, false)
-        }
-        rumoca_core::BuiltinFunction::Size => {
-            #[cfg(feature = "tracing")]
-            debug!("evaluating size() builtin");
-            eval_size_integer_with_context(args, ctx)
-        }
-        _ => {
-            #[cfg(feature = "tracing")]
-            warn!(function = ?function, "unhandled builtin function");
-            None
-        }
-    };
-
-    #[cfg(feature = "tracing")]
-    match &result {
-        Some(v) => debug!(function = ?function, result = v, "builtin evaluated"),
-        None => debug!(function = ?function, "builtin evaluation deferred (value not yet known)"),
-    }
-
-    result
-}
-
-fn eval_integer_mod_builtin(x: i64, y: i64) -> i64 {
-    let remainder = x % y;
-    if remainder != 0 && (remainder > 0) != (y > 0) {
-        remainder + y
-    } else {
-        remainder
-    }
-}
-
-/// Evaluate max/min functions that return integer, with array dimension support.
-fn eval_max_min_integer_with_context(
-    args: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext,
-    is_max: bool,
-) -> Option<i64> {
-    if args.is_empty() {
-        #[cfg(feature = "tracing")]
-        warn!("max/min called with no arguments");
-        return None;
-    }
-
-    #[cfg(feature = "tracing")]
-    let func_name = if is_max { "max" } else { "min" };
-
-    if args.len() >= 2 {
-        // Binary form: max(a, b) or min(a, b)
-        #[cfg(feature = "tracing")]
-        debug!(func = func_name, "evaluating binary form");
-        let x = try_eval_integer_with_context(&args[0], ctx)?;
-        let y = try_eval_integer_with_context(&args[1], ctx)?;
-        #[cfg(feature = "tracing")]
-        debug!(x = x, y = y, "binary form operands");
-        Some(if is_max { x.max(y) } else { x.min(y) })
-    } else {
-        // Array form: max([a; b; c]) - single argument that's an array
-        match &args[0] {
-            rumoca_core::Expression::Array { elements, .. } => {
-                #[cfg(feature = "tracing")]
-                debug!(
-                    func = func_name,
-                    element_count = elements.len(),
-                    "evaluating array form"
-                );
-                let flat_elements = flatten_array_elements(elements);
-                #[cfg(feature = "tracing")]
-                debug!(
-                    func = func_name,
-                    flat_count = flat_elements.len(),
-                    "flattened array elements"
-                );
-                let values: Option<Vec<i64>> = flat_elements
-                    .iter()
-                    .map(|e| try_eval_integer_with_context(e, ctx))
-                    .collect();
-                let values = values?;
-                #[cfg(feature = "tracing")]
-                debug!(values = ?values, "array elements evaluated");
-                if values.is_empty() {
-                    None
-                } else if is_max {
-                    values.into_iter().max()
-                } else {
-                    values.into_iter().min()
-                }
-            }
-            _other => {
-                #[cfg(feature = "tracing")]
-                debug!(
-                    func = func_name,
-                    expr_kind = std::any::type_name_of_val(_other),
-                    "single argument (non-array)"
-                );
-                try_eval_integer_with_context(&args[0], ctx)
-            }
-        }
-    }
-}
-
-/// Flatten nested array elements into a single vector of scalar expressions.
-fn flatten_array_elements(elements: &[rumoca_core::Expression]) -> Vec<&rumoca_core::Expression> {
-    let mut result = Vec::new();
-    for elem in elements {
-        match elem {
-            rumoca_core::Expression::Array {
-                elements: inner, ..
-            } => {
-                result.extend(flatten_array_elements(inner));
-            }
-            _ => {
-                result.push(elem);
-            }
-        }
-    }
-    result
-}
-
-/// Evaluate sum/product functions that return integer, with array dimension support.
-fn eval_sum_product_integer_with_dims(
-    args: &[rumoca_core::Expression],
-    known_ints: &FxHashMap<String, i64>,
-    array_dims: &FxHashMap<String, Vec<i64>>,
-    is_sum: bool,
-) -> Option<i64> {
-    if args.is_empty() {
-        #[cfg(feature = "tracing")]
-        warn!("sum/product called with no arguments");
-        return None;
-    }
-
-    #[cfg(feature = "tracing")]
-    let func_name = if is_sum { "sum" } else { "product" };
-
-    match &args[0] {
-        rumoca_core::Expression::Array { elements, .. } => {
-            #[cfg(feature = "tracing")]
-            debug!(
-                func = func_name,
-                element_count = elements.len(),
-                "evaluating array form"
-            );
-            let flat_elements = flatten_array_elements(elements);
-            #[cfg(feature = "tracing")]
-            debug!(
-                func = func_name,
-                flat_count = flat_elements.len(),
-                "flattened array elements"
-            );
-            let values: Option<Vec<i64>> = flat_elements
-                .iter()
-                .map(|e| try_eval_flat_expr_integer_with_dims(e, known_ints, array_dims))
-                .collect();
-            let values = values?;
-            #[cfg(feature = "tracing")]
-            debug!(values = ?values, "array elements evaluated");
-            if values.is_empty() {
-                Some(if is_sum { 0 } else { 1 })
-            } else if is_sum {
-                Some(values.into_iter().sum())
-            } else {
-                Some(values.into_iter().product())
-            }
-        }
-        _other => {
-            #[cfg(feature = "tracing")]
-            debug!(
-                func = func_name,
-                "single argument (non-array) - returning as-is"
-            );
-            try_eval_flat_expr_integer_with_dims(&args[0], known_ints, array_dims)
-        }
-    }
+    eval_param_expr(expr, ctx).and_then(|value| value.to_real())
 }
 
 /// Infer array dimensions from an array literal binding.
@@ -1142,10 +406,10 @@ fn infer_user_function_call_dimensions(
 }
 
 fn concrete_param_dims(param: &rumoca_core::FunctionParam) -> Option<Vec<i64>> {
-    if param.dims.is_empty() || param.dims.iter().any(|dim| *dim < 0) {
+    if param.dimensions().is_empty() {
         return None;
     }
-    Some(param.dims.clone())
+    Some(param.dimensions().to_vec())
 }
 
 fn broadcast_function_arg_dims(
@@ -1165,6 +429,22 @@ fn function_arg_value(arg: &rumoca_core::Expression) -> &rumoca_core::Expression
     } else {
         arg
     }
+}
+
+fn named_call_arg(expr: &rumoca_core::Expression) -> Option<(&str, &rumoca_core::Expression)> {
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor: true,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    let arg_name = name
+        .as_str()
+        .strip_prefix(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)?;
+    (args.len() == 1).then(|| (arg_name, &args[0]))
 }
 
 fn infer_function_arg_dims(
@@ -1451,9 +731,7 @@ fn eval_param_shape_subscript(
     match subscript {
         rumoca_core::Subscript::Index { value, .. } => Some(*value),
         rumoca_core::Subscript::Expr { expr, .. } => try_eval_integer_with_context(expr, ctx),
-        rumoca_core::Subscript::Colon { .. } => {
-            param.dims.get(index).copied().filter(|dim| *dim >= 0)
-        }
+        rumoca_core::Subscript::Colon { .. } => param.dimensions().get(index).copied(),
     }
 }
 
@@ -1496,65 +774,6 @@ fn infer_range_dimensions_with_context(
     };
 
     Some(vec![len])
-}
-
-/// Evaluate size(array, dim) builtin function with scope resolution.
-///
-/// Uses the variable context to resolve unqualified array names to their
-/// fully qualified form when looking up dimensions (MLS §5.1).
-fn eval_size_integer_with_context(
-    args: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext,
-) -> Option<i64> {
-    if args.is_empty() || args.len() > 2 {
-        #[cfg(feature = "tracing")]
-        warn!(arg_count = args.len(), "size() requires 1 or 2 arguments");
-        return None;
-    }
-
-    let array_name = match &args[0] {
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => name.to_string(),
-        _ => {
-            #[cfg(feature = "tracing")]
-            warn!(
-                arg0_kind = std::any::type_name_of_val(&args[0]),
-                "size() first arg must be a simple VarRef"
-            );
-            return None;
-        }
-    };
-
-    #[cfg(feature = "tracing")]
-    debug!(array = %array_name, var_context = ?ctx.var_context, "looking up array dimensions with scope resolution");
-
-    // Try scope-aware lookup for array dimensions (MLS §5.1)
-    let dims = lookup_array_dims_in_scope(&array_name, ctx.var_context, ctx.array_dims)?;
-
-    if args.len() == 1 {
-        if dims.len() == 1 {
-            #[cfg(feature = "tracing")]
-            debug!(array = %array_name, size = dims[0], "size(A) for 1D array");
-            Some(dims[0])
-        } else {
-            #[cfg(feature = "tracing")]
-            warn!(array = %array_name, ndims = dims.len(), "size(A) requires explicit dimension for multi-dimensional arrays");
-            None
-        }
-    } else {
-        let dim = try_eval_integer_with_context(&args[1], ctx)?;
-        if dim >= 1 && (dim as usize) <= dims.len() {
-            let result = dims[(dim as usize) - 1];
-            #[cfg(feature = "tracing")]
-            debug!(array = %array_name, dim = dim, result = result, "size(A, dim) evaluated");
-            Some(result)
-        } else {
-            #[cfg(feature = "tracing")]
-            warn!(array = %array_name, dim = dim, ndims = dims.len(), "dimension out of range");
-            None
-        }
-    }
 }
 
 /// Walk up the scope chain looking for array dimensions.
@@ -1613,153 +832,27 @@ fn lookup_array_dims_in_scope(
     lookup_dims_in_ancestors(array_name, &enclosing.to_flat_string(), array_dims)
 }
 
-/// Evaluate user function calls that return integer.
-fn eval_user_func_integer(
-    name: &rumoca_core::Reference,
-    args: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext,
-    call_span: Option<rumoca_core::Span>,
-) -> Option<i64> {
-    let name_str = name.as_str();
-
-    // Handle integer() function (user function that converts to integer)
-    if name_str == "integer" {
-        let arg = args.first()?;
-        return try_eval_real_with_context(arg, ctx).map(|v| v as i64);
-    }
-
-    // Try to find and evaluate the user-defined function using rumoca_eval_const
-    let func = ctx.functions.get(name_str)?;
-    let eval_ctx = build_user_func_eval_ctx(ctx);
-    let arg_values = eval_func_args(args, ctx)?;
-    let span = user_function_eval_span(name, call_span, func)?;
-
-    let result = crate::constant::function_eval::eval_function_with_call_args(
-        func,
-        arg_values,
-        &eval_ctx,
-        &crate::constant::function_eval::EvalLimits::default(),
-        0,
-        span,
-    );
-
-    match result {
-        Ok(value) => value.as_integer(),
-        Err(_) => None,
-    }
-}
-
 /// Evaluate user function calls that return a real value.
 pub fn eval_user_func_real(
     name: &rumoca_core::Reference,
     args: &[rumoca_core::Expression],
     ctx: &ParamEvalContext,
 ) -> Option<f64> {
-    eval_user_func_real_with_span(name, args, ctx, None)
-}
-
-fn eval_user_func_real_with_span(
-    name: &rumoca_core::Reference,
-    args: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext,
-    call_span: Option<rumoca_core::Span>,
-) -> Option<f64> {
-    let name_str = name.as_str();
-    let func = ctx.functions.get(name_str)?;
-    let eval_ctx = build_user_func_eval_ctx(ctx);
-    let arg_values = eval_func_args(args, ctx)?;
-    let span = user_function_eval_span(name, call_span, func)?;
-
-    let result = crate::constant::function_eval::eval_function_with_call_args(
-        func,
-        arg_values,
-        &eval_ctx,
-        &crate::constant::function_eval::EvalLimits::default(),
-        0,
-        span,
-    );
-
-    match result {
-        Ok(value) => value
-            .as_real()
-            .or_else(|| value.as_integer().map(|i| i as f64)),
-        Err(_) => None,
-    }
-}
-
-fn user_function_eval_span(
-    name: &rumoca_core::Reference,
-    call_span: Option<rumoca_core::Span>,
-    func: &rumoca_core::Function,
-) -> Option<rumoca_core::Span> {
-    call_span
-        .filter(|span| !span.is_dummy())
-        .or_else(|| name.span())
-        .or_else(|| (!func.span.is_dummy()).then_some(func.span))
-}
-
-/// Build an EvalContext for user function evaluation.
-fn build_user_func_eval_ctx(ctx: &ParamEvalContext) -> EvalContext {
-    let parameter_capacity = ctx.known_ints.len() + ctx.known_reals.len() + ctx.known_bools.len();
-    let mut eval_ctx = EvalContext::with_capacity(parameter_capacity, 0, ctx.functions.len() * 2);
-    for (param_name, value) in ctx.known_ints {
-        eval_ctx.add_parameter(param_name.clone(), Value::Integer(*value));
-    }
-    for (param_name, value) in ctx.known_reals {
-        eval_ctx.add_parameter(param_name.clone(), Value::Real(*value));
-    }
-    for (param_name, value) in ctx.known_bools {
-        eval_ctx.add_parameter(param_name.clone(), Value::Bool(*value));
-    }
-    for func_def in ctx.functions.values() {
-        eval_ctx.add_function(func_def.clone());
-    }
-    eval_ctx
-}
-
-/// Evaluate function arguments to positional/named values.
-fn eval_func_args(
-    args: &[rumoca_core::Expression],
-    ctx: &ParamEvalContext,
-) -> Option<Vec<crate::constant::function_eval::FunctionCallArg>> {
-    let mut arg_values = Vec::new();
-    for arg in args {
-        if let Some((name, value_expr)) = named_call_arg(arg) {
-            let value = eval_func_arg_value(value_expr, ctx)?;
-            arg_values.push(crate::constant::function_eval::FunctionCallArg::named(
-                name.to_string(),
-                value,
-            ));
-            continue;
-        }
-        let value = eval_func_arg_value(arg, ctx)?;
-        arg_values.push(crate::constant::function_eval::FunctionCallArg::positional(
-            value,
-        ));
-    }
-    Some(arg_values)
-}
-
-fn named_call_arg(expr: &rumoca_core::Expression) -> Option<(&str, &rumoca_core::Expression)> {
-    let rumoca_core::Expression::FunctionCall {
-        name,
-        args,
-        is_constructor: true,
-        ..
-    } = expr
-    else {
-        return None;
-    };
-    let arg_name = name.as_str().strip_prefix(NAMED_CALL_ARG_PREFIX)?;
-    let value = args.first()?;
-    (args.len() == 1).then_some((arg_name, value))
-}
-
-fn eval_func_arg_value(expr: &rumoca_core::Expression, ctx: &ParamEvalContext) -> Option<Value> {
-    if let Some(int_val) = try_eval_integer_with_context(expr, ctx) {
-        return Some(Value::Integer(int_val));
-    }
-    try_eval_real_with_context(expr, ctx).map(Value::Real)
+    let span = name.span().or_else(|| {
+        ctx.functions
+            .get(name.as_str())
+            .and_then(|function| (!function.span.is_dummy()).then_some(function.span))
+    })?;
+    eval_param_expr(
+        &rumoca_core::Expression::FunctionCall {
+            name: name.clone(),
+            args: args.to_vec(),
+            is_constructor: false,
+            span,
+        },
+        ctx,
+    )
+    .and_then(|value| value.to_real())
 }
 
 /// Try to evaluate a flat expression to a real value.
@@ -1768,51 +861,16 @@ pub fn try_eval_flat_expr_real(
     known_ints: &FxHashMap<String, i64>,
     known_reals: &FxHashMap<String, f64>,
 ) -> Option<f64> {
-    match expr {
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(n),
-            ..
-        } => Some(*n as f64),
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(r),
-            ..
-        } => Some(*r),
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => {
-            let name_str = name.to_string();
-            if let Some(v) = known_reals.get(&name_str) {
-                return Some(*v);
-            }
-            known_ints.get(&name_str).map(|&v| v as f64)
-        }
-        rumoca_core::Expression::Unary { op, rhs, .. } => {
-            let val = try_eval_flat_expr_real(rhs, known_ints, known_reals)?;
-            match op {
-                rumoca_core::OpUnary::Minus => Some(-val),
-                rumoca_core::OpUnary::Plus => Some(val),
-                _ => None,
-            }
-        }
-        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
-            let l = try_eval_flat_expr_real(lhs, known_ints, known_reals)?;
-            let r = try_eval_flat_expr_real(rhs, known_ints, known_reals)?;
-            match op {
-                rumoca_core::OpBinary::Add => Some(l + r),
-                rumoca_core::OpBinary::Sub => Some(l - r),
-                rumoca_core::OpBinary::Mul => Some(l * r),
-                rumoca_core::OpBinary::Div => {
-                    if r != 0.0 {
-                        Some(l / r)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            }
-        }
-        _ => None,
-    }
+    let eval_ctx = build_eval_context(
+        known_ints,
+        known_reals,
+        &FxHashMap::default(),
+        &FxHashMap::default(),
+        &FxHashMap::default(),
+    );
+    crate::constant::eval_expr(expr, &eval_ctx)
+        .ok()
+        .and_then(|value| value.to_real())
 }
 
 /// Try to extract an enumeration value from a flat expression.
@@ -1845,7 +903,91 @@ pub fn try_eval_flat_expr_enum(
     known_bools: &FxHashMap<String, bool>,
     known_enums: &FxHashMap<String, String>,
 ) -> Option<String> {
-    eval_enum_inner(expr, known_ints, known_bools, known_enums)
+    let param_ctx = ParamEvalContext {
+        known_ints,
+        known_reals: &FxHashMap::default(),
+        known_bools,
+        known_enums,
+        array_dims: &FxHashMap::default(),
+        functions: &FxHashMap::default(),
+        var_context: None,
+    };
+    let mut evaluator = ParamEvaluator::new(&param_ctx);
+    evaluator.set_var_context(None);
+    register_enum_value_candidates(expr, &evaluator.enum_canonicalizer, &mut evaluator.eval_ctx);
+    crate::constant::eval_expr(expr, &evaluator.eval_ctx)
+        .ok()
+        .and_then(|value| {
+            value.as_enum().map(|(type_name, literal)| {
+                if type_name.is_empty() {
+                    literal.to_string()
+                } else {
+                    format!("{type_name}.{literal}")
+                }
+            })
+        })
+}
+
+fn register_enum_value_candidates(
+    expr: &rumoca_core::Expression,
+    enum_canonicalizer: &EnumCanonicalizer,
+    eval_ctx: &mut EvalContext,
+) {
+    match expr {
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (_, value) in branches {
+                register_enum_value_candidates(value, enum_canonicalizer, eval_ctx);
+            }
+            register_enum_value_candidates(else_branch, enum_canonicalizer, eval_ctx);
+        }
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty()
+            && !eval_ctx.parameters.contains_key(name.as_str())
+            && looks_like_enum_literal_path(name.as_str()) =>
+        {
+            if let Some(identity) = enum_canonicalizer.canonicalize(name.as_str()) {
+                eval_ctx.add_parameter(name.to_string(), identity.to_value());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn register_enum_comparison_candidates(
+    expr: &rumoca_core::Expression,
+    enum_canonicalizer: &EnumCanonicalizer,
+    eval_ctx: &mut EvalContext,
+) {
+    EnumComparisonRegistrar {
+        enum_canonicalizer,
+        eval_ctx,
+    }
+    .visit_expression(expr);
+}
+
+struct EnumComparisonRegistrar<'a> {
+    enum_canonicalizer: &'a EnumCanonicalizer,
+    eval_ctx: &'a mut EvalContext,
+}
+
+impl ExpressionVisitor for EnumComparisonRegistrar<'_> {
+    fn visit_binary(
+        &mut self,
+        op: &rumoca_core::OpBinary,
+        lhs: &rumoca_core::Expression,
+        rhs: &rumoca_core::Expression,
+    ) {
+        if matches!(op, rumoca_core::OpBinary::Eq | rumoca_core::OpBinary::Neq) {
+            register_enum_value_candidates(lhs, self.enum_canonicalizer, self.eval_ctx);
+            register_enum_value_candidates(rhs, self.enum_canonicalizer, self.eval_ctx);
+        }
+        self.walk_binary(op, lhs, rhs);
+    }
 }
 
 /// Check whether a dotted path is likely an enum literal reference.
@@ -1863,132 +1005,6 @@ pub fn looks_like_enum_literal_path(path: &str) -> bool {
     parts[..parts.len() - 1]
         .iter()
         .any(|segment| segment.chars().next().is_some_and(char::is_uppercase))
-}
-
-/// Resolve an expression to its enum value string (MLS §4.9.5).
-fn resolve_enum_value(
-    expr: &rumoca_core::Expression,
-    known_enums: &FxHashMap<String, String>,
-) -> Option<String> {
-    let rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    } = expr
-    else {
-        return None;
-    };
-    if !subscripts.is_empty() {
-        return None;
-    }
-
-    let name_str = name.to_string();
-    if let Some(enum_val) = known_enums.get(&name_str) {
-        return Some(enum_val.clone());
-    }
-
-    try_extract_enum_value(expr).map(|literal| canonicalize_enum_literal(&literal, known_enums))
-}
-
-/// Inner enum evaluation.
-fn eval_enum_inner(
-    expr: &rumoca_core::Expression,
-    known_ints: &FxHashMap<String, i64>,
-    known_bools: &FxHashMap<String, bool>,
-    known_enums: &FxHashMap<String, String>,
-) -> Option<String> {
-    match expr {
-        rumoca_core::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => eval_enum_if(branches, else_branch, known_ints, known_bools, known_enums),
-        _ => resolve_enum_value(expr, known_enums),
-    }
-}
-
-/// Evaluate enum if-expressions with compile-time conditions.
-fn eval_enum_if(
-    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
-    else_branch: &rumoca_core::Expression,
-    known_ints: &FxHashMap<String, i64>,
-    known_bools: &FxHashMap<String, bool>,
-    known_enums: &FxHashMap<String, String>,
-) -> Option<String> {
-    let mut unknown_branch_values: Vec<String> = Vec::new();
-    for (cond, then_expr) in branches {
-        match try_eval_flat_expr_boolean(cond, known_ints, known_bools, known_enums) {
-            Some(true) => return eval_enum_inner(then_expr, known_ints, known_bools, known_enums),
-            Some(false) => continue,
-            None => unknown_branch_values.push(eval_enum_inner(
-                then_expr,
-                known_ints,
-                known_bools,
-                known_enums,
-            )?),
-        }
-    }
-
-    let else_value = eval_enum_inner(else_branch, known_ints, known_bools, known_enums)?;
-    if unknown_branch_values.is_empty() {
-        return Some(else_value);
-    }
-
-    let all_same = unknown_branch_values
-        .iter()
-        .all(|value| enum_values_equivalent(value, &else_value, known_enums));
-    if all_same { Some(else_value) } else { None }
-}
-
-fn enum_values_equivalent(lhs: &str, rhs: &str, known_enums: &FxHashMap<String, String>) -> bool {
-    let lhs_norm = canonicalize_enum_literal(lhs, known_enums);
-    let rhs_norm = canonicalize_enum_literal(rhs, known_enums);
-    rumoca_core::enum_values_equal(&lhs_norm, &rhs_norm)
-}
-
-/// Canonicalize a potentially partially-qualified enum literal using known enum values.
-///
-/// Example:
-/// - known value: `Modelica.Fluid.Types.ModelStructure.a_vb`
-/// - literal: `pipe.Types.ModelStructure.a_vb`
-/// - canonicalized: `Modelica.Fluid.Types.ModelStructure.a_vb`
-///
-/// This preserves MLS §4.9.5 enum identity across equivalent qualification paths.
-pub fn canonicalize_enum_literal(literal: &str, known_enums: &FxHashMap<String, String>) -> String {
-    let parts = ComponentPath::from_flat_path(literal).into_parts();
-    if parts.len() < 2 {
-        return literal.to_string();
-    }
-
-    // Try progressively shorter suffixes and prefer the first unambiguous match.
-    // This handles local package aliases like `pipe.Types.X` vs global `Modelica...Types.X`.
-    // Only consider suffixes with at least two segments (`Type.Literal`) to
-    // avoid over-broad matches on single identifiers.
-    for start in 0..parts.len().saturating_sub(1) {
-        let suffix = parts[start..].join(".");
-        let mut best_match: Option<&str> = None;
-        let mut best_segments = 0usize;
-        let mut ambiguous_best = false;
-        for value in known_enums.values() {
-            if !value.ends_with(&suffix) {
-                continue;
-            }
-            let candidate = value.as_str();
-            let candidate_segments = ComponentPath::from_flat_path(candidate).len();
-            if candidate_segments > best_segments {
-                best_match = Some(candidate);
-                best_segments = candidate_segments;
-                ambiguous_best = false;
-            } else if candidate_segments == best_segments
-                && best_match.is_some_and(|existing| existing != candidate)
-            {
-                ambiguous_best = true;
-            }
-        }
-        if !ambiguous_best && let Some(value) = best_match {
-            return value.to_string();
-        }
-    }
-
-    literal.to_string()
 }
 
 #[cfg(test)]

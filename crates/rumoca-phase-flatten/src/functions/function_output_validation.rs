@@ -57,7 +57,7 @@ fn collect_statement_assigned_outputs<'a>(
         rumoca_core::Statement::FunctionCall {
             outputs: targets, ..
         } => {
-            for target in targets {
+            for target in targets.iter().flatten() {
                 collect_assigned_output_from_component_reference(target, outputs, assigned);
             }
             false
@@ -102,7 +102,7 @@ fn collect_assigned_output_from_component_reference<'a>(
     outputs: &IndexSet<&'a str>,
     assigned: &mut IndexSet<&'a str>,
 ) {
-    let Some(first) = comp.parts.first() else {
+    let Some(first) = comp.parts().first() else {
         return;
     };
     let output = first.ident.as_str();
