@@ -14,6 +14,9 @@ use rumoca_core::{BuiltinFunction, Span, apply_scalar_binary_math, apply_scalar_
 
 /// Evaluate a built-in function call.
 pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, EvalError> {
+    if let Some(result) = eval_vectorized_call(name, args, span) {
+        return result;
+    }
     if let Some(result) = eval_scalar_math_builtin(name, args, span) {
         return result;
     }
@@ -49,13 +52,72 @@ pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, Eva
         // String functions
         "String" => eval_string_convert(args, span),
 
-        // Array comparison functions (MLS library functions used for structural parameters)
-        "isEqual" | "Modelica.Math.Vectors.isEqual" | "Modelica.Math.Matrices.isEqual" => {
-            eval_is_equal(args, span)
-        }
-
         _ => Err(EvalError::unknown_function(name, span)),
     }
+}
+
+/// Apply a one-argument scalar builtin element-wise to an array actual.
+///
+/// MLS 3.6 §12.4.6 (referenced from §10.6.12): "Functions with one scalar
+/// return value can be applied to arrays element-wise, e.g., if `A` is a vector
+/// of reals, then `sin(A)` is a vector where each element is the result of
+/// applying the function `sin` to the corresponding element in `A`" —
+/// `sin({a, b, c}) = {sin(a), sin(b), sin(c)}`. The array actual is the
+/// *foreach argument* of that rule, and the result has its dimension sizes; the
+/// recursion carries the rule through a matrix row by row.
+///
+/// Only the one-argument scalar functions of MLS §3.7.3 (elementary
+/// mathematical), §3.7.1 (numeric `abs`/`sign`/`sqrt`) and §3.7.2
+/// (event-triggering `floor`/`ceil`/`integer`) are vectorized here, because
+/// those are exactly the builtins whose formal parameter is a scalar — an array
+/// actual can only be a foreach argument. `size`, `ndims`, `sum`, `product`,
+/// `fill`, `cat`, `linspace` and the reduction forms of `min`/`max`
+/// declare array formals, so an array actual there is the ordinary call and
+/// vectorizing it would change what the model means.
+fn eval_vectorized_call(
+    name: &str,
+    args: &[Value],
+    span: Span,
+) -> Option<Result<Value, EvalError>> {
+    if !is_scalar_argument_builtin(name) {
+        return None;
+    }
+    let [Value::Array(elements)] = args else {
+        return None;
+    };
+    Some(
+        elements
+            .iter()
+            .map(|element| eval_builtin(name, std::slice::from_ref(element), span))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+    )
+}
+
+/// The builtins whose single formal parameter is a scalar (MLS §3.7.1, §3.7.2,
+/// §3.7.3), so an array actual is a foreach argument under MLS §12.4.6.
+fn is_scalar_argument_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "sin"
+            | "cos"
+            | "tan"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "sinh"
+            | "cosh"
+            | "tanh"
+            | "exp"
+            | "log"
+            | "log10"
+            | "sqrt"
+            | "abs"
+            | "sign"
+            | "floor"
+            | "ceil"
+            | "integer"
+    )
 }
 
 fn eval_scalar_math_builtin(
@@ -114,9 +176,6 @@ pub fn is_builtin(name: &str) -> bool {
             | "integer"
             | "div"
             | "String"
-            | "isEqual"
-            | "Modelica.Math.Vectors.isEqual"
-            | "Modelica.Math.Matrices.isEqual"
     )
 }
 
@@ -162,16 +221,7 @@ fn eval_abs(args: &[Value], span: Span) -> Result<Value, EvalError> {
 fn eval_sign(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 1, span)?;
     match &args[0] {
-        Value::Real(x) => {
-            let s = if *x > 0.0 {
-                1.0
-            } else if *x < 0.0 {
-                -1.0
-            } else {
-                0.0
-            };
-            Ok(Value::Real(s))
-        }
+        Value::Real(x) => Ok(Value::Real(rumoca_core::modelica_sign(*x))),
         Value::Integer(x) => {
             let s = if *x > 0 {
                 1
@@ -218,13 +268,31 @@ fn eval_ceil(args: &[Value], span: Span) -> Result<Value, EvalError> {
     }
 }
 
+/// Collect the scalar elements of an array of any rank in row-major order.
+///
+/// MLS §3.7.2.4 defines `min(A)`/`max(A)` over an array expression with any
+/// number of dimensions, so a matrix such as `[a; b]` (a `Value::Array` of
+/// row `Value::Array`s) must be reduced element-wise, not row-wise.
+fn collect_array_scalars<'a>(value: &'a Value, out: &mut Vec<&'a Value>) {
+    match value.as_array() {
+        Some(elements) => {
+            for element in elements {
+                collect_array_scalars(element, out);
+            }
+        }
+        None => out.push(value),
+    }
+}
+
 // min/max: works on two values or array
 fn eval_min_max(args: &[Value], is_min: bool, span: Span) -> Result<Value, EvalError> {
     if args.len() == 1 {
-        // Array version
-        let arr = args[0]
-            .as_array()
-            .ok_or_else(|| EvalError::type_mismatch("Array", args[0].type_name(), span))?;
+        // Array version (any rank; MLS §3.7.2.4)
+        if args[0].as_array().is_none() {
+            return Err(EvalError::type_mismatch("Array", args[0].type_name(), span));
+        }
+        let mut arr: Vec<&Value> = Vec::new();
+        collect_array_scalars(&args[0], &mut arr);
         if arr.is_empty() {
             return Err(EvalError::function_error("min/max on empty array", span));
         }
@@ -232,14 +300,13 @@ fn eval_min_max(args: &[Value], is_min: bool, span: Span) -> Result<Value, EvalE
         // Check if all Integer
         let all_int = arr.iter().all(|v| matches!(v, Value::Integer(_)));
         if all_int {
-            let result =
-                arr[1..]
-                    .iter()
-                    .try_fold(integer_value(&arr[0], span)?, |acc, value| {
-                        let value = integer_value(value, span)?;
-                        let result = select_min_max_integer(acc, value, is_min);
-                        Ok(result)
-                    })?;
+            let result = arr[1..]
+                .iter()
+                .try_fold(integer_value(arr[0], span)?, |acc, value| {
+                    let value = integer_value(value, span)?;
+                    let result = select_min_max_integer(acc, value, is_min);
+                    Ok(result)
+                })?;
             return Ok(Value::Integer(result));
         }
 
@@ -294,6 +361,14 @@ fn select_min_max_integer(acc: i64, value: i64, is_min: bool) -> i64 {
 // mod: x - floor(x/y) * y
 fn eval_mod(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 2, span)?;
+    if let (Value::Integer(x), Value::Integer(y)) = (&args[0], &args[1]) {
+        if *y == 0 {
+            return Err(EvalError::DivisionByZero { span });
+        }
+        return rumoca_core::eval_integer_mod_builtin(*x, *y)
+            .map(Value::Integer)
+            .ok_or_else(|| integer_overflow_error("mod(...)", span));
+    }
     let x = to_real(&args[0], span)?;
     let y = to_real(&args[1], span)?;
     if y == 0.0 {
@@ -307,6 +382,14 @@ fn eval_mod(args: &[Value], span: Span) -> Result<Value, EvalError> {
 // rem: x - div(x,y) * y (truncated division)
 fn eval_rem(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 2, span)?;
+    if let (Value::Integer(x), Value::Integer(y)) = (&args[0], &args[1]) {
+        if *y == 0 {
+            return Err(EvalError::DivisionByZero { span });
+        }
+        return rumoca_core::eval_integer_rem_builtin(*x, *y)
+            .map(Value::Integer)
+            .ok_or_else(|| integer_overflow_error("rem(...)", span));
+    }
     let x = to_real(&args[0], span)?;
     let y = to_real(&args[1], span)?;
     if y == 0.0 {
@@ -325,7 +408,9 @@ fn eval_div(args: &[Value], span: Span) -> Result<Value, EvalError> {
             if *y == 0 {
                 return Err(EvalError::DivisionByZero { span });
             }
-            Ok(Value::Integer(x / y))
+            rumoca_core::eval_integer_div_builtin(*x, *y)
+                .map(Value::Integer)
+                .ok_or_else(|| integer_overflow_error("div(...)", span))
         }
         (a, b) => {
             let x = to_real(a, span)?;
@@ -333,7 +418,15 @@ fn eval_div(args: &[Value], span: Span) -> Result<Value, EvalError> {
             if y == 0.0 {
                 return Err(EvalError::DivisionByZero { span });
             }
-            checked_real_to_i64((x / y).trunc(), span, "div(...)").map(Value::Integer)
+            let result = (x / y).trunc();
+            if result.is_finite() {
+                Ok(Value::Real(result))
+            } else {
+                Err(EvalError::function_error(
+                    "div(...) produced a non-finite Real",
+                    span,
+                ))
+            }
         }
     }
 }
@@ -343,7 +436,12 @@ fn eval_integer(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 1, span)?;
     match &args[0] {
         Value::Integer(x) => Ok(Value::Integer(*x)),
-        Value::Real(x) => checked_real_to_i64(x.floor(), span, "integer(...)").map(Value::Integer),
+        Value::Real(x) => checked_real_to_i64(
+            rumoca_core::modelica_integer_value(*x),
+            span,
+            "integer(...)",
+        )
+        .map(Value::Integer),
         other => Err(EvalError::type_mismatch(
             "Real or Integer",
             other.type_name(),
@@ -630,68 +728,6 @@ fn eval_string_convert(args: &[Value], span: Span) -> Result<Value, EvalError> {
     };
     Ok(Value::String(value))
 }
-
-/// isEqual: Compare two arrays/matrices for numerical equality.
-///
-/// MLS library function: Modelica.Math.{Vectors,Matrices}.isEqual
-/// Signature: isEqual(v1, v2, eps=0) -> Boolean
-///
-/// Returns true if:
-/// - Both arrays have the same shape (dimensions)
-/// - All corresponding elements differ by at most `eps`
-fn eval_is_equal(args: &[Value], span: Span) -> Result<Value, EvalError> {
-    if args.len() < 2 || args.len() > 3 {
-        return Err(EvalError::WrongArgCount {
-            expected: 2,
-            actual: args.len(),
-            span,
-        });
-    }
-
-    let eps = if args.len() == 3 {
-        to_real(&args[2], span)?
-    } else {
-        0.0
-    };
-
-    Ok(Value::Bool(values_equal(&args[0], &args[1], eps)))
-}
-
-/// Recursively compare two values for equality within tolerance.
-fn values_equal(v1: &Value, v2: &Value, eps: f64) -> bool {
-    match (v1, v2) {
-        // Array comparison: must have same length and all elements equal
-        (Value::Array(arr1), Value::Array(arr2)) => {
-            if arr1.len() != arr2.len() {
-                return false;
-            }
-            arr1.iter()
-                .zip(arr2.iter())
-                .all(|(a, b)| values_equal(a, b, eps))
-        }
-        // Real comparison with tolerance
-        (Value::Real(r1), Value::Real(r2)) => (r1 - r2).abs() <= eps,
-        // Integer comparison (exact, or convert to real if eps > 0)
-        (Value::Integer(i1), Value::Integer(i2)) => {
-            if eps == 0.0 {
-                i1 == i2
-            } else {
-                ((*i1 as f64) - (*i2 as f64)).abs() <= eps
-            }
-        }
-        // Mixed Integer/Real comparison
-        (Value::Integer(i), Value::Real(r)) | (Value::Real(r), Value::Integer(i)) => {
-            ((*i as f64) - r).abs() <= eps
-        }
-        // Boolean comparison (exact)
-        (Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
-        // String comparison (exact)
-        (Value::String(s1), Value::String(s2)) => s1 == s2,
-        // Different types are not equal
-        _ => false,
-    }
-}
-
 // Helper: check argument count
 fn check_arg_count(args: &[Value], expected: usize, span: Span) -> Result<(), EvalError> {
     if args.len() != expected {
@@ -953,74 +989,40 @@ mod tests {
         let result =
             eval_builtin("div", &[Value::Integer(-7), Value::Integer(3)], Span::DUMMY).unwrap();
         assert_eq!(result.as_integer().unwrap(), -2);
-    }
-
-    #[test]
-    fn test_is_equal_vectors() {
-        // Equal vectors
-        let v1 = Value::Array(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)]);
-        let v2 = Value::Array(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)]);
-        let result = eval_builtin("isEqual", &[v1, v2], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(true));
-
-        // Different vectors
-        let v1 = Value::Array(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)]);
-        let v2 = Value::Array(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
-        let result = eval_builtin("isEqual", &[v1, v2], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(false));
-
-        // Different lengths
-        let v1 = Value::Array(vec![Value::Real(0.0), Value::Real(1.0)]);
-        let v2 = Value::Array(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)]);
-        let result = eval_builtin("isEqual", &[v1, v2], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(false));
-    }
-
-    #[test]
-    fn test_is_equal_with_tolerance() {
-        let v1 = Value::Array(vec![Value::Real(1.0), Value::Real(2.0)]);
-        let v2 = Value::Array(vec![Value::Real(1.001), Value::Real(2.001)]);
-
-        // Without tolerance: not equal
-        let result = eval_builtin("isEqual", &[v1.clone(), v2.clone()], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(false));
-
-        // With tolerance: equal
-        let result = eval_builtin("isEqual", &[v1, v2, Value::Real(0.01)], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(true));
-    }
-
-    #[test]
-    fn test_is_equal_matrices() {
-        // 2x2 matrix comparison (nested arrays)
-        let m1 = Value::Array(vec![
-            Value::Array(vec![Value::Real(1.0), Value::Real(2.0)]),
-            Value::Array(vec![Value::Real(3.0), Value::Real(4.0)]),
-        ]);
-        let m2 = Value::Array(vec![
-            Value::Array(vec![Value::Real(1.0), Value::Real(2.0)]),
-            Value::Array(vec![Value::Real(3.0), Value::Real(4.0)]),
-        ]);
-        let result = eval_builtin("isEqual", &[m1, m2], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(true));
-    }
-
-    #[test]
-    fn test_is_equal_qualified_name() {
-        // Test with qualified function names (as used in MSL)
-        let v1 = Value::Array(vec![Value::Integer(0), Value::Integer(1)]);
-        let v2 = Value::Array(vec![Value::Integer(0), Value::Integer(1)]);
-
-        let result = eval_builtin(
-            "Modelica.Math.Vectors.isEqual",
-            &[v1.clone(), v2.clone()],
-            Span::DUMMY,
-        )
-        .unwrap();
-        assert_eq!(result.as_bool(), Some(true));
 
         let result =
-            eval_builtin("Modelica.Math.Matrices.isEqual", &[v1, v2], Span::DUMMY).unwrap();
-        assert_eq!(result.as_bool(), Some(true));
+            eval_builtin("div", &[Value::Real(-7.0), Value::Integer(3)], Span::DUMMY).unwrap();
+        assert_eq!(result.as_real(), Some(-2.0));
+    }
+
+    #[test]
+    fn quotient_builtins_preserve_integer_result_types_and_sign_rules() {
+        let modulo =
+            eval_builtin("mod", &[Value::Integer(-7), Value::Integer(3)], Span::DUMMY).unwrap();
+        assert_eq!(modulo.as_integer(), Some(2));
+        let remainder =
+            eval_builtin("rem", &[Value::Integer(-7), Value::Integer(3)], Span::DUMMY).unwrap();
+        assert_eq!(remainder.as_integer(), Some(-1));
+
+        let real_modulo =
+            eval_builtin("mod", &[Value::Real(-7.0), Value::Integer(3)], Span::DUMMY).unwrap();
+        assert_eq!(real_modulo.as_real(), Some(2.0));
+    }
+
+    #[test]
+    fn is_equal_spellings_are_not_builtins() {
+        // isEqual is an MSL library function, not an MLS predefined builtin
+        // (§3.7). Dispatch must reach it only through a registered function
+        // body; an unregistered call is an unknown function, never an
+        // emulation keyed on the name's shape.
+        for spelling in [
+            "isEqual",
+            "Modelica.Math.Vectors.isEqual",
+            "Modelica.Math.Matrices.isEqual",
+        ] {
+            assert!(!is_builtin(spelling));
+            let v = Value::Array(vec![Value::Real(1.0)]);
+            assert!(eval_builtin(spelling, &[v.clone(), v], Span::DUMMY).is_err());
+        }
     }
 }
