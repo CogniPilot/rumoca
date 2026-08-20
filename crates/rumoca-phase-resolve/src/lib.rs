@@ -259,9 +259,6 @@ pub struct Resolver {
     pub(crate) name_to_def: IndexMap<String, DefId>,
     /// Map from class DefId to declared class type.
     pub(crate) class_types: IndexMap<DefId, rumoca_core::ClassType>,
-    /// Map from package qualified name to its direct children.
-    /// Used for O(1) unqualified import resolution instead of O(n) scan.
-    pub(crate) package_children: IndexMap<String, IndexMap<String, DefId>>,
     /// Collected diagnostics.
     pub(crate) diagnostics: Diagnostics,
     /// Set of class DefIds currently being resolved for extends (for direct cycle detection).
@@ -391,7 +388,6 @@ impl Resolver {
             def_names: IndexMap::default(),
             name_to_def: IndexMap::default(),
             class_types: IndexMap::default(),
-            package_children: IndexMap::default(),
             diagnostics: Diagnostics::new(),
             resolving_extends: std::collections::HashSet::new(),
             inheritance_edges: Vec::new(),
@@ -468,20 +464,12 @@ impl Resolver {
     /// top-level/global names) and register it in both lookup maps.
     ///
     /// The qualified name is composed here from the structured pair; callers
-    /// never join-and-resplit paths. Also populates the package_children map
-    /// for O(1) unqualified import resolution.
+    /// never join-and-resplit paths.
     pub(crate) fn alloc_def_id(&mut self, enclosing: Option<&str>, leaf: &str) -> DefId {
-        let id = DefId::new(self.next_def_id);
-        self.next_def_id += 1;
+        let id = self.alloc_local_def_id();
 
         let name = match enclosing {
-            Some(enclosing) if !enclosing.is_empty() => {
-                self.package_children
-                    .entry(enclosing.to_string())
-                    .or_default()
-                    .insert(leaf.to_string(), id);
-                format!("{enclosing}.{leaf}")
-            }
+            Some(enclosing) if !enclosing.is_empty() => format!("{enclosing}.{leaf}"),
             _ => leaf.to_string(),
         };
 
@@ -489,6 +477,15 @@ impl Resolver {
         self.name_to_def.insert(name.clone(), id);
         self.def_names.insert(id, name);
 
+        id
+    }
+
+    /// Allocate a source declaration identity that is visible only through its
+    /// lexical scope. Loop iterators have no global or qualified class name and
+    /// therefore must never enter the class entry-point indexes.
+    pub(crate) fn alloc_local_def_id(&mut self) -> DefId {
+        let id = DefId::new(self.next_def_id);
+        self.next_def_id += 1;
         id
     }
 
@@ -536,15 +533,27 @@ impl Resolver {
         let registration_ms = maybe_elapsed_ms(registration_start);
 
         let extends_start = maybe_start_timer();
-        // Phase 2a: Resolve all imports and extends clauses first
-        // This ensures inheritance edges are complete for inherited member lookup
-        self.resolve_extends_all(&mut tree.definitions, "");
+        // Phase 2a: construct imports and inheritance to a fixed point. Import
+        // paths can traverse inherited package members, while extends clauses
+        // can name imports, so neither relation is authoritative until both
+        // stop adding inheritance edges. Intermediate rounds are diagnostic-
+        // free; only the final, stable round reports unsupported names.
+        loop {
+            self.resolve_imports_all(&tree.definitions, false);
+            let edge_count = self.inheritance_edges.len();
+            self.resolve_extends_all(&mut tree.definitions, "", false);
+            self.populate_inherited_scope_members(&tree.definitions);
+            if self.inheritance_edges.len() == edge_count {
+                break;
+            }
+        }
+        self.resolve_imports_all(&tree.definitions, true);
+        self.resolve_extends_all(&mut tree.definitions, "", true);
         let extends_ms = maybe_elapsed_ms(extends_start);
 
         let cycle_check_start = maybe_start_timer();
-        // Reject cycles before recursively constructing effective inherited
-        // member views, then make inherited names participate in ordinary
-        // scope lookup before contents are resolved.
+        // Diagnose cycles after the graph is stable, then publish the final
+        // inherited view before contents are resolved.
         self.check_inheritance_cycles(&tree.definitions);
         self.populate_inherited_scope_members(&tree.definitions);
         let cycle_check_ms = maybe_elapsed_ms(cycle_check_start);

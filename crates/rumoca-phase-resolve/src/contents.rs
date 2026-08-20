@@ -31,7 +31,7 @@ impl ResolveTraversalCallbacks for Resolver {
     }
 
     fn bind_loop_index_name(&mut self, loop_scope: ScopeId, index_name: &str) {
-        let def_id = self.alloc_def_id(None, index_name);
+        let def_id = self.alloc_local_def_id();
         self.scope_tree.add_member(
             loop_scope,
             ComponentPath::from_flat_path(index_name),
@@ -385,7 +385,7 @@ impl Resolver {
     /// enclosing class.
     fn find_inherited_type(&self, scope: ScopeId, type_name: &str) -> Option<rumoca_core::DefId> {
         self.enclosing_class_def_ids(scope)
-            .find_map(|container| self.lookup_inherited_member_of(container, type_name))
+            .find_map(|container| self.lookup_class_member(container, type_name))
     }
 
     /// Resolve references in a list of expressions.
@@ -565,7 +565,7 @@ impl Resolver {
         }
 
         self.enclosing_class_def_ids(scope)
-            .find_map(|container| self.lookup_inherited_member_of(container, first_part))
+            .find_map(|container| self.lookup_class_member(container, first_part))
     }
 
     fn resolve_component_reference_full_path(
@@ -674,20 +674,9 @@ impl Resolver {
             // MLS §7.3: inherited class/type elements are visible as members of
             // the extending class, including simple type names in nested records.
             .or_else(|| self.find_inherited_type(scope, first_part))?;
-        let mut current_qualified = self.def_names.get(&current_def_id)?.clone();
-
         for part in name.name.iter().skip(1) {
             let member = part.text.as_ref();
-            let direct_name = format!("{current_qualified}.{member}");
-            if let Some(&next_def_id) = self.name_to_def.get(&direct_name) {
-                current_def_id = next_def_id;
-                current_qualified = self.def_names.get(&next_def_id)?.clone();
-                continue;
-            }
-
-            let inherited_def_id = self.lookup_inherited_member_of(current_def_id, member)?;
-            current_def_id = inherited_def_id;
-            current_qualified = self.def_names.get(&inherited_def_id)?.clone();
+            current_def_id = self.lookup_class_member(current_def_id, member)?;
         }
 
         Some(current_def_id)

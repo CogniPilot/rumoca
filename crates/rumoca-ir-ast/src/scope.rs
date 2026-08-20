@@ -99,10 +99,15 @@ impl ScopeTree {
         self.predefined_members.get(name).copied()
     }
 
-    /// Add an import to a scope.
-    pub fn add_import(&mut self, scope: ScopeId, import: Import) {
+    /// Replace every import visible directly in one source scope.
+    ///
+    /// Resolve constructs the complete import set for a class before publishing
+    /// it. Replacing the set makes repeated inheritance/import fixed-point
+    /// rounds idempotent: no consumer can observe duplicate or half-resolved
+    /// import clauses.
+    pub fn set_imports(&mut self, scope: ScopeId, imports: Vec<Import>) {
         if let Some(s) = self.get_mut(scope) {
-            s.imports.push(import);
+            s.imports = imports;
         }
     }
 
@@ -182,6 +187,32 @@ impl ScopeTree {
             Some(InheritedMember::Unique(def_id)) => Some(*def_id),
             Some(InheritedMember::Ambiguous) | None => None,
         }
+    }
+
+    /// Construct the unambiguous declaration view owned by one class scope.
+    ///
+    /// Direct declarations hide inherited declarations of the same name;
+    /// ambiguous inherited names are deliberately absent. Imports are lexical
+    /// conveniences and are not re-exported as package members (MLS §13.2.2).
+    pub fn effective_members(&self, scope: ScopeId) -> IndexMap<ComponentPath, DefId> {
+        let Some(scope) = self.get(scope) else {
+            return IndexMap::default();
+        };
+        let mut members = scope
+            .inherited_members
+            .iter()
+            .filter_map(|(name, member)| match member {
+                InheritedMember::Unique(def_id) => Some((name.clone(), *def_id)),
+                InheritedMember::Ambiguous => None,
+            })
+            .collect::<IndexMap<_, _>>();
+        members.extend(
+            scope
+                .members
+                .iter()
+                .map(|(name, def_id)| (name.clone(), *def_id)),
+        );
+        members
     }
 
     /// Whether `target` is declared directly in `scope`.

@@ -38,6 +38,44 @@ end Test;
     // Model should have a scope
     assert!(model.scope_id.is_some());
 }
+
+#[test]
+fn registered_scopes_retain_their_declared_class_kind() {
+    let source = r#"
+package P
+  function f
+    input Real x;
+    output Real y;
+  algorithm
+    y := x;
+  end f;
+end P;
+
+encapsulated function g
+  input Real x;
+  output Real y;
+algorithm
+  y := x;
+end g;
+"#;
+    let resolved = resolve_tree_source(source);
+    let tree = resolved.inner();
+    let package = tree.definitions.classes.get("P").expect("package P");
+    let function = package.classes.get("f").expect("function P.f");
+    let encapsulated = tree.definitions.classes.get("g").expect("function g");
+
+    for (class, expected) in [
+        (package, rumoca_ir_ast::ScopeKind::Package),
+        (function, rumoca_ir_ast::ScopeKind::Function),
+        (encapsulated, rumoca_ir_ast::ScopeKind::Encapsulated),
+    ] {
+        let scope = class.scope_id.expect("resolved class scope");
+        assert_eq!(
+            tree.scope_tree.get(scope).expect("scope row").kind,
+            expected
+        );
+    }
+}
 #[test]
 fn test_unresolved_component_reference_is_error() {
     let source = r#"

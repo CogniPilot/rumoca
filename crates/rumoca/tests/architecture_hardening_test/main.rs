@@ -83,6 +83,22 @@ fn test_semantic_code_does_not_add_textual_model_path_recovery() {
 }
 
 #[test]
+fn test_resolve_qualified_paths_only_traverse_scope_tree_members() {
+    let root = workspace_root();
+    for relative in [
+        "crates/rumoca-phase-resolve/src/lookup.rs",
+        "crates/rumoca-phase-resolve/src/extends.rs",
+        "crates/rumoca-phase-resolve/src/contents.rs",
+    ] {
+        let source = fs::read_to_string(root.join(relative)).expect("read resolve source");
+        assert!(
+            !source.contains("name_to_def"),
+            "{relative} must traverse qualified semantic paths through ScopeTree member APIs"
+        );
+    }
+}
+
+#[test]
 fn test_sim_sources_use_ir_namespace_aliases() {
     let root = workspace_root();
     let sim_dirs = [

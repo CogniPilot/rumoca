@@ -48,6 +48,41 @@ end QuasiStatic;
         "renamed package imports must preserve the record declaration identity"
     );
 }
+
+#[test]
+fn inherited_package_import_can_supply_an_extends_target() {
+    let source = r#"
+package BaseLibrary
+  package Types
+    model Parent
+      Real x;
+    end Parent;
+  end Types;
+end BaseLibrary;
+
+package Library
+  extends BaseLibrary;
+end Library;
+
+model Child
+  import Library.Types.Parent;
+  extends Parent;
+end Child;
+"#;
+
+    let tree = resolve_test_source(source)
+        .expect("imports must traverse the effective inherited package view before extends lookup");
+    let child = tree
+        .definitions
+        .classes
+        .get("Child")
+        .expect("Child must be registered");
+    let parent = child.extends[0]
+        .base_def_id
+        .and_then(|def_id| tree.def_map.get(&def_id));
+    assert_eq!(parent.map(String::as_str), Some("BaseLibrary.Types.Parent"));
+}
+
 #[test]
 fn test_short_package_alias_member_lookup_resolves_inherited_member() {
     let source = r#"

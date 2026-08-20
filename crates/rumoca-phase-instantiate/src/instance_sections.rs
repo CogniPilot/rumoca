@@ -3,7 +3,7 @@ use rumoca_ir_ast as ast;
 
 use super::connections;
 use super::inheritance::required_location_to_span;
-use super::source_scope::{location_source_scope, location_source_scope_id};
+use super::source_scope::location_source_scope;
 use super::{InstantiateContext, InstantiateError, InstantiateResult};
 
 /// Convert algorithm statements to instance statements.
@@ -20,11 +20,13 @@ pub(super) fn algorithms_to_instance(
                 .iter()
                 .map(|stmt| {
                     let location = stmt.get_location();
+                    let (source_scope, source_scope_id) = location_source_scope(ctx, location)
+                        .map_or((None, None), |(scope, scope_id)| (Some(scope), scope_id));
                     Ok(ast::InstanceStatement {
                         statement: stmt.clone(),
                         origin: origin.clone(),
-                        source_scope: location_source_scope(ctx, location),
-                        source_scope_id: location_source_scope_id(ctx, location),
+                        source_scope,
+                        source_scope_id,
                         span: required_location_to_span(
                             location,
                             source_map,
@@ -106,11 +108,13 @@ fn append_instance_equations(
             continue;
         }
         let location = equation.get_location();
+        let (source_scope, source_scope_id) = location_source_scope(ctx, location)
+            .map_or((None, None), |(scope, scope_id)| (Some(scope), scope_id));
         instances.push(ast::InstanceEquation {
             equation: equation.clone(),
             origin: origin.clone(),
-            source_scope: location_source_scope(ctx, location),
-            source_scope_id: location_source_scope_id(ctx, location),
+            source_scope,
+            source_scope_id,
             span: equation_owner_span(equation, location, source_map)?,
         });
     }

@@ -619,8 +619,7 @@ impl ast::Visitor for ExprTypeIssuesVisitor<'_> {
                 let refers_to_class = cref
                     .root_def_id()
                     .and_then(|def_id| find_class_by_def_id(self.def, def_id))
-                    .is_some()
-                    || bare_name_resolves_to_local_or_top_level_class(self.class, self.def, name);
+                    .is_some();
                 if !self.class.components.contains_key(name) && refers_to_class {
                     self.diags.push(semantic_error(
                         ER011_CLASS_USED_AS_VALUE,
@@ -640,14 +639,6 @@ impl ast::Visitor for ExprTypeIssuesVisitor<'_> {
         }
         walk_expression_default(self, expr)
     }
-}
-
-fn bare_name_resolves_to_local_or_top_level_class(
-    class: &ClassDef,
-    def: &StoredDefinition,
-    name: &str,
-) -> bool {
-    class.classes.contains_key(name) || def.classes.contains_key(name)
 }
 
 fn emit_non_boolean_if_condition(cond: &Expression, diags: &mut Vec<Diagnostic>) {

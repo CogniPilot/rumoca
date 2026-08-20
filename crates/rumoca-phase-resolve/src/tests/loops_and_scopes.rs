@@ -19,6 +19,41 @@ end Test;
 }
 
 #[test]
+fn loop_iterator_identity_does_not_replace_a_top_level_class_entry() {
+    let source = r#"
+model i
+end i;
+
+model Test
+  Real x[2];
+equation
+  for i in 1:2 loop
+    x[i] = i;
+  end for;
+end Test;
+"#;
+    let tree = resolve_parsed_tree_source(source)
+        .unwrap_or_else(|diagnostics| panic!("resolution failed: {diagnostics:#?}"))
+        .into_inner();
+    let class_id = tree
+        .definitions
+        .classes
+        .get("i")
+        .and_then(|class| class.def_id)
+        .expect("top-level class identity");
+
+    assert_eq!(tree.name_map.get("i"), Some(&class_id));
+    assert_eq!(
+        tree.def_map
+            .values()
+            .filter(|name| name.as_str() == "i")
+            .count(),
+        1,
+        "the scope-local iterator must not enter the qualified class-name index"
+    );
+}
+
+#[test]
 fn test_for_equation_range_resolves() {
     let source = r#"
 model Test

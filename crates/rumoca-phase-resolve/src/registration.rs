@@ -53,11 +53,7 @@ impl Resolver {
         qualified_name: &str,
     ) {
         // Create a scope for this class
-        let scope_kind = if class.encapsulated {
-            ast::ScopeKind::Encapsulated
-        } else {
-            ast::ScopeKind::Class
-        };
+        let scope_kind = class_scope_kind(class);
         let class_scope = self.scope_tree.create_scope(enclosing, scope_kind);
         class.scope_id = Some(class_scope);
         if let Some(class_def_id) = class.def_id {
@@ -116,5 +112,22 @@ impl Resolver {
             let nested_qualified = format!("{}.{}", qualified_name, name);
             self.register_class(nested, class_scope, &nested_qualified);
         }
+    }
+}
+
+fn class_scope_kind(class: &ast::ClassDef) -> ast::ScopeKind {
+    if class.encapsulated {
+        return ast::ScopeKind::Encapsulated;
+    }
+    match class.class_type {
+        rumoca_core::ClassType::Package => ast::ScopeKind::Package,
+        rumoca_core::ClassType::Function => ast::ScopeKind::Function,
+        rumoca_core::ClassType::Model
+        | rumoca_core::ClassType::Class
+        | rumoca_core::ClassType::Block
+        | rumoca_core::ClassType::Connector
+        | rumoca_core::ClassType::Record
+        | rumoca_core::ClassType::Type
+        | rumoca_core::ClassType::Operator => ast::ScopeKind::Class,
     }
 }

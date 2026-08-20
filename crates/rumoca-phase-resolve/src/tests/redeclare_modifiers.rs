@@ -281,17 +281,29 @@ fn redeclare_container_identity_comes_from_the_scope_tree_not_rendered_text() {
     let mut resolver = Resolver::new();
     let global = resolver.scope_tree.global();
 
-    let (base, _) = declare_test_class(&mut resolver, None, "Base", global);
+    let (_base, _) = declare_test_class(&mut resolver, None, "Base", global);
     let base_state = resolver.alloc_def_id(Some("Base"), "State");
     let (container, container_scope) = declare_test_class(&mut resolver, None, "Outer", global);
-    resolver.class_to_bases.insert(container, vec![base]);
-
-    let (unrelated_base, _) = declare_test_class(&mut resolver, None, "Unrelated", global);
-    let unrelated_state = resolver.alloc_def_id(Some("Unrelated"), "State");
-    let (unrelated, _) = declare_test_class(&mut resolver, None, "Decoy", global);
+    let mut inherited = rumoca_ir_ast::AstIndexMap::default();
+    inherited.insert(
+        ComponentPath::from_parts(["State"]),
+        rumoca_ir_ast::InheritedMember::Unique(base_state),
+    );
     resolver
-        .class_to_bases
-        .insert(unrelated, vec![unrelated_base]);
+        .scope_tree
+        .set_inherited_members(container_scope, inherited);
+
+    let (_unrelated_base, _) = declare_test_class(&mut resolver, None, "Unrelated", global);
+    let unrelated_state = resolver.alloc_def_id(Some("Unrelated"), "State");
+    let (unrelated, unrelated_scope) = declare_test_class(&mut resolver, None, "Decoy", global);
+    let mut unrelated_inherited = rumoca_ir_ast::AstIndexMap::default();
+    unrelated_inherited.insert(
+        ComponentPath::from_parts(["State"]),
+        rumoca_ir_ast::InheritedMember::Unique(unrelated_state),
+    );
+    resolver
+        .scope_tree
+        .set_inherited_members(unrelated_scope, unrelated_inherited);
 
     // Declared inside `Outer`'s scope, but rendered as `Decoy.State`.
     let (nested, _) = declare_test_class(&mut resolver, Some("Decoy"), "State", container_scope);
@@ -301,7 +313,7 @@ fn redeclare_container_identity_comes_from_the_scope_tree_not_rendered_text() {
         "fixture must distinguish the structural answer from the textual one"
     );
     assert_eq!(
-        resolver.lookup_inherited_member("Decoy", "State"),
+        resolver.lookup_class_member(unrelated, "State"),
         Some(unrelated_state),
         "fixture check: the textually named container inherits a different `State`"
     );
@@ -313,7 +325,7 @@ fn redeclare_container_identity_comes_from_the_scope_tree_not_rendered_text() {
     assert_eq!(
         resolver
             .enclosing_class_def_id(nested)
-            .and_then(|owner| resolver.lookup_inherited_member_of(owner, "State")),
+            .and_then(|owner| resolver.lookup_class_member(owner, "State")),
         Some(base_state),
         "the redeclared slot must come from the structural container's base chain"
     );
