@@ -377,7 +377,7 @@ mod tests {
                 },
                 ChangedFile {
                     status: "A".to_string(),
-                    path: "dev/review.md".to_string(),
+                    path: "notes/review.md".to_string(),
                 },
             ],
             &[Numstat {

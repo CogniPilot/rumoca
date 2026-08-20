@@ -6,7 +6,7 @@
 //! [`RowEvalContext::external_tables`]. Impure random-generator streams are
 //! carried by [`SimulationRuntimeState`] and are never process-global.
 
-// SPEC_0021 file-size exception - split plan: extract external-table access and the impure random-stream runtime state into eval-solve/src/runtime_state.rs, leaving this file as the row-evaluation facade; tracked as RDD2/GALEC cleanup debt (dev/2026-08-11 remediation note).
+// SPEC_0021 file-size exception - split plan: extract external-table access and the impure random-stream runtime state into eval-solve/src/runtime_state.rs, leaving this file as the row-evaluation facade; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 
 use std::{
     cell::RefCell,
@@ -3883,7 +3883,7 @@ fn eval_function_conditional(
     program: &rumoca_ir_solve::FunctionConditionalProgram,
     captures: &[f64],
 ) -> Result<Vec<f64>, EvalSolveError> {
-    for arm in &program.arms {
+    for (arm_index, arm) in program.arms.iter().enumerate() {
         let condition = eval_function_conditional_region(
             input,
             &arm.condition,
@@ -3891,6 +3891,14 @@ fn eval_function_conditional(
             captures,
             1,
         )?;
+        tracing::trace!(
+            target: "rumoca_eval_solve::function_conditional",
+            arm_index,
+            condition = condition[0],
+            result_count = program.result_count,
+            capture_count = program.capture_count,
+            "evaluate function-conditional arm"
+        );
         if condition[0] != 0.0 {
             return eval_function_conditional_region(
                 input,

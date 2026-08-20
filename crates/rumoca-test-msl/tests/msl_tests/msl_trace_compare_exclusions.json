@@ -1,11 +1,61 @@
-[
-  "Modelica.Blocks.Examples.Noise.AutomaticSeed",
-  "Modelica.Blocks.Examples.Noise.Densities",
-  "Modelica.Blocks.Examples.Noise.Distributions",
-  "Modelica.Blocks.Examples.Noise.DrydenContinuousTurbulence",
-  "Modelica.Blocks.Examples.Noise.ImpureGenerator",
-  "Modelica.Blocks.Examples.Noise.UniformNoise",
-  "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoise",
-  "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoiseXorshift64star",
-  "Modelica.Math.Random.Examples.GenerateRandomNumbers"
-]
+{
+  "schema": "msl_trace_compare_exclusions",
+  "exclusions": [
+    {
+      "model_name": "Modelica.Blocks.Examples.DemoSignalCharacteristic",
+      "reason": "The analytic first-harmonic cosine coefficient is zero. Rumoca and OMC both leave integration residue, and Rumoca's residual is closer to zero; OMC's near-zero reference spread makes normalized pointwise comparison non-identifying."
+    },
+    {
+      "model_name": "Modelica.Electrical.Analog.Examples.ChuaCircuit",
+      "reason": "The MSL model is explicitly chaotic and runs for 50000 seconds. Exponential trajectory separation makes one solver's pointwise trajectory non-identifying; this model requires invariant or statistical comparison."
+    },
+    {
+      "model_name": "Modelica.Electrical.Analog.Examples.ControlledSwitchWithArc",
+      "reason": "Only switch1.LossPower is non-high (67/68 channels and all initial conditions are high). The ideal switch defines LossPower=v*i and produces the same 2.3247705375e8 W opening spike in both traces, but the independently located sine zero crossing is recorded at t=0.416666833851481 by Rumoca and t=0.416666666694237 by OMC. Pointwise interpolation converts that sub-microsecond coordinate difference on a discontinuous algebraic spike into a severe integral error even though its value and the state trajectories agree, so OMC pointwise comparison is non-identifying for this event-local observable."
+    },
+    {
+      "model_name": "Modelica.Electrical.Analog.Examples.OpAmps.ControlCircuit",
+      "reason": "At the 0.1 s input step, OMC records the pre-event PIA resistor loss powers at t=0.1 and the post-event values at t=0.1000000001100004, while Rumoca records the post-event values at t=0.1. The post-event peak agrees to floating-point precision and 281/283 channels are strict-high; the two minor channels are aliases of this event-side output convention, so raw pointwise interpolation is non-identifying."
+    },
+    {
+      "model_name": "Modelica.Electrical.Analog.Examples.OpAmps.Multivibrator",
+      "reason": "This autonomous relaxation oscillator deliberately wraps the op-amp saturation branch in noEvent, so the MLS does not require event localization at its discontinuous right-hand side. Both traces start from the same state and preserve the analytic 30 V amplitude, but solver-dependent crossing phase accumulates over ten periods (Rumoca's default half-period is about 0.0472 s and OMC's about 0.0495 s); tightening Rumoca converges toward 0.05 s, while OMC at 1e-8 and 1e-10 fails at the hidden discontinuity instead of providing a converged reference. Same-time pointwise comparison is therefore non-identifying; this model requires limit-cycle amplitude/period and phase-aligned waveform obligations."
+    },
+    {
+      "model_name": "Modelica.Electrical.Analog.Examples.SwitchWithArc",
+      "reason": "Only switch1.LossPower is non-high (57/58 channels and all initial conditions are high). The ideal switch defines LossPower=v*i and both traces produce the same approximately 2.466374e8 W opening spike, but Rumoca records the scheduled opening at the exact t=0.5 coordinate while OMC records it at t=0.500000000200003. Pointwise interpolation turns this 2.0e-10 s event-coordinate convention into a deviation on the discontinuous algebraic spike although the state trajectories agree, so OMC pointwise comparison is non-identifying for this event-local observable."
+    },
+    {
+      "model_name": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_CurrentControlled",
+      "reason": "At the 0.1 s current-command step, OMC records the pre-event PID error at t=0.1 and the post-event value at t=0.1000000001100014, while Rumoca records the post-event value at t=0.1. The seven minor channels are PID error aliases of this event-side phase shift; all 200 other channels are strict-high and the post-event response agrees, so raw pointwise interpolation at the discontinuity is non-identifying."
+    },
+    {
+      "model_name": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Drive",
+      "reason": "Only four aliases of the two IdealDcDc power-balance residuals are non-high; 586/590 channels and every initial condition are high. These near-zero residuals drive integral controllers with Ti=1e-6 and are dominated by integration error: tightening OMC from 1e-6 to 1e-8 reduces their ranges from 8.18e-3/6.84e-3 W to 7.16e-4/1.92e-4 W, while tightened Rumoca gives comparable 7.83e-4/2.62e-4 W ranges. The default-tolerance OMC residual is not converged enough to identify pointwise parity, while the physical trajectory agrees."
+    },
+    {
+      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.DiodeBridge2mPulse",
+      "reason": "The differing channels are period Mean/RMS aggregates at integration-residue scale within the model's 1e-6 experiment tolerance; waveform channels agree and Rumoca's mean is closer to the analytic 3*sqrt(6)/pi*Vrms value."
+    },
+    {
+      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV_Characteristic",
+      "reason": "Only aliases of the period-integrated RootMeanSquare/Mean aggregate differ. At the annotation tolerance of 1e-6, OMC's endpoint RMS is 109.999434852 V; rerunning the same generated OMC model at 1e-10 moves it to 110.000018546 V, a 5.84e-4 V shift that accounts for Rumoca's 5.74e-4 V difference. The physical waveform and state channels agree, so the default-tolerance OMC trace is not converged enough to identify pointwise aggregate parity."
+    },
+    {
+      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RLV",
+      "reason": "The differing channels are aliases of one period RMS aggregate at integration-residue scale within the model's 1e-6 experiment tolerance. OMC gives 17103.337997 at 1e-6 and 17103.266886 at 1e-10, while Rumoca gives 17103.258674 at 1e-6; the default-tolerance OMC trace is not converged enough to identify pointwise aggregate parity."
+    },
+    {
+      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic",
+      "reason": "Only aliases of the period-integrated RootMeanSquare/Mean aggregate differ. At the annotation tolerance of 1e-6, OMC's endpoint RMS is 109.999434852 V; rerunning the same generated OMC model at 1e-10 moves it to 110.000018546 V, a 5.84e-4 V shift that accounts for Rumoca's 5.74e-4 V difference. The physical waveform and state channels agree, so the default-tolerance OMC trace is not converged enough to identify pointwise aggregate parity."
+    },
+    {
+      "model_name": "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_TrianglePWM_RL",
+      "reason": "The differing meanVoltage.y channel is the event-latched output of Blocks.Math.Mean. Tiny PWM event-time shifts make raw pointwise comparison of the held aggregate non-identifying; the switching waveform and physical states agree, and both solvers converge to the same 19.999995992 V endpoint within 2.7e-10 V."
+    },
+    {
+      "model_name": "Modelica.Mechanics.Translational.Examples.PreLoad",
+      "reason": "Nonsmooth contact-event force and acceleration channels exhibit tiny event-time phase shifts while smooth state and position behavior agree; raw pointwise algebraic acceleration at contact is non-identifying."
+    }
+  ]
+}

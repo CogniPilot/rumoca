@@ -484,15 +484,35 @@ fn last_stage_seconds(report: &MslParityTimingReport) -> f64 {
         .map_or(0.0, |stage| stage.elapsed_seconds)
 }
 
-fn run_simulation_parity_stages(summary: &MslSummary, report: &mut MslParityTimingReport) {
+/// Run the comparator stage and report what it did.
+///
+/// The stage NEVER panics on a comparator that could not run: it returns the
+/// typed reason, which the gate turns into a loud "parity unmeasured" verdict.
+/// Panicking here would abort before the summary is printed, which is how a
+/// skipped comparator used to look identical to a comparator that ran.
+fn run_simulation_parity_stages(
+    summary: &MslSummary,
+    report: &mut MslParityTimingReport,
+) -> MslParityStageOutcome {
     let parity_start = Instant::now();
     let _parity_watchdog = StageAbortWatchdog::new("parity_stage", 7200);
     println!("MSL parity stage: ensuring OMC references + trace comparison...");
-    run_timed_parity_stage_or_panic(
-        report,
+    let stage_start = Instant::now();
+    let outcome = ensure_required_msl_parity_references(summary);
+    let status = match &outcome {
+        MslParityStageOutcome::Ran | MslParityStageOutcome::MergedShardArtifacts => "pass",
+        MslParityStageOutcome::DidNotRun(reason) => {
+            println!(
+                "MSL {PARITY_UNMEASURED_HEADLINE} ({}); the comparator stage produced no bands",
+                reason.detail()
+            );
+            "fail"
+        }
+    };
+    report.record_stage(
         "omc_reference_and_trace_compare",
-        "Failed to ensure required OMC parity references",
-        || ensure_required_msl_parity_references(summary),
+        status,
+        stage_start.elapsed(),
     );
     run_timed_parity_stage_or_panic(
         report,
@@ -504,16 +524,21 @@ fn run_simulation_parity_stages(summary: &MslSummary, report: &mut MslParityTimi
         "MSL parity stage: completed in {:.2}s",
         parity_start.elapsed().as_secs_f64()
     );
+    outcome
 }
 
-fn run_quality_snapshot_stage(summary: &MslSummary, report: &mut MslParityTimingReport) {
+fn run_quality_snapshot_stage(
+    summary: &MslSummary,
+    stage: &MslParityStageOutcome,
+    report: &mut MslParityTimingReport,
+) {
     let _snapshot_watchdog = StageAbortWatchdog::new("quality_snapshot_write", 300);
     println!("MSL parity stage: writing current quality snapshot...");
     run_timed_parity_stage_or_panic(
         report,
         "quality_snapshot_write",
         "Failed to write current MSL quality snapshot",
-        || write_current_msl_quality_snapshot(summary),
+        || write_current_msl_quality_snapshot(summary, stage),
     );
     println!(
         "MSL parity stage: quality snapshot written in {:.2}s",
@@ -521,7 +546,11 @@ fn run_quality_snapshot_stage(summary: &MslSummary, report: &mut MslParityTiming
     );
 }
 
-fn run_quality_gate_stage(summary: &MslSummary, report: &mut MslParityTimingReport) {
+fn run_quality_gate_stage(
+    summary: &MslSummary,
+    stage: &MslParityStageOutcome,
+    report: &mut MslParityTimingReport,
+) {
     if should_skip_msl_quality_gate() {
         println!(
             "MSL quality gate: baseline delta checks skipped for focused/non-baseline run (committed target scope, explicit target file, subset, or non-default sim set)."
@@ -530,7 +559,7 @@ fn run_quality_gate_stage(summary: &MslSummary, report: &mut MslParityTimingRepo
             report,
             "quality_gate_eval_partial",
             "Failed to run MSL quality gate",
-            || enforce_msl_quality_gate(summary),
+            || enforce_msl_quality_gate(summary, stage),
         );
         return;
     }
@@ -540,7 +569,7 @@ fn run_quality_gate_stage(summary: &MslSummary, report: &mut MslParityTimingRepo
         report,
         "quality_gate_eval",
         "Failed to run MSL quality gate",
-        || enforce_msl_quality_gate(summary),
+        || enforce_msl_quality_gate(summary, stage),
     );
     println!(
         "MSL quality gate: completed in {:.2}s",
@@ -576,6 +605,23 @@ fn print_simulatable_compilation_rate(summary: &MslSummary) {
     );
 }
 
+fn run_comparator_before_quality_gate<State, Compare, Gate>(
+    simulations_attempted: bool,
+    state: &mut State,
+    compare: Compare,
+    gate: Gate,
+) where
+    Compare: FnOnce(&mut State) -> MslParityStageOutcome,
+    Gate: FnOnce(&MslParityStageOutcome, &mut State),
+{
+    let parity_stage = if simulations_attempted {
+        compare(state)
+    } else {
+        MslParityStageOutcome::DidNotRun(MslParityUnmeasuredReason::NoSimulationsAttempted)
+    };
+    gate(&parity_stage, state);
+}
+
 pub(super) fn print_final_stats(summary: &MslSummary) {
     let write_start = Instant::now();
     write_msl_results(summary).expect("Failed to write results");
@@ -591,17 +637,21 @@ pub(super) fn print_final_stats(summary: &MslSummary) {
         "  - Core + JSON write subtotal: {:.2}s",
         summary.timings.core_pipeline_seconds + json_write_seconds
     );
-    assert_valid_msl_summary(summary);
-    if require_selected_targets_success() && !selected_target_failures(summary).is_empty() {
-        run_quality_gate_stage(summary, &mut timing_report);
-        finalize_msl_parity_timing_report(&mut timing_report);
-        return;
-    }
-    if summary.sim_attempted > 0 {
-        run_simulation_parity_stages(summary, &mut timing_report);
-        run_quality_snapshot_stage(summary, &mut timing_report);
-    }
-    run_quality_gate_stage(summary, &mut timing_report);
+    // Only the structural measurability check runs before the comparator.
+    // Every verdict that depends on simulation outcomes, including the
+    // explicit selected-target success gate, is downstream of the parity
+    // stage, so no gate can abort before every surviving trace is measured.
+    assert_msl_run_is_measurable(summary);
+    run_comparator_before_quality_gate(
+        summary.sim_attempted > 0,
+        &mut timing_report,
+        |report| {
+            let stage = run_simulation_parity_stages(summary, report);
+            run_quality_snapshot_stage(summary, &stage, report);
+            stage
+        },
+        |stage, report| run_quality_gate_stage(summary, stage, report),
+    );
     finalize_msl_parity_timing_report(&mut timing_report);
     print_simulatable_compilation_rate(summary);
 }
@@ -956,5 +1006,21 @@ mod tests {
             .expect("failed stage should be recorded");
         assert_eq!(stage.label, "quality_gate_eval");
         assert_eq!(stage.status, "fail");
+    }
+
+    #[test]
+    fn explicit_selected_target_failure_gate_runs_after_comparator() {
+        let mut stages = Vec::new();
+        run_comparator_before_quality_gate(
+            true,
+            &mut stages,
+            |stages| {
+                stages.push("comparator");
+                MslParityStageOutcome::Ran
+            },
+            |_stage, stages| stages.push("selected_target_success_gate"),
+        );
+
+        assert_eq!(stages, ["comparator", "selected_target_success_gate"]);
     }
 }

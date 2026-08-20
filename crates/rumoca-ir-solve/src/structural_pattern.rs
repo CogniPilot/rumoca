@@ -1,4 +1,4 @@
-// SPEC_0021 file-size exception - split plan: split the derivation walk by construction owner (scalar-JVP derivation into structural_pattern/scalar_jvp.rs, seed/output dependency derivation into structural_pattern/dependency.rs, wire records into structural_pattern/wire.rs), leaving construction + provenance here; tracked as the pattern-authority follow-up slice (dev/2026-08-11 remediation note).
+// SPEC_0021 file-size exception - split plan: split the derivation walk by construction owner (scalar-JVP derivation into structural_pattern/scalar_jvp.rs, seed/output dependency derivation into structural_pattern/dependency.rs, wire records into structural_pattern/wire.rs), leaving construction + provenance here; tracked as the pattern-authority follow-up slice (SPEC_0021 follow-up).
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 
@@ -569,6 +569,71 @@ impl StructuralPattern {
         program_output_y_dependencies(program, span)
     }
 
+    /// Exact solver-`P` dependencies of every output of one checked scalar
+    /// program, in output order.
+    ///
+    /// Runtime storage follows immutable model parameters in the same `P`
+    /// vector. Consumers that prove a program parameter-static must therefore
+    /// compare this construction-derived set with the immutable prefix rather
+    /// than treating every `P` load as a constant.
+    pub fn derive_output_p_dependencies(
+        program: &[LinearOp],
+        span: Option<Span>,
+    ) -> Result<Vec<BTreeSet<usize>>, StructuralPatternError> {
+        program_output_dependencies_with_fold(
+            program,
+            span,
+            None,
+            None,
+            None,
+            DependencySource::SolverP,
+        )?
+        .into_iter()
+        .map(|dependencies| match dependencies {
+            DependencyState::Known(indices) => Ok(indices),
+            DependencyState::Unknown => Err(dependency_error(
+                "scalar output has an opaque solver-P dependency",
+                span,
+            )),
+        })
+        .collect()
+    }
+
+    /// Whether each output of one checked scalar program depends on an AD
+    /// seed input.
+    pub fn derive_output_seed_dependencies(
+        program: &[LinearOp],
+        span: Option<Span>,
+    ) -> Result<Vec<bool>, StructuralPatternError> {
+        derive_output_dependency_presence(program, span, DependencySource::Seed, "AD-seed")
+    }
+
+    /// Whether each output of one checked scalar program contains an opaque
+    /// runtime operation such as table access or random-state evaluation.
+    ///
+    /// The dependency walk deliberately treats these operations as an effect
+    /// even when their explicit register inputs are constant. This lets cache
+    /// certificates fail closed without making consumers rediscover nested
+    /// function/fold control flow.
+    pub fn derive_output_effect_dependencies(
+        program: &[LinearOp],
+        span: Option<Span>,
+    ) -> Result<Vec<bool>, StructuralPatternError> {
+        derive_output_dependency_presence(program, span, DependencySource::Effect, "runtime-effect")
+    }
+
+    /// Whether each output of one checked scalar program depends on time.
+    ///
+    /// This uses the same exhaustive compact-operation walk as solver-`Y`
+    /// dependency derivation, so tensor and typed-call inputs remain one
+    /// construction-owned proof instead of being rediscovered by consumers.
+    pub fn derive_output_time_dependencies(
+        program: &[LinearOp],
+        span: Option<Span>,
+    ) -> Result<Vec<bool>, StructuralPatternError> {
+        derive_output_dependency_presence(program, span, DependencySource::Time, "time")
+    }
+
     /// Non-production fixture constructor.
     ///
     /// SPEC_0039 / SOLVE-C17: tests and backend benchmarks need a pattern with
@@ -963,8 +1028,29 @@ enum DependencyState {
 
 #[derive(Clone, Copy)]
 enum DependencySource {
+    Effect,
     Seed,
+    SolverP,
     SolverY,
+    Time,
+}
+
+fn derive_output_dependency_presence(
+    program: &[LinearOp],
+    span: Option<Span>,
+    source: DependencySource,
+    source_name: &'static str,
+) -> Result<Vec<bool>, StructuralPatternError> {
+    program_output_dependencies_with_fold(program, span, None, None, None, source)?
+        .into_iter()
+        .map(|dependencies| match dependencies {
+            DependencyState::Known(indices) => Ok(!indices.is_empty()),
+            DependencyState::Unknown => Err(dependency_error(
+                format!("scalar output has an opaque {source_name} dependency"),
+                span,
+            )),
+        })
+        .collect()
 }
 
 impl DependencyState {
@@ -1133,8 +1219,9 @@ fn apply_dependency_op(
     op: LinearOp,
 ) -> Result<(), StructuralPatternError> {
     match op {
-        LinearOp::Const { dst, .. } | LinearOp::LoadTime { dst } | LinearOp::LoadP { dst, .. } =>
-            walk.set_empty(dst),
+        LinearOp::Const { dst, .. } => walk.set_empty(dst),
+        LinearOp::LoadP { dst, index } => walk.load_p(dst, index),
+        LinearOp::LoadTime { dst } => walk.load_time(dst),
         LinearOp::LoadY { dst, index } => walk.load_y(dst, index),
         LinearOp::LoadSeed { dst, index } => walk.load_seed(dst, index),
         LinearOp::LoadFoldCarried { dst, index } => walk.load_fold_carried(dst, index)?,
@@ -1144,7 +1231,8 @@ fn apply_dependency_op(
             walk.load_conditional_capture(dst, index)?,
         LinearOp::LoadFunctionConditionalCaptureRange { dst_start, index_start, count } =>
             walk.load_conditional_capture_range(dst_start, index_start, count)?,
-        LinearOp::LoadIndexedP { dst, index, .. } => walk.copy(dst, index)?,
+        LinearOp::LoadIndexedP { dst, base, count, index } =>
+            walk.load_indexed_p(dst, base, count, index)?,
         LinearOp::LoadIndexedRegister { dst, base, stride, dimensions, indices } =>
             walk.load_indexed_register(dst, base, stride, &dimensions, &indices)?,
         LinearOp::LoadIndexedFoldCarried { dst, base, stride, dimensions, indices } =>
@@ -1307,16 +1395,58 @@ impl DependencyWalk<'_> {
     /// as constants; [`DependencyWalk::load_seed`] is the mirror image.
     fn load_y(&mut self, dst: Reg, index: usize) {
         match self.source {
-            DependencySource::Seed => self.set_empty(dst),
+            DependencySource::Effect
+            | DependencySource::Seed
+            | DependencySource::SolverP
+            | DependencySource::Time => self.set_empty(dst),
             DependencySource::SolverY => self.set_seed(dst, index),
+        }
+    }
+
+    fn load_p(&mut self, dst: Reg, index: usize) {
+        match self.source {
+            DependencySource::SolverP => self.set_seed(dst, index),
+            DependencySource::Effect
+            | DependencySource::Seed
+            | DependencySource::SolverY
+            | DependencySource::Time => self.set_empty(dst),
+        }
+    }
+
+    fn load_time(&mut self, dst: Reg) {
+        match self.source {
+            DependencySource::Time => self.set_seed(dst, 0),
+            DependencySource::Effect
+            | DependencySource::Seed
+            | DependencySource::SolverP
+            | DependencySource::SolverY => self.set_empty(dst),
         }
     }
 
     fn load_seed(&mut self, dst: Reg, index: usize) {
         match self.source {
             DependencySource::Seed => self.set_seed(dst, index),
-            DependencySource::SolverY => self.set_empty(dst),
+            DependencySource::Effect
+            | DependencySource::SolverP
+            | DependencySource::SolverY
+            | DependencySource::Time => self.set_empty(dst),
         }
+    }
+
+    fn load_indexed_p(
+        &mut self,
+        dst: Reg,
+        base: usize,
+        count: usize,
+        index: Reg,
+    ) -> Result<(), StructuralPatternError> {
+        let mut dependencies = self.get(index)?;
+        if matches!(self.source, DependencySource::SolverP) {
+            let end = checked_indexed_seed_end(base, count, self.span)?;
+            dependencies = dependencies.union(DependencyState::Known((base..end).collect()));
+        }
+        self.set(dst, dependencies);
+        Ok(())
     }
 
     fn load_context_value(
@@ -1479,16 +1609,13 @@ impl DependencyWalk<'_> {
         count: usize,
         index: Reg,
     ) -> Result<(), StructuralPatternError> {
-        set_indexed_seed_dependency(
-            &mut self.registers,
-            IndexedSeedDependency {
-                dst,
-                base,
-                count,
-                index,
-            },
-            self.span,
-        )
+        let mut dependencies = self.get(index)?;
+        if matches!(self.source, DependencySource::Seed) {
+            let end = checked_indexed_seed_end(base, count, self.span)?;
+            dependencies = dependencies.union(DependencyState::Known((base..end).collect()));
+        }
+        self.set(dst, dependencies);
+        Ok(())
     }
 
     fn linear_solve(
@@ -1790,7 +1917,13 @@ impl DependencyWalk<'_> {
                 (DependencySource::SolverY, crate::TensorInputKind::Y) => {
                     DependencyState::singleton(input_start + element)
                 }
+                (DependencySource::SolverP, crate::TensorInputKind::P) => {
+                    DependencyState::singleton(input_start + element)
+                }
                 (DependencySource::Seed, _)
+                | (DependencySource::Effect, _)
+                | (DependencySource::Time, _)
+                | (DependencySource::SolverP, crate::TensorInputKind::Y)
                 | (DependencySource::SolverY, crate::TensorInputKind::P) => {
                     DependencyState::empty()
                 }
@@ -1799,7 +1932,10 @@ impl DependencyWalk<'_> {
             if lanes == 2 {
                 let dependency = match self.source {
                     DependencySource::Seed => tensor_load_seed(seed_start, element),
-                    DependencySource::SolverY => DependencyState::empty(),
+                    DependencySource::Effect
+                    | DependencySource::SolverP
+                    | DependencySource::SolverY
+                    | DependencySource::Time => DependencyState::empty(),
                 };
                 self.set(dst_start + (element * lanes + 1) as Reg, dependency);
             }
@@ -1807,6 +1943,16 @@ impl DependencyWalk<'_> {
     }
 
     fn runtime(&mut self, op: LinearOp) -> Result<(), StructuralPatternError> {
+        if matches!(self.source, DependencySource::Effect) {
+            let dst = op.dst_register().ok_or_else(|| {
+                dependency_error(
+                    "runtime dependency operation has no output register",
+                    self.span,
+                )
+            })?;
+            self.set_seed(dst, 0);
+            return Ok(());
+        }
         apply_runtime_dependency(&mut self.registers, op, self.span)
     }
 
@@ -2212,13 +2358,6 @@ fn function_fold_dependencies(
     }
 }
 
-struct IndexedSeedDependency {
-    dst: Reg,
-    base: usize,
-    count: usize,
-    index: Reg,
-}
-
 struct LinearSolveDependency {
     dst: Reg,
     matrix_start: Reg,
@@ -2322,18 +2461,6 @@ fn set_range_dependency(
 ) -> Result<(), StructuralPatternError> {
     let dependencies = register_range(registers, start, len, span)?;
     set_register(registers, dst, dependencies);
-    Ok(())
-}
-
-fn set_indexed_seed_dependency(
-    registers: &mut Vec<Option<DependencyState>>,
-    dependency: IndexedSeedDependency,
-    span: Option<Span>,
-) -> Result<(), StructuralPatternError> {
-    let mut dependencies = register(registers, dependency.index, span)?;
-    let end = checked_indexed_seed_end(dependency.base, dependency.count, span)?;
-    dependencies = dependencies.union(DependencyState::Known((dependency.base..end).collect()));
-    set_register(registers, dependency.dst, dependencies);
     Ok(())
 }
 
@@ -2793,11 +2920,14 @@ mod tests {
             declarations, 1,
             "exactly one caller-row constructor may exist"
         );
-        let gated = source
+        let declaration_prefix = source
             .split(declaration.as_str())
             .next()
-            .expect("the declaration is preceded by its attribute")
-            .ends_with("#[cfg(any(test, feature = \"pattern-fixtures\"))]\n    ");
+            .expect("the declaration is preceded by its attribute");
+        let gated = declaration_prefix
+            .strip_suffix("    ")
+            .and_then(|prefix| prefix.lines().next_back())
+            == Some("    #[cfg(any(test, feature = \"pattern-fixtures\"))]");
         assert!(
             gated,
             "from_row_dependencies must be declared directly under the pattern-fixtures gate"

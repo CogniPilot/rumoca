@@ -152,8 +152,6 @@ Defeated alternatives are
 
 ## References
 
-- `dev/2026-08-11-core-structure-decisions.md` §13.1–§13.6 — the user-ratified
-  decision record consolidated here.
 - CasADi user guide, `web.casadi.org/docs` §3.1 (`SX` scalar expression graphs),
   §3.3 (`MX` matrix primitives), §3.4 (mixing `SX` and `MX`), §4.2 (`expand()`)
   — the §2 rationale.

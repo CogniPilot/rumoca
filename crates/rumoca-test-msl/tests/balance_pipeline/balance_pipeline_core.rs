@@ -9,6 +9,9 @@ use rumoca_worker::{
 };
 use streaming_workers::*;
 
+#[cfg(test)]
+mod partial_classification_tests;
+
 /// Run full MSL compile pipeline using Session for parallel compilation.
 ///
 /// Set `run_simulation=false` for compile+balance-only runs.
@@ -16,6 +19,7 @@ const COMPILE_CHUNK_PROGRESS_INTERVAL_SECS: u64 = 15;
 const COMPILE_CHUNK_PROGRESS_POLL_MILLIS: u64 = 250;
 const MODEL_ATTEMPT_TIMEOUT_ERROR_CODE: &str = "EMSL_TIMEOUT_MODEL_ATTEMPT";
 const MODEL_WORKER_ERROR_CODE: &str = "EMSL_MODEL_WORKER";
+const MODEL_WORKER_MEMORY_LIMIT_ERROR_CODE: &str = "EMSL_MODEL_WORKER_MEMORY_LIMIT";
 const COMPILE_PIPELINE_STAGE_BUDGETS: f64 = 4.0;
 /// Slow-compile logging threshold (None = off). Edit to enable.
 const SLOW_COMPILE_LOG_THRESHOLD_SECS: Option<f64> = None;
@@ -153,16 +157,18 @@ pub(super) fn log_simulation_run_configuration(run_simulation: bool) {
         return;
     }
     let compile_stage_budget = model_attempt_timeout_secs();
+    let solver_budget = sim_timeout_secs();
+    let phase_timeouts = model_worker_phase_timeouts(compile_stage_budget, solver_budget);
     println!("Per-model compile stage budget: {}s", compile_stage_budget);
     println!(
-        "Per-model model worker phase timeout: {}s",
-        compile_stage_budget
+        "Per-model simulation parent watchdog: {}s",
+        phase_timeouts.timeout_secs_for(Some(rumoca_worker::WorkerProgressPhase::Sim))
     );
     println!(
         "Model worker startup timeout: {}s",
         model_worker_startup_timeout_secs(compile_stage_budget)
     );
-    println!("Per-model simulation timeout: {}s", sim_timeout_secs());
+    println!("Per-model simulation timeout: {}s", solver_budget);
     if let Some(stop_time_override) = simulation_stop_time_override() {
         println!(
             "Simulation horizon mode: override stopTime={} via RUMOCA_MSL_SIM_STOP_TIME_OVERRIDE",
@@ -206,6 +212,57 @@ pub(super) fn select_compile_models_for_run(
         compile_scope_count,
         compile_names: compile_scope_names,
     }
+}
+
+fn source_partial_classification(
+    tree: &rumoca_ir_ast::ClassTree,
+    model_names: &[String],
+) -> Result<BTreeMap<String, bool>, String> {
+    model_names
+        .iter()
+        .map(|name| {
+            tree.get_class_by_qualified_name(name)
+                .map(|class| (name.clone(), class.partial))
+                .ok_or_else(|| format!("source partial classification cannot find `{name}`"))
+        })
+        .collect()
+}
+
+fn apply_source_partial_classification(
+    results: &mut [MslModelResult],
+    classification: &BTreeMap<String, bool>,
+) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for result in results {
+        let source_partial = classification
+            .get(&result.model_name)
+            .copied()
+            .ok_or_else(|| format!("unclassified MSL result `{}`", result.model_name))?;
+        if !seen.insert(result.model_name.clone()) {
+            return Err(format!("duplicate MSL result `{}`", result.model_name));
+        }
+        if let Some(compiled_partial) = result.is_partial
+            && compiled_partial != source_partial
+        {
+            return Err(format!(
+                "partial classification disagrees for `{}`: source={source_partial}, compiled={compiled_partial}",
+                result.model_name
+            ));
+        }
+        result.is_partial = Some(source_partial);
+    }
+    if seen.len() != classification.len() {
+        let missing = classification
+            .keys()
+            .filter(|name| !seen.contains(*name))
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(format!(
+            "source partial classification has no MSL result for: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 fn slow_compile_log_threshold_secs_from_override(raw: Option<&str>) -> Option<f64> {
@@ -561,7 +618,7 @@ fn finalize_compile_entry(
     let remaining_budget_secs = if compile_outcome.is_success() {
         // Keep the compile budget and simulation timeout independent. Once
         // compile finishes within budget, the sim worker should still receive
-        // the nominal solver timeout rather than "10s minus compile time",
+        // the nominal solver timeout rather than subtracting compile time,
         // otherwise near-threshold models regress due to compile overhead
         // instead of simulation behavior.
         Some(budget_secs)
@@ -712,6 +769,24 @@ fn compile_model_with_budget_timeout<T: FocusedClosureCompiler + Sync + Send + '
     }
 }
 
+/// Record the machine-readable classification for a harness-side failure.
+///
+/// These never carry the worker's own typed classification: the worker either
+/// never ran, or was killed before it could report one. The harness therefore
+/// mints the bucket from the typed [`ModelWorkerRunOutcome`] it observed, never
+/// from the message it renders for humans.
+pub(super) fn set_harness_failure_classification(
+    result: &mut MslModelResult,
+    active_phase: Option<WorkerProgressPhase>,
+    bucket: rumoca_worker::ModelFailureBucket,
+    error_code: &str,
+) {
+    result.failure_phase = Some(active_phase.unwrap_or(WorkerProgressPhase::Compile));
+    result.failure_bucket = Some(bucket);
+    result.owner_category = Some(bucket.owner_category());
+    result.failure_error_code = Some(error_code.to_string());
+}
+
 fn model_worker_failure_entry(
     model_name: &str,
     budget_secs: f64,
@@ -763,6 +838,7 @@ fn worker_model_result_to_msl(result: WorkerModelResult) -> MslModelResult {
         ir_flat_file: result.ir_flat_file,
         sim_status: result.sim_status,
         sim_error: result.sim_error,
+        sim_error_code: result.sim_error_code,
         sim_error_span: result.sim_error_span,
         ic_status: result.ic_status,
         ic_error: result.ic_error,
@@ -773,6 +849,11 @@ fn worker_model_result_to_msl(result: WorkerModelResult) -> MslModelResult {
         ir_solve_seconds: result.ir_solve_seconds,
         ir_solve_structural_dae_seconds: result.ir_solve_structural_dae_seconds,
         ir_solve_lower_seconds: result.ir_solve_lower_seconds,
+        tensor_family_bodies: result.tensor_family_bodies,
+        tensor_preserved_family_bodies: result.tensor_preserved_family_bodies,
+        tensor_scalarized_family_rows: result.tensor_scalarized_family_rows,
+        tensor_preservation_percent: result.tensor_preservation_percent,
+        tensor_preservation_error: result.tensor_preservation_error,
         sim_backend_build_seconds: result.sim_backend_build_seconds,
         sim_run_seconds: result.sim_run_seconds,
         sim_wall_seconds: result.sim_wall_seconds,
@@ -782,8 +863,14 @@ fn worker_model_result_to_msl(result: WorkerModelResult) -> MslModelResult {
         ir_dae_file: result.ir_dae_file,
         ir_solve_file: result.ir_solve_file,
         ir_solve_error: result.ir_solve_error,
+        ir_solve_error_code: result.ir_solve_error_code,
         timeout_phase: result.timeout_phase,
         timeout_seconds: result.timeout_seconds,
+        balance_detail: result.balance_detail,
+        failure_phase: result.failure_phase,
+        failure_bucket: result.failure_bucket,
+        owner_category: result.owner_category,
+        failure_error_code: result.failure_error_code,
     }
 }
 
@@ -792,12 +879,19 @@ fn model_worker_failure_result(
     error_code: &str,
     error: impl Into<String>,
 ) -> MslModelResult {
-    worker_model_result_to_msl(WorkerModelResult::phase_failure(
+    let mut result = worker_model_result_to_msl(WorkerModelResult::phase_failure(
         model_name.to_string(),
         "ToDae",
         error.into(),
         Some(error_code.to_string()),
-    ))
+    ));
+    set_harness_failure_classification(
+        &mut result,
+        None,
+        rumoca_worker::ModelFailureBucket::HarnessFailure,
+        error_code,
+    );
+    result
 }
 
 fn model_worker_artifact_dir_name(model_name: &str) -> String {
@@ -864,6 +958,7 @@ fn simulation_timeout_model_result(
         return None;
     }
     let message = timeout_message(model_name, elapsed_secs, phase_timeout_secs, active_phase);
+    result.sim_error_code = Some(MODEL_ATTEMPT_TIMEOUT_ERROR_CODE.to_string());
     result.timeout_phase = active_phase;
     result.timeout_seconds = Some(phase_timeout_secs);
     match active_phase {
@@ -901,6 +996,60 @@ fn simulation_timeout_model_result(
     Some(result)
 }
 
+fn memory_limit_message(
+    model_name: &str,
+    elapsed_secs: f64,
+    memory_limit_mb: usize,
+    active_phase: Option<WorkerProgressPhase>,
+) -> String {
+    let active_phase = active_phase
+        .map(|phase| phase.to_string())
+        .unwrap_or_else(|| "Unknown".to_string());
+    format!(
+        "model worker exceeded {memory_limit_mb} MB resident-plus-swap limit after {elapsed_secs:.3}s in phase {active_phase} ({model_name})"
+    )
+}
+
+fn simulation_memory_limit_model_result(
+    model_name: &str,
+    output_dir: &Path,
+    elapsed_secs: f64,
+    memory_limit_mb: usize,
+    active_phase: Option<WorkerProgressPhase>,
+) -> Option<MslModelResult> {
+    let partial_path = output_dir.join(MODEL_WORKER_PARTIAL_RESULT_FILE);
+    let mut result =
+        worker_model_result_to_msl(read_model_worker_response_file(&partial_path).ok()?.result);
+    if result.phase_reached != "Success" {
+        return None;
+    }
+    let message = memory_limit_message(model_name, elapsed_secs, memory_limit_mb, active_phase);
+    match active_phase {
+        Some(WorkerProgressPhase::Solve) => {
+            result.ir_solve_error = Some(message.clone());
+            result.sim_status = Some("sim_solver_fail".to_string());
+            result.sim_error = Some(message);
+        }
+        Some(WorkerProgressPhase::SimBuild) => {
+            result.sim_status = Some("sim_solver_fail".to_string());
+            result.sim_error = Some(message);
+        }
+        Some(WorkerProgressPhase::IC) => {
+            result.ic_status = Some("ic_solver_fail".to_string());
+            result.ic_error = Some(message.clone());
+            result.sim_status = Some("sim_solver_fail".to_string());
+            result.sim_error = Some(message);
+        }
+        Some(WorkerProgressPhase::Sim) => {
+            result.ic_status = Some("ic_ok".to_string());
+            result.sim_status = Some("sim_solver_fail".to_string());
+            result.sim_error = Some(message);
+        }
+        _ => return None,
+    }
+    Some(result)
+}
+
 #[derive(Clone, Copy)]
 struct InProcessWorkerRequest<'a> {
     source_root_path: &'a Path,
@@ -928,6 +1077,7 @@ fn run_compile_model_in_process_worker(
             plan.source_root_path,
             plan.startup_timeout_secs,
             plan.cpu_core_id,
+            model_worker_memory_limit_mb(),
         ) {
             Ok(spawned) => *worker = Some(spawned),
             Err(error) => {
@@ -953,10 +1103,30 @@ fn run_compile_model_in_process_worker(
             "model worker",
         )
     });
-    let outcome = worker_ref.run_request(&request, phase_timeout_secs, &progress_jsonl);
+    let outcome = worker_ref.run_request(
+        &request,
+        model_worker_phase_timeouts(phase_timeout_secs, sim_timeout_secs()),
+        &progress_jsonl,
+    );
     if let Some(session) = perf_session {
         session.finish();
     }
+    finish_in_process_worker_outcome(
+        worker,
+        plan,
+        &output_dir,
+        compile_perf_artifacts.as_ref(),
+        outcome,
+    )
+}
+
+fn finish_in_process_worker_outcome(
+    worker: &mut Option<ModelWorkerDaemon>,
+    plan: InProcessWorkerRequest<'_>,
+    output_dir: &Path,
+    compile_perf_artifacts: Option<&CompilePerfArtifacts>,
+    outcome: ModelWorkerRunOutcome,
+) -> (MslModelResult, bool) {
     match outcome {
         ModelWorkerRunOutcome::Completed(response) => {
             let response = *response;
@@ -967,10 +1137,15 @@ fn run_compile_model_in_process_worker(
                     .as_deref()
                     .is_some_and(|status| status != "sim_ok");
             result.compile_perf_profile_file = retain_compile_perf_profile_if(
-                compile_perf_artifacts.as_ref(),
+                compile_perf_artifacts,
                 response.elapsed_secs,
                 force_keep,
             );
+            // Declared per-model ceilings (Solve-IR serialized size, total
+            // compile wall) are applied to every completed attempt, so an
+            // overrun is a loud, typed `ResourceBudget` failure rather than a
+            // model that merely looks slow in the timings table.
+            enforce_model_resource_budgets(&mut result);
             (result, true)
         }
         ModelWorkerRunOutcome::TimedOut {
@@ -980,10 +1155,10 @@ fn run_compile_model_in_process_worker(
         } => {
             *worker = None;
             let compile_perf_profile_file =
-                retain_compile_timeout_perf_profile(compile_perf_artifacts.as_ref(), elapsed_secs);
+                retain_compile_timeout_perf_profile(compile_perf_artifacts, elapsed_secs);
             let mut result = simulation_timeout_model_result(
                 plan.model_name,
-                &output_dir,
+                output_dir,
                 elapsed_secs,
                 phase_timeout_secs,
                 active_phase,
@@ -996,6 +1171,45 @@ fn run_compile_model_in_process_worker(
                     active_phase,
                 )
             });
+            set_harness_failure_classification(
+                &mut result,
+                active_phase,
+                rumoca_worker::ModelFailureBucket::Timeout,
+                MODEL_ATTEMPT_TIMEOUT_ERROR_CODE,
+            );
+            result.compile_perf_profile_file = compile_perf_profile_file;
+            (result, false)
+        }
+        ModelWorkerRunOutcome::MemoryLimitExceeded {
+            elapsed_secs,
+            active_phase,
+            memory_limit_mb,
+        } => {
+            *worker = None;
+            let compile_perf_profile_file =
+                retain_compile_timeout_perf_profile(compile_perf_artifacts, elapsed_secs);
+            let message =
+                memory_limit_message(plan.model_name, elapsed_secs, memory_limit_mb, active_phase);
+            let mut result = simulation_memory_limit_model_result(
+                plan.model_name,
+                output_dir,
+                elapsed_secs,
+                memory_limit_mb,
+                active_phase,
+            )
+            .unwrap_or_else(|| {
+                model_worker_failure_result(
+                    plan.model_name,
+                    MODEL_WORKER_MEMORY_LIMIT_ERROR_CODE,
+                    message,
+                )
+            });
+            set_harness_failure_classification(
+                &mut result,
+                active_phase,
+                rumoca_worker::ModelFailureBucket::MemoryLimit,
+                MODEL_WORKER_MEMORY_LIMIT_ERROR_CODE,
+            );
             result.compile_perf_profile_file = compile_perf_profile_file;
             (result, false)
         }
@@ -1031,8 +1245,8 @@ fn prepare_model_worker_request(
         run_simulation: plan.run_simulation,
         selected_for_simulation: plan.selected_for_simulation,
         explicit_sim_target: plan.explicit_sim_target,
+        sim_timeout_secs: Some(sim_timeout_secs()),
         emit_json: false,
-        allow_unbalanced_for_diagnostics: false,
         nan_trace: false,
         emit_modelica: false,
         source_root_path: plan.source_root_path.to_path_buf(),
@@ -1304,7 +1518,24 @@ fn prepare_compiled_source_root(
     println!("Building tolerant source-root index...");
     let session_start = Instant::now();
     let _session_watchdog = StageAbortWatchdog::new("session_build", 300);
-    let source_root = match CompiledSourceRoot::from_parsed_batch_tolerant(parsed_successes) {
+    let source_map = match rumoca_compile::parsing::source_map_for_parsed_files(&parsed_successes) {
+        Ok(source_map) => source_map,
+        Err(error) => {
+            println!("Failed to preserve parsed source text: {error}");
+            let mut summary = empty_summary(total_mo_files, parse_errors);
+            summary.resolve_errors = 1;
+            return Err(Box::new(finalize_early_summary(
+                summary,
+                timings,
+                frontend_compile_start,
+                core_start,
+            )));
+        }
+    };
+    let source_root = match CompiledSourceRoot::from_parsed_batch_with_resolution_planning(
+        parsed_successes,
+        source_map,
+    ) {
         Ok(source_root) => std::sync::Arc::new(source_root),
         Err(error) => {
             println!("Failed to build tolerant source-root index: {error}");
@@ -1384,7 +1615,10 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
     let context = setup.context(run_simulation);
     let simulation_threads = simulation_threads_for_run(run_simulation);
 
-    let chunked_output = run_chunked_compile_and_render(
+    let partial_classification =
+        source_partial_classification(source_root.tree(), &selection.compile_names)
+            .unwrap_or_else(|error| panic!("invalid source partial classification: {error}"));
+    let mut chunked_output = run_chunked_compile_and_render(
         &source_root,
         &msl_dir,
         &selection.compile_names,
@@ -1392,6 +1626,8 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
         &context,
         simulation_threads,
     );
+    apply_source_partial_classification(&mut chunked_output.model_results, &partial_classification)
+        .unwrap_or_else(|error| panic!("invalid source partial classification: {error}"));
 
     timings.compile_seconds = chunked_output.compile_only_seconds;
     timings.render_and_write_seconds = chunked_output.render_and_write_seconds;
@@ -1399,7 +1635,7 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
     timings.compile_chunk_count = chunked_output.chunk_count;
     timings.worker_threads = chunked_output.worker_threads;
     timings.scheduler = chunked_output.scheduler;
-    update_phase_timing_totals(&mut timings);
+    update_phase_timing_totals(&mut timings, &chunked_output.model_results);
     timings.frontend_compile_seconds =
         timings.parse_seconds + timings.session_build_seconds + timings.compile_seconds;
     print_compile_timing_summary(compile_count, &timings);
@@ -1415,7 +1651,7 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
         total_mo_files: parsed.total_mo_files,
         parse_errors: parsed.parse_errors,
         total_models: selection.compile_scope_count,
-        class_type_counts,
+        class_type_counts: class_type_counts.into_iter().collect(),
     };
 
     finalize_msl_summary_from_results(
