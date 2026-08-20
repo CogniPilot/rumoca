@@ -1,13 +1,35 @@
-pub mod event;
+#[cfg(not(kani))]
+pub mod delay;
+#[cfg(not(kani))]
+pub mod eval_at;
+pub(crate) mod event_history;
+#[cfg(not(kani))]
+pub mod event_newton;
+#[cfg(not(kani))]
 pub mod hotpath_stats;
+#[cfg(not(kani))]
+pub mod inspect_alloc;
+#[cfg(not(kani))]
+pub mod iterative_solve;
+#[cfg(not(kani))]
+pub mod jacobian;
+#[cfg(not(kani))]
 pub mod mass_matrix;
-pub mod no_state;
-pub mod orchestration;
+#[cfg(not(kani))]
 pub mod pre_params;
+#[cfg(not(kani))]
 pub mod projection;
+#[cfg(not(kani))]
 pub mod report;
+#[cfg(not(kani))]
 pub mod schedule;
+#[cfg(not(kani))]
+pub mod solve_events;
+#[cfg(not(kani))]
 pub mod solve_ops;
-pub mod tensor_policy;
+#[cfg(not(kani))]
+pub mod solve_runtime;
+#[cfg(not(kani))]
 pub mod time;
+#[cfg(not(kani))]
 pub mod timeout;
