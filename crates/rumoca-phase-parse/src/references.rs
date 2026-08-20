@@ -21,6 +21,7 @@ impl TryFrom<&modelica_grammar_trait::ComponentReference> for rumoca_ir_ast::Com
         parts.push(rumoca_ir_ast::ComponentRefPart {
             ident: ast.ident.clone(),
             subs: first_subs,
+            def_id: None,
         });
         for comp_ref in &ast.component_reference_list {
             parts.push(comp_ref.component_ref_part.clone());
@@ -36,7 +37,7 @@ impl TryFrom<&modelica_grammar_trait::ComponentReference> for rumoca_ir_ast::Com
             local: ast.component_reference_opt.is_some(),
             parts,
             span,
-            def_id: None,
+            qualified_display_name: None,
         })
     }
 }
@@ -54,6 +55,7 @@ impl TryFrom<&modelica_grammar_trait::ComponentRefPart> for rumoca_ir_ast::Compo
                 .component_ref_part_opt
                 .as_ref()
                 .map(|subs| subs.array_subscripts.subscripts.clone()),
+            def_id: None,
         })
     }
 }

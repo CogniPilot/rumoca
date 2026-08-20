@@ -142,6 +142,14 @@ pub struct Component {
     pub is_replaceable: bool,
     /// True if declared with element-level `redeclare` prefix.
     pub is_redeclare: bool,
+    /// True once an `extends` modification has redeclared this inherited
+    /// component (MLS §7.3, `extends Base(redeclare C a[2])`).
+    ///
+    /// Instantiation consumes only the redeclared *type* from such a
+    /// modification, so everything else the redeclare states — notably array
+    /// dimensions — is dropped. Consumers that would otherwise read this
+    /// component's shape as a fact about the source must treat it as unproven.
+    pub redeclared_by_modification: bool,
     /// Constraining type for replaceable components (MLS §7.3.2)
     /// If set, redeclarations must be subtypes of this type
     pub constrainedby: Option<Name>,
@@ -241,6 +249,7 @@ impl Component {
             is_final: false,
             is_replaceable: false,
             is_redeclare: false,
+            redeclared_by_modification: false,
             constrainedby: None,
             is_structural: false,
         }
@@ -402,6 +411,12 @@ pub struct ExternalFunction {
     pub output: Option<ComponentReference>,
     /// Arguments passed to the external function.
     pub args: Vec<Expression>,
+    /// Annotation arguments attached to the external clause (MLS §12.9.4).
+    ///
+    /// These remain syntax-preserving AST expressions so annotations such as
+    /// `Library` and `Include` are not collapsed into rendered strings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotation: Vec<Expression>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -478,6 +493,13 @@ pub struct ClassDef {
     pub is_replaceable: bool,
     /// True if declared with element-level `redeclare` prefix.
     pub is_redeclare: bool,
+    /// Resolved inherited class slot replaced by this declaration (MLS §7.3).
+    ///
+    /// This is semantic identity, not a same-spelling heuristic. It is
+    /// populated by name resolution after the containing class's extends
+    /// graph is available.
+    #[serde(default)]
+    pub redeclare_target_def_id: Option<DefId>,
     /// Constraining type for replaceable classes (MLS §7.3.2)
     /// If set, redeclarations must be subtypes of this type
     pub constrainedby: Option<Name>,
@@ -527,6 +549,7 @@ impl Default for ClassDef {
             is_outer: false,
             is_replaceable: false,
             is_redeclare: false,
+            redeclare_target_def_id: None,
             constrainedby: None,
             array_subscripts: Vec::new(),
             external: None,
@@ -685,6 +708,12 @@ impl Import {
 pub struct ComponentRefPart {
     pub ident: Token,
     pub subs: Option<Vec<Subscript>>,
+    /// Exact declaration reached by this segment.
+    ///
+    /// Resolve fills static paths; Instantiate fills segments deferred across
+    /// replaceable-class boundaries before constructing instance IR.
+    #[serde(skip)]
+    pub def_id: Option<DefId>,
 }
 
 impl Debug for ComponentRefPart {
@@ -712,7 +741,7 @@ fn format_subscripts(subs: &[Subscript]) -> String {
         .join(",")
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 
 pub struct ComponentReference {
     /// Whether this reference starts with a `.` (local lookup).
@@ -721,10 +750,53 @@ pub struct ComponentReference {
     pub parts: Vec<ComponentRefPart>,
     /// Source span for this component reference.
     pub span: Span,
-    /// Resolved definition ID for the first part (populated by resolve phase).
-    /// For `a.b.c`, this resolves `a` to its DefId.
+    /// Non-semantic qualified display spelling. Resolution and identity proofs
+    /// use only `parts`; this cache is ignored by equality and serialization.
+    ///
+    /// It spells the leading parts that stay on one reference when the
+    /// reference is lowered — every part of an unsubscripted reference, and
+    /// the parts up to and including the first subscripted one otherwise,
+    /// always without subscripts. Lowering splits at that first subscripted
+    /// part, so a spelling that covered more parts could not be attached to
+    /// anything.
     #[serde(skip)]
-    pub def_id: Option<DefId>,
+    pub qualified_display_name: Option<rumoca_core::VarName>,
+}
+
+impl ComponentReference {
+    pub fn root_def_id(&self) -> Option<DefId> {
+        self.parts.first().and_then(|part| part.def_id)
+    }
+
+    pub fn target_def_id(&self) -> Option<DefId> {
+        self.parts.last().and_then(|part| part.def_id)
+    }
+
+    pub fn set_root_def_id(&mut self, def_id: Option<DefId>) {
+        if let Some(root) = self.parts.first_mut() {
+            root.def_id = def_id;
+        }
+    }
+
+    pub fn set_target_def_id(&mut self, def_id: Option<DefId>) {
+        if let Some(target) = self.parts.last_mut() {
+            target.def_id = def_id;
+        }
+    }
+
+    pub fn qualified_display_name(&self) -> Option<&rumoca_core::VarName> {
+        self.qualified_display_name.as_ref()
+    }
+
+    pub fn set_qualified_display_name(&mut self, name: impl Into<String>) {
+        self.qualified_display_name = Some(rumoca_core::VarName::new(name));
+    }
+}
+
+impl PartialEq for ComponentReference {
+    fn eq(&self, other: &Self) -> bool {
+        self.local == other.local && self.parts == other.parts && self.span == other.span
+    }
 }
 
 impl Display for ComponentReference {
@@ -799,6 +871,8 @@ pub enum Equation {
     FunctionCall {
         comp: ComponentReference,
         args: Vec<Expression>,
+        /// Exact source range of the complete call, including delimiters.
+        span: Span,
     },
     /// MLS §8.3.7: assert(condition, message, level)
     Assert {
@@ -873,6 +947,12 @@ pub enum Expression {
     FunctionCall {
         comp: ComponentReference,
         args: Vec<Expression>,
+        /// True for the grammar form `function F(bound = value)`.
+        ///
+        /// A partial application is a function value, not a call result. The
+        /// parser must preserve that distinction through semantic checking.
+        #[serde(default)]
+        is_partial_application: bool,
         span: Span,
     },
     /// Class modification in extends/declaration context: `i(x = 2)`
@@ -963,6 +1043,9 @@ pub enum Expression {
         base: Arc<Expression>,
         /// The field name to access.
         field: String,
+        /// Exact declaration identity of the projected field after resolution.
+        #[serde(skip)]
+        field_def_id: Option<DefId>,
         span: Span,
     },
 }
@@ -980,10 +1063,16 @@ impl Debug for Expression {
                 .field("end", end)
                 .finish(),
             Expression::ComponentReference(comp) => write!(f, "{:?}", comp),
-            Expression::FunctionCall { comp, args, .. } => f
+            Expression::FunctionCall {
+                comp,
+                args,
+                is_partial_application,
+                ..
+            } => f
                 .debug_struct("FunctionCall")
                 .field("comp", comp)
                 .field("args", args)
+                .field("is_partial_application", is_partial_application)
                 .finish(),
             Expression::ClassModification {
                 target,
@@ -1085,6 +1174,27 @@ fn format_debug_if_branches(branches: &[(Expression, Expression)]) -> String {
 }
 
 impl Expression {
+    /// Return the semantic value of a nested component modifier with a binding.
+    ///
+    /// MLS §7.2 syntax such as `field(start = 1) = value` is represented as
+    /// `Assign(ClassModification(field, ...), value)`. The class-modification
+    /// side owns field attributes; consumers projecting a value binding must
+    /// carry only the right-hand side into executable IR.
+    pub fn component_modifier_binding_value(&self) -> Option<&Self> {
+        match self {
+            Self::Binary {
+                op: rumoca_core::OpBinary::Assign,
+                lhs,
+                rhs,
+                ..
+            } if matches!(lhs.as_ref(), Self::ClassModification { .. }) => Some(rhs),
+            // `field(attributes...)` has no value binding. Its attributes are
+            // projected independently during instantiation.
+            Self::ClassModification { .. } => None,
+            value => Some(value),
+        }
+    }
+
     pub fn span(&self) -> Span {
         match self {
             Expression::Empty { span }
@@ -1160,13 +1270,29 @@ impl std::fmt::Display for Expression {
                 token,
                 ..
             } => match terminal_type {
-                TerminalType::String => write!(f, "\"{}\"", token.text),
+                TerminalType::String => {
+                    write!(
+                        f,
+                        "\"{}\"",
+                        rumoca_core::escape_modelica_string(&token.text)
+                    )
+                }
                 TerminalType::Bool => write!(f, "{}", token.text),
                 _ => write!(f, "{}", token.text),
             },
             Expression::ComponentReference(comp) => write!(f, "{}", comp),
-            Expression::FunctionCall { comp, args, .. } => {
-                write!(f, "{}({})", comp, format_display_list(args))
+            Expression::FunctionCall {
+                comp,
+                args,
+                is_partial_application,
+                ..
+            } => {
+                let prefix = if *is_partial_application {
+                    "function "
+                } else {
+                    ""
+                };
+                write!(f, "{}{}({})", prefix, comp, format_display_list(args))
             }
             Expression::ClassModification {
                 target,
@@ -1310,7 +1436,7 @@ impl std::fmt::Display for Equation {
                 cond_blocks,
                 else_block,
             } => format_if_equation(f, cond_blocks, else_block),
-            Equation::FunctionCall { comp, args } => {
+            Equation::FunctionCall { comp, args, .. } => {
                 write!(f, "{}({})", comp, format_display_list(args))
             }
             Equation::Assert {
@@ -1471,6 +1597,46 @@ pub enum Subscript {
     },
 }
 
+impl Subscript {
+    /// The array extent this subscript states, when it states one syntactically.
+    ///
+    /// Two subscript forms are dimensions on sight, with no scope or modifier
+    /// environment needed (MLS §10.5):
+    ///
+    /// - an unsigned integer literal — `Real x[3]` has extent 3;
+    /// - the type name `Boolean`, whose two values index the array — `Real
+    ///   x[Boolean]` has extent 2, and OpenModelica flattens it to
+    ///   `x[false], x[true]`.
+    ///
+    /// Everything else (a parameter reference, `:`, an enumeration type name, an
+    /// arbitrary expression) is *not* decided here and stays symbolic for a
+    /// later phase that has the scope to evaluate it.
+    ///
+    /// This lives on the AST node rather than in a phase because both places
+    /// that record a component's shape must agree: the parser, for a shape read
+    /// off a declaration, and instantiation, for a shape restated by a
+    /// redeclaration (MLS §7.3). They drifted once — instantiation's private
+    /// copy dropped the `Boolean` arm, so `redeclare C a[Boolean]` silently
+    /// produced a scalar while the identical declaration produced two elements.
+    pub fn literal_dimension(&self) -> Option<usize> {
+        match self {
+            Subscript::Expression(Expression::Terminal {
+                token,
+                terminal_type: TerminalType::UnsignedInteger,
+                ..
+            }) => token.text.parse::<usize>().ok(),
+            // MLS §10.5: `Boolean` as a dimension means the two Boolean values.
+            Subscript::Expression(Expression::ComponentReference(comp_ref)) => {
+                (comp_ref.parts.len() == 1
+                    && &*comp_ref.parts[0].ident.text == "Boolean"
+                    && comp_ref.parts[0].subs.is_none())
+                .then_some(2)
+            }
+            _ => None,
+        }
+    }
+}
+
 impl Display for Subscript {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1520,6 +1686,49 @@ mod tests {
             },
             ..ClassDef::default()
         }
+    }
+
+    #[test]
+    fn component_reference_display_cache_is_nonsemantic() {
+        let root = DefId::new(31);
+        let target = DefId::new(32);
+        let reference = ComponentReference {
+            local: false,
+            parts: vec![
+                ComponentRefPart {
+                    ident: Token {
+                        text: Arc::from("alias"),
+                        ..Token::default()
+                    },
+                    subs: None,
+                    def_id: Some(root),
+                },
+                ComponentRefPart {
+                    ident: Token {
+                        text: Arc::from("member"),
+                        ..Token::default()
+                    },
+                    subs: None,
+                    def_id: Some(target),
+                },
+            ],
+            span: Span::from_offsets(
+                rumoca_core::SourceId::from_source_name("component_reference_identity.mo"),
+                3,
+                15,
+            ),
+            qualified_display_name: None,
+        };
+        let mut qualified = reference.clone();
+        qualified.set_qualified_display_name("Pkg.Concrete.member");
+
+        assert!(reference == qualified);
+        assert_eq!(qualified.root_def_id(), Some(root));
+        assert_eq!(qualified.target_def_id(), Some(target));
+        assert_eq!(
+            qualified.qualified_display_name().map(|name| name.as_str()),
+            Some("Pkg.Concrete.member")
+        );
     }
 
     #[test]

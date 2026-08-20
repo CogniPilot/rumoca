@@ -93,7 +93,9 @@ fn convert_simple_equation(
 
     // No RHS means function call equation (reinit, assert, terminate, etc.)
     // See MLS 8.3.6-8.3.8
-    let rumoca_ir_ast::Expression::FunctionCall { comp, args, .. } = &simple_eq.simple_expression
+    let rumoca_ir_ast::Expression::FunctionCall {
+        comp, args, span, ..
+    } = &simple_eq.simple_expression
     else {
         return Err(semantic_error_from_expression(
             format!(
@@ -107,6 +109,7 @@ fn convert_simple_equation(
     Ok(rumoca_ir_ast::Equation::FunctionCall {
         comp: comp.clone(),
         args: args.clone(),
+        span: *span,
     })
 }
 

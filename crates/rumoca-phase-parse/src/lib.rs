@@ -15,14 +15,17 @@ mod helpers;
 mod recovery;
 mod references;
 mod sections;
+mod take_cell;
 
 use generated::modelica_grammar_trait;
 use parol_runtime::{Result, Token};
 use rumoca_core::{BytePos, Span};
 use rumoca_ir_ast as ast;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt::{Display, Error, Formatter};
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use errors::{ParseError, convert_parol_error, format_parse_error};
@@ -37,7 +40,7 @@ pub use generated::modelica_parser;
 // Re-export types used by modelica_grammar_trait (generated code references these)
 pub use components::{ComponentList, TokenList};
 pub use definitions::{Composition, ElementList};
-pub use expressions::{ArraySubscripts, ExpressionList, ModificationArg};
+pub use expressions::{ArraySubscripts, ExpressionList, FunctionCallArguments, ModificationArg};
 pub use sections::{AlgorithmSection, EquationSection};
 
 /// A parsed comment with its location information
@@ -176,6 +179,41 @@ impl From<&ParserToken> for rumoca_core::Token {
     }
 }
 
+thread_local! {
+    /// Memoizes the `SourceId` of the file currently being tokenized.
+    ///
+    /// parol hands every token the same `Arc<PathBuf>` for a given parse, so the
+    /// FNV-1a hash of the full path is computed exactly once per file instead of
+    /// once per token, and no token owns a copy of the path.
+    static PARSE_SOURCE_ID: RefCell<Option<(Arc<PathBuf>, rumoca_core::SourceId)>> =
+        const { RefCell::new(None) };
+}
+
+/// Resolve the `SourceId` for a parol token path, reusing the per-file memo.
+///
+/// Real paths hash through `SourceId::from_source_name`; canonical
+/// `<source-id:...>` registrations decode to their preassigned identity.
+fn parser_source_id(path: &Arc<PathBuf>) -> rumoca_core::SourceId {
+    PARSE_SOURCE_ID.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if let Some((cached_path, id)) = slot.as_ref()
+            && (Arc::ptr_eq(cached_path, path) || cached_path.as_path() == path.as_path())
+        {
+            return *id;
+        }
+        let id = rumoca_core::source_id_for_name(path.to_string_lossy().as_ref());
+        *slot = Some((Arc::clone(path), id));
+        id
+    })
+}
+
+/// Drop the per-file `SourceId` memo so the next parse recomputes it.
+fn reset_parser_source_id() {
+    PARSE_SOURCE_ID.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
 impl TryFrom<&parol_runtime::Token<'_>> for ParserToken {
     type Error = anyhow::Error;
 
@@ -189,9 +227,10 @@ impl TryFrom<&parol_runtime::Token<'_>> for ParserToken {
                 end_column: value.location.end_column,
                 start: value.location.start,
                 end: value.location.end,
-                // Preserve full source path so cross-file features (goto definition,
-                // diagnostics attribution) can locate the real file, not only basename.
-                file_name: value.location.file_name.to_string_lossy().to_string(),
+                // Preserve full source path identity so cross-file features (goto
+                // definition, diagnostics attribution) can locate the real file;
+                // the name itself lives in the `SourceMap`, not in every token.
+                source: parser_source_id(&value.location.file_name),
             },
             token_number: value.token_number,
             token_type: value.token_type,
@@ -338,7 +377,12 @@ fn parse_once_to_ast(
     file_name: &str,
 ) -> std::result::Result<ast::StoredDefinition, Vec<ParseError>> {
     let mut grammar = ModelicaGrammar::new();
-    if let Err(parol_err) = generated::modelica_parser::parse(source, file_name, &mut grammar) {
+    // The per-file `SourceId` memo is scoped to one parse; clear it so a reused
+    // thread never stamps tokens with a stale file identity.
+    reset_parser_source_id();
+    let parse_result = generated::modelica_parser::parse(source, file_name, &mut grammar);
+    reset_parser_source_id();
+    if let Err(parol_err) = parse_result {
         return Err(convert_parol_error(parol_err, source));
     }
     match grammar.modelica {
@@ -661,6 +705,23 @@ end Ball;
     }
 
     #[test]
+    fn repeated_exponentiation_is_rejected_instead_of_truncated() {
+        let source = "model M\n  Real x;\nequation\n  x = 2^3^2;\nend M;";
+        let result = parse_string(source, "test.mo");
+        assert!(
+            result.is_err(),
+            "non-parenthesized repeated exponentiation must fail"
+        );
+    }
+
+    #[test]
+    fn duplicate_top_level_class_names_are_rejected() {
+        let source = "model M end M;\nmodel M end M;";
+        let error = parse_string(source, "test.mo").expect_err("duplicate class must fail");
+        assert!(error.to_string().contains("Duplicate top-level class"));
+    }
+
+    #[test]
     fn test_parse_to_ast_simple() {
         let source = r#"model Test end Test;"#;
         let ast = parse_to_ast(source, "test.mo");
@@ -728,6 +789,34 @@ end Ball;
     }
 
     #[test]
+    fn test_function_call_spans_include_both_delimiters() {
+        let source = "\
+model Test
+  Real y;
+  Real current = pre(y);
+  Real empty = marker();
+equation
+  Connections.root(y);
+end Test;";
+        let parsed = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = parsed.classes.get("Test").expect("Test should exist");
+        for (name, expected) in [("current", "pre(y)"), ("empty", "marker()")] {
+            let binding = model.components[name]
+                .binding
+                .as_ref()
+                .expect("binding should exist");
+            let ast::Expression::FunctionCall { span, .. } = binding else {
+                panic!("expected function-call binding");
+            };
+            assert_eq!(source_slice(source, *span), expected);
+        }
+        let ast::Equation::FunctionCall { span, .. } = &model.equations[0] else {
+            panic!("expected function-call equation");
+        };
+        assert_eq!(source_slice(source, *span), "Connections.root(y)");
+    }
+
+    #[test]
     fn test_parse_empty_class_modification_has_paren_span() {
         let source = "model Test\n  Real x(foo());\nend Test;";
         let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
@@ -758,6 +847,57 @@ end Test;
         let model = ast.classes.get("Test").expect("Test should exist");
         assert_eq!(&*model.name.text, "Test");
         assert_eq!(model.components.len(), 3, "Should have 3 components");
+    }
+
+    #[test]
+    fn test_component_dimensions_follow_mls_order() {
+        let source = "model Test\n  Real[3] x[2];\nend Test;";
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = ast.classes.get("Test").expect("Test should exist");
+        let x = model.components.get("x").expect("x should exist");
+
+        assert_eq!(x.shape, vec![2, 3]);
+        assert_eq!(x.shape_expr.len(), 2);
+    }
+
+    #[test]
+    fn test_string_escapes_are_decoded_and_reescaped() {
+        let source = r#"model Test
+  parameter String s = "line\nquote\"slash\\";
+end Test;"#;
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = ast.classes.get("Test").expect("Test should exist");
+        let s = model.components.get("s").expect("s should exist");
+        let ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::String,
+            token,
+            ..
+        } = s.binding.as_ref().expect("binding should exist")
+        else {
+            panic!("expected string binding");
+        };
+
+        assert_eq!(token.text.as_ref(), "line\nquote\"slash\\");
+        assert_eq!(
+            s.binding.as_ref().expect("binding").to_string(),
+            r#""line\nquote\"slash\\""#
+        );
+    }
+
+    #[test]
+    fn test_skipped_function_outputs_preserve_slot_positions() {
+        let source = r#"model Test
+algorithm
+  (x, , z) := f();
+end Test;"#;
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = ast.classes.get("Test").expect("Test should exist");
+        let ast::Statement::FunctionCall { outputs, .. } = &model.algorithms[0][0] else {
+            panic!("expected function call statement");
+        };
+
+        assert_eq!(outputs.len(), 3);
+        assert!(matches!(outputs[1], ast::Expression::Empty { .. }));
     }
 
     #[test]
@@ -849,6 +989,40 @@ function f_der = der(f, x);
         assert_eq!(&*f_der.name.text, "f_der");
         assert_eq!(f_der.extends.len(), 1, "expected one extends entry");
         assert_eq!(f_der.extends[0].base_name.to_string(), "f");
+    }
+
+    #[test]
+    fn test_roundtrip_preserves_partial_function_application() {
+        let source = r#"
+model Test
+  Real x;
+equation
+  x = solve(function f(offset = 1), 0);
+end Test;
+"#;
+
+        let reparsed = round_trip_ast(source);
+        let model = reparsed.classes.get("Test").expect("Test should exist");
+        let rhs = match model.equations.first().expect("expected one equation") {
+            ast::Equation::Simple { rhs, .. } => rhs,
+            other => panic!("expected simple equation, got {other:?}"),
+        };
+        let args = match rhs {
+            ast::Expression::FunctionCall {
+                args,
+                is_partial_application: false,
+                ..
+            } => args,
+            other => panic!("expected ordinary outer call, got {other:?}"),
+        };
+        assert!(matches!(
+            args.first(),
+            Some(ast::Expression::FunctionCall {
+                is_partial_application: true,
+                ..
+            })
+        ));
+        assert_eq!(args[0].to_string(), "function f(offset = 1)");
     }
 
     #[test]

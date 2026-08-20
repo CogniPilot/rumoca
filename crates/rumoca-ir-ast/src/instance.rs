@@ -10,9 +10,8 @@
 use crate::AstIndexMap as IndexMap;
 use indexmap::IndexSet;
 use rumoca_core::{
-    ComponentPath, ComponentRefPart as CoreComponentRefPart,
-    ComponentReference as CoreComponentReference, DefId, ProvenanceSpan, ScopeId, Span,
-    Subscript as CoreSubscript, TypeId,
+    ComponentPath, ComponentReference as CoreComponentReference, DefId, EffectiveType, InstanceId,
+    ScopeId, Span, TypeId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,36 +26,40 @@ type FastIndexMap<K, V> = IndexMap<K, V>;
 // Core Instance Types
 // =============================================================================
 
-/// Unique identifier for an instance in the instance tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub struct InstanceId(pub u32);
-
-impl InstanceId {
-    /// Create a new InstanceId from an index.
-    pub fn new(index: u32) -> Self {
-        Self(index)
-    }
-
-    /// Get the underlying index.
-    pub fn index(&self) -> u32 {
-        self.0
-    }
-}
-
-impl std::fmt::Display for InstanceId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "InstanceId({})", self.0)
-    }
-}
-
 /// A fully qualified path with resolved subscripts.
 ///
 /// Example: `"body.position[1].x"` would be represented as:
 /// `[("body", []), ("position", [1]), ("x", [])]`
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QualifiedName {
     /// Sequence of (name, subscripts) pairs.
     pub parts: Vec<(String, Vec<i64>)>,
+}
+
+/// Hashes the path's *shape* — segment count, per-segment subscripts, and
+/// per-segment identifier length — never the identifier bytes.
+///
+/// `QualifiedName` is a live map key (`ModificationEnvironment::active`), and a
+/// derived `Hash` over `Vec<(String, Vec<i64>)>` walked every identifier on
+/// every probe. Hashing the shape is a strict subset of what the derived
+/// `PartialEq` compares, so equal names still hash equal and the map stays
+/// correct; unequal names of the same shape share a bucket and are separated by
+/// the equality check. Modification environments hold one entry per modifier of
+/// one instance, so those buckets stay small.
+///
+/// The alternative — interning each segment inside `hash` — would pay a global
+/// interner probe (which hashes the identifier anyway) per map probe, i.e. more
+/// work than the derive it replaces. Interning belongs at construction; that
+/// means holding `VarName` segments here, which is a wider IR change than this
+/// type can make on its own.
+impl std::hash::Hash for QualifiedName {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.parts.len().hash(state);
+        for (ident, subscripts) in &self.parts {
+            ident.len().hash(state);
+            subscripts.hash(state);
+        }
+    }
 }
 
 impl QualifiedName {
@@ -553,6 +556,8 @@ impl ClassOverride {
 pub struct InstanceData {
     /// Unique identifier for this instance.
     pub instance_id: InstanceId,
+    /// Exact class occurrence that owns this component.
+    pub owner_class_id: Option<InstanceId>,
     /// Structured resolved component reference for this concrete instance.
     ///
     /// This is the semantic carrier for downstream Flat/DAE phases. The
@@ -578,6 +583,11 @@ pub struct InstanceData {
     /// DefId of the declared component type when available from resolve phase.
     /// Builtin types typically do not have a DefId.
     pub type_def_id: Option<DefId>,
+    /// Resolved first-segment declaration of a qualified type reference.
+    ///
+    /// For `Medium.State`, this identifies the `Medium` class/package slot
+    /// without recovering semantic structure from the rendered type name.
+    pub type_reference_root_def_id: Option<DefId>,
     /// Lexical scope where this component declaration was written.
     #[serde(default)]
     pub declaration_source_scope: Option<QualifiedName>,
@@ -593,6 +603,18 @@ pub struct InstanceData {
     /// (e.g., `redeclare package Medium = Medium`) that is remapped to an active
     /// enclosing override during instantiation (MLS §7.3).
     pub has_forwarding_class_redeclare: bool,
+    /// True when a redeclare modification was consumed for this component —
+    /// either an `extends` modification that redeclared it
+    /// (`extends Base(redeclare C a[2])`) or a redeclare modifier written on
+    /// its own declaration (`Holder h(redeclare C a[2])`), MLS §7.3.
+    ///
+    /// Instantiation consumes only the redeclared *type*; the redeclaration's
+    /// array dimensions are dropped. `dims` on such an instance (and on
+    /// anything instantiated underneath it) is therefore this compiler's
+    /// residue of the *original* declaration, not a statement about the model,
+    /// and must never be reported to the user as one.
+    #[serde(default)]
+    pub had_redeclare: bool,
 
     // Type prefixes (MLS §4.4.2, SPEC_0022 §3.19-3.20)
     /// Variability (constant, parameter, discrete, continuous).
@@ -674,6 +696,13 @@ pub struct InstanceData {
     /// count toward the local equation size. Models/blocks (like Delta) are NOT
     /// interface connectors even if they contain sub-connectors.
     pub is_connector_type: bool,
+    /// True if this component's type is an expandable connector (MLS §9.1.3).
+    ///
+    /// Kept on the container instance because an empty expandable connector has
+    /// no flattened descendants from which later phases could recover this
+    /// semantic fact.
+    #[serde(default)]
+    pub is_expandable_connector_type: bool,
     /// The path of the enclosing overconstrained record (MLS §9.4).
     /// E.g., "frame_a.R" for variables frame_a.R.T and frame_a.R.w.
     /// Used to group OC variables into VCG nodes for balance correction.
@@ -687,6 +716,7 @@ impl Default for InstanceData {
     fn default() -> Self {
         Self {
             instance_id: InstanceId::default(),
+            owner_class_id: None,
             component_ref: None,
             qualified_name: QualifiedName::default(),
             source_location: rumoca_core::Location::default(),
@@ -695,9 +725,11 @@ impl Default for InstanceData {
             type_id: TypeId::default(),
             type_name: String::new(),
             type_def_id: None,
+            type_reference_root_def_id: None,
             declaration_source_scope: None,
             class_overrides: IndexMap::default(),
             has_forwarding_class_redeclare: false,
+            had_redeclare: false,
             variability: Variability::Empty,
             causality: Causality::Empty,
             flow: false,
@@ -725,35 +757,10 @@ impl Default for InstanceData {
             is_overconstrained: false,
             is_protected: false,
             is_connector_type: false,
+            is_expandable_connector_type: false,
             oc_record_path: None,
             oc_eq_constraint_size: None,
         }
-    }
-}
-
-pub fn component_reference_for_instance(
-    qualified_name: &QualifiedName,
-    span: ProvenanceSpan,
-    def_id: Option<DefId>,
-) -> CoreComponentReference {
-    let provenance = span;
-    let span = provenance.span();
-    CoreComponentReference {
-        local: false,
-        span,
-        parts: qualified_name
-            .parts
-            .iter()
-            .map(|(ident, subs)| CoreComponentRefPart {
-                ident: ident.clone(),
-                span,
-                subs: subs
-                    .iter()
-                    .map(|sub| CoreSubscript::generated_index_with_provenance(*sub, provenance))
-                    .collect(),
-            })
-            .collect(),
-        def_id,
     }
 }
 
@@ -762,6 +769,9 @@ pub fn component_reference_for_instance(
 pub struct ClassInstanceData {
     /// Unique identifier for this class instance.
     pub instance_id: InstanceId,
+    /// Exact structured component occurrence whose type instantiated this
+    /// class. The root model has no component owner.
+    pub owner_component_id: Option<InstanceId>,
     /// DefId of the class definition this instance was instantiated from.
     pub class_def_id: Option<DefId>,
     /// Fully qualified name in the instance tree.
@@ -772,6 +782,14 @@ pub struct ClassInstanceData {
     /// Resolved lexical scope of the class declaration that produced this instance.
     #[serde(default)]
     pub source_scope_id: Option<ScopeId>,
+    /// Effective replaceable class/package selections in this concrete class instance.
+    ///
+    /// Instantiation owns this context because it is the first phase where the
+    /// complete modification environment and enclosing redeclares are known.
+    /// Downstream phases must consume it directly instead of reconstructing
+    /// virtual class identity from instance paths.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub class_overrides: ClassOverrideMap,
     /// Equations from this instance (not inherited).
     pub equations: Vec<InstanceEquation>,
     /// Initial equations from this instance.
@@ -838,6 +856,28 @@ pub struct InstanceConnection {
     /// Used to determine the correct hierarchy level for flow sum equations.
     /// Empty string means root level.
     pub scope: String,
+    /// Compact authoritative form for a regular vectorized connection.
+    ///
+    /// `a` and `b` above are the domain's first scalar member for diagnostic
+    /// and compatibility views. Flattening derives all scalar members from
+    /// this family at its input boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<InstanceConnectionFamily>,
+}
+
+/// A qualified connection endpoint whose subscripts are affine in a structured
+/// connection family's binders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceConnectionEndpoint {
+    pub parts: Vec<(String, Vec<rumoca_core::AffineForm>)>,
+}
+
+/// Compact instance-IR representation of a regular vectorized `connect`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceConnectionFamily {
+    pub domain: rumoca_core::StructuredIndexDomain,
+    pub a: InstanceConnectionEndpoint,
+    pub b: InstanceConnectionEndpoint,
 }
 
 // =============================================================================
@@ -898,7 +938,32 @@ pub struct InstanceOverlay {
     /// Keys are resolved type identities and values are canonical root type identities.
     /// Populated by typecheck_instanced for flatten-time type compatibility.
     pub type_roots: IndexMap<TypeId, TypeId>,
-    /// Next available instance ID.
+    /// Exact nominal type identity keyed by resolved source declaration identity.
+    ///
+    /// This is producer-owned transition evidence from post-instantiation
+    /// typechecking. Flattening uses it to type function values without
+    /// interpreting their display names.
+    pub type_ids_by_def_id: FastIndexMap<DefId, TypeId>,
+    /// Canonical `TypeId`s proven by typechecking to denote enumerations.
+    ///
+    /// Effective component identities remain in `enumeration_types`; this
+    /// root catalog also covers function values that do not have component
+    /// occurrences in the instance overlay.
+    pub enumeration_type_roots: IndexSet<TypeId>,
+    /// Concrete effective types produced after instance dimensions are resolved.
+    ///
+    /// Each component `type_id` names exactly one descriptor in this catalog
+    /// after successful post-instantiation type checking.
+    pub effective_types: FastIndexMap<TypeId, EffectiveType>,
+    /// Effective type identities whose exact canonical root is an enumeration.
+    ///
+    /// Typecheck constructs this set from its resolved `TypeTable`; later
+    /// phases never infer enumeration semantics from a rendered type name.
+    pub enumeration_types: IndexSet<TypeId>,
+    /// Number of occurrence identities allocated so far.
+    ///
+    /// Allocation is one-based because `InstanceId::UNSET` reserves zero, so
+    /// this is also the last identity handed out.
     next_id: u32,
 }
 
@@ -909,10 +974,23 @@ impl InstanceOverlay {
     }
 
     /// Allocate a new unique InstanceId.
+    ///
+    /// Identities are one-based: `InstanceId::UNSET` is reserved so a defaulted
+    /// occurrence field can never be mistaken for an allocated instance.
     pub fn alloc_id(&mut self) -> InstanceId {
-        let id = InstanceId(self.next_id);
-        self.next_id += 1;
-        id
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .expect("instantiated occurrence identity space exhausted");
+        InstanceId(self.next_id)
+    }
+
+    /// Number of `InstanceId`s allocated so far.
+    ///
+    /// Callers that snapshot a subtree use this to check that every id they
+    /// allocated is still reachable through `components`/`classes`.
+    pub fn allocated_instance_count(&self) -> u32 {
+        self.next_id
     }
 
     /// Add instance data for a component.
@@ -1154,37 +1232,6 @@ mod tests {
     }
 
     #[test]
-    fn component_reference_for_instance_preserves_parts_subscripts_and_def_id()
-    -> Result<(), rumoca_core::MissingProvenanceSpan> {
-        let def_id = DefId::new(9);
-        let span = Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("instance_test.mo"),
-            1,
-            5,
-        );
-        let provenance = span.require_provenance("instance test component reference")?;
-        let mut qn = QualifiedName::new();
-        qn.push("body".to_string(), vec![]);
-        qn.push("frame".to_string(), vec![2]);
-        qn.push("r_0".to_string(), vec![]);
-
-        let reference = component_reference_for_instance(&qn, provenance, Some(def_id));
-
-        assert_eq!(reference.def_id, Some(def_id));
-        assert_eq!(reference.parts.len(), 3);
-        assert_eq!(reference.parts[0].ident, "body");
-        assert_eq!(reference.parts[1].ident, "frame");
-        assert_eq!(
-            reference.parts[1].subs,
-            vec![CoreSubscript::generated_index_with_provenance(
-                2, provenance
-            )]
-        );
-        assert_eq!(reference.parts[2].ident, "r_0");
-        Ok(())
-    }
-
-    #[test]
     fn test_starts_with_component_path_rejects_subscript_mismatch() {
         let mut qn = QualifiedName::new();
         qn.push("sys".to_string(), vec![]);
@@ -1247,8 +1294,8 @@ mod tests {
     fn test_expr(marker: &str) -> Expression {
         Expression::ComponentReference(ComponentReference {
             local: false,
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
             parts: vec![ComponentRefPart {
                 ident: Token {
                     text: std::sync::Arc::from(marker),
@@ -1257,6 +1304,7 @@ mod tests {
                     token_type: 0,
                 },
                 subs: None,
+                def_id: None,
             }],
         })
     }
@@ -1396,5 +1444,22 @@ mod tests {
 
         assert_eq!(component_a.qualified_name.to_flat_string(), "a");
         assert_eq!(component_b.qualified_name.to_flat_string(), "b");
+    }
+
+    #[test]
+    fn allocated_occurrence_identities_are_one_based_and_never_unset() {
+        let mut overlay = InstanceOverlay::new();
+
+        let first = overlay.alloc_id();
+        let second = overlay.alloc_id();
+
+        assert!(
+            !first.is_unset(),
+            "the reserved identity is not allocatable"
+        );
+        assert!(!second.is_unset());
+        assert_eq!(first, InstanceId::new(1));
+        assert_eq!(second, InstanceId::new(2));
+        assert_eq!(overlay.allocated_instance_count(), 2);
     }
 }

@@ -35,14 +35,15 @@ fn make_comp_ref(name: &str) -> ComponentReference {
     ComponentReference {
         local: false,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
         parts: vec![ComponentRefPart {
             ident: Token {
                 text: std::sync::Arc::from(name),
                 ..Default::default()
             },
             subs: None,
+            def_id: None,
         }],
-        def_id: None,
     }
 }
 
@@ -50,14 +51,15 @@ fn make_comp_ref_with_subscript(name: &str, sub: Expression) -> ComponentReferen
     ComponentReference {
         local: false,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
         parts: vec![ComponentRefPart {
             ident: Token {
                 text: std::sync::Arc::from(name),
                 ..Default::default()
             },
             subs: Some(vec![Subscript::Expression(sub)]),
+            def_id: None,
         }],
-        def_id: None,
     }
 }
 
@@ -73,6 +75,31 @@ fn test_collect_component_refs() {
     assert_eq!(refs.len(), 2);
     assert_eq!(refs[0].to_string(), "x");
     assert_eq!(refs[1].to_string(), "y");
+}
+
+#[test]
+fn expression_component_path_preserves_projected_fields_and_indices() {
+    let projected = Expression::FieldAccess {
+        base: Arc::new(Expression::ArrayIndex {
+            base: Arc::new(Expression::FieldAccess {
+                base: Arc::new(make_var("stackData")),
+                field: "cellData".to_string(),
+                field_def_id: None,
+                span: rumoca_core::Span::DUMMY,
+            }),
+            subscripts: vec![
+                Subscript::Expression(make_int(1)),
+                Subscript::Expression(make_int(2)),
+            ],
+            span: rumoca_core::Span::DUMMY,
+        }),
+        field: "nRC".to_string(),
+        field_def_id: None,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    let path = expression_component_path(&projected).expect("path-shaped expression");
+    assert_eq!(path.as_str(), "stackData.cellData[1,2].nRC");
 }
 
 #[test]
@@ -231,11 +258,13 @@ fn test_function_call_context_dispatch() {
     let expr_call = Expression::FunctionCall {
         comp: make_comp_ref("f_expr"),
         args: vec![make_int(1)],
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     };
     let equation_call = Equation::FunctionCall {
         comp: make_comp_ref("f_eq"),
         args: vec![make_int(2)],
+        span: rumoca_core::Span::DUMMY,
     };
     let statement_call = Statement::FunctionCall {
         comp: make_comp_ref("f_stmt"),
@@ -490,6 +519,7 @@ fn make_expression_context_dispatch_class() -> ClassDef {
         ]],
         external: Some(ExternalFunction {
             args: vec![make_int(13)],
+            annotation: vec![make_int(14)],
             ..Default::default()
         }),
         ..Default::default()
@@ -513,6 +543,7 @@ fn assert_expression_contexts_seen(seen: &[ExpressionContext]) {
     assert!(seen.contains(&ExpressionContext::StatementAssertLevel));
     assert!(seen.contains(&ExpressionContext::StatementFunctionOutput));
     assert!(seen.contains(&ExpressionContext::ExternalArgument));
+    assert!(seen.contains(&ExpressionContext::ExternalAnnotation));
 }
 
 #[test]
@@ -650,6 +681,7 @@ fn test_transformer_recurses_into_function_call_target_subscripts() {
     let expr = Expression::FunctionCall {
         comp: make_comp_ref_with_subscript("f", make_int(1)),
         args: vec![],
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     };
     let transformed = IncrementSubscript.transform_expression(expr);
@@ -664,4 +696,108 @@ fn test_transformer_recurses_into_function_call_target_subscripts() {
         panic!("expected integer subscript");
     };
     assert_eq!(token.text.as_ref(), "2");
+}
+
+// ---------------------------------------------------------------------------
+// Arc reuse in the rewrite transformer (P4 parser allocation work)
+// ---------------------------------------------------------------------------
+
+struct Identity;
+impl ExpressionTransformer for Identity {}
+
+#[test]
+fn transform_reuses_uniquely_owned_arc_allocation() {
+    let child = Arc::new(make_var("x"));
+    let child_ptr = Arc::as_ptr(&child);
+    let expr = Expression::Unary {
+        op: rumoca_core::OpUnary::Minus,
+        rhs: child,
+        span: test_span(),
+    };
+
+    let result = Identity.transform_expression(expr);
+    let Expression::Unary { rhs, .. } = result else {
+        unreachable!("identity transform must preserve the Unary variant");
+    };
+    assert_eq!(
+        Arc::as_ptr(&rhs),
+        child_ptr,
+        "a uniquely owned child Arc must be transformed in place, not reallocated"
+    );
+}
+
+#[test]
+fn transform_reuses_uniquely_owned_arcs_for_binary_children() {
+    let lhs = Arc::new(make_var("x"));
+    let rhs = Arc::new(make_int(1));
+    let lhs_ptr = Arc::as_ptr(&lhs);
+    let rhs_ptr = Arc::as_ptr(&rhs);
+    let expr = Expression::Binary {
+        op: OpBinary::Add,
+        lhs,
+        rhs,
+        span: test_span(),
+    };
+
+    let result = Renamer.transform_expression(expr);
+    let Expression::Binary { lhs, rhs, .. } = result else {
+        unreachable!("transform must preserve the Binary variant");
+    };
+    assert_eq!(Arc::as_ptr(&lhs), lhs_ptr);
+    assert_eq!(Arc::as_ptr(&rhs), rhs_ptr);
+    assert_eq!(collect_component_refs(&lhs)[0].to_string(), "renamed");
+}
+
+#[test]
+fn transform_of_shared_arc_leaves_original_untouched() {
+    let child = Arc::new(make_var("x"));
+    let retained = Arc::clone(&child);
+    assert_eq!(Arc::strong_count(&child), 2);
+    let expr = Expression::Binary {
+        op: OpBinary::Add,
+        lhs: child,
+        rhs: Arc::new(make_int(1)),
+        span: test_span(),
+    };
+
+    let result = Renamer.transform_expression(expr);
+    let Expression::Binary { lhs, .. } = result else {
+        unreachable!("transform must preserve the Binary variant");
+    };
+    assert_ne!(
+        Arc::as_ptr(&lhs),
+        Arc::as_ptr(&retained),
+        "a shared child must be copied on write"
+    );
+    assert_eq!(collect_component_refs(&lhs)[0].to_string(), "renamed");
+    assert_eq!(
+        collect_component_refs(&retained)[0].to_string(),
+        "x",
+        "the retained clone must still hold the pre-transform name"
+    );
+}
+
+#[test]
+fn transform_arc_preserves_nested_subtrees() {
+    // Range holds three Arc children (including the optional step); a payload
+    // that lost its identity during the in-place swap would show up here.
+    let expr = Expression::Range {
+        start: Arc::new(make_var("a")),
+        step: Some(Arc::new(make_var("b"))),
+        end: Arc::new(make_var("x")),
+        span: test_span(),
+    };
+    let result = Renamer.transform_expression(expr);
+    let Expression::Range {
+        start, step, end, ..
+    } = result
+    else {
+        unreachable!("transform must preserve the Range variant");
+    };
+    assert_eq!(collect_component_refs(&start)[0].to_string(), "a");
+    assert_eq!(
+        collect_component_refs(step.as_ref().expect("step present"))[0].to_string(),
+        "b"
+    );
+    assert_eq!(collect_component_refs(&end)[0].to_string(), "renamed");
 }
