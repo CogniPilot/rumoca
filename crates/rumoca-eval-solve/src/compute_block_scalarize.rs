@@ -1,17 +1,17 @@
 use rumoca_ir_solve::{
-    ComputeBlock, ComputeNode, LinearOp, Reg, ScalarProgramBlock, SolveProblemShapeContractError,
-    SolveVisitor,
+    ComputeBlock, ComputeNode, LinearOp, RefreshScalarProgramSource, Reg, ScalarProgramBlock,
+    SolveProblemShapeContractError, SolveVisitor,
 };
 
 mod affine;
 mod dense;
 
-pub(crate) use affine::scalarize_affine_rows;
 use affine::scalarize_affine_rows_with_span;
 pub use affine::{
     checked_tensor_output_count, scalar_program_output_count, scalar_program_output_indices,
     tensor_output_indices,
 };
+pub(crate) use affine::{tensor_output_count, validate_affine_stride_metadata};
 use dense::{MatMulScalarizeInput, scalarize_linsolve, scalarize_matmul};
 
 /// Expand tensor `ComputeBlock` nodes to flat scalar programs.
@@ -20,17 +20,57 @@ use dense::{MatMulScalarizeInput, scalarize_linsolve, scalarize_matmul};
 /// Solve IR directly. Invalid tensor metadata is reported as `ScalarizeError`
 /// instead of treated as an internal invariant.
 pub fn to_scalar_program_block(block: &ComputeBlock) -> Result<ScalarProgramBlock, ScalarizeError> {
+    Ok(to_scalar_program_projection(block)?.block)
+}
+
+/// Final scalar fallback plus the exact canonical source of every retained
+/// scalar program. Tensor-generated rows have no scalar-program source.
+pub struct ScalarProgramProjection {
+    block: ScalarProgramBlock,
+    sources: Box<[Option<RefreshScalarProgramSource>]>,
+}
+
+impl ScalarProgramProjection {
+    #[must_use]
+    pub const fn block(&self) -> &ScalarProgramBlock {
+        &self.block
+    }
+
+    #[must_use]
+    pub const fn sources(&self) -> &[Option<RefreshScalarProgramSource>] {
+        &self.sources
+    }
+
+    #[must_use]
+    pub fn into_block(self) -> ScalarProgramBlock {
+        self.block
+    }
+}
+
+pub fn to_scalar_program_projection(
+    block: &ComputeBlock,
+) -> Result<ScalarProgramProjection, ScalarizeError> {
     block
         .validate_shape_contract("scalarize compute block")
         .map_err(ScalarizeError::from)?;
     let mut collector = ScalarProgramCollector::default();
     collector.visit_compute_block(block)?;
-    ScalarProgramBlock::with_output_indices(
+    let block = ScalarProgramBlock::with_output_indices(
         collector.rows,
         collector.program_spans,
         collector.output_indices,
     )
-    .map_err(ScalarizeError::from)
+    .map_err(ScalarizeError::from)?;
+    if collector.sources.len() != block.programs().len() {
+        return Err(ScalarizeError::ShapeContract {
+            message: "scalar fallback source projection is not row-aligned".to_string(),
+            span: block.first_source_span(),
+        });
+    }
+    Ok(ScalarProgramProjection {
+        block,
+        sources: collector.sources.into_boxed_slice(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,7 +97,7 @@ pub enum ScalarizeError {
     },
     NegativeLoadIndex {
         kind: &'static str,
-        value: isize,
+        value: i128,
         span: rumoca_core::Span,
     },
     NegativeOutputIndex {
@@ -115,6 +155,16 @@ pub enum ScalarizeError {
         message: String,
         span: Option<rumoca_core::Span>,
     },
+}
+
+struct AffineComputeNodeInput<'a> {
+    domain: &'a rumoca_core::StructuredIndexDomain,
+    output_map: &'a rumoca_ir_solve::TensorOutputMap,
+    base_ops: &'a [LinearOp],
+    load_strides: &'a [rumoca_ir_solve::AffineStencilLoadStride],
+    const_strides: &'a [rumoca_ir_solve::AffineStencilConstStride],
+    span: rumoca_core::Span,
+    kind: &'static str,
 }
 
 impl ScalarizeError {
@@ -256,20 +306,36 @@ struct ScalarProgramCollector {
     rows: Vec<Vec<LinearOp>>,
     program_spans: Vec<rumoca_core::Span>,
     output_indices: Vec<usize>,
+    sources: Vec<Option<RefreshScalarProgramSource>>,
     next_output: usize,
 }
 
 impl ScalarProgramCollector {
     fn append_scalar_program_block(
         &mut self,
+        node_index: usize,
         block: &ScalarProgramBlock,
     ) -> Result<(), ScalarizeError> {
         let span = scalar_program_block_span(block);
-        let mut programs = cloned_scalar_rows_optional(&block.programs, "scalar programs", span)?;
+        reserve_vec_additional_optional(
+            &mut self.sources,
+            block.programs().len(),
+            "scalar program sources",
+            span,
+        )?;
+        for program_index in 0..block.programs().len() {
+            let source = RefreshScalarProgramSource::checked(node_index, program_index)
+                .ok_or_else(|| ScalarizeError::ShapeContract {
+                    message: "scalar program source identity exceeds u32".to_string(),
+                    span,
+                })?;
+            self.sources.push(Some(source));
+        }
+        let mut programs = cloned_scalar_rows_optional(block.programs(), "scalar programs", span)?;
         append_vec_optional(&mut self.rows, &mut programs, "scalar programs", span)?;
         extend_cloned_values(
             &mut self.program_spans,
-            &block.program_spans,
+            block.program_spans(),
             "scalar programs spans",
             span,
         )?;
@@ -281,7 +347,11 @@ impl ScalarProgramCollector {
             "scalar programs output indices",
             span,
         )?;
-        self.next_output = scalar_program_output_count(block, self.next_output, "scalar programs")?;
+        self.next_output = self.next_output.max(scalar_program_output_count(
+            block,
+            self.next_output,
+            "scalar programs",
+        )?);
         Ok(())
     }
 
@@ -293,6 +363,9 @@ impl ScalarProgramCollector {
         span: rumoca_core::Span,
         kind: &'static str,
     ) -> Result<(), ScalarizeError> {
+        reserve_vec_additional(&mut self.sources, programs.len(), kind, span)?;
+        self.sources
+            .extend(std::iter::repeat_n(None, programs.len()));
         push_repeated_spans(&mut self.program_spans, span, programs.len(), kind)?;
         extend_output_range(&mut self.output_indices, start, end, kind, span)?;
         self.next_output = end;
@@ -306,6 +379,9 @@ impl ScalarProgramCollector {
         span: rumoca_core::Span,
         kind: &'static str,
     ) -> Result<(), ScalarizeError> {
+        reserve_vec_additional(&mut self.sources, programs.len(), kind, span)?;
+        self.sources
+            .extend(std::iter::repeat_n(None, programs.len()));
         push_repeated_spans(&mut self.program_spans, span, programs.len(), kind)?;
         self.next_output = self.next_output.max(checked_tensor_output_count(
             &output_indices,
@@ -316,19 +392,15 @@ impl ScalarProgramCollector {
         append_vec(&mut self.output_indices, &mut output_indices, kind, span)?;
         append_vec(&mut self.rows, &mut programs, kind, span)
     }
-}
 
-impl SolveVisitor for ScalarProgramCollector {
-    type Error = ScalarizeError;
-
-    fn visit_compute_node(
+    fn append_compute_node(
         &mut self,
-        _node_index: usize,
+        node_index: usize,
         node: &ComputeNode,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), ScalarizeError> {
         match node {
             ComputeNode::ScalarPrograms(block) => {
-                self.append_scalar_program_block(block)?;
+                self.append_scalar_program_block(node_index, block)
             }
             ComputeNode::MatMul {
                 lhs_ops,
@@ -357,7 +429,7 @@ impl SolveVisitor for ScalarProgramCollector {
                     span: *span,
                 })?;
                 let end = checked_contiguous_output_count(start, output_len, "matmul", *span)?;
-                self.append_contiguous_programs(vec![program], start, end, *span, "matmul")?;
+                self.append_contiguous_programs(vec![program], start, end, *span, "matmul")
             }
             ComputeNode::LinSolve {
                 setup_ops,
@@ -375,7 +447,7 @@ impl SolveVisitor for ScalarProgramCollector {
                     scalarize_linsolve(setup_ops, *matrix_start, *rhs_start, *n, *next_reg, *span)?;
                 let start = self.next_output;
                 let end = checked_contiguous_output_count(start, *n, "linsolve", *span)?;
-                self.append_contiguous_programs(vec![program], start, end, *span, "linsolve")?;
+                self.append_contiguous_programs(vec![program], start, end, *span, "linsolve")
             }
             ComputeNode::Map {
                 domain,
@@ -385,18 +457,15 @@ impl SolveVisitor for ScalarProgramCollector {
                 const_strides,
                 span,
                 ..
-            } => {
-                let scalar_programs = scalarize_affine_rows_with_span(
-                    domain,
-                    base_ops,
-                    load_strides,
-                    const_strides,
-                    "map",
-                    *span,
-                )?;
-                let output_indices = tensor_output_indices(domain, output_map, "map", *span)?;
-                self.append_tensor_programs(scalar_programs, output_indices, *span, "map")?;
-            }
+            } => self.append_affine_compute_node(AffineComputeNodeInput {
+                domain,
+                output_map,
+                base_ops,
+                load_strides,
+                const_strides,
+                span: *span,
+                kind: "map",
+            }),
             ComputeNode::AffineStencil {
                 domain,
                 output_map,
@@ -405,25 +474,80 @@ impl SolveVisitor for ScalarProgramCollector {
                 const_strides,
                 span,
                 ..
-            } => {
-                let scalar_programs = scalarize_affine_rows_with_span(
-                    domain,
-                    base_ops,
-                    load_strides,
-                    const_strides,
-                    "affine stencil",
-                    *span,
-                )?;
-                let output_indices =
-                    tensor_output_indices(domain, output_map, "affine stencil", *span)?;
-                self.append_tensor_programs(
-                    scalar_programs,
-                    output_indices,
-                    *span,
-                    "affine stencil",
-                )?;
-            }
+            } => self.append_affine_compute_node(AffineComputeNodeInput {
+                domain,
+                output_map,
+                base_ops,
+                load_strides,
+                const_strides,
+                span: *span,
+                kind: "affine stencil",
+            }),
         }
+    }
+
+    fn append_affine_compute_node(
+        &mut self,
+        input: AffineComputeNodeInput<'_>,
+    ) -> Result<(), ScalarizeError> {
+        let scalar_programs = scalarize_affine_rows_with_span(
+            input.domain,
+            input.base_ops,
+            input.load_strides,
+            input.const_strides,
+            input.kind,
+            input.span,
+        )?;
+        let output_indices =
+            tensor_output_indices(input.domain, input.output_map, input.kind, input.span)?;
+        self.append_tensor_programs(scalar_programs, output_indices, input.span, input.kind)
+    }
+
+    fn trace_compute_node(
+        &self,
+        node_index: usize,
+        node: &ComputeNode,
+        output_cursor_before: usize,
+    ) {
+        if !tracing::enabled!(target: "rumoca_eval_solve::scalarize", tracing::Level::DEBUG) {
+            return;
+        }
+        let (kind, declared_outputs) = compute_node_trace_fields(node);
+        tracing::debug!(
+            target: "rumoca_eval_solve::scalarize",
+            node_index,
+            kind,
+            output_cursor_before,
+            output_cursor_after = self.next_output,
+            declared_outputs,
+            "scalarized compute node"
+        );
+    }
+}
+
+fn compute_node_trace_fields(node: &ComputeNode) -> (&'static str, String) {
+    match node {
+        ComputeNode::ScalarPrograms(block) => ("scalar", format!("{:?}", block.output_indices())),
+        ComputeNode::MatMul { m, n, .. } => ("matmul", format!("{m}x{n}")),
+        ComputeNode::LinSolve { n, .. } => ("linsolve", n.to_string()),
+        ComputeNode::Map { output_map, .. } => ("map", format!("{output_map:?}")),
+        ComputeNode::AffineStencil { output_map, .. } => {
+            ("affine_stencil", format!("{output_map:?}"))
+        }
+    }
+}
+
+impl SolveVisitor for ScalarProgramCollector {
+    type Error = ScalarizeError;
+
+    fn visit_compute_node(
+        &mut self,
+        node_index: usize,
+        node: &ComputeNode,
+    ) -> Result<(), Self::Error> {
+        let output_cursor_before = self.next_output;
+        self.append_compute_node(node_index, node)?;
+        self.trace_compute_node(node_index, node, output_cursor_before);
         Ok(())
     }
 
@@ -439,6 +563,8 @@ impl SolveVisitor for ScalarProgramCollector {
         reserve_vec_additional(&mut self.rows, 1, "scalar program rows", span)?;
         self.rows
             .push(cloned_linear_ops(ops, "scalar program", span)?);
+        reserve_vec_additional(&mut self.sources, 1, "scalar program sources", span)?;
+        self.sources.push(None);
         reserve_vec_additional(&mut self.program_spans, 1, "scalar program spans", span)?;
         self.program_spans.push(span);
         reserve_vec_additional(

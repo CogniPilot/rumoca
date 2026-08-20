@@ -1,8 +1,8 @@
 use super::*;
 use rumoca_core::{SourceId, Span, StructuredIndexBinder, StructuredIndexDomain};
 use rumoca_ir_solve::{
-    AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock,
-    SparsityPattern, TensorNodeMetadata,
+    AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp, PatternDerivation,
+    PatternProvenance, ScalarProgramBlock, StructuralPattern, TensorNodeMetadata,
 };
 
 fn test_domain() -> StructuredIndexDomain {
@@ -33,8 +33,8 @@ fn matmul_node(lhs: f64, rhs: &[f64]) -> ComputeNode {
         m: 1,
         k: 1,
         n: rhs.len(),
-        lhs_sparsity: SparsityPattern::Dense,
-        rhs_sparsity: SparsityPattern::Dense,
+        lhs_pattern: crate::fixture_pattern(1, 1, false),
+        rhs_pattern: crate::fixture_pattern(1, rhs.len(), false),
         metadata: TensorNodeMetadata::default(),
         span: test_span("prepared_matmul.mo"),
     }
@@ -44,11 +44,154 @@ fn test_span(name: &'static str) -> Span {
     Span::from_offsets(SourceId::from_source_name(name), 1, 2)
 }
 
+fn test_pattern(rows: usize, columns: usize, dependencies: &[Vec<usize>]) -> StructuralPattern {
+    let provenance = PatternProvenance::derived(
+        PatternDerivation::TensorOperand,
+        test_span("prepared_sparse_tensor.mo"),
+    )
+    .expect("fixture provenance");
+    StructuralPattern::from_row_dependencies(rows, columns, dependencies, provenance)
+        .expect("fixture structural pattern")
+}
+
+fn tridiagonal_dependencies(size: usize) -> Vec<Vec<usize>> {
+    (0..size)
+        .map(|row| {
+            (0..size)
+                .filter(|column| row.abs_diff(*column) <= 1)
+                .collect()
+        })
+        .collect()
+}
+
 fn const_store_row(value: f64) -> Vec<LinearOp> {
     vec![
         LinearOp::Const { dst: 0, value },
         LinearOp::StoreOutput { src: 0 },
     ]
+}
+
+#[test]
+fn prepared_linsolve_executes_sparse_candidate_with_proven_pattern() {
+    let size = 24;
+    let dependencies = tridiagonal_dependencies(size);
+    let mut setup_ops = Vec::with_capacity(size * size + size);
+    for row in 0..size {
+        for column in 0..size {
+            setup_ops.push(LinearOp::Const {
+                dst: (row * size + column) as u32,
+                value: if row == column {
+                    4.0
+                } else if row.abs_diff(column) == 1 {
+                    -1.0
+                } else {
+                    0.0
+                },
+            });
+        }
+    }
+    for row in 0..size {
+        setup_ops.push(LinearOp::Const {
+            dst: (size * size + row) as u32,
+            value: 1.0,
+        });
+    }
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::LinSolve {
+            setup_ops,
+            matrix_start: 0,
+            rhs_start: (size * size) as u32,
+            n: size,
+            next_reg: (size * size + size) as u32,
+            matrix_pattern: test_pattern(size, size, &dependencies),
+            metadata: TensorNodeMetadata::default(),
+            span: test_span("prepared_sparse_linsolve.mo"),
+        }],
+    };
+    let prepared = PreparedComputeBlock::new(&block).expect("sparse LinSolve should prepare");
+    assert!(matches!(
+        prepared.nodes.as_slice(),
+        [PreparedComputeNode::LinSolve {
+            kernel: LinearSolveKernel::SparseCandidate,
+            ..
+        }]
+    ));
+    let mut output = vec![0.0; size];
+    prepared
+        .eval_with_context(&[], &[], 0.0, RowEvalContext::default(), &mut output)
+        .expect("sparse LinSolve should evaluate");
+    for row in 0..size {
+        let mut reconstructed = 4.0 * output[row];
+        if row > 0 {
+            reconstructed -= output[row - 1];
+        }
+        if row + 1 < size {
+            reconstructed -= output[row + 1];
+        }
+        assert!((reconstructed - 1.0).abs() <= 1.0e-12);
+    }
+}
+
+#[test]
+fn prepared_matmul_executes_sparse_candidate_with_proven_pattern() {
+    let size = 20;
+    let lhs_dependencies = tridiagonal_dependencies(size);
+    let rhs_dependencies = vec![(0..size).collect::<Vec<_>>(); size];
+    let lhs_ops = (0..size * size)
+        .map(|offset| LinearOp::Const {
+            dst: offset as u32,
+            value: if (offset / size).abs_diff(offset % size) <= 1 {
+                1.0
+            } else {
+                0.0
+            },
+        })
+        .collect();
+    let rhs_ops = (0..size * size)
+        .map(|offset| LinearOp::Const {
+            dst: (size * size + offset) as u32,
+            value: 1.0,
+        })
+        .collect();
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::MatMul {
+            lhs_ops,
+            lhs_start: 0,
+            rhs_ops,
+            rhs_start: (size * size) as u32,
+            m: size,
+            k: size,
+            n: size,
+            lhs_pattern: test_pattern(size, size, &lhs_dependencies),
+            rhs_pattern: test_pattern(size, size, &rhs_dependencies),
+            metadata: TensorNodeMetadata::default(),
+            span: test_span("prepared_sparse_matmul.mo"),
+        }],
+    };
+    let prepared = PreparedComputeBlock::new(&block).expect("sparse MatMul should prepare");
+    assert!(matches!(
+        prepared.nodes.as_slice(),
+        [PreparedComputeNode::MatMul {
+            kernel: MatMulKernel::SparseCandidate,
+            ..
+        }]
+    ));
+    let mut output = vec![0.0; size * size];
+    prepared
+        .eval_with_context(&[], &[], 0.0, RowEvalContext::default(), &mut output)
+        .expect("sparse MatMul should evaluate");
+    for row in 0..size {
+        let expected = if row == 0 || row + 1 == size {
+            2.0
+        } else {
+            3.0
+        };
+        assert!(
+            output[row * size..(row + 1) * size]
+                .iter()
+                .all(|value| (*value - expected).abs() <= f64::EPSILON)
+        );
+    }
 }
 
 #[test]
@@ -68,7 +211,7 @@ fn prepared_vec_with_capacity_rejects_impossible_capacity_with_span() {
 }
 
 #[test]
-fn prepared_compute_block_evaluates_map_through_scalar_view() {
+fn prepared_compute_block_evaluates_map_through_native_affine_loop() {
     let domain = test_domain();
     let block = ComputeBlock {
         nodes: vec![ComputeNode::Map {
@@ -93,6 +236,10 @@ fn prepared_compute_block_evaluates_map_through_scalar_view() {
     };
 
     let prepared = PreparedComputeBlock::new(&block).expect("valid map block should prepare");
+    assert!(matches!(
+        prepared.nodes.as_slice(),
+        [PreparedComputeNode::Affine { .. }]
+    ));
     let mut out = vec![0.0; prepared.len()];
     prepared
         .eval_with_context(
@@ -105,6 +252,43 @@ fn prepared_compute_block_evaluates_map_through_scalar_view() {
         .expect("prepared Map evaluation should succeed");
 
     assert_eq!(out, vec![10.0, 20.0, 30.0]);
+}
+
+#[test]
+fn prepared_empty_map_does_not_require_inputs_from_its_unexecuted_body() {
+    let domain = StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 0,
+            step: 1,
+        }],
+    };
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("empty domain still has a valid output mapping"),
+            domain,
+            base_ops: vec![
+                LinearOp::LoadY {
+                    dst: 0,
+                    index: usize::MAX,
+                },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: Vec::new(),
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: test_span("prepared_empty_map.mo"),
+        }],
+    };
+
+    let prepared = PreparedComputeBlock::new(&block).expect("empty map should prepare");
+    assert_eq!(prepared.len(), 0);
+    prepared
+        .eval_with_context(&[], &[], 0.0, RowEvalContext::default(), &mut [])
+        .expect("an empty map must not evaluate or validate its body loads");
 }
 
 #[test]
@@ -154,6 +338,61 @@ fn prepared_compute_block_writes_sparse_map_output_slots() {
 }
 
 #[test]
+fn prepared_compute_block_combines_duplicate_affine_stride_descriptors() {
+    let domain = test_domain();
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("valid dense output map"),
+            domain,
+            base_ops: vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: vec![
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: isize::MAX,
+                    }],
+                },
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: 1,
+                    }],
+                },
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: -isize::MAX,
+                    }],
+                },
+            ],
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: test_span("prepared_combined_strides.mo"),
+        }],
+    };
+
+    let prepared = PreparedComputeBlock::new(&block).expect("combined stride should prepare");
+    let mut output = vec![0.0; prepared.len()];
+    prepared
+        .eval_with_context(
+            &[2.0, 3.0, 5.0],
+            &[],
+            0.0,
+            RowEvalContext::default(),
+            &mut output,
+        )
+        .expect("combined stride should evaluate");
+    assert_eq!(output, vec![2.0, 3.0, 5.0]);
+}
+
+#[test]
 fn prepared_compute_block_rejects_negative_tensor_output_map_with_span() {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("bad_prepared_output.mo"),
@@ -189,7 +428,7 @@ fn prepared_compute_block_rejects_negative_tensor_output_map_with_span() {
     assert_eq!(err.source_span(), Some(span));
     assert!(
         err.to_string()
-            .contains("output map produced negative output index -1"),
+            .contains("output map produced negative output index"),
         "error should explain the invalid output map: {err}"
     );
 }
@@ -241,8 +480,8 @@ fn prepared_compute_block_rejects_matmul_output_overflow_with_span() {
             m: usize::MAX,
             k: 1,
             n: 2,
-            lhs_sparsity: SparsityPattern::Dense,
-            rhs_sparsity: SparsityPattern::Dense,
+            lhs_pattern: crate::fixture_pattern(1, 1, false),
+            rhs_pattern: crate::fixture_pattern(1, 1, false),
             metadata: TensorNodeMetadata::default(),
             span,
         }],
@@ -266,10 +505,15 @@ fn prepared_compute_block_places_local_scalar_node_after_tensor_output() {
     let block = ComputeBlock {
         nodes: vec![
             matmul_node(2.0, &[3.0, 4.0]),
-            ComputeNode::ScalarPrograms(ScalarProgramBlock::with_source_span(
-                vec![const_store_row(9.0)],
-                test_span("prepared_scalar.mo"),
-            )),
+            ComputeNode::ScalarPrograms(
+                ScalarProgramBlock::with_source_span(
+                    vec![const_store_row(9.0)],
+                    test_span("prepared_scalar.mo")
+                        .require_provenance("prepared compute-block fixture")
+                        .expect("fixture span is source-backed"),
+                )
+                .expect("prepared scalar fixture is computable"),
+            ),
             matmul_node(5.0, &[6.0]),
         ],
     };
