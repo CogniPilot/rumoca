@@ -110,6 +110,12 @@ impl TypeTable {
             .expect("primitive String not registered")
     }
 
+    /// Get the TypeId for Clock.
+    pub fn clock(&self) -> TypeId {
+        self.lookup("Clock")
+            .expect("primitive Clock not registered")
+    }
+
     /// Get the number of types in the table.
     pub fn len(&self) -> usize {
         self.types.len()

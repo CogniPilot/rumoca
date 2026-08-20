@@ -1,6 +1,6 @@
 use crate::{
     ComponentRefPart, ComponentReference, ExpressionRewriter, FallibleExpressionRewriter, ForIndex,
-    Statement, StatementBlock,
+    Reference, Statement, StatementBlock,
 };
 
 pub trait StatementRewriter: ExpressionRewriter {
@@ -59,11 +59,15 @@ pub trait StatementRewriter: ExpressionRewriter {
                 outputs,
                 span,
             } => Statement::FunctionCall {
-                comp: self.rewrite_component_reference(comp),
+                comp: self.rewrite_reference(comp),
                 args: self.rewrite_expressions(args),
                 outputs: outputs
                     .iter()
-                    .map(|output| self.rewrite_component_reference(output))
+                    .map(|output| {
+                        output
+                            .as_ref()
+                            .map(|output| self.rewrite_component_reference(output))
+                    })
                     .collect(),
                 span: *span,
             },
@@ -120,16 +124,26 @@ pub trait StatementRewriter: ExpressionRewriter {
         &mut self,
         reference: &ComponentReference,
     ) -> ComponentReference {
-        ComponentReference {
-            local: reference.local,
-            span: reference.span,
-            parts: reference
-                .parts
+        ComponentReference::construct(
+            reference.local(),
+            reference.span(),
+            reference
+                .parts()
                 .iter()
                 .map(|part| self.rewrite_component_ref_part(part))
                 .collect(),
-            def_id: reference.def_id,
-        }
+        )
+        .expect("rewriting a checked reference preserves its nonempty shape")
+    }
+
+    fn rewrite_reference(&mut self, reference: &Reference) -> Reference {
+        let Some(component) = reference.component_ref() else {
+            return reference.clone();
+        };
+        reference.with_rewritten_component_reference(
+            reference.as_str(),
+            self.rewrite_component_reference(component),
+        )
     }
 
     fn rewrite_component_ref_part(&mut self, part: &ComponentRefPart) -> ComponentRefPart {
@@ -137,6 +151,7 @@ pub trait StatementRewriter: ExpressionRewriter {
             ident: part.ident.clone(),
             span: part.span,
             subs: self.rewrite_subscripts(&part.subs),
+            def_id: part.def_id,
         }
     }
 }
@@ -201,11 +216,16 @@ pub trait FallibleStatementRewriter: FallibleExpressionRewriter {
                 outputs,
                 span,
             } => Ok(Statement::FunctionCall {
-                comp: self.rewrite_component_reference(comp)?,
+                comp: self.rewrite_reference(comp)?,
                 args: self.rewrite_expressions(args)?,
                 outputs: outputs
                     .iter()
-                    .map(|output| self.rewrite_component_reference(output))
+                    .map(|output| {
+                        output
+                            .as_ref()
+                            .map(|output| self.rewrite_component_reference(output))
+                            .transpose()
+                    })
                     .collect::<Result<Vec<_>, Self::Error>>()?,
                 span: *span,
             }),
@@ -271,16 +291,26 @@ pub trait FallibleStatementRewriter: FallibleExpressionRewriter {
         &mut self,
         reference: &ComponentReference,
     ) -> Result<ComponentReference, Self::Error> {
-        Ok(ComponentReference {
-            local: reference.local,
-            span: reference.span,
-            parts: reference
-                .parts
+        Ok(ComponentReference::construct(
+            reference.local(),
+            reference.span(),
+            reference
+                .parts()
                 .iter()
                 .map(|part| self.rewrite_component_ref_part(part))
                 .collect::<Result<Vec<_>, Self::Error>>()?,
-            def_id: reference.def_id,
-        })
+        )
+        .expect("rewriting a checked reference preserves its nonempty shape"))
+    }
+
+    fn rewrite_reference(&mut self, reference: &Reference) -> Result<Reference, Self::Error> {
+        let Some(component) = reference.component_ref() else {
+            return Ok(reference.clone());
+        };
+        Ok(reference.with_rewritten_component_reference(
+            reference.as_str(),
+            self.rewrite_component_reference(component)?,
+        ))
     }
 
     fn rewrite_component_ref_part(
@@ -291,6 +321,7 @@ pub trait FallibleStatementRewriter: FallibleExpressionRewriter {
             ident: part.ident.clone(),
             span: part.span,
             subs: self.rewrite_subscripts(&part.subs)?,
+            def_id: part.def_id,
         })
     }
 }

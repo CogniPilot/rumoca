@@ -639,7 +639,7 @@ fn location_to_span(loc: &parol_runtime::lexer::Location) -> Span {
     let end = BytePos(loc.end as usize);
     let source_name = loc.file_name.to_string_lossy();
     normalize_span(Span::new(
-        SourceId::from_source_name(source_name.as_ref()),
+        rumoca_core::source_id_for_name(source_name.as_ref()),
         start,
         end,
     ))
@@ -651,7 +651,7 @@ fn ast_location_to_span(location: &rumoca_core::Location) -> Span {
     if end.0 <= start.0 {
         end = BytePos(start.0.saturating_add(1));
     }
-    Span::new(SourceId::from_source_name(&location.file_name), start, end)
+    Span::new(location.source, start, end)
 }
 
 /// Format a parse error with source context using miette.
