@@ -121,11 +121,27 @@ impl<'a> MeModelSource<'a> {
         Self(MeModelSourceInner::Fixture(model))
     }
 
-    pub(crate) fn model(self) -> &'a rumoca_ir_solve::SolveModel {
+    pub(crate) fn into_parts(
+        self,
+    ) -> Result<
+        (
+            &'a rumoca_ir_solve::SolveModel,
+            Vec<rumoca_ir_solve::fmi::FmiEventIndicatorSource>,
+        ),
+        rumoca_ir_solve::fmi::FmiComponentError,
+    > {
         match self.0 {
-            MeModelSourceInner::Correlated(view) => view.model(),
+            MeModelSourceInner::Correlated(view) => {
+                let (model, inventory) = view.into_parts();
+                Ok((model, inventory.sources().to_vec()))
+            }
             #[cfg(test)]
-            MeModelSourceInner::Fixture(model) => model,
+            MeModelSourceInner::Fixture(model) => Ok((
+                model,
+                rumoca_ir_solve::fmi::FmiEventIndicatorInventory::derive(model)?
+                    .sources()
+                    .to_vec(),
+            )),
         }
     }
 }

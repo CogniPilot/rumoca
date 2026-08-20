@@ -65,16 +65,6 @@ pub(super) struct RootConditionPlan {
     pub(super) search_rows: Vec<usize>,
 }
 
-impl RootConditionPlan {
-    pub(super) fn search_is_uniformly_inactive(&self) -> bool {
-        self.search_rows.is_empty()
-            && self
-                .entries
-                .iter()
-                .all(|entry| !matches!(entry, RootConditionPlanEntry::DirectTime(_)))
-    }
-}
-
 pub(super) fn visible_value_plan(model: &solve::SolveModel) -> Option<VisibleValuePlan> {
     let rows = &model.visible_value_rows;
     if rows.row_count() != model.visible_names.len()

@@ -1,7 +1,7 @@
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 
-use crate::{SimVariableMeta, runtime::pre_params::write_pre_params_from_sources, timeline};
+use crate::{SimVariableMeta, runtime::pre_params::write_pre_params_from_sources};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeSolveError {
@@ -425,18 +425,6 @@ pub fn root_crossings_with_relation_memory(
             root_crossing(index, *old, *new, tol)
         })
         .collect()
-}
-
-pub fn filter_scheduled_root_crossings(
-    crossings: &mut Vec<RootCrossing>,
-    scheduled_roots: &[solve::ScheduledRootCondition],
-) {
-    if scheduled_roots.is_empty() {
-        return;
-    }
-    crossings.retain(|crossing| {
-        !timeline::scheduled_root_index_is_known(scheduled_roots, crossing.index)
-    });
 }
 
 pub fn root_value_crossed(before: f64, after: f64, tol: f64) -> bool {

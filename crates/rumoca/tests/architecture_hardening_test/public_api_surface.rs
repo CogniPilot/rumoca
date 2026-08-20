@@ -76,6 +76,18 @@ const REMOVED_DECLARATION_ONLY_SURFACES: &[(&str, &str)] = &[
     ("crates/rumoca-sim/src/lib.rs", "set_parameter_values"),
     ("crates/rumoca-solver/src/session.rs", "initial_point"),
     (
+        "crates/rumoca-solver/src/runtime/solve_ops.rs",
+        "filter_scheduled_root_crossings",
+    ),
+    (
+        "crates/rumoca-solver/src/runtime/solve_runtime.rs",
+        "root_condition_is_search_active",
+    ),
+    (
+        "crates/rumoca-solver/src/runtime/solve_runtime/plans.rs",
+        "root_search_is_uniformly_inactive",
+    ),
+    (
         "crates/rumoca-tool-lsp/src/util.rs",
         "token_to_range_in_source",
     ),

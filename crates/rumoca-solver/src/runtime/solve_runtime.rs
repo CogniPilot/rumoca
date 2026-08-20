@@ -275,7 +275,6 @@ pub struct SolveRuntime {
     event_action_conditions: PreparedScalarProgramBlock,
     event_action_active_row_indices: RefCell<Vec<usize>>,
     root_condition_plan: Option<RootConditionPlan>,
-    root_search_uniformly_inactive: bool,
     discrete_rhs: PreparedScalarProgramBlock,
     /// Compiler-selected scalar rows for public observation, indexed once.
     observation_refresh_scalar_rows: Box<[usize]>,
@@ -566,10 +565,6 @@ impl SolveRuntime {
             )
         });
         let delay_runtime = DelayRuntime::new(&model.problem.events.delays)?;
-        let root_search_uniformly_inactive = delay_runtime.event_root_count() == 0
-            && root_condition_plan
-                .as_ref()
-                .is_some_and(RootConditionPlan::search_is_uniformly_inactive);
         let root_condition_count =
             total_root_condition_count(model, delay_runtime.event_root_count())?;
         let structured_discrete_rows =
@@ -641,7 +636,6 @@ impl SolveRuntime {
             )?,
             event_action_active_row_indices: RefCell::new(Vec::new()),
             root_condition_plan,
-            root_search_uniformly_inactive,
             discrete_rhs: PreparedScalarProgramBlock::new(model.problem.discrete.rhs.clone())?,
             observation_refresh_scalar_rows,
             observation_refresh_p_scratch: RefCell::new(Vec::new()),
@@ -1048,27 +1042,6 @@ impl SolveRuntime {
 
     pub fn root_condition_count(&self) -> usize {
         self.root_condition_count
-    }
-
-    pub fn root_search_is_uniformly_inactive(&self) -> bool {
-        self.root_search_uniformly_inactive
-    }
-
-    /// Whether one standard event-indicator position carries a searchable
-    /// surface instead of the root plan's stable neutral sentinel.
-    pub fn root_condition_is_search_active(&self, index: usize) -> bool {
-        let model_root_count = self.model.problem.events.root_conditions.output_count();
-        if index >= model_root_count {
-            return index < self.root_condition_count();
-        }
-        self.root_condition_plan.as_ref().is_none_or(|plan| {
-            plan.entries.get(index).is_some_and(|entry| {
-                matches!(
-                    entry,
-                    RootConditionPlanEntry::DirectTime(_) | RootConditionPlanEntry::Dynamic
-                )
-            })
-        })
     }
 
     pub fn derivative_settled_coordinate_can_refresh_roots(&self) -> bool {

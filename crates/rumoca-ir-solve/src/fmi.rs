@@ -85,6 +85,8 @@ pub enum FmiComponentError {
         name: &'static str,
         declaration: Span,
     },
+    #[error("FMI event-indicator inventory is invalid: {message}")]
+    EventIndicatorInventory { message: String, span: Option<Span> },
 }
 
 impl FmiComponentError {
@@ -96,12 +98,143 @@ impl FmiComponentError {
             | Self::StorageTypeMismatch { span, .. }
             | Self::NonAddressableStorage { span, .. } => Some(*span),
             Self::ReservedMaxStepDurationName { declaration, .. } => Some(*declaration),
+            Self::EventIndicatorInventory { span, .. } => *span,
             Self::InvalidSolve(_)
             | Self::VariableCount { .. }
             | Self::ValueReferenceOverflow
             | Self::StateCount { .. } => None,
         }
     }
+}
+
+/// One source in the ordered FMI Model Exchange event-indicator vector.
+///
+/// This is compiler metadata, not a host-side filter: each entry identifies
+/// the checked semantic owner whose scalar value occupies the corresponding
+/// FMI position.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FmiEventIndicatorSource {
+    RootCondition { index: usize },
+    DynamicTimeEvent { index: usize },
+    DelayDiscontinuity { index: usize },
+}
+
+impl FmiEventIndicatorSource {
+    #[must_use]
+    pub const fn source_index(self) -> usize {
+        match self {
+            Self::RootCondition { index }
+            | Self::DynamicTimeEvent { index }
+            | Self::DelayDiscontinuity { index } => index,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct FmiEventIndicatorInventory {
+    sources: Box<[FmiEventIndicatorSource]>,
+}
+
+impl FmiEventIndicatorInventory {
+    pub fn derive(model: &SolveModel) -> Result<Self, FmiComponentError> {
+        let static_y = model
+            .problem
+            .continuous
+            .refresh_owners
+            .root()
+            .static_causal_rows()
+            .iter()
+            .map(|row| row.target_index())
+            .collect::<BTreeSet<_>>();
+        let scheduled = model
+            .problem
+            .events
+            .scheduled_root_conditions
+            .iter()
+            .map(|root| root.root_index)
+            .collect::<BTreeSet<_>>();
+        let mut sources = dependency_backed_indicator_sources(
+            &model.problem.events.root_conditions,
+            &static_y,
+            |index| {
+                (!scheduled.contains(&index))
+                    .then_some(FmiEventIndicatorSource::RootCondition { index })
+            },
+        )?;
+        sources.extend(dependency_backed_indicator_sources(
+            &model.problem.events.dynamic_time_event_rhs,
+            &static_y,
+            |index| Some(FmiEventIndicatorSource::DynamicTimeEvent { index }),
+        )?);
+        sources.extend(
+            (0..model.problem.events.delays.delay_time_rhs.output_count())
+                .map(|index| FmiEventIndicatorSource::DelayDiscontinuity { index }),
+        );
+        Ok(Self {
+            sources: sources.into_boxed_slice(),
+        })
+    }
+
+    #[must_use]
+    pub fn sources(&self) -> &[FmiEventIndicatorSource] {
+        &self.sources
+    }
+
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.sources.len()
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+}
+
+fn dependency_backed_indicator_sources(
+    block: &crate::ScalarProgramBlock,
+    static_y: &BTreeSet<usize>,
+    mut source: impl FnMut(usize) -> Option<FmiEventIndicatorSource>,
+) -> Result<Vec<FmiEventIndicatorSource>, FmiComponentError> {
+    let mut sources = Vec::new();
+    let mut output_ordinal = 0usize;
+    for (program_index, program) in block.programs().iter().enumerate() {
+        let span = block.program_span(program_index);
+        let dependencies = crate::StructuralPattern::derive_output_y_dependencies(program, span)
+            .map_err(|error| FmiComponentError::EventIndicatorInventory {
+                message: error.to_string(),
+                span,
+            })?;
+        for dependencies in dependencies {
+            let output_index = block
+                .output_indices()
+                .get(output_ordinal)
+                .copied()
+                .ok_or_else(|| FmiComponentError::EventIndicatorInventory {
+                    message: "indicator output has no checked scalar identity".to_string(),
+                    span,
+                })?;
+            if !dependencies.is_subset(static_y)
+                && let Some(source) = source(output_index)
+            {
+                sources.push(source);
+            }
+            output_ordinal = output_ordinal.checked_add(1).ok_or_else(|| {
+                FmiComponentError::EventIndicatorInventory {
+                    message: "indicator output ordinal overflows".to_string(),
+                    span,
+                }
+            })?;
+        }
+    }
+    if output_ordinal != block.output_indices().len() {
+        return Err(FmiComponentError::EventIndicatorInventory {
+            message: "indicator programs and checked output identities disagree".to_string(),
+            span: block.first_source_span(),
+        });
+    }
+    sources.sort_by_key(|source| source.source_index());
+    Ok(sources)
 }
 
 /// The checked FMI description of one component, with no kernel attached.
@@ -175,6 +308,7 @@ impl FmiMetadata {
 #[derive(Debug)]
 pub struct FmiComponent {
     metadata: FmiMetadata,
+    event_indicators: FmiEventIndicatorInventory,
     model: Arc<SolveModel>,
 }
 
@@ -193,8 +327,10 @@ impl FmiComponent {
             .validate()
             .map_err(|error| FmiComponentError::InvalidSolve(error.to_string()))?;
         let metadata = checked_metadata(&model.problem, inputs)?;
+        let event_indicators = FmiEventIndicatorInventory::derive(&model)?;
         Ok(Self {
             metadata,
+            event_indicators,
             model: Arc::new(model),
         })
     }
@@ -202,6 +338,11 @@ impl FmiComponent {
     #[must_use]
     pub const fn metadata(&self) -> &FmiMetadata {
         &self.metadata
+    }
+
+    #[must_use]
+    pub const fn event_indicators(&self) -> &FmiEventIndicatorInventory {
+        &self.event_indicators
     }
 
     #[must_use]
@@ -265,7 +406,10 @@ impl FmiComponent {
     /// owned-root escape.
     #[must_use]
     pub fn runtime_view(&self) -> FmiRuntimeView<'_> {
-        FmiRuntimeView { model: &self.model }
+        FmiRuntimeView {
+            model: &self.model,
+            event_indicators: &self.event_indicators,
+        }
     }
 
     /// Consume this component into the correlated codegen view.
@@ -276,6 +420,7 @@ impl FmiComponent {
     pub fn into_codegen_view(self) -> FmiCodegenView {
         FmiCodegenView {
             metadata: self.metadata,
+            event_indicators: self.event_indicators,
             model: self.model,
         }
     }
@@ -289,6 +434,7 @@ impl FmiComponent {
 #[derive(Debug)]
 pub struct FmiRuntimeView<'component> {
     model: &'component SolveModel,
+    event_indicators: &'component FmiEventIndicatorInventory,
 }
 
 impl<'component> FmiRuntimeView<'component> {
@@ -297,6 +443,21 @@ impl<'component> FmiRuntimeView<'component> {
     #[must_use]
     pub fn model(self) -> &'component SolveModel {
         self.model
+    }
+
+    #[must_use]
+    pub fn event_indicators(&self) -> &'component FmiEventIndicatorInventory {
+        self.event_indicators
+    }
+
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        &'component SolveModel,
+        &'component FmiEventIndicatorInventory,
+    ) {
+        (self.model, self.event_indicators)
     }
 }
 
@@ -317,6 +478,7 @@ impl<'component> FmiRuntimeView<'component> {
 #[derive(Debug)]
 pub struct FmiCodegenView {
     metadata: FmiMetadata,
+    event_indicators: FmiEventIndicatorInventory,
     model: Arc<SolveModel>,
 }
 
@@ -324,6 +486,11 @@ impl FmiCodegenView {
     #[must_use]
     pub const fn metadata(&self) -> &FmiMetadata {
         &self.metadata
+    }
+
+    #[must_use]
+    pub const fn event_indicators(&self) -> &FmiEventIndicatorInventory {
+        &self.event_indicators
     }
 
     #[must_use]

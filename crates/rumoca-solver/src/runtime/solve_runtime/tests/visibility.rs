@@ -497,8 +497,6 @@ fn root_condition_plan_neutralizes_parameter_static_algebraic_outputs() {
 
     assert_eq!(plan.evaluated_rows, vec![0]);
     assert!(plan.search_rows.is_empty());
-    assert!(runtime.root_search_is_uniformly_inactive());
-    assert!(!runtime.root_condition_is_search_active(0));
 
     let full = runtime
         .eval_root_conditions_from_solver_y(0.0, &[0.0, 2.0], &[])
@@ -523,8 +521,6 @@ fn root_condition_plan_keeps_state_dependent_algebraic_outputs_dynamic() {
 
     assert_eq!(plan.evaluated_rows, vec![0]);
     assert_eq!(plan.search_rows, vec![0]);
-    assert!(!runtime.root_search_is_uniformly_inactive());
-    assert!(runtime.root_condition_is_search_active(0));
 
     let mut search = vec![0.0];
     runtime

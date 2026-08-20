@@ -49,6 +49,65 @@ fn dynamic_time_event_deadline_lowers_to_owned_row() {
     ));
 }
 
+#[test]
+fn fmi_inventory_promotes_a_state_dependent_deadline_to_an_indicator() {
+    let source = TestSource::new("Real x; equation der(x) = 0;");
+    let declaration = source.at(0, 6);
+    let equation = source.at(17, 27);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let start = model.expressions(|expressions| {
+            expressions
+                .at(declaration)
+                .literal(dae::DaeLiteral::Real(0.0))
+        })?;
+        let state = model.variables(|variables| {
+            variables.state(
+                VarName::new("x"),
+                real,
+                declaration,
+                dae::VariableAttributes {
+                    start: Some(start),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        let (deadline, residual) = model.expressions(|expressions| {
+            let state_value = expressions
+                .at(equation)
+                .coordinate(dae::CoordinateInput::State(state))?;
+            let derivative = expressions
+                .at(equation)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let zero = expressions
+                .at(equation)
+                .literal(dae::DaeLiteral::Real(0.0))?;
+            let residual =
+                expressions
+                    .at(equation)
+                    .binary(dae::BinaryOperator::Subtract, derivative, zero)?;
+            Ok((state_value, residual))
+        })?;
+        model.continuous(|continuous| continuous.value_equation(equation, residual))?;
+        model.events(|events| events.dynamic_time_event(deadline, equation))?;
+        Ok(())
+    })
+    .expect("state-dependent deadline is valid by construction");
+
+    let component = crate::fmi::lower_to_fmi_component(&model, &std::collections::HashMap::new())
+        .expect("FMI lowering constructs the checked indicator inventory");
+    assert_eq!(
+        component.event_indicators().sources(),
+        [rumoca_ir_solve::fmi::FmiEventIndicatorSource::DynamicTimeEvent { index: 0 }]
+    );
+}
+
 /// SOLVE-C12 maps the typed DAE terminal coordinate to one runtime P-slot and
 /// marks the event partition so the driver activates that slot only at stop
 /// time. The action program therefore remains a pure load from `(y, p, t)`.

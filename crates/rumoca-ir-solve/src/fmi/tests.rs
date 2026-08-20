@@ -242,7 +242,7 @@ mod max_step_duration_local {
 
     /// A delay-bearing kernel whose storage is one two-scalar state run, so the
     /// state inventory indices can be read back with the local present.
-    fn delay_bearing_model_with_one_state() -> (SolveModel, FmiVariableInput) {
+    pub(super) fn delay_bearing_model_with_one_state() -> (SolveModel, FmiVariableInput) {
         let mut model = delay_bearing_model(1);
         model.problem.layout = VarLayout::from_parts(IndexMap::new(), 2, 1);
         model.problem.solve_layout.variable_storage_runs = vec![SolveVariableStorageRun {
@@ -293,6 +293,84 @@ mod max_step_duration_local {
             causality: FmiCausality::Local,
             variability: FmiVariability::Continuous,
             ..parameter_input(name)
+        }
+    }
+
+    mod event_indicator_inventory {
+        use super::*;
+        use crate::{RootRelationRefreshRole, RootZeroDomain, ScheduledRootCondition};
+
+        fn load_row(operation: LinearOp) -> ScalarProgramBlock {
+            ScalarProgramBlock::with_source_span(
+                vec![vec![operation, LinearOp::StoreOutput { src: 0 }]],
+                fixture_span()
+                    .require_provenance("FMI indicator fixture")
+                    .unwrap(),
+            )
+            .unwrap()
+        }
+
+        fn state_root_model() -> (SolveModel, FmiVariableInput) {
+            let (mut model, input) = delay_bearing_model_with_one_state();
+            model.problem.events.delays = SolveDelayPartition::default();
+            model.problem.events.root_conditions = load_row(LinearOp::LoadY { dst: 0, index: 0 });
+            model.problem.events.root_relation_memory_targets = vec![None];
+            model.problem.events.root_zero_domains = vec![RootZeroDomain::Previous];
+            model.problem.events.root_relation_refresh_roles =
+                vec![RootRelationRefreshRole::Frozen];
+            (model, input)
+        }
+
+        #[test]
+        fn continuously_state_dependent_roots_are_the_ordered_inventory() {
+            let (model, input) = state_root_model();
+            let component = FmiComponent::construct(model, vec![input]).unwrap();
+            assert_eq!(
+                component.event_indicators().sources(),
+                [FmiEventIndicatorSource::RootCondition { index: 0 }]
+            );
+        }
+
+        #[test]
+        fn scheduled_roots_are_absent_from_the_indicator_inventory() {
+            let (mut model, input) = state_root_model();
+            model.problem.events.scheduled_root_conditions = vec![ScheduledRootCondition {
+                root_index: 0,
+                period_seconds: 1.0,
+                phase_seconds: 0.0,
+            }];
+            let component = FmiComponent::construct(model, vec![input]).unwrap();
+            assert!(component.event_indicators().is_empty());
+        }
+
+        #[test]
+        fn parameter_only_roots_and_deadlines_are_time_events_not_indicators() {
+            let (mut model, input) = delay_bearing_model_with_one_run();
+            model.problem.events.delays = SolveDelayPartition::default();
+            model.problem.events.root_conditions = load_row(LinearOp::LoadP { dst: 0, index: 0 });
+            model.problem.events.root_relation_memory_targets = vec![None];
+            model.problem.events.root_zero_domains = vec![RootZeroDomain::Previous];
+            model.problem.events.root_relation_refresh_roles =
+                vec![RootRelationRefreshRole::Frozen];
+            model.problem.events.dynamic_time_event_rhs =
+                load_row(LinearOp::LoadP { dst: 0, index: 0 });
+            let component = FmiComponent::construct(model, vec![input]).unwrap();
+            assert!(component.event_indicators().is_empty());
+        }
+
+        #[test]
+        fn state_deadlines_precede_delay_discontinuity_sources_deterministically() {
+            let (mut model, input) = delay_bearing_model_with_one_state();
+            model.problem.events.dynamic_time_event_rhs =
+                load_row(LinearOp::LoadY { dst: 0, index: 0 });
+            let component = FmiComponent::construct(model, vec![input]).unwrap();
+            assert_eq!(
+                component.event_indicators().sources(),
+                [
+                    FmiEventIndicatorSource::DynamicTimeEvent { index: 0 },
+                    FmiEventIndicatorSource::DelayDiscontinuity { index: 0 },
+                ]
+            );
         }
     }
 

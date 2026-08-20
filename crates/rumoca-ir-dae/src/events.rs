@@ -149,8 +149,10 @@ impl<'dae> Events<'_, 'dae> {
         Ok(TimeEventId::from_raw(raw))
     }
 
-    /// Own a time-event deadline that is fixed during continuous integration
-    /// and re-evaluated after each event boundary.
+    /// Own a time-event deadline. Discrete/parameter deadlines are announced
+    /// as ordinary time events; continuously state-dependent deadlines are
+    /// lowered to checked FMI event-indicator sources so an integrator cannot
+    /// step across their moving zero surface.
     pub fn dynamic_time_event(
         &mut self,
         deadline: ExprId<'dae>,
@@ -160,11 +162,7 @@ impl<'dae> Events<'_, 'dae> {
         self.storage
             .expect_closed_expression(deadline, provenance)?;
         let ty = self.storage.expr_type(deadline, provenance)?;
-        let variability = self.storage.expr_variability(deadline, provenance)?;
-        if !ty.is_scalar()
-            || ty.scalar_type() != ScalarType::Real
-            || variability > crate::ExpressionVariability::Discrete
-        {
+        if !ty.is_scalar() || ty.scalar_type() != ScalarType::Real {
             return Err(DaeConstructionError::InvalidDynamicTimeEventDeadline {
                 span: provenance.span(),
             });

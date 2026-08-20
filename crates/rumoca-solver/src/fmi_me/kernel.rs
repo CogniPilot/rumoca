@@ -18,8 +18,7 @@ use crate::runtime::schedule::{RuntimeEventStop, ScheduledEventConsumption, Solv
 #[cfg(test)]
 use crate::runtime::solve_ops::root_crossings_with_relation_memory;
 use crate::runtime::solve_ops::{
-    EventActionOutcome, EventPreMode, RootCrossing, convert_variable_meta,
-    filter_scheduled_root_crossings, runtime_values_changed,
+    EventActionOutcome, EventPreMode, RootCrossing, convert_variable_meta, runtime_values_changed,
     write_observation_clock_activation_params,
 };
 use crate::runtime::solve_runtime::{
@@ -94,6 +93,7 @@ impl StateTimeCoincidence {
 /// events, or runtime objects: the only way in is [`SolveMeKernel`].
 pub struct SolveMeKernel {
     runtime: Rc<SolveRuntime>,
+    event_indicator_sources: Vec<rumoca_ir_solve::fmi::FmiEventIndicatorSource>,
     instance_brand: Rc<()>,
     instance_name: &'static str,
     lifecycle: MeLifecycle,
@@ -213,7 +213,7 @@ impl SolveMeKernel {
     pub(crate) fn model_description(&self) -> MeModelDescription<'_> {
         MeModelDescription {
             continuous_state_count: self.state_count,
-            event_indicator_count: self.runtime.root_condition_count(),
+            event_indicator_count: self.event_indicator_sources.len(),
             // The linked kernel commits accepted-point history and invalidates
             // component caches here. Discrete-delay models need this even when
             // they have no continuous delay channel, so the current component
@@ -421,7 +421,7 @@ impl SolveMeKernel {
     }
 
     pub(crate) fn get_event_indicators(&self, indicators: &mut Vec<f64>) -> Result<(), MeError> {
-        indicators.resize(self.runtime.root_condition_count(), 0.0);
+        indicators.resize(self.event_indicator_sources.len(), 0.0);
         self.event_indicators_into(indicators)
     }
 
@@ -441,7 +441,7 @@ impl SolveMeKernel {
         self.require_active_lifecycle("completed_integrator_step")?;
         self.post_event_eval_time = None;
         let enter_event_mode = self.complete_indicator_domains()?;
-        if !self.pending_root_crossings.is_empty() {
+        if enter_event_mode {
             self.clear_runtime_caches();
         } else if self.last_projection_changed {
             self.clear_derivative_cache();
@@ -482,7 +482,7 @@ impl SolveMeKernel {
         crossings: &mut Vec<MeIndicatorCrossing>,
     ) -> Result<(), MeError> {
         self.require_active_lifecycle("event_indicator_crossings")?;
-        let expected = self.runtime.root_condition_count();
+        let expected = self.event_indicator_sources.len();
         if before.len() != expected || after.len() != expected {
             return Err(contract(format!(
                 "event-indicator crossing buffers have {}/{} entries for {expected} indicators",
@@ -495,21 +495,29 @@ impl SolveMeKernel {
                 "event-indicator crossing buffers must contain finite values",
             ));
         }
-        let mut located = root_crossings_with_relation_memory(
+        let relation_targets = self
+            .event_indicator_sources
+            .iter()
+            .map(|source| match *source {
+                rumoca_ir_solve::fmi::FmiEventIndicatorSource::RootCondition { index } => self
+                    .runtime
+                    .model
+                    .problem
+                    .events
+                    .root_relation_memory_targets
+                    .get(index)
+                    .copied()
+                    .flatten(),
+                rumoca_ir_solve::fmi::FmiEventIndicatorSource::DynamicTimeEvent { .. }
+                | rumoca_ir_solve::fmi::FmiEventIndicatorSource::DelayDiscontinuity { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        let located = root_crossings_with_relation_memory(
             before,
             after,
             self.tolerance,
-            &self
-                .runtime
-                .model
-                .problem
-                .events
-                .root_relation_memory_targets,
+            &relation_targets,
             &self.params,
-        );
-        filter_scheduled_root_crossings(
-            &mut located,
-            &self.runtime.model.problem.events.scheduled_root_conditions,
         );
         crossings.clear();
         crossings.extend(located.into_iter().map(|crossing| MeIndicatorCrossing {
@@ -531,7 +539,7 @@ impl SolveMeKernel {
         crossings: &[MeIndicatorCrossing],
     ) -> Result<(), MeError> {
         self.require_active_lifecycle("arm_state_event")?;
-        let indicator_count = self.runtime.root_condition_count();
+        let indicator_count = self.event_indicator_sources.len();
         if let Some(crossing) = crossings.iter().find(|crossing| {
             crossing.index >= indicator_count
                 || !crossing.post_indicator_value.is_finite()
@@ -544,9 +552,26 @@ impl SolveMeKernel {
         }
         self.pending_root_crossings.clear();
         self.pending_root_crossings
-            .extend(crossings.iter().map(|crossing| RootCrossing {
-                index: crossing.index,
-                post_relation_memory_value: crossing.post_indicator_value,
+            .extend(crossings.iter().filter_map(|crossing| {
+                let index = match self.event_indicator_sources[crossing.index] {
+                    rumoca_ir_solve::fmi::FmiEventIndicatorSource::RootCondition { index } => index,
+                    rumoca_ir_solve::fmi::FmiEventIndicatorSource::DelayDiscontinuity { index } => {
+                        self.runtime
+                            .model
+                            .problem
+                            .events
+                            .root_conditions
+                            .output_count()
+                            + index
+                    }
+                    rumoca_ir_solve::fmi::FmiEventIndicatorSource::DynamicTimeEvent { .. } => {
+                        return None;
+                    }
+                };
+                Some(RootCrossing {
+                    index,
+                    post_relation_memory_value: crossing.post_indicator_value,
+                })
             }));
         Ok(())
     }

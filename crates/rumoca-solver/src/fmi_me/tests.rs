@@ -1102,8 +1102,8 @@ fn neutral_static_root_never_fabricates_a_relation_crossing() {
     let mut indicators = Vec::new();
     kernel
         .get_event_indicators(&mut indicators)
-        .expect("the non-search root should expose its neutral sentinel");
-    assert_eq!(indicators, vec![1.0]);
+        .expect("the parameter-static relation is outside the FMI indicator domain");
+    assert!(indicators.is_empty());
     assert_eq!(
         kernel.verification_observable_state().3,
         vec![1.0f64.to_bits()],
@@ -1117,7 +1117,7 @@ fn neutral_static_root_never_fabricates_a_relation_crossing() {
     assert_eq!(
         kernel.verification_observable_state().3,
         vec![1.0f64.to_bits()],
-        "neutralized search output must not overwrite relation memory"
+        "an excluded parameter-static relation must not overwrite relation memory"
     );
 }
 
