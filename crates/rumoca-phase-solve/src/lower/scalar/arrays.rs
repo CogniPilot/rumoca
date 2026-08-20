@@ -5,6 +5,7 @@
 //! falls back to an explicit selection chain over the base's checked extent.
 
 use super::*;
+use rumoca_core::{flatten_coordinates, row_major_coordinates};
 
 enum ArrayUpdateAxis {
     Whole(u32),

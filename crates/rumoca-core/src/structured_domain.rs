@@ -158,6 +158,54 @@ pub fn row_major_strides(dims: &[usize]) -> Option<Vec<usize>> {
     Some(strides)
 }
 
+/// Convert one zero-based row-major scalar ordinal to zero-based coordinates.
+///
+/// Returns `None` for an out-of-range ordinal, a zero extent, or scalar-count
+/// overflow. A scalar shape (`[]`) contains exactly ordinal zero.
+pub fn row_major_coordinates(extents: &[u32], ordinal: usize) -> Option<Vec<u32>> {
+    let scalar_count = extents
+        .iter()
+        .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))?;
+    if ordinal >= scalar_count {
+        return None;
+    }
+    let mut remainder = ordinal;
+    let mut coordinates = vec![0; extents.len()];
+    for (axis, extent) in extents.iter().enumerate().rev() {
+        if *extent == 0 {
+            return None;
+        }
+        coordinates[axis] = u32::try_from(remainder % *extent as usize).ok()?;
+        remainder /= *extent as usize;
+    }
+    Some(coordinates)
+}
+
+/// Convert zero-based coordinates to one zero-based row-major scalar ordinal.
+///
+/// Returns `None` for rank mismatch, an out-of-range coordinate, or address
+/// overflow. A scalar shape (`[]`) maps its only coordinate tuple to zero.
+pub fn flatten_coordinates(extents: &[u32], coordinates: &[u32]) -> Option<usize> {
+    if extents.len() != coordinates.len() {
+        return None;
+    }
+    extents
+        .iter()
+        .zip(coordinates)
+        .try_fold(0usize, |flat, (extent, coordinate)| {
+            if coordinate >= extent {
+                return None;
+            }
+            flat.checked_mul(*extent as usize)?
+                .checked_add(*coordinate as usize)
+        })
+}
+
+/// Checked multiplication for tensor extents and row-major storage lengths.
+pub const fn checked_product(lhs: usize, rhs: usize) -> Option<usize> {
+    lhs.checked_mul(rhs)
+}
+
 /// A regular elementwise `for` family: its (possibly nested) loop binders and
 /// the affine array accesses appearing in its uniform body.
 ///
@@ -697,6 +745,21 @@ mod tests {
         assert_eq!(row_major_strides(&[3, 4]), Some(vec![4, 1]));
         assert_eq!(row_major_strides(&[2, 3, 4]), Some(vec![12, 4, 1]));
         assert_eq!(row_major_strides(&[2, usize::MAX, 2]), None);
+    }
+
+    #[test]
+    fn row_major_coordinates_and_flattening_are_exact_inverses() {
+        let extents = [2, 3, 4];
+        for ordinal in 0..24 {
+            let coordinates = row_major_coordinates(&extents, ordinal).unwrap();
+            assert_eq!(flatten_coordinates(&extents, &coordinates), Some(ordinal));
+        }
+        assert_eq!(row_major_coordinates(&[], 0), Some(Vec::new()));
+        assert_eq!(flatten_coordinates(&[], &[]), Some(0));
+        assert_eq!(row_major_coordinates(&[2, 0, 3], 0), None);
+        assert_eq!(row_major_coordinates(&[2, 3], 6), None);
+        assert_eq!(flatten_coordinates(&[2, 3], &[2, 0]), None);
+        assert_eq!(flatten_coordinates(&[2, 3], &[1]), None);
     }
 
     #[test]

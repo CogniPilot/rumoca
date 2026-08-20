@@ -162,21 +162,6 @@ fn accumulate_sparse_matmul_inner(
     }
 }
 
-pub(super) fn checked_product(
-    lhs: usize,
-    rhs: usize,
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<usize, crate::ScalarizeError> {
-    lhs.checked_mul(rhs)
-        .ok_or(crate::ScalarizeError::ProductOverflow {
-            kind,
-            lhs,
-            rhs,
-            span,
-        })
-}
-
 pub(super) fn eval_left_diagonal_matmul(
     regs: &[f64],
     lhs_start: usize,

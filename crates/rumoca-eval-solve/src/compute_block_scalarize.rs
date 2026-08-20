@@ -414,7 +414,14 @@ impl ScalarProgramCollector {
                 ..
             } => {
                 let start = self.next_output;
-                let output_len = checked_product(*m, *n, "matmul", *span)?;
+                let output_len = rumoca_core::checked_product(*m, *n).ok_or(
+                    ScalarizeError::ProductOverflow {
+                        kind: "matmul",
+                        lhs: *m,
+                        rhs: *n,
+                        span: *span,
+                    },
+                )?;
                 if output_len == 0 {
                     return Ok(());
                 }
@@ -758,13 +765,13 @@ pub fn checked_contiguous_output_count(
         })
 }
 
-pub(super) fn checked_product(
+pub(super) fn scalarize_product(
     lhs: usize,
     rhs: usize,
     kind: &'static str,
     span: rumoca_core::Span,
 ) -> Result<usize, ScalarizeError> {
-    lhs.checked_mul(rhs).ok_or(ScalarizeError::ProductOverflow {
+    rumoca_core::checked_product(lhs, rhs).ok_or(ScalarizeError::ProductOverflow {
         kind,
         lhs,
         rhs,

@@ -6,6 +6,7 @@
 //! exact scalar or is rejected as not compile-time computable.
 
 use super::*;
+use rumoca_core::{flatten_coordinates, row_major_coordinates};
 
 impl<'dae> ScalarSelector<'dae> {
     pub(in crate::lower) const fn view(&self) -> dae::DaeView<'dae> {

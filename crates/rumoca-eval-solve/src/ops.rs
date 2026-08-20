@@ -1,6 +1,6 @@
 use super::{BinaryOp, CompareOp, UnaryOp};
 
-pub(crate) fn eval_unary(op: UnaryOp, value: f64) -> f64 {
+pub fn eval_unary(op: UnaryOp, value: f64) -> f64 {
     match op {
         UnaryOp::Neg => -value,
         UnaryOp::Not => (value == 0.0) as u8 as f64,
@@ -25,7 +25,7 @@ pub(crate) fn eval_unary(op: UnaryOp, value: f64) -> f64 {
     }
 }
 
-pub(crate) fn eval_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
+pub fn eval_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
     match op {
         BinaryOp::Add => lhs + rhs,
         BinaryOp::Sub => lhs - rhs,
@@ -40,6 +40,6 @@ pub(crate) fn eval_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
     }
 }
 
-pub(crate) fn eval_compare(op: CompareOp, lhs: f64, rhs: f64) -> f64 {
+pub fn eval_compare(op: CompareOp, lhs: f64, rhs: f64) -> f64 {
     op.compare_as_f64(lhs, rhs)
 }

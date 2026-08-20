@@ -76,7 +76,13 @@ pub(crate) fn solve_all_unchecked(
             span: None,
         });
     }
-    let matrix_len = checked_product(n, n, "linear solve matrix")?;
+    let matrix_len =
+        rumoca_core::checked_product(n, n).ok_or_else(|| EvalSolveError::Scalarization {
+            message: format!(
+                "linear solve matrix shape product {n} * {n} overflows register range"
+            ),
+            span: None,
+        })?;
     ensure_register_range(regs, "read", matrix_start, matrix_len)?;
     ensure_register_range(regs, "read", rhs_start, n)?;
     let matrix_offset = matrix_start as usize;
@@ -212,18 +218,6 @@ fn build_augmented_matrix(
         matrix.set(row_idx, n, rhs);
     }
     Ok(matrix)
-}
-
-fn checked_product(
-    lhs: usize,
-    rhs: usize,
-    operation: &'static str,
-) -> Result<usize, EvalSolveError> {
-    lhs.checked_mul(rhs)
-        .ok_or_else(|| EvalSolveError::Scalarization {
-            message: format!("{operation} shape product {lhs} * {rhs} overflows register range"),
-            span: None,
-        })
 }
 
 fn checked_register_end(start: u32, len: usize) -> Result<usize, EvalSolveError> {

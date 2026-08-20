@@ -3,7 +3,7 @@ mod tests;
 
 use std::collections::{HashMap, HashSet};
 
-use rumoca_core::Span;
+use rumoca_core::{Span, flatten_coordinates, row_major_coordinates};
 use rumoca_ir_dae as dae;
 
 /// Failure to derive one exact scalar view from a checked DAE expression.
@@ -1527,40 +1527,4 @@ fn multiplication_scalar_pairs(lhs: &[u32], rhs: &[u32], scalar: usize) -> Vec<(
         }
         _ => unreachable!("checked multiplication has a valid algebraic shape"),
     }
-}
-
-fn row_major_coordinates(extents: &[u32], index: usize) -> Option<Vec<u32>> {
-    let scalar_count = extents
-        .iter()
-        .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))?;
-    if index >= scalar_count {
-        return None;
-    }
-    let mut remainder = index;
-    let mut coordinates = Vec::with_capacity(extents.len());
-    for extent in extents.iter().rev() {
-        if *extent == 0 {
-            return None;
-        }
-        coordinates.push(u32::try_from(remainder % *extent as usize).ok()?);
-        remainder /= *extent as usize;
-    }
-    coordinates.reverse();
-    Some(coordinates)
-}
-
-fn flatten_coordinates(extents: &[u32], coordinates: &[u32]) -> Option<usize> {
-    if extents.len() != coordinates.len() {
-        return None;
-    }
-    extents
-        .iter()
-        .zip(coordinates)
-        .try_fold(0usize, |flat, (extent, coordinate)| {
-            if coordinate >= extent {
-                return None;
-            }
-            flat.checked_mul(*extent as usize)?
-                .checked_add(*coordinate as usize)
-        })
 }

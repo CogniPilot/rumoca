@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests;
 
-use rumoca_core::{Span, modelica_sign};
+use rumoca_core::{Span, flatten_coordinates, modelica_sign, row_major_coordinates};
 use rumoca_ir_dae as dae;
 use rustc_hash::FxHashMap;
 
@@ -1716,25 +1716,6 @@ fn range_values(
         .collect()
 }
 
-fn row_major_coordinates(extents: &[u32], index: usize) -> Option<Vec<u32>> {
-    let count = extents
-        .iter()
-        .try_fold(1_usize, |count, extent| count.checked_mul(*extent as usize))?;
-    if index >= count {
-        return None;
-    }
-    let mut remainder = index;
-    let mut coordinates = vec![0_u32; extents.len()];
-    for (axis, extent) in extents.iter().enumerate().rev() {
-        if *extent == 0 {
-            return None;
-        }
-        coordinates[axis] = u32::try_from(remainder % *extent as usize).ok()?;
-        remainder /= *extent as usize;
-    }
-    Some(coordinates)
-}
-
 fn expand_flat_indices(
     flats: Vec<usize>,
     selected: &[usize],
@@ -1771,22 +1752,6 @@ fn checked_expanded_index(
                 "array index calculation overflowed",
                 span,
             )
-        })
-}
-
-fn flatten_coordinates(extents: &[u32], coordinates: &[u32]) -> Option<usize> {
-    if extents.len() != coordinates.len() {
-        return None;
-    }
-    extents
-        .iter()
-        .zip(coordinates)
-        .try_fold(0_usize, |flat, (extent, coordinate)| {
-            if coordinate >= extent {
-                return None;
-            }
-            flat.checked_mul(*extent as usize)?
-                .checked_add(*coordinate as usize)
         })
 }
 

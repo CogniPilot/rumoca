@@ -29,6 +29,7 @@ import that path.
 | `runtime_defined_unknown_names`, `runtime_defined_continuous_unknown_names` | `rumoca-phase-structural::runtime_defined` | Single implementation; phase-structural is the authoritative caller. |
 | `expressions_semantically_equal`, `Expression::semantically_eq_ignoring_spans` | `rumoca-core` | Shared Flat/DAE expression identity. This is structural identity only; evaluation stays in `rumoca-eval-*`. |
 | `modelica_sign`, `escape_modelica_string` | `rumoca-core` | MLS `sign` and source-string escaping. |
+| `row_major_coordinates`, `flatten_coordinates`, `row_major_strides`, `checked_product` | `rumoca-core::structured_domain` | Checked row-major tensor address and extent arithmetic shared by DAE projection, Solve lowering, and backend views. |
 | nearest named tool-config discovery and `ToolConfigError` | `rumoca-core::tool_config` | One parent-directory walk and one typed read/parse error shape shared by fmt/lint; each tool owns only its accepted filenames and config schema. |
 | `eval_ast_integer_binary` | `rumoca-core` | Checked MLS integer arithmetic shared by AST/Flat structural evaluators; `/` folds only when its Real result is exactly integral. |
 | AST scalar constant evaluation (`AstScalarContext`, `eval_integer`, `eval_real`, `eval_boolean`) | `rumoca-eval-ast::ast_scalar` | One syntax dispatch; compiler phases provide lookup, function-call, coercion, and diagnostic policy through adapters. |

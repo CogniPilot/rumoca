@@ -129,6 +129,43 @@ fn solve_consumes_the_structural_analysis_issued_by_preparation() {
     }
 }
 
+#[test]
+fn tensor_address_arithmetic_has_one_foundation_owner() {
+    let root = workspace_root();
+    let owner = read(&root, "crates/rumoca-core/src/structured_domain.rs");
+    for helper in [
+        "fn row_major_coordinates(",
+        "fn flatten_coordinates(",
+        "fn checked_product(",
+    ] {
+        assert_eq!(
+            owner.matches(helper).count(),
+            1,
+            "rumoca-core must contain exactly one `{helper}` owner"
+        );
+        let mut duplicates = Vec::new();
+        let mut files = Vec::new();
+        super::architecture_hardening_support::collect_rs_files(&root.join("crates"), &mut files);
+        for path in files {
+            if path.ends_with("crates/rumoca-core/src/structured_domain.rs")
+                || path
+                    .ends_with("crates/rumoca/tests/architecture_hardening_test/dae_ownership.rs")
+            {
+                continue;
+            }
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            if source.contains(helper) {
+                duplicates.push(path.display().to_string());
+            }
+        }
+        assert!(
+            duplicates.is_empty(),
+            "tensor arithmetic helper `{helper}` is duplicated in {duplicates:?}"
+        );
+    }
+}
+
 fn read(root: &std::path::Path, relative: &str) -> String {
     fs::read_to_string(root.join(relative))
         .unwrap_or_else(|error| panic!("read {relative}: {error}"))

@@ -14,6 +14,7 @@ mod support;
 
 use std::cell::RefCell;
 
+use crate::compute_block_scalarize::scalarize_product as checked_product;
 use crate::tensor_policy::{
     LinearSolveKernel, MatMulKernel, select_linear_solve_kernel, select_matmul_kernel,
 };

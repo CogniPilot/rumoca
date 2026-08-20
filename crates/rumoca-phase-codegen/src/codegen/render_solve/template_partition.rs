@@ -758,7 +758,14 @@ fn partition_node_for_template(
         }
         solve::ComputeNode::MatMul { m, n, span, .. } => {
             let span = required_compute_node_span(*span, "matmul scalar fallback")?;
-            let count = checked_product(*m, *n, "matmul scalar fallback", span)?;
+            let count = rumoca_core::checked_product(*m, *n).ok_or(
+                rumoca_eval_solve::ScalarizeError::ProductOverflow {
+                    kind: "matmul scalar fallback",
+                    lhs: *m,
+                    rhs: *n,
+                    span,
+                },
+            )?;
             let native_dense = mlir_native_dense_node_supported(node);
             if native_dense {
                 push_native_dense_node(partition, node, *output_cursor, span)?;
@@ -985,21 +992,6 @@ fn push_native_dense_node(
         output_offset,
     });
     Ok(())
-}
-
-fn checked_product(
-    lhs: usize,
-    rhs: usize,
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<usize, rumoca_eval_solve::ScalarizeError> {
-    lhs.checked_mul(rhs)
-        .ok_or(rumoca_eval_solve::ScalarizeError::ProductOverflow {
-            kind,
-            lhs,
-            rhs,
-            span,
-        })
 }
 
 fn partition_vec_with_capacity<T>(

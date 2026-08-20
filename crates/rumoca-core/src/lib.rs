@@ -63,7 +63,8 @@ pub use source_map::{SourceMap, placeholder_source_name, source_id_for_name};
 pub use statement_rewriter::{FallibleStatementRewriter, StatementRewriter};
 pub use structured_domain::{
     AffineForm, ArrayAccess, ComprehensionScalarView, ComprehensionTemplate, RegularForFamily,
-    StructuredIndexBinder, StructuredIndexDomain, StructuredIndexDomainError, row_major_strides,
+    StructuredIndexBinder, StructuredIndexDomain, StructuredIndexDomainError, checked_product,
+    flatten_coordinates, row_major_coordinates, row_major_strides,
 };
 pub use subscript::Subscript;
 

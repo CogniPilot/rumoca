@@ -49,7 +49,7 @@ pub use compute_block_scalarize::{
     tensor_output_indices, to_scalar_program_block, to_scalar_program_projection,
 };
 use linear_solve::{solve_component_op, solve_component_unchecked};
-pub(crate) use ops::{eval_binary, eval_compare, eval_unary};
+pub use ops::{eval_binary, eval_compare, eval_unary};
 pub use prepared::{
     ComputeNodeOutputRangeRequest, PreparedComputeBlock, PreparedScalarProgramBlock,
     TargetAssignmentOutputRequest, target_assignment_shape, target_assignment_shapes,

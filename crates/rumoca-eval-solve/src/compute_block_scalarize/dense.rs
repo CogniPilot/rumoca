@@ -1,6 +1,6 @@
 use rumoca_ir_solve::{BinaryOp, LinearOp, Reg};
 
-use super::{ScalarizeError, checked_product};
+use super::{ScalarizeError, scalarize_product as checked_product};
 
 /// Scalarize a `LinSolve` node into a SINGLE self-contained program.
 ///

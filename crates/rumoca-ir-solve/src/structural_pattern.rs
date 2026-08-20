@@ -2871,7 +2871,15 @@ fn set_linear_solve_dependency(
     dependency: LinearSolveDependency,
     span: Option<Span>,
 ) -> Result<(), StructuralPatternError> {
-    let matrix_len = checked_product(dependency.n, dependency.n, "linear solve matrix", span)?;
+    let matrix_len = rumoca_core::checked_product(dependency.n, dependency.n).ok_or_else(|| {
+        dependency_error(
+            format!(
+                "linear solve matrix shape product {} * {} overflows register range",
+                dependency.n, dependency.n
+            ),
+            span,
+        )
+    })?;
     let dependencies = register_range(registers, dependency.matrix_start, matrix_len, span)?.union(
         register_range(registers, dependency.rhs_start, dependency.n, span)?,
     );
@@ -2929,20 +2937,6 @@ fn union_registers<const N: usize>(
         .try_fold(DependencyState::empty(), |dependencies, register_id| {
             Ok(dependencies.union(register(registers, register_id, span)?))
         })
-}
-
-fn checked_product(
-    lhs: usize,
-    rhs: usize,
-    operation: &'static str,
-    span: Option<Span>,
-) -> Result<usize, StructuralPatternError> {
-    lhs.checked_mul(rhs).ok_or_else(|| {
-        dependency_error(
-            format!("{operation} shape product {lhs} * {rhs} overflows register range"),
-            span,
-        )
-    })
 }
 
 fn checked_indexed_seed_end(

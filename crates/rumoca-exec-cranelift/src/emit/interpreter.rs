@@ -61,17 +61,25 @@ fn execute_simple_row(
             }
             SimpleOp::Unary { dst, op, arg } => {
                 let x = read_reg_value(regs, arg as usize);
-                set_reg_value(regs, dst as usize, apply_unary(op, x));
+                set_reg_value(regs, dst as usize, rumoca_eval_solve::eval_unary(op, x));
             }
             SimpleOp::Binary { dst, op, lhs, rhs } => {
                 let lhs = read_reg_value(regs, lhs as usize);
                 let rhs = read_reg_value(regs, rhs as usize);
-                set_reg_value(regs, dst as usize, apply_binary(op, lhs, rhs));
+                set_reg_value(
+                    regs,
+                    dst as usize,
+                    rumoca_eval_solve::eval_binary(op, lhs, rhs),
+                );
             }
             SimpleOp::Compare { dst, op, lhs, rhs } => {
                 let lhs = read_reg_value(regs, lhs as usize);
                 let rhs = read_reg_value(regs, rhs as usize);
-                set_reg_value(regs, dst as usize, apply_compare(op, lhs, rhs));
+                set_reg_value(
+                    regs,
+                    dst as usize,
+                    rumoca_eval_solve::eval_compare(op, lhs, rhs),
+                );
             }
             SimpleOp::Select {
                 dst,
@@ -349,7 +357,7 @@ fn execute_general_op(
                 let dst = dst_start as usize + element * lanes;
                 let lhs_re = read_reg_value(regs, lhs);
                 let rhs_re = read_reg_value(regs, rhs);
-                let raw_primal = apply_binary(op, lhs_re, rhs_re);
+                let raw_primal = rumoca_eval_solve::eval_binary(op, lhs_re, rhs_re);
                 let primal = if lanes == 2 && op == BinaryOp::Div && rhs_re == 0.0 && lhs_re == 0.0
                 {
                     0.0
@@ -622,17 +630,25 @@ fn execute_general_op(
         }
         LinearOp::Unary { dst, op, arg } => {
             let x = read_reg_value(regs, arg as usize);
-            set_reg_value(regs, dst as usize, apply_unary(op, x));
+            set_reg_value(regs, dst as usize, rumoca_eval_solve::eval_unary(op, x));
         }
         LinearOp::Binary { dst, op, lhs, rhs } => {
             let lhs = read_reg_value(regs, lhs as usize);
             let rhs = read_reg_value(regs, rhs as usize);
-            set_reg_value(regs, dst as usize, apply_binary(op, lhs, rhs));
+            set_reg_value(
+                regs,
+                dst as usize,
+                rumoca_eval_solve::eval_binary(op, lhs, rhs),
+            );
         }
         LinearOp::Compare { dst, op, lhs, rhs } => {
             let lhs = read_reg_value(regs, lhs as usize);
             let rhs = read_reg_value(regs, rhs as usize);
-            set_reg_value(regs, dst as usize, apply_compare(op, lhs, rhs));
+            set_reg_value(
+                regs,
+                dst as usize,
+                rumoca_eval_solve::eval_compare(op, lhs, rhs),
+            );
         }
         LinearOp::Select {
             dst,
@@ -1241,77 +1257,4 @@ fn swap_dense_rows(matrix: &mut [f64], rhs: &mut [f64], n: usize, lhs: usize, rh
         matrix.swap(lhs * n + col, rhs_row * n + col);
     }
     rhs.swap(lhs, rhs_row);
-}
-
-#[inline(always)]
-fn apply_unary(op: UnaryOp, value: f64) -> f64 {
-    match op {
-        UnaryOp::Neg => -value,
-        UnaryOp::Not => {
-            if value == 0.0 {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        UnaryOp::Abs => value.abs(),
-        UnaryOp::Sign => {
-            if value > 0.0 {
-                1.0
-            } else if value < 0.0 {
-                -1.0
-            } else {
-                0.0
-            }
-        }
-        UnaryOp::Sqrt => value.sqrt(),
-        UnaryOp::Floor => value.floor(),
-        UnaryOp::Ceil => value.ceil(),
-        UnaryOp::Trunc => value.trunc(),
-        UnaryOp::Sin => value.sin(),
-        UnaryOp::Cos => value.cos(),
-        UnaryOp::Tan => value.tan(),
-        UnaryOp::Asin => value.asin(),
-        UnaryOp::Acos => value.acos(),
-        UnaryOp::Atan => value.atan(),
-        UnaryOp::Sinh => value.sinh(),
-        UnaryOp::Cosh => value.cosh(),
-        UnaryOp::Tanh => value.tanh(),
-        UnaryOp::Exp => value.exp(),
-        UnaryOp::Log => value.ln(),
-        UnaryOp::Log10 => value.log10(),
-    }
-}
-
-#[inline(always)]
-fn apply_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
-    match op {
-        BinaryOp::Add => lhs + rhs,
-        BinaryOp::Sub => lhs - rhs,
-        BinaryOp::Mul => lhs * rhs,
-        BinaryOp::Div => lhs / rhs,
-        BinaryOp::Pow => lhs.powf(rhs),
-        BinaryOp::And => {
-            if lhs != 0.0 && rhs != 0.0 {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        BinaryOp::Or => {
-            if lhs != 0.0 || rhs != 0.0 {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        BinaryOp::Atan2 => lhs.atan2(rhs),
-        BinaryOp::Min => lhs.min(rhs),
-        BinaryOp::Max => lhs.max(rhs),
-    }
-}
-
-#[inline(always)]
-fn apply_compare(op: CompareOp, lhs: f64, rhs: f64) -> f64 {
-    op.compare_as_f64(lhs, rhs)
 }

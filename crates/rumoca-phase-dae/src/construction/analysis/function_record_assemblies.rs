@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_core::{ExpressionVisitor, Reference};
+use rumoca_core::{ExpressionVisitor, Reference, row_major_coordinates};
 
 pub(super) fn plan_staged_record_assemblies(
     statements: &[rumoca_core::Statement],
@@ -675,21 +675,4 @@ impl RecordSelfReadChecker<'_> {
                 .get_or_insert_with(|| reference.to_string());
         }
     }
-}
-
-fn row_major_coordinates(dimensions: &[u32], scalar: usize) -> Option<Vec<u32>> {
-    let count = dimensions
-        .iter()
-        .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))?;
-    if scalar >= count {
-        return None;
-    }
-    let mut remainder = scalar;
-    let mut coordinates = Vec::with_capacity(dimensions.len());
-    for extent in dimensions.iter().rev() {
-        coordinates.push(u32::try_from(remainder % *extent as usize).ok()?);
-        remainder /= *extent as usize;
-    }
-    coordinates.reverse();
-    Some(coordinates)
 }
