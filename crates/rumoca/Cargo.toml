@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 keywords = ["modelica", "compiler", "dae", "simulation"]
 categories = ["compilers", "science", "simulation"]
 default-run = "rumoca"
@@ -176,11 +177,11 @@ name = "suite_galec_fmu"
 path = "tests/suite_galec_fmu/main.rs"
 
 [dev-dependencies]
-crossterm = "0.28"
-tungstenite = "0.26"
+crossterm = { workspace = true }
+tungstenite = { workspace = true }
 mimalloc = { workspace = true }
-walkdir = "2.5"
-serde = { version = "1.0", features = ["derive"] }
+walkdir = { workspace = true }
+serde = { workspace = true }
 syn = { workspace = true }
 # Direct phase access for debugging/analysis tests
 rumoca-ir-ast = { workspace = true }

@@ -334,7 +334,7 @@ impl SolveRuntime {
                 scalar: &self.implicit_projection_scalar_jacobian_v,
             },
         };
-        let projection_args = crate::AlgebraicProjectionArgs {
+        let projection_args = crate::runtime::projection::AlgebraicProjectionArgs {
             parameters: args.params,
             time: args.t,
             state_count: self.state_count,
@@ -369,7 +369,7 @@ impl SolveRuntime {
         tol: f64,
     ) -> Result<bool, RuntimeSolveError> {
         let projection_model = RuntimeManifoldProjection { runtime: self };
-        crate::project_state_manifold(
+        crate::runtime::projection::project_state_manifold(
             &projection_model,
             solver_y,
             params,

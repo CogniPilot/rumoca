@@ -322,28 +322,7 @@ pub(crate) fn scaled_newton_delta_with_cache(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn scaled_unique_delta(
-    jacobian: &DMatrix<f64>,
-    residual: &[f64],
-    row_scales: &[f64],
-    variable_scales: &[f64],
-    structure: Option<&solve::StructuralPattern>,
-    tolerance: f64,
-    cache: Option<&mut SparseNewtonCache>,
-) -> Option<DVector<f64>> {
-    scaled_newton_delta_impl(
-        jacobian,
-        residual,
-        row_scales,
-        variable_scales,
-        structure,
-        tolerance,
-        cache,
-        false,
-    )
-}
-
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn scaled_newton_delta_impl(
     jacobian: &DMatrix<f64>,

@@ -1,5 +1,6 @@
-use crate::{
-    AlgebraicProjectionModel, ImplicitProjectionModel, InitialHomotopySystem, RuntimeSolveError,
+use crate::RuntimeSolveError;
+use crate::runtime::projection::{
+    AlgebraicProjectionModel, ImplicitProjectionModel, InitialHomotopySystem,
     project_initial_variables_with_homotopy,
 };
 use nalgebra::{DMatrix, DVector};
@@ -92,6 +93,7 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
             .flatten()
     }
 
+    #[cfg(test)]
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self
             .runtime

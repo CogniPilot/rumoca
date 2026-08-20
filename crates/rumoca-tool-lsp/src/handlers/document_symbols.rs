@@ -81,17 +81,17 @@ fn position_leq(left: lsp_types::Position, right: lsp_types::Position) -> bool {
     left.line < right.line || (left.line == right.line && left.character <= right.character)
 }
 
-fn class_type_to_symbol_kind(ct: &rumoca_compile::parsing::ir_core::ClassType) -> SymbolKind {
+fn class_type_to_symbol_kind(ct: &rumoca_core::ClassType) -> SymbolKind {
     match ct {
-        rumoca_compile::parsing::ir_core::ClassType::Model
-        | rumoca_compile::parsing::ir_core::ClassType::Block
-        | rumoca_compile::parsing::ir_core::ClassType::Class => SymbolKind::CLASS,
-        rumoca_compile::parsing::ir_core::ClassType::Connector => SymbolKind::INTERFACE,
-        rumoca_compile::parsing::ir_core::ClassType::Record => SymbolKind::STRUCT,
-        rumoca_compile::parsing::ir_core::ClassType::Type => SymbolKind::TYPE_PARAMETER,
-        rumoca_compile::parsing::ir_core::ClassType::Package => SymbolKind::NAMESPACE,
-        rumoca_compile::parsing::ir_core::ClassType::Function => SymbolKind::FUNCTION,
-        rumoca_compile::parsing::ir_core::ClassType::Operator => SymbolKind::OPERATOR,
+        rumoca_core::ClassType::Model
+        | rumoca_core::ClassType::Block
+        | rumoca_core::ClassType::Class => SymbolKind::CLASS,
+        rumoca_core::ClassType::Connector => SymbolKind::INTERFACE,
+        rumoca_core::ClassType::Record => SymbolKind::STRUCT,
+        rumoca_core::ClassType::Type => SymbolKind::TYPE_PARAMETER,
+        rumoca_core::ClassType::Package => SymbolKind::NAMESPACE,
+        rumoca_core::ClassType::Function => SymbolKind::FUNCTION,
+        rumoca_core::ClassType::Operator => SymbolKind::OPERATOR,
     }
 }
 
@@ -109,15 +109,15 @@ mod tests {
         let symbol = QueryDocumentSymbol {
             name: "M".to_string(),
             detail: None,
-            kind: DocumentSymbolKind::Class(rumoca_compile::parsing::ir_core::ClassType::Model),
-            range: rumoca_compile::parsing::ir_core::Location {
+            kind: DocumentSymbolKind::Class(rumoca_core::ClassType::Model),
+            range: rumoca_core::Location {
                 start_line: 2,
                 start_column: 1,
                 end_line: 4,
                 end_column: 10,
                 ..Default::default()
             },
-            selection_range: rumoca_compile::parsing::ir_core::Location {
+            selection_range: rumoca_core::Location {
                 start_line: 1,
                 start_column: 1,
                 end_line: 1,
@@ -136,15 +136,15 @@ mod tests {
         let symbol = QueryDocumentSymbol {
             name: "M".to_string(),
             detail: None,
-            kind: DocumentSymbolKind::Class(rumoca_compile::parsing::ir_core::ClassType::Model),
-            range: rumoca_compile::parsing::ir_core::Location {
+            kind: DocumentSymbolKind::Class(rumoca_core::ClassType::Model),
+            range: rumoca_core::Location {
                 start_line: 2,
                 start_column: 1,
                 end_line: 4,
                 end_column: 10,
                 ..Default::default()
             },
-            selection_range: rumoca_compile::parsing::ir_core::Location {
+            selection_range: rumoca_core::Location {
                 start_line: 2,
                 start_column: 7,
                 end_line: 2,
@@ -182,7 +182,7 @@ mod tests {
             name: "𝔸x".to_string(),
             detail: None,
             kind: DocumentSymbolKind::Component,
-            range: rumoca_compile::parsing::ir_core::Location {
+            range: rumoca_core::Location {
                 start_line: 2,
                 start_column: 8,
                 end_line: 2,
@@ -191,7 +191,7 @@ mod tests {
                 end: name_end as u32,
                 ..Default::default()
             },
-            selection_range: rumoca_compile::parsing::ir_core::Location {
+            selection_range: rumoca_core::Location {
                 start_line: 2,
                 start_column: 8,
                 end_line: 2,
@@ -219,14 +219,14 @@ mod tests {
             name: "Variables".to_string(),
             detail: None,
             kind: DocumentSymbolKind::VariablesSection,
-            range: rumoca_compile::parsing::ir_core::Location {
+            range: rumoca_core::Location {
                 start_line: 2,
                 start_column: 8,
                 end_line: 2,
                 end_column: 10,
                 ..Default::default()
             },
-            selection_range: rumoca_compile::parsing::ir_core::Location {
+            selection_range: rumoca_core::Location {
                 start_line: 2,
                 start_column: 8,
                 end_line: 2,

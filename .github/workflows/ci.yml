@@ -377,6 +377,14 @@ jobs:
           test -f "$msl_dir/Complex.mo"
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
+      - name: Ensure CMM for heavy Solve regressions (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo xtask repo modelica-deps ensure
+          test -f target/cmm/CMM-a642c381/LieGroups/package.mo
+
       - name: Run example build smoke (Linux monitored)
         if: runner.os == 'Linux'
         shell: bash
@@ -426,6 +434,14 @@ jobs:
           # Not nextest-sharded: the suite isn't the CI pole (the MSL gate is), so
           # sharding it buys no overall wall-clock, only jobs + runner cost.
           cargo xtask verify workspace
+
+      - name: Run heavy Solve counterexample regressions (Linux)
+        if: runner.os == 'Linux' && !cancelled()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --package rumoca --features heavy-solve-tests \
+            --test suite_heavy_solve -- --nocapture
 
       - name: Run workspace tests
         if: runner.os != 'Linux' && !cancelled()
@@ -846,7 +862,7 @@ jobs:
 
       - name: Enforce coverage regression gate
         run: |
-          ./target/debug/xtask coverage gate --allowed-workspace-line-coverage-drop 3.0
+          ./target/debug/xtask coverage gate --enforce-trim-regressions
 
   # Build the heavy MSL artifacts (release + LTO) ONCE via Nix/crane. The
   # producer keeps the pinned OpenModelica closure in its own stable GitHub
@@ -1567,6 +1583,16 @@ jobs:
             --out target/msl/modelicatest-results/modelica_test_catalog.md \
             --json-out target/msl/modelicatest-results/modelica_test_catalog.json
 
+      - name: Run required OMC differential semantics test
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/msl
+          touch target/msl/omc-differential-required
+          cargo test --package rumoca --test suite_core \
+            omc_differential_semantics::encapsulated_scope_rejection_matches_omc \
+            -- --nocapture
+
       # Report-only survey of the *whole* ModelicaTest package. The blocking
       # gate above stays bounded to the committed target list; this pass exists
       # to discover which additional ModelicaTest models now reach `sim_ok` so
@@ -2149,6 +2175,16 @@ jobs:
       - name: Install maturin (Windows)
         if: runner.os == 'Windows'
         run: python -m pip install maturin
+
+      - name: Run Python binding Rust tests
+        if: matrix.name == 'linux-x86_64-gnu'
+        shell: bash
+        run: |
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
+            set -euo pipefail
+            export PYO3_PYTHON="$(command -v python)"
+            cargo test --package rumoca-bind-python --lib
+          '
 
       - name: Build wheels (Nix)
         if: runner.os != 'Windows'

@@ -475,6 +475,7 @@ impl SolveRuntime {
         }
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn execute_clock_partition_scalar_rows(
         &self,

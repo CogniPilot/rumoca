@@ -5,9 +5,9 @@ pub(super) fn is_hover_preview_candidate(ast: &ast::StoredDefinition, word: &str
     ast.classes.get(word).is_some_and(|class| {
         matches!(
             class.class_type,
-            rumoca_compile::parsing::ir_core::ClassType::Model
-                | rumoca_compile::parsing::ir_core::ClassType::Block
-                | rumoca_compile::parsing::ir_core::ClassType::Class
+            rumoca_core::ClassType::Model
+                | rumoca_core::ClassType::Block
+                | rumoca_core::ClassType::Class
         )
     })
 }
@@ -22,7 +22,7 @@ pub(super) fn is_hover_preview_candidate(ast: &ast::StoredDefinition, word: &str
 pub(super) fn class_target_definition_in_snapshot(
     snapshot: &SessionSnapshot,
     target_uri: &str,
-    declaration_location: &rumoca_compile::parsing::ir_core::Location,
+    declaration_location: &rumoca_core::Location,
     fallback_uri: &Url,
 ) -> Option<GotoDefinitionResponse> {
     let source = snapshot.get_document(target_uri).map(|doc| doc.content);
@@ -36,7 +36,7 @@ pub(super) fn class_target_definition_in_snapshot(
 
 pub(super) fn class_target_definition(
     target_uri: &str,
-    declaration_location: &rumoca_compile::parsing::ir_core::Location,
+    declaration_location: &rumoca_core::Location,
     fallback_uri: &Url,
     target_source: Option<&str>,
 ) -> Option<GotoDefinitionResponse> {
@@ -100,17 +100,17 @@ pub(super) fn local_component_hover(info: &rumoca_compile::compile::LocalCompone
     }
 }
 
-fn class_type_keyword(class_type: &rumoca_compile::parsing::ir_core::ClassType) -> &'static str {
+fn class_type_keyword(class_type: &rumoca_core::ClassType) -> &'static str {
     match class_type {
-        rumoca_compile::parsing::ir_core::ClassType::Model => "model",
-        rumoca_compile::parsing::ir_core::ClassType::Block => "block",
-        rumoca_compile::parsing::ir_core::ClassType::Connector => "connector",
-        rumoca_compile::parsing::ir_core::ClassType::Record => "record",
-        rumoca_compile::parsing::ir_core::ClassType::Type => "type",
-        rumoca_compile::parsing::ir_core::ClassType::Package => "package",
-        rumoca_compile::parsing::ir_core::ClassType::Function => "function",
-        rumoca_compile::parsing::ir_core::ClassType::Class => "class",
-        rumoca_compile::parsing::ir_core::ClassType::Operator => "operator",
+        rumoca_core::ClassType::Model => "model",
+        rumoca_core::ClassType::Block => "block",
+        rumoca_core::ClassType::Connector => "connector",
+        rumoca_core::ClassType::Record => "record",
+        rumoca_core::ClassType::Type => "type",
+        rumoca_core::ClassType::Package => "package",
+        rumoca_core::ClassType::Function => "function",
+        rumoca_core::ClassType::Class => "class",
+        rumoca_core::ClassType::Operator => "operator",
     }
 }
 

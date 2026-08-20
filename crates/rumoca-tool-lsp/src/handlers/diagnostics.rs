@@ -6,12 +6,12 @@ use rumoca_compile::Session;
 use rumoca_compile::compile::SemanticDiagnosticsMode;
 #[cfg(test)]
 use rumoca_compile::compile::SourceRootKind;
-use rumoca_compile::compile::core as rumoca_core;
-use rumoca_compile::compile::core::{
-    Diagnostic as CommonDiagnostic, DiagnosticSeverity as CommonSeverity, SourceMap,
-};
 use rumoca_compile::parsing::ast;
 use rumoca_compile::parsing::{ParseError, parse_source_to_ast_with_errors};
+use rumoca_core;
+use rumoca_core::{
+    Diagnostic as CommonDiagnostic, DiagnosticSeverity as CommonSeverity, SourceMap,
+};
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, lint};
 use serde_json::json;
 use std::collections::HashSet;
@@ -325,10 +325,10 @@ fn should_compile_for_diagnostics(class: &ast::ClassDef, qualified_name: &str) -
     // targets while still checking their nested runnable classes/functions.
     matches!(
         class.class_type,
-        rumoca_compile::parsing::ir_core::ClassType::Model
-            | rumoca_compile::parsing::ir_core::ClassType::Block
-            | rumoca_compile::parsing::ir_core::ClassType::Class
-            | rumoca_compile::parsing::ir_core::ClassType::Function
+        rumoca_core::ClassType::Model
+            | rumoca_core::ClassType::Block
+            | rumoca_core::ClassType::Class
+            | rumoca_core::ClassType::Function
     )
 }
 
@@ -798,8 +798,8 @@ fn lint_to_diagnostic(msg: &LintMessage) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_compile::compile::core::PrimaryLabel;
-    use rumoca_compile::parsing::Span;
+    use rumoca_core::PrimaryLabel;
+    use rumoca_core::Span;
 
     #[test]
     fn parse_diagnostics_include_precise_range_and_compact_message() {

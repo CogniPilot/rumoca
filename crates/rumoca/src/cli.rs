@@ -41,9 +41,9 @@ pub use crate::sim_bench::SimBenchArgs;
 use crate::{CompilationResult, Compiler, CompilerError, DaeCompilationResult, TemplateIr};
 use rumoca_compile::{
     codegen::render_flat_template_with_name,
-    compile::core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap},
     compile::{Dae, FlatModel},
 };
+use rumoca_core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap};
 use rumoca_phase_resolve::ResolvedTree;
 use rumoca_sim::{DiffsolMethod, SimOptions, SimSolverMode};
 use rumoca_sim::{SimulationRequestSummary, SimulationRunMetrics};
@@ -737,7 +737,7 @@ pub fn build_source_diagnostic_report(
 /// them, is what this function exists to stop.
 pub fn build_compile_failure_report(
     failure: &rumoca_compile::compile::ModelFailureDiagnostic,
-    source_map: &rumoca_compile::compile::core::SourceMap,
+    source_map: &rumoca_core::SourceMap,
 ) -> Report {
     let Some(label) = failure.primary_label.as_ref() else {
         return build_compile_failure_fallback_report(
@@ -790,10 +790,7 @@ pub fn build_compile_failure_report(
 ///
 /// A stale or synthesized span must not panic the renderer, and a zero-length
 /// span must still draw a caret, so the length floors at one byte.
-fn clamped_label_offsets(
-    span: rumoca_compile::compile::core::Span,
-    source: &str,
-) -> (usize, usize) {
+fn clamped_label_offsets(span: rumoca_core::Span, source: &str) -> (usize, usize) {
     let start = span.start.0.min(source.len());
     let end = span.end.0.max(start + 1).min(source.len());
     (start, end.saturating_sub(start).max(1))
@@ -806,8 +803,8 @@ fn clamped_label_offsets(
 /// column are zero-based; a terminal `file:line:col` is one-based everywhere
 /// else this compiler prints one, so both fields are shifted here.
 fn cross_source_label_note(
-    label: &rumoca_compile::compile::core::Label,
-    source_map: &rumoca_compile::compile::core::SourceMap,
+    label: &rumoca_core::Label,
+    source_map: &rumoca_core::SourceMap,
 ) -> String {
     let text = label.message.as_deref().unwrap_or("related location");
     match rumoca_compile::compile::source_span_location(source_map, label.span) {

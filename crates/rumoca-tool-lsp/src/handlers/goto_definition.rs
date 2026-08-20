@@ -3,7 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use lsp_types::{GotoDefinitionResponse, Location, Position, Range, Url};
-use rumoca_compile::parsing::{self, DefId, ast};
+use rumoca_compile::parsing::ast;
+use rumoca_core::DefId;
 
 use crate::helpers::{
     get_qualified_class_name_at_position, get_word_at_position, imported_def_id,
@@ -17,7 +18,7 @@ use crate::helpers::{
 /// another file has no text available. Routing through
 /// [`location_to_range_in_optional_source`] keeps that case explicit instead of
 /// silently publishing lexer character columns as UTF-16 columns.
-fn definition_range(loc: &parsing::Location, source: Option<&str>) -> Range {
+fn definition_range(loc: &rumoca_core::Location, source: Option<&str>) -> Range {
     location_to_range_in_optional_source(source, loc)
 }
 

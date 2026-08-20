@@ -69,6 +69,7 @@ fn test_simulate_model_wrapper_returns_time_series_payload() {
 #[test]
 // SPEC_0021: Exception - native kernel schedule exposure is validated through
 // the full wasm preparation payload in one regression.
+// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
 #[allow(clippy::too_many_lines)]
 fn test_prepare_gpu_simulation_exposes_native_kernel_schedules() {
     let _guard = session_test_guard();

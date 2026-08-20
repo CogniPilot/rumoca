@@ -122,7 +122,7 @@ mod tests {
     use rumoca_ir_solve as solve;
 
     use super::*;
-    use crate::{AlgebraicProjectionModel, ImplicitProjectionModel};
+    use crate::runtime::projection::{AlgebraicProjectionModel, ImplicitProjectionModel};
 
     struct StepLimitedModel {
         plan: solve::AlgebraicProjectionPlan,

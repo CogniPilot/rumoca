@@ -5,7 +5,8 @@
 
 use std::ops::ControlFlow::{self, Continue};
 
-use rumoca_compile::parsing::{ClassType, TerminalType, Variability, ast};
+use rumoca_compile::parsing::{TerminalType, ast};
+use rumoca_core::{ClassType, Variability};
 
 use crate::lint_context::LintContext;
 use crate::lint_rules::{

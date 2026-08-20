@@ -31,7 +31,7 @@ pub fn repo_root() -> PathBuf {
             .map(std::path::Path::to_path_buf)
     }
     let root = workspace_root_from_cwd().unwrap_or_else(|| {
-        rumoca_compile::compile::core::workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"))
+        rumoca_core::workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"))
     });
     root.canonicalize().unwrap_or(root)
 }

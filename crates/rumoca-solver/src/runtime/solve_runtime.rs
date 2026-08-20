@@ -14,16 +14,18 @@ use crate::runtime::delay::{DelayRuntime, DelayRuntimeSnapshot};
 use crate::runtime::pre_params::{
     advance_event_iteration_pre_params, event_iteration_plan_settled, seed_event_entry_pre_params,
 };
+use crate::runtime::projection::{
+    ImplicitProjectionModel, ManifoldProjectionModel, project_algebraic_seed_with_plan,
+    project_algebraics_with_plan, project_algebraics_with_plan_certified,
+};
 use crate::runtime::solve_events::{
     current_dynamic_time_event_stop, event_action_params, next_runtime_event_stop,
     visible_values_with_context,
 };
 use crate::runtime::solve_ops::write_clock_activation_params;
 use crate::{
-    EventActionOutcome, ImplicitProjectionModel, ManifoldProjectionModel, RuntimeEventStop,
-    RuntimeSolveError, SolveStopSchedule, project_algebraic_seed_with_plan,
-    project_algebraics_with_plan, project_algebraics_with_plan_certified, push_visible_values,
-    relation_memory_value_from_root, replace_last_visible_values,
+    EventActionOutcome, RuntimeEventStop, RuntimeSolveError, SolveStopSchedule,
+    push_visible_values, relation_memory_value_from_root, replace_last_visible_values,
     timeline::sample_time_match_with_tol,
 };
 use rumoca_eval_solve::refresh_plan::trace_refresh_plan;
@@ -367,6 +369,7 @@ impl SolveRuntime {
     // complete construction-issued Solve owner inventory into the flat fields
     // used by the hot path. Keeping the one-to-one binding visible makes
     // coverage review safer than distributing it across partial builders.
+    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
     #[allow(clippy::too_many_lines)]
     pub fn new_with_execution_backend(
         model: &solve::SolveModel,
@@ -1140,6 +1143,7 @@ impl SolveRuntime {
 
     // SPEC_0021: Exception - public runtime API mirrors solver callback inputs
     // without hiding mutable scratch/output buffers behind allocation.
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn eval_state_derivatives_with_guess_into(
         &self,
@@ -1235,6 +1239,7 @@ impl SolveRuntime {
 
     // SPEC_0021: Exception - public runtime API mirrors solver callback inputs
     // without hiding the certified warm-start and output buffers.
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn eval_root_search_conditions_with_guess_into(
         &self,

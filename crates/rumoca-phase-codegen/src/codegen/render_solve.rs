@@ -733,6 +733,7 @@ fn render_solve_row_typed_with_overrides(
 /// as the dialect infinity, matching serde_json's null for non-finite).
 // SPEC_0021: Exception - this exhaustive LinearOp dispatch mirrors the
 // serialized value-walk renderer variant-for-variant for byte-identical output.
+// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
 #[allow(clippy::too_many_lines, clippy::excessive_nesting)]
 fn render_solve_op_typed(
     op: &solve::LinearOp,

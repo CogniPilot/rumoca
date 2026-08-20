@@ -681,6 +681,7 @@ pub(in crate::codegen) fn native_family_template_partition(
 
 // SPEC_0021: Exception - native-family partitioning handles every ComputeNode
 // variant in one place so scalar fallback cursor movement is auditable.
+// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
 #[allow(clippy::too_many_lines)]
 fn partition_node_for_template(
     partition: &mut NativeFamilyTemplatePartition,
@@ -1032,6 +1033,7 @@ fn reserve_partition_capacity<T>(
 
 // SPEC_0021: Exception - affine family serialization groups domain, output
 // map, op rows, strides, and span into one template object.
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn push_native_affine_family(
     partition: &mut NativeFamilyTemplatePartition,

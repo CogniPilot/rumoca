@@ -337,6 +337,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         )
     }
 
+    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
     #[allow(clippy::too_many_lines)]
     fn derive(
         &mut self,
@@ -643,6 +644,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
     // SPEC_0021: Exception - exhaustive tangent relation over every checked
     // unary operator; keeping primal and tangent clauses adjacent makes the
     // construction proof reviewable as one total match.
+    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
     #[allow(clippy::too_many_lines)]
     fn derive_unary(
         &mut self,
@@ -855,6 +857,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
 
     // SPEC_0021: Exception - exhaustive tangent relation over every checked
     // binary operator, including the scalar AD singular-value guards.
+    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
     #[allow(clippy::too_many_lines)]
     fn derive_binary(
         &mut self,

@@ -5,10 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 rumoca-input = { workspace = true }
-crossterm = "0.28"
+crossterm = { workspace = true }
 
 [lints]
 workspace = true

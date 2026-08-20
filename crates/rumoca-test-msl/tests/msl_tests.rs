@@ -33,13 +33,13 @@
 
 use rayon::prelude::*;
 use rumoca_compile::{
-    compile::core::{VarName, msl_cache_dir_from_manifest, workspace_root_from_manifest_dir},
     compile::{
         CompiledSourceRoot, Dae, FailedPhase, PhaseResult, StrictCompileReport,
         compile_phase_timing_stats, reset_compile_phase_timing_stats,
     },
     parsing::{LenientParseResult, parse_files_parallel_lenient},
 };
+use rumoca_core::{VarName, msl_cache_dir_from_manifest, workspace_root_from_manifest_dir};
 use rumoca_phase_flatten::{flatten_phase_timing_stats, reset_flatten_phase_timing_stats};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -617,13 +617,13 @@ struct MslModelResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_error_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    sim_error_span: Option<rumoca_compile::compile::core::Span>,
+    sim_error_span: Option<rumoca_core::Span>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ic_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ic_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    ic_error_span: Option<rumoca_compile::compile::core::Span>,
+    ic_error_span: Option<rumoca_core::Span>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ic_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

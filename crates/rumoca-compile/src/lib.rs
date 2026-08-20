@@ -85,12 +85,7 @@ pub mod source_roots {
 
 /// Parsing and merge helpers.
 pub mod parsing {
-    pub use rumoca_core as ir_core;
     pub use rumoca_ir_ast as ast;
-
-    pub use rumoca_core::{
-        Causality, ClassType, DefId, Location, OpBinary, Span, Token, Variability,
-    };
     pub use rumoca_ir_ast::{
         ClassDef, ComponentReference, Expression, StoredDefinition, TerminalType,
         walk_component_reference_default,
@@ -180,15 +175,6 @@ pub mod phase_structural {
 
 /// Compilation session API and result structures.
 pub mod compile {
-    pub use rumoca_core as core;
-    pub use rumoca_core::{
-        Causality as AstCausality, Token as AstToken, VarName, Variability as AstVariability,
-    };
-    pub use rumoca_ir_ast::{
-        Component as AstComponent, ComponentRefPart as AstComponentRefPart,
-        ComponentReference as AstComponentReference, Expression as AstExpression,
-        ForIndex as AstForIndex, Subscript as AstSubscript,
-    };
     pub use rumoca_ir_dae::{
         ClockOperation, ConditionId, ContinuousOwnerView, CoordinateView, Dae, DaeProvenance,
         DaeView, DiscreteBranchActivation, DiscreteRealActivation, DiscreteRealEquationView,

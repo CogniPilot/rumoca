@@ -2,7 +2,7 @@
 //!
 //! Ported from the main branch's `src/lsp/handlers/semantic_tokens.rs`.
 
-use rumoca_compile::parsing::{self, ast};
+use rumoca_compile::parsing::ast;
 use std::ops::ControlFlow::{self, Continue};
 
 use lsp_types::{
@@ -13,13 +13,13 @@ use lsp_types::{
 use crate::traversal_adapter;
 
 type ClassDef = ast::ClassDef;
-type ClassType = rumoca_compile::parsing::ir_core::ClassType;
+type ClassType = rumoca_core::ClassType;
 type Component = ast::Component;
 type ComponentReference = ast::ComponentReference;
 type Expression = ast::Expression;
 type StoredDefinition = ast::StoredDefinition;
 type TerminalType = ast::TerminalType;
-type Variability = parsing::Variability;
+type Variability = rumoca_core::Variability;
 
 // Token type indices (must match order in get_semantic_token_legend)
 const TYPE_NAMESPACE: u32 = 0;
@@ -134,7 +134,7 @@ impl<'a> SemanticTokenCollector<'a> {
     /// and has no way to express a token that spans lines, so multi-line spans
     /// (multi-line strings, quoted identifiers containing newlines) are dropped
     /// rather than emitted with a bogus length.
-    fn add_token_at(&mut self, loc: &parsing::Location, token_type: u32, modifiers: u32) {
+    fn add_token_at(&mut self, loc: &rumoca_core::Location, token_type: u32, modifiers: u32) {
         if loc.start_line == 0 || loc.start_column == 0 {
             return;
         }

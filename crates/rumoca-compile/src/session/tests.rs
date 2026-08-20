@@ -1,6 +1,6 @@
 use super::*;
-use crate::compile::core::{Diagnostic as CommonDiagnostic, PrimaryLabel};
 use rumoca_core::Span;
+use rumoca_core::{Diagnostic as CommonDiagnostic, PrimaryLabel};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 mod cache_behavior_source_root_tests;

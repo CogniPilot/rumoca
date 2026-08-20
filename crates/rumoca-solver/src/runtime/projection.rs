@@ -17,9 +17,7 @@ use rumoca_ir_solve as solve;
 
 use super::solve_ops::RuntimeSolveError;
 use initial_diagnostics::initial_projection_error;
-pub(crate) use scaling::{
-    SparseNewtonCache, scaled_newton_delta, scaled_newton_delta_with_cache, scaled_unique_delta,
-};
+pub(crate) use scaling::{SparseNewtonCache, scaled_newton_delta, scaled_newton_delta_with_cache};
 use scaling::{
     algebraic_block_scales, algebraic_plan_row_scales, initial_block_fallback_scales,
     initial_residual_scales, jacobian_row_scales, model_variable_scale,
@@ -28,24 +26,26 @@ use scaling::{
 use singleton::{SingletonAssignmentStep, initial_row_target_name, singleton_assignment_improves};
 use step_limit::StepLimit;
 
-pub use manifold::{ManifoldProjectionModel, project_state_manifold};
+pub(crate) use manifold::{ManifoldProjectionModel, project_state_manifold};
 
+#[cfg(test)]
+use plan::algebraic_tail_len;
 use plan::{
-    algebraic_tail_len, require_square_projection_block, validate_algebraic_projection_plan,
+    require_square_projection_block, validate_algebraic_projection_plan,
     validate_initial_projection_plan,
 };
 
 const ALGEBRAIC_PROJECTION_MAX_ITERS: usize = 32;
 
 #[derive(Clone, Copy)]
-pub struct AlgebraicProjectionArgs<'a> {
+pub(crate) struct AlgebraicProjectionArgs<'a> {
     pub parameters: &'a [f64],
     pub time: f64,
     pub state_count: usize,
     pub tolerance: f64,
 }
 
-pub trait ImplicitProjectionModel {
+pub(crate) trait ImplicitProjectionModel {
     fn eval_residual(
         &self,
         y: &[f64],
@@ -64,6 +64,7 @@ pub trait ImplicitProjectionModel {
     ) -> Result<(), RuntimeSolveError>;
 
     fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot>;
+    #[cfg(test)]
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan;
     fn target_name_for_row(&self, row_idx: usize) -> Option<&str>;
 
@@ -157,6 +158,7 @@ pub trait ImplicitProjectionModel {
         false
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn solve_algebraic_newton_delta(
         &self,
@@ -178,28 +180,6 @@ pub trait ImplicitProjectionModel {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn solve_algebraic_sensitivity_delta(
-        &self,
-        _block_index: usize,
-        jacobian: &DMatrix<f64>,
-        residual: &[f64],
-        row_scales: &[f64],
-        variable_scales: &[f64],
-        structure: Option<&solve::StructuralPattern>,
-        tolerance: f64,
-    ) -> Option<DVector<f64>> {
-        scaled_unique_delta(
-            jacobian,
-            residual,
-            row_scales,
-            variable_scales,
-            structure,
-            tolerance,
-            None,
-        )
-    }
-
     fn eval_implicit_target_value(
         &self,
         _row_idx: usize,
@@ -218,7 +198,7 @@ pub trait ImplicitProjectionModel {
     }
 }
 
-pub trait AlgebraicProjectionModel: ImplicitProjectionModel {
+pub(crate) trait AlgebraicProjectionModel: ImplicitProjectionModel {
     fn eval_initial_residual(
         &self,
         y: &[f64],
@@ -282,39 +262,8 @@ pub trait AlgebraicProjectionModel: ImplicitProjectionModel {
     }
 }
 
-pub fn implicit_residual_is_zero_through_interval<M: ImplicitProjectionModel>(
-    model: &M,
-    y: &[f64],
-    p: &[f64],
-    t_start: f64,
-    t_end: f64,
-    tol: f64,
-) -> Result<bool, RuntimeSolveError> {
-    if t_end <= t_start {
-        return Ok(true);
-    }
-    let midpoint = t_start + 0.5 * (t_end - t_start);
-    for t in [t_start, midpoint, t_end] {
-        if !implicit_residual_is_zero(model, y, p, t, tol)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-pub fn implicit_residual_is_zero<M: ImplicitProjectionModel>(
-    model: &M,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    tol: f64,
-) -> Result<bool, RuntimeSolveError> {
-    let mut rhs = vec![0.0; y.len()];
-    model.eval_residual(y, p, t, &mut rhs)?;
-    Ok(rhs.iter().all(|value| value.abs() <= tol))
-}
-
-pub fn project_algebraics<M: ImplicitProjectionModel>(
+#[cfg(test)]
+pub(crate) fn project_algebraics<M: ImplicitProjectionModel>(
     model: &M,
     y: &mut [f64],
     p: &[f64],
@@ -340,23 +289,7 @@ pub fn project_algebraics<M: ImplicitProjectionModel>(
     )
 }
 
-pub fn project_algebraics_and_detect_changes<M: ImplicitProjectionModel>(
-    model: &M,
-    y: &mut [f64],
-    p: &[f64],
-    t: f64,
-    state_count: usize,
-    tol: f64,
-) -> Result<bool, RuntimeSolveError> {
-    let before = y.to_vec();
-    project_algebraics(model, y, p, t, state_count, tol)?;
-    Ok(before
-        .iter()
-        .zip(y.iter())
-        .any(|(old, new)| (old - new).abs() > tol))
-}
-
-pub fn project_algebraic_seed_with_plan<M: ImplicitProjectionModel>(
+pub(crate) fn project_algebraic_seed_with_plan<M: ImplicitProjectionModel>(
     model: &M,
     plan: &solve::AlgebraicProjectionPlan,
     y: &[f64],
@@ -492,7 +425,7 @@ fn algebraic_seed_block_jacobian<M: ImplicitProjectionModel>(
     Ok(jacobian)
 }
 
-pub fn project_algebraics_with_plan<M: ImplicitProjectionModel>(
+pub(crate) fn project_algebraics_with_plan<M: ImplicitProjectionModel>(
     model: &M,
     plan: &solve::AlgebraicProjectionPlan,
     y: &mut [f64],
@@ -503,7 +436,7 @@ pub fn project_algebraics_with_plan<M: ImplicitProjectionModel>(
     branch_continuity::project_with_branch_continuity(model, plan, y, args, max_iters, false)
 }
 
-pub fn project_algebraics_with_plan_certified<M: ImplicitProjectionModel>(
+pub(crate) fn project_algebraics_with_plan_certified<M: ImplicitProjectionModel>(
     model: &M,
     plan: &solve::AlgebraicProjectionPlan,
     y: &mut [f64],
@@ -1218,6 +1151,7 @@ impl<M: AlgebraicProjectionModel> ImplicitProjectionModel
         self.model.implicit_target(row_idx)
     }
 
+    #[cfg(test)]
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         self.model.algebraic_projection_plan()
     }
@@ -1366,7 +1300,7 @@ impl<M: AlgebraicProjectionModel> AlgebraicProjectionModel
 #[cfg(test)]
 use initial::project_initial_block;
 use initial::*;
-pub use initial::{
+pub(crate) use initial::{
     InitialHomotopySystem, project_initial_variables_with_homotopy,
     project_initial_variables_with_plan,
 };

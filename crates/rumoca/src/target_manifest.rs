@@ -17,7 +17,7 @@ use rumoca_compile::codegen::targets::{
 };
 #[cfg(any(feature = "scheduled-sim", feature = "fmu-packaging"))]
 use rumoca_compile::codegen::targets::{TargetArchiveFormat, TargetArchiveRoot, safe_target_join};
-use rumoca_compile::compile::core::{Diagnostic as CommonDiagnostic, PrimaryLabel, SourceMap};
+use rumoca_core::{Diagnostic as CommonDiagnostic, PrimaryLabel, SourceMap};
 use rumoca_phase_galec::{GalecInput, GalecOptions, GalecTargetError};
 
 struct TargetModelIdentity<'a> {

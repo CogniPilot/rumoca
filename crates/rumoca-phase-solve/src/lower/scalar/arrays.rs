@@ -450,6 +450,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(ArrayUpdateAxis::Runtime(matches))
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn dynamic_record_field_array_update(
         &mut self,

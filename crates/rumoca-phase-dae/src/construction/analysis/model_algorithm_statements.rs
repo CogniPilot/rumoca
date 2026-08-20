@@ -247,6 +247,7 @@ fn reject_reads_of_written(
 
 // SPEC_0021 exception: exhaustive statement-grammar validation keeps each
 // accepted form and its provenance checks visible at one boundary.
+// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
 #[allow(clippy::too_many_lines)]
 fn validate_algorithm_statements(
     statements: &[rumoca_core::Statement],

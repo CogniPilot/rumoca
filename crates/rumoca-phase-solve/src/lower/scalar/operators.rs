@@ -317,6 +317,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn packed_multiply_outputs(
         &mut self,

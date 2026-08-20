@@ -27,7 +27,7 @@ use std::{
 #[cfg(target_arch = "wasm32")]
 use js_sys::Date;
 use lsp_types::{Diagnostic as LspDiagnostic, Position, Range, Url};
-use rumoca_compile::parsing::ClassType;
+use rumoca_core::ClassType;
 #[cfg(target_arch = "wasm32")]
 use std::sync::TryLockError;
 use wasm_bindgen::prelude::*;
@@ -47,9 +47,10 @@ use rumoca_compile::compile::{
     compile_phase_timing_stats, reset_compile_phase_timing_stats, session_cache_stats,
 };
 use rumoca_compile::parsing::{
-    Causality, ClassDef, DefId, Expression, OpBinary, ParseError, Span, StoredDefinition,
-    Variability, collect_model_names, parse_source_to_ast, parse_source_to_ast_with_errors,
+    ClassDef, Expression, ParseError, StoredDefinition, collect_model_names, parse_source_to_ast,
+    parse_source_to_ast_with_errors,
 };
+use rumoca_core::{Causality, DefId, OpBinary, Span, Variability};
 use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use rumoca_tool_lsp::completion_metrics::{
     CompletionTimingSummary, extract_namespace_completion_prefix,

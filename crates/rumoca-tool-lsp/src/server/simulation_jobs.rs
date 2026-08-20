@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use super::*;
-use rumoca_compile::compile::VarName;
+use rumoca_core::VarName;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 use tower_lsp::lsp_types;

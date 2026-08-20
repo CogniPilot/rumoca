@@ -263,6 +263,7 @@ pub(super) fn lower_region_conditional<'program, 'dae>(
 // SPEC_0021: Exception - this is the explicit checked structured-region ABI;
 // each argument is a distinct construction proof input rather than optional
 // behavioral configuration.
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn lower_region_assignment_chain<'program, 'dae>(
     builder: &mut solve::TypedProgramBuilder<'program>,

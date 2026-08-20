@@ -38,15 +38,6 @@ pub use runtime::pre_params::{
     commit_pre_params_after_event_at, update_slot, write_pre_params_from_sources,
 };
 #[cfg(not(kani))]
-pub use runtime::projection::{
-    AlgebraicProjectionArgs, AlgebraicProjectionModel, ImplicitProjectionModel,
-    InitialHomotopySystem, ManifoldProjectionModel, implicit_residual_is_zero,
-    implicit_residual_is_zero_through_interval, project_algebraic_seed_with_plan,
-    project_algebraics, project_algebraics_and_detect_changes, project_algebraics_with_plan,
-    project_algebraics_with_plan_certified, project_initial_variables_with_homotopy,
-    project_initial_variables_with_plan, project_state_manifold,
-};
-#[cfg(not(kani))]
 pub use runtime::report::{
     DRIVER_TRACE_TARGET, RuntimeProgressSnapshot, RuntimeTraceContext, runtime_progress_snapshot,
     trace_runtime_done, trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail,

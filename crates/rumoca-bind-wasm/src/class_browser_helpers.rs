@@ -1,4 +1,5 @@
-use rumoca_compile::parsing::{ClassType, ComponentReference, Expression, Token};
+use rumoca_compile::parsing::{ComponentReference, Expression};
+use rumoca_core::{ClassType, Token};
 use rumoca_eval_ast::eval_instantiate::expr_to_string;
 
 pub(crate) fn class_type_label(class_type: &ClassType) -> String {

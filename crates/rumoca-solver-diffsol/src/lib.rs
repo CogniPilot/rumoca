@@ -6,6 +6,7 @@
 
 // Diffsol problem closures are single-threaded here but require cloneable shared
 // handles that live with the leaked solver problem.
+// SPEC_0021: Exception - DiffSL owns a thread-confined context behind its shared handle.
 #![allow(clippy::arc_with_non_send_sync)]
 
 mod me_integrator;

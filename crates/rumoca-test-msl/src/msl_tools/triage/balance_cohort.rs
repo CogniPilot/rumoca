@@ -8,7 +8,7 @@
 //! many of them are actually ED001, and for each ED001 model which component
 //! dominates the gap and which balance clamps were exercised.
 
-use rumoca_compile::compile::core::split_first_top_level;
+use rumoca_core::split_first_top_level;
 use rumoca_worker::ModelFailureBucket;
 use serde::Serialize;
 use serde_json::Value;

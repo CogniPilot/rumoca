@@ -79,6 +79,7 @@ impl SolveRuntime {
             });
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn eval_single_output_rows_with_native(
         &self,
@@ -120,6 +121,7 @@ impl SolveRuntime {
         Ok(())
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn eval_selected_outputs_with_native(
         &self,
@@ -165,6 +167,7 @@ impl SolveRuntime {
         Ok(())
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn try_compiled_program_outputs(
         &self,
@@ -222,6 +225,7 @@ impl SolveRuntime {
         Ok(false)
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn try_compiled_single_output(
         &self,

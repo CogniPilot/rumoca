@@ -18,7 +18,7 @@ pub mod mass_matrix;
 #[cfg(not(kani))]
 pub mod pre_params;
 #[cfg(not(kani))]
-pub mod projection;
+pub(crate) mod projection;
 #[cfg(not(kani))]
 pub mod report;
 #[cfg(not(kani))]

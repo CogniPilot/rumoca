@@ -458,6 +458,7 @@ fn assignment_expression_registers(
     }
 }
 
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn tensor_binary_operands(
     output: u32,

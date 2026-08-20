@@ -2004,6 +2004,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn dynamic_indexed_record_field(
         &mut self,
@@ -2060,6 +2061,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(dst)
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn record_array_update_field(
         &mut self,

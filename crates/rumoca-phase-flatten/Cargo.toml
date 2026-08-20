@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 [features]
 default = []
@@ -16,10 +17,10 @@ rumoca-eval-ast = { workspace = true }
 rumoca-eval-flat = { workspace = true }
 rumoca-ir-ast = { workspace = true }
 rumoca-ir-flat = { workspace = true }
-indexmap = "2.2"
+indexmap = { workspace = true }
 rustc-hash = { workspace = true }
-thiserror = "2.0"
-miette = "7.4"
+thiserror = { workspace = true }
+miette = { workspace = true }
 tracing = { workspace = true, optional = true }
 
 [dev-dependencies]

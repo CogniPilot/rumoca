@@ -14,7 +14,7 @@ const MANIFOLD_PROJECTION_MAX_ITERS: usize = 16;
 /// Unlike algebraic projection, manifold projection changes state coordinates.
 /// A block may therefore contain more coordinates than residual rows; the
 /// runtime computes the minimum-norm scaled Newton correction.
-pub trait ManifoldProjectionModel {
+pub(crate) trait ManifoldProjectionModel {
     fn eval_manifold_residual(
         &self,
         y: &[f64],
@@ -49,7 +49,7 @@ pub trait ManifoldProjectionModel {
 
 /// Project participating state coordinates onto every retained index-reduction
 /// constraint. Returns whether any state value changed.
-pub fn project_state_manifold<M: ManifoldProjectionModel>(
+pub(crate) fn project_state_manifold<M: ManifoldProjectionModel>(
     model: &M,
     y: &mut [f64],
     p: &[f64],

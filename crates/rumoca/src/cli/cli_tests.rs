@@ -1,9 +1,7 @@
 use super::*;
 use clap::CommandFactory;
-use rumoca_compile::compile::{
-    ModelFailureDiagnostic,
-    core::{Label, SourceMap},
-};
+use rumoca_compile::compile::ModelFailureDiagnostic;
+use rumoca_core::{Label, SourceMap};
 use rumoca_core::{SourceId, Span};
 use std::io::Write;
 use tempfile::NamedTempFile;

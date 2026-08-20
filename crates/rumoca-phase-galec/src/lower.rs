@@ -775,6 +775,7 @@ fn build_pre_names<'dae>(
         .collect()
 }
 
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn append_previous_states<'dae>(
     view: dae::DaeView<'dae>,
@@ -812,6 +813,7 @@ fn append_previous_states<'dae>(
     Ok(())
 }
 
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn append_clock_period(
     clock: &AdmittedClock,
@@ -963,6 +965,7 @@ fn lower_action_guard<'dae>(
     }
 }
 
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn combine_action_guards<'dae>(
     view: dae::DaeView<'dae>,

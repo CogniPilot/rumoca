@@ -77,7 +77,7 @@ pub(super) async fn rename(
 }
 
 fn navigation_locations_to_lsp(
-    locations: Vec<(String, rumoca_compile::parsing::ir_core::Location)>,
+    locations: Vec<(String, rumoca_core::Location)>,
     fallback_uri: &Url,
     sources: &mut SnapshotSourceTexts<'_>,
 ) -> Vec<Location> {
@@ -94,7 +94,7 @@ fn navigation_locations_to_lsp(
 }
 
 fn navigation_rename_edit(
-    locations: Vec<(String, rumoca_compile::parsing::ir_core::Location)>,
+    locations: Vec<(String, rumoca_core::Location)>,
     fallback_uri: &Url,
     new_name: &str,
     sources: &mut SnapshotSourceTexts<'_>,

@@ -2657,6 +2657,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         )
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn lower_typed_pure_call(
         &mut self,
@@ -3995,6 +3996,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.insert(dst, value)
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn lower_matrix_multiply(
         &mut self,
@@ -4212,6 +4214,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(())
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn lower_tensor_binary(
         &mut self,
@@ -4708,6 +4711,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(())
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     // SPEC_0021: exhaustive static/dynamic dispatch over TensorUpdateSubscript.
     #[expect(
@@ -5141,6 +5145,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(())
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn lower_tensor_load(
         &mut self,
@@ -5566,6 +5571,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok((flat, valid))
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     // SPEC_0021: exhaustive dispatch over checked fold tensor-update nodes.
     #[expect(
@@ -5855,6 +5861,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(())
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn try_lower_scalar_fold_tensor_update(
         &mut self,

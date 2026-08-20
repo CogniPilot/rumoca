@@ -28,6 +28,7 @@ struct ScheduledAssignment<'dae> {
     assignment: ClockedAssignment,
 }
 
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn lower_clock_schedule<'dae>(
     view: dae::DaeView<'dae>,
@@ -257,6 +258,7 @@ fn clock_domain_cycle<'dae>(
     )
 }
 
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn append_divider_state<'dae>(
     clock: dae::ClockId<'dae>,

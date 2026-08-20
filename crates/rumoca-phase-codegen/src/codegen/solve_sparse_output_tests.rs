@@ -54,6 +54,7 @@ fn solve_problem_with_sparse_output_map_derivative() -> solve::SolveProblem {
 #[test]
 // SPEC_0021: Exception - this regression verifies sparse output handling
 // across C, Rust, and MLIR renderers from one shared fixture.
+// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
 #[allow(clippy::too_many_lines)]
 fn scalar_solve_targets_write_sparse_output_indices() {
     let problem = solve_problem_with_sparse_output_map_derivative();

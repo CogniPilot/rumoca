@@ -72,15 +72,15 @@ fn url_from_file_path(path: impl AsRef<Path>) -> Option<Url> {
 fn match_symbol_kind(kind: &WorkspaceSymbolKind) -> SymbolKind {
     match kind {
         WorkspaceSymbolKind::Class(class_type) => match class_type {
-            rumoca_compile::parsing::ir_core::ClassType::Model
-            | rumoca_compile::parsing::ir_core::ClassType::Block
-            | rumoca_compile::parsing::ir_core::ClassType::Class => SymbolKind::CLASS,
-            rumoca_compile::parsing::ir_core::ClassType::Connector => SymbolKind::INTERFACE,
-            rumoca_compile::parsing::ir_core::ClassType::Record => SymbolKind::STRUCT,
-            rumoca_compile::parsing::ir_core::ClassType::Type => SymbolKind::TYPE_PARAMETER,
-            rumoca_compile::parsing::ir_core::ClassType::Package => SymbolKind::NAMESPACE,
-            rumoca_compile::parsing::ir_core::ClassType::Function => SymbolKind::FUNCTION,
-            rumoca_compile::parsing::ir_core::ClassType::Operator => SymbolKind::OPERATOR,
+            rumoca_core::ClassType::Model
+            | rumoca_core::ClassType::Block
+            | rumoca_core::ClassType::Class => SymbolKind::CLASS,
+            rumoca_core::ClassType::Connector => SymbolKind::INTERFACE,
+            rumoca_core::ClassType::Record => SymbolKind::STRUCT,
+            rumoca_core::ClassType::Type => SymbolKind::TYPE_PARAMETER,
+            rumoca_core::ClassType::Package => SymbolKind::NAMESPACE,
+            rumoca_core::ClassType::Function => SymbolKind::FUNCTION,
+            rumoca_core::ClassType::Operator => SymbolKind::OPERATOR,
         },
         WorkspaceSymbolKind::Component => SymbolKind::VARIABLE,
     }
@@ -115,9 +115,9 @@ pub fn collect_model_names(ast: &ast::StoredDefinition, source: &str) -> Vec<(St
     for (name, class) in &ast.classes {
         if matches!(
             class.class_type,
-            rumoca_compile::parsing::ir_core::ClassType::Model
-                | rumoca_compile::parsing::ir_core::ClassType::Block
-                | rumoca_compile::parsing::ir_core::ClassType::Class
+            rumoca_core::ClassType::Model
+                | rumoca_core::ClassType::Block
+                | rumoca_core::ClassType::Class
         ) {
             let range = location_to_range_in_source(source, &class.name.location);
             let model_name = qualify_stored_definition_class_name(ast, name);

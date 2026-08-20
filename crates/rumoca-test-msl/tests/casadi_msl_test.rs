@@ -39,8 +39,7 @@ const MSL_URL: &str =
     "https://github.com/modelica/ModelicaStandardLibrary/archive/refs/tags/v4.1.0.tar.gz";
 
 fn get_msl_cache_dir() -> PathBuf {
-    let cache_dir =
-        rumoca_compile::compile::core::msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
+    let cache_dir = rumoca_core::msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
     fs::create_dir_all(&cache_dir).expect("Failed to create MSL cache directory");
     cache_dir
 }

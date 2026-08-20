@@ -1,6 +1,6 @@
 use super::*;
 
-pub fn project_initial_variables_with_plan<M: AlgebraicProjectionModel>(
+pub(crate) fn project_initial_variables_with_plan<M: AlgebraicProjectionModel>(
     model: &M,
     y: &mut [f64],
     p: &mut [f64],
@@ -88,7 +88,7 @@ pub(super) fn combined_parameter_seed_index(
 ///
 /// `homotopy_parameter_index` is the hidden λ slot; `None` means the model
 /// carries no `homotopy(...)` and the plan is projected once, as-is.
-pub struct InitialHomotopySystem<'a, M> {
+pub(crate) struct InitialHomotopySystem<'a, M> {
     pub model: &'a M,
     pub t: f64,
     pub plan: &'a solve::InitializationProjectionPlan,
@@ -103,7 +103,7 @@ pub struct InitialHomotopySystem<'a, M> {
 /// for the acceptance contract). Callers with no such system pass a step that
 /// does nothing, and must have proven that the plan alone owns every unknown the
 /// continuation parameter reaches.
-pub fn project_initial_variables_with_homotopy<M, F>(
+pub(crate) fn project_initial_variables_with_homotopy<M, F>(
     system: InitialHomotopySystem<'_, M>,
     y: &mut [f64],
     p: &mut [f64],
@@ -935,6 +935,7 @@ pub(super) fn algebraic_block_jacobian(
     Ok(jacobian)
 }
 
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn fill_colored_algebraic_rows(
     jacobian: &mut DMatrix<f64>,

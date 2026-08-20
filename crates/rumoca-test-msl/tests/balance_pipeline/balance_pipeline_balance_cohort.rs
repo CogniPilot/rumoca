@@ -9,7 +9,7 @@
 //! question ("is the ToDae gap a balance cohort?") is answered by data.
 
 use super::MslModelResult;
-use rumoca_compile::compile::core::split_first_top_level;
+use rumoca_core::split_first_top_level;
 use serde::{Deserialize, Serialize};
 
 /// The SPEC_0008 code for an unbalanced model (`rumoca::todae::ED001`).

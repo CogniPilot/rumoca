@@ -432,6 +432,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
     }
 
     // SPEC_0021: exhaustive dispatch over the closed typed operation vocabulary.
+    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
     #[allow(clippy::too_many_lines)]
     fn eval_operation(
         &mut self,

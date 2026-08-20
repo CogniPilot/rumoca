@@ -562,40 +562,6 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             )
     }
 
-    fn solve_algebraic_sensitivity_delta(
-        &self,
-        block_index: usize,
-        jacobian: &DMatrix<f64>,
-        residual: &[f64],
-        row_scales: &[f64],
-        variable_scales: &[f64],
-        structure: Option<&solve::StructuralPattern>,
-        tolerance: f64,
-    ) -> Option<DVector<f64>> {
-        let block_index = self.block_indices.get(block_index).copied()?;
-        let cache = self.runtime.algebraic_newton_caches.get(block_index);
-        match cache {
-            Some(cache) => crate::runtime::projection::scaled_unique_delta(
-                jacobian,
-                residual,
-                row_scales,
-                variable_scales,
-                structure,
-                tolerance,
-                Some(&mut cache.borrow_mut()),
-            ),
-            None => crate::runtime::projection::scaled_unique_delta(
-                jacobian,
-                residual,
-                row_scales,
-                variable_scales,
-                structure,
-                tolerance,
-                None,
-            ),
-        }
-    }
-
     fn eval_implicit_target_value(
         &self,
         row_idx: usize,
@@ -653,6 +619,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             .flatten()
     }
 
+    #[cfg(test)]
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         self.plan
     }
@@ -878,7 +845,7 @@ impl SolveRuntime {
                 scalar: &self.implicit_projection_scalar_jacobian_v,
             },
         };
-        let projection_args = crate::AlgebraicProjectionArgs {
+        let projection_args = crate::runtime::projection::AlgebraicProjectionArgs {
             parameters: args.params,
             time: args.t,
             state_count: self.state_count,

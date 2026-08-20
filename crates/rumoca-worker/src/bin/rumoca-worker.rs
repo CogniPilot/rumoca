@@ -776,7 +776,7 @@ fn root_standalone_example_name(model_name: &str) -> bool {
     let Some((_, suffix)) = model_name.split_once(".Examples.") else {
         return false;
     };
-    let mut segments = rumoca_compile::compile::core::split_path_with_indices(suffix);
+    let mut segments = rumoca_core::split_path_with_indices(suffix);
     if segments.len() <= 1 {
         return true;
     }

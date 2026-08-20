@@ -1323,6 +1323,7 @@ struct ComponentInstantiationScope<'a> {
 
 // SPEC_0021: Exception - component instantiation is the phase entry point that
 // coordinates the independently extracted type, binding, shape, and nesting helpers.
+// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
 #[allow(clippy::too_many_lines)]
 fn instantiate_component(
     tree: &ast::ClassTree,

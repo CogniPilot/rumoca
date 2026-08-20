@@ -135,12 +135,7 @@ pub(crate) fn run(root: &Path, args: &CoverageGateArgs) -> Result<()> {
     );
     let baseline = load_baseline(&baseline_path)?;
     let package_filter = selected_packages(&args.packages, Some(&baseline), &current_metrics);
-    let comparisons = build_comparisons(
-        &baseline,
-        &current_metrics,
-        &package_filter,
-        !args.packages.is_empty(),
-    )?;
+    let comparisons = build_comparisons(&baseline, &current_metrics, &package_filter)?;
     let baseline_workspace = baseline
         .workspace_line_coverage_percent
         .zip(baseline.workspace_lines_covered)
@@ -414,7 +409,6 @@ fn build_comparisons(
     baseline: &CoverageTrimGateBaseline,
     current_metrics: &BTreeMap<String, PackageGateMetrics>,
     selected_packages: &[String],
-    strict_missing_current: bool,
 ) -> Result<Vec<GateComparison>> {
     let mut comparisons = Vec::new();
     for package in selected_packages {
@@ -425,13 +419,10 @@ fn build_comparisons(
             );
         };
         let Some(current) = current_metrics.get(package) else {
-            if strict_missing_current {
-                bail!(
-                    "current trim candidates are missing package '{}' (check package filters)",
-                    package
-                );
-            }
-            continue;
+            bail!(
+                "current trim candidates are missing baseline package '{}' (coverage roster drift; regenerate or promote the baseline explicitly)",
+                package
+            );
         };
         comparisons.push(GateComparison {
             package: package.clone(),
@@ -612,4 +603,26 @@ fn unix_timestamp_seconds() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn baseline_package_missing_from_current_inventory_fails_closed() {
+        let baseline = CoverageTrimGateBaseline {
+            generated_by: GENERATED_BY.to_string(),
+            generated_at_unix_secs: 0,
+            source_candidates_file: "candidates.json".to_string(),
+            workspace_line_coverage_percent: None,
+            workspace_lines_covered: None,
+            workspace_lines_total: None,
+            packages: BTreeMap::from([("rumoca-core".to_string(), PackageGateMetrics::default())]),
+        };
+
+        let error = build_comparisons(&baseline, &BTreeMap::new(), &["rumoca-core".to_string()])
+            .expect_err("a stale coverage roster must not silently shrink the gate");
+        assert!(error.to_string().contains("coverage roster drift"));
+    }
 }

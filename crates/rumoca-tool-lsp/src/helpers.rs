@@ -5,8 +5,9 @@ use crate::text_position::{
     utf16_column_to_byte_column,
 };
 use lsp_types::{Position, Range};
-use rumoca_compile::compile::core as rumoca_core;
-use rumoca_compile::parsing::{self, DefId, ast};
+use rumoca_compile::parsing::ast;
+use rumoca_core;
+use rumoca_core::DefId;
 
 /// Convert a Modelica source location to an LSP [`Range`] (0-indexed, UTF-16
 /// columns) against the text the location was produced from.
@@ -18,7 +19,7 @@ use rumoca_compile::parsing::{self, DefId, ast};
 /// span is the authoritative form, so it is preferred; the character columns are
 /// only a fallback for synthesized locations that carry no span.
 #[must_use]
-pub fn location_to_range_in_source(source: &str, loc: &parsing::Location) -> Range {
+pub fn location_to_range_in_source(source: &str, loc: &rumoca_core::Location) -> Range {
     if loc.end > loc.start && (loc.end as usize) <= source.len() {
         return span_to_range(source, loc.start as usize, loc.end as usize);
     }
@@ -33,7 +34,7 @@ pub fn location_to_range_in_source(source: &str, loc: &parsing::Location) -> Ran
 #[must_use]
 pub fn location_to_range_in_optional_source(
     source: Option<&str>,
-    loc: &parsing::Location,
+    loc: &rumoca_core::Location,
 ) -> Range {
     match source {
         Some(text) => location_to_range_in_source(text, loc),
@@ -54,7 +55,7 @@ pub fn location_to_range_in_optional_source(
 /// lexer's 1-based character columns into 0-based UTF-16 columns using the
 /// referenced source lines. Lines that are not present in `source` (a location
 /// from a different file) degrade to the raw character column.
-fn location_range_from_char_columns(source: &str, loc: &parsing::Location) -> Range {
+fn location_range_from_char_columns(source: &str, loc: &rumoca_core::Location) -> Range {
     let start_line = loc.start_line.saturating_sub(1);
     let end_line = loc.end_line.saturating_sub(1);
     Range {
@@ -511,7 +512,7 @@ mod tests {
     fn location_range_prefers_the_byte_span() {
         let source = "model M\n  Real 𝔸x = 1;\nend M;\n";
         let start = source.find("𝔸x").expect("component name");
-        let loc = parsing::Location {
+        let loc = rumoca_core::Location {
             // Deliberately wrong character columns: the byte span wins.
             start_line: 2,
             start_column: 1,
@@ -535,7 +536,7 @@ mod tests {
         // A synthesized location (no byte span) still has to report UTF-16
         // columns; `𝔸` counts as two units even though it is one lexer column.
         let source = "model M\n  Real 𝔸x = 1;\nend M;\n";
-        let loc = parsing::Location {
+        let loc = rumoca_core::Location {
             start_line: 2,
             start_column: 8,
             end_line: 2,
@@ -551,7 +552,7 @@ mod tests {
     #[test]
     fn location_range_without_source_keeps_raw_char_columns() {
         // No file text available: the raw lexer columns are the only signal.
-        let loc = parsing::Location {
+        let loc = rumoca_core::Location {
             start_line: 3,
             start_column: 5,
             end_line: 3,

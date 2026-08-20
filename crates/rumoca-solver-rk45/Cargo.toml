@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 # SPEC_0038 §Internal Solver Boundary: this crate implements only the FMI 3 ME

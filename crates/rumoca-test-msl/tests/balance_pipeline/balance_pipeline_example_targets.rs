@@ -24,7 +24,7 @@ pub(super) fn is_root_msl_example_model_name(model_name: &str) -> bool {
     let Some((_, suffix)) = model_name.split_once(".Examples.") else {
         return false;
     };
-    let mut segments: Vec<&str> = rumoca_compile::compile::core::split_path_with_indices(suffix);
+    let mut segments: Vec<&str> = rumoca_core::split_path_with_indices(suffix);
     if segments.len() <= 1 {
         return true;
     }
@@ -62,7 +62,7 @@ pub(super) fn is_root_standalone_msl_example_dae_model(
 
 struct ClassPathFrame<'a> {
     name: &'a str,
-    class_type: &'a rumoca_compile::compile::core::ClassType,
+    class_type: &'a rumoca_core::ClassType,
 }
 
 pub(super) fn root_msl_example_model_names(
@@ -129,12 +129,9 @@ fn is_root_msl_example_path(path: &[ClassPathFrame<'_>]) -> bool {
     {
         return false;
     }
-    package_path.iter().all(|frame| {
-        matches!(
-            frame.class_type,
-            rumoca_compile::compile::core::ClassType::Package
-        )
-    })
+    package_path
+        .iter()
+        .all(|frame| matches!(frame.class_type, rumoca_core::ClassType::Package))
 }
 
 #[cfg(test)]
@@ -142,9 +139,9 @@ mod tests {
     use super::*;
     use rumoca_compile::compile::Session;
 
-    fn class(name: &str, class_type: rumoca_compile::compile::core::ClassType) -> ast::ClassDef {
+    fn class(name: &str, class_type: rumoca_core::ClassType) -> ast::ClassDef {
         ast::ClassDef {
-            name: rumoca_compile::compile::core::Token {
+            name: rumoca_core::Token {
                 text: std::sync::Arc::from(name),
                 ..Default::default()
             },
@@ -156,32 +153,17 @@ mod tests {
     #[test]
     fn root_example_selection_excludes_models_nested_inside_models() {
         let mut tree = ast::ClassTree::new();
-        let mut modelica = class(
-            "Modelica",
-            rumoca_compile::compile::core::ClassType::Package,
-        );
-        let mut mechanics = class(
-            "Mechanics",
-            rumoca_compile::compile::core::ClassType::Package,
-        );
-        let mut examples = class(
-            "Examples",
-            rumoca_compile::compile::core::ClassType::Package,
-        );
-        let mut elementary = class(
-            "Elementary",
-            rumoca_compile::compile::core::ClassType::Package,
-        );
+        let mut modelica = class("Modelica", rumoca_core::ClassType::Package);
+        let mut mechanics = class("Mechanics", rumoca_core::ClassType::Package);
+        let mut examples = class("Examples", rumoca_core::ClassType::Package);
+        let mut elementary = class("Elementary", rumoca_core::ClassType::Package);
         let mut root_model = class(
             "PointGravityWithPointMasses2",
-            rumoca_compile::compile::core::ClassType::Model,
+            rumoca_core::ClassType::Model,
         );
         root_model.classes.insert(
             "SystemWithStandardBodies".to_string(),
-            class(
-                "SystemWithStandardBodies",
-                rumoca_compile::compile::core::ClassType::Model,
-            ),
+            class("SystemWithStandardBodies", rumoca_core::ClassType::Model),
         );
         elementary
             .classes
@@ -266,7 +248,7 @@ mod tests {
             let declaration = result
                 .flat
                 .variables
-                .get(&rumoca_compile::compile::core::VarName::new(name))
+                .get(&rumoca_core::VarName::new(name))
                 .unwrap_or_else(|| {
                     panic!("Flat must retain the zero-cardinality declaration `{name}`")
                 });

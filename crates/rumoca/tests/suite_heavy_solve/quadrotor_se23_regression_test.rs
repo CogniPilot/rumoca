@@ -27,15 +27,18 @@ use rumoca_sim::{SimOptions, eval_dae_at};
 
 /// The `LieGroups` library ships in the cached CogniPilot Modelica Models
 /// (CMM) snapshot, pulled by `cargo xtask repo modelica-deps ensure`. Resolve its package
-/// directory, or `None` when the cache is absent (so the test skips locally
-/// without the cache, matching the other CMM-dependent regressions).
-fn cached_lie_groups() -> Option<PathBuf> {
+/// directory. This suite is selected explicitly through `heavy-solve-tests`,
+/// so a missing corpus is a hard failure rather than a green test that measured
+/// nothing.
+fn cached_lie_groups() -> PathBuf {
     let lie_groups =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cmm/CMM-a642c381/LieGroups");
+    assert!(
+        lie_groups.join("package.mo").is_file(),
+        "heavy Solve regressions require cached CMM at target/cmm/CMM-a642c381; \
+         run `cargo xtask repo modelica-deps ensure`"
+    );
     lie_groups
-        .join("package.mo")
-        .is_file()
-        .then_some(lie_groups)
 }
 
 fn der_value(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
@@ -56,15 +59,39 @@ fn der_value(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
         .value
 }
 
+fn typed_index_operation_counts(program: &rumoca_ir_solve::TypedProgram) -> (usize, usize) {
+    program
+        .operations()
+        .iter()
+        .fold((0, 0), |(selects, projections), operation| {
+            use rumoca_ir_solve::SolveOperation;
+
+            let (local_selects, local_projections) = match operation.operation() {
+                SolveOperation::Select { .. } => (1, 0),
+                SolveOperation::ProjectElementDynamic { .. } => (0, 1),
+                SolveOperation::Conditional {
+                    if_true, if_false, ..
+                } => {
+                    let true_counts = typed_index_operation_counts(if_true.body());
+                    let false_counts = typed_index_operation_counts(if_false.body());
+                    (
+                        true_counts.0 + false_counts.0,
+                        true_counts.1 + false_counts.1,
+                    )
+                }
+                SolveOperation::Map { body, .. } => typed_index_operation_counts(body.body()),
+                SolveOperation::Fold { transition, .. } => {
+                    typed_index_operation_counts(transition.body())
+                }
+                _ => (0, 0),
+            };
+            (selects + local_selects, projections + local_projections)
+        })
+}
+
 #[test]
 fn quadrotor_se23_13state_initial_derivatives_are_stable() {
-    let Some(lie_groups) = cached_lie_groups() else {
-        eprintln!(
-            "skipping SE_2(3) 13-state quadrotor regression: requires cached CMM at \
-             target/cmm/CMM-a642c381; run `cargo xtask repo modelica-deps ensure`"
-        );
-        return;
-    };
+    let lie_groups = cached_lie_groups();
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/quadrotor_se23");
     let model = fixtures.join("QuadrotorSquare13_fn.mo");
 
@@ -120,10 +147,7 @@ fn quadrotor_se23_13state_initial_derivatives_are_stable() {
 /// lowers to ONE multi-output program with operands computed once.
 #[test]
 fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(lie_groups) = cached_lie_groups() else {
-        eprintln!("skipping SE_2(3) scalar-program size regression: requires cached CMM");
-        return Ok(());
-    };
+    let lie_groups = cached_lie_groups();
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/quadrotor_se23");
     let model = fixtures.join("QuadrotorSquare13_fn.mo");
 
@@ -132,7 +156,8 @@ fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::e
         .source_root(&lie_groups.to_string_lossy())
         .compile_path_dae(&model)?;
 
-    let problem = rumoca_sim::lower_solve_problem(&compiled.dae)?;
+    let package = rumoca_phase_solve::lower_solve_package(&compiled.dae)?;
+    let problem = &package.problem;
     let block = &problem.continuous.derivative_rhs;
     let scalar = rumoca_eval_solve::to_scalar_program_block(block)?;
     let block_output_count = block.len()?;
@@ -185,30 +210,33 @@ fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::e
 
     // Runtime-variable subscripts into the constant reference tables
     // (`Xref[i-1,j]`, `nref`, `aref`, `tg`, where `i` depends on input time)
-    // lower to `LoadIndexedP` indexed loads, NOT N-deep select chains. Before
-    // this fix the derivative was ~158k ops / ~88k selects (rendered to a 143 MB
-    // C file that `cc -O2` could not compile); the indexed-load lowering
-    // collapses it to ~9k ops / ~400 selects (a 1.8 MB C file). Lock in the
-    // collapse so a regression to select-chain indexing is caught here.
-    let (selects, indexed_loads) =
-        scalar
-            .programs()
-            .iter()
-            .flatten()
-            .fold((0usize, 0usize), |(s, i), op| match op {
-                rumoca_ir_solve::LinearOp::Select { .. } => (s + 1, i),
-                rumoca_ir_solve::LinearOp::LoadIndexedP { .. } => (s, i + 1),
-                _ => (s, i),
-            });
+    // remain compact dynamic projections inside the issued typed call owners.
+    // The legacy scalar-call path represented these as `LoadIndexedP`; the
+    // typed path deliberately retains the aggregate parameter and proves each
+    // one-based projection at its construction boundary. Count both the thin
+    // scalar wrapper and the owner bodies so this gate follows the authoritative
+    // representation instead of requiring scalarization to reappear.
+    let scalar_selects = scalar
+        .programs()
+        .iter()
+        .flatten()
+        .filter(|op| matches!(op, rumoca_ir_solve::LinearOp::Select { .. }))
+        .count();
+    let (typed_selects, dynamic_projections) = package
+        .pure_calls
+        .owners()
+        .iter()
+        .map(|owner| typed_index_operation_counts(owner.body()))
+        .fold((0, 0), |lhs, rhs| (lhs.0 + rhs.0, lhs.1 + rhs.1));
     assert!(
         approx_bytes < 16 * 1024 * 1024,
         "scalar derivative program is {} KB — function-projection duplication regression?",
         approx_bytes / 1024
     );
     assert!(
-        indexed_loads >= 40,
-        "expected runtime table subscripts to lower to LoadIndexedP (got {indexed_loads}); \
-         dynamic-index → select-chain regression?"
+        dynamic_projections >= 40,
+        "expected runtime table subscripts to remain compact typed dynamic projections \
+         (got {dynamic_projections}); dynamic-index → select-chain regression?"
     );
     assert!(
         total_ops < 20_000,
@@ -216,9 +244,9 @@ fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::e
          select-chain blowup regression?"
     );
     assert!(
-        selects < 5_000,
-        "scalar derivative has {selects} selects; expected ~400 after indexed-load lowering — \
-         dynamic-index select-chain regression?"
+        scalar_selects + typed_selects < 5_000,
+        "derivative has {} scalar/typed selects; dynamic-index select-chain regression?",
+        scalar_selects + typed_selects
     );
     Ok(())
 }

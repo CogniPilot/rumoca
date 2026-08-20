@@ -5,12 +5,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-tungstenite = "0.26"
+tungstenite = { workspace = true }
 
 [lints]
 workspace = true

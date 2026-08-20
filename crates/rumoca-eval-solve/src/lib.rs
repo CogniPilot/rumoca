@@ -3554,6 +3554,7 @@ fn eval_row_prepared_fast(
     Ok(())
 }
 
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn eval_fold_tensor_update(
     regs: &[f64],
@@ -3635,6 +3636,7 @@ fn fold_tensor_node_value(
     }
 }
 
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn eval_matrix_multiply(
     regs: &mut [f64],
@@ -3670,6 +3672,7 @@ fn eval_matrix_multiply(
     }
 }
 
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn eval_tensor_binary(
     regs: &mut [f64],
@@ -4382,6 +4385,7 @@ fn eval_pure_call_directional_payload(
     )
 }
 
+// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn eval_typed_call_payload(
     table: &SolvePureCallTable,

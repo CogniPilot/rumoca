@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 [features]
 # SPEC_0039 / SOLVE-C17: exposes `StructuralPattern::from_row_dependencies`,

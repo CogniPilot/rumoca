@@ -956,6 +956,7 @@ impl<'de> Deserialize<'de> for GuardedAssignmentProgram {
 }
 
 impl GuardedAssignmentProgram {
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn checked(
         program: Vec<LinearOp>,

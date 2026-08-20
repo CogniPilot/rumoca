@@ -6,9 +6,9 @@ use rumoca_compile::Session;
 use rumoca_compile::compile::ClassLocalCompletionKind;
 #[cfg(feature = "server")]
 use rumoca_compile::compile::SessionSnapshot;
-use rumoca_compile::compile::core as rumoca_core;
+use rumoca_compile::parsing::ast;
 use rumoca_compile::parsing::ast::Visitor;
-use rumoca_compile::parsing::{self, ast};
+use rumoca_core;
 use std::collections::{BTreeMap, HashSet};
 use std::ops::ControlFlow;
 
@@ -774,10 +774,9 @@ fn dot_completion_items(
 
 fn component_completion_kind(comp: &ast::Component) -> CompletionItemKind {
     match (&comp.variability, &comp.causality) {
-        (parsing::Variability::Parameter(_), _) | (parsing::Variability::Constant(_), _) => {
-            CompletionItemKind::CONSTANT
-        }
-        (_, parsing::Causality::Input(_)) | (_, parsing::Causality::Output(_)) => {
+        (rumoca_core::Variability::Parameter(_), _)
+        | (rumoca_core::Variability::Constant(_), _) => CompletionItemKind::CONSTANT,
+        (_, rumoca_core::Causality::Input(_)) | (_, rumoca_core::Causality::Output(_)) => {
             CompletionItemKind::PROPERTY
         }
         _ => CompletionItemKind::VARIABLE,

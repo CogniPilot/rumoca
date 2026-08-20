@@ -178,3 +178,36 @@ fn removed_declaration_only_public_items_do_not_return() {
         restored.join("\n")
     );
 }
+
+#[test]
+fn audited_facades_do_not_restore_forwarded_or_private_surfaces() {
+    let root = workspace_root();
+    let compile_facade = fs::read_to_string(root.join("crates/rumoca-compile/src/lib.rs"))
+        .expect("read compile facade");
+    for forbidden in [
+        "pub use rumoca_core as",
+        "AstCausality",
+        "AstComponent",
+        "AstExpression",
+        "AstToken",
+        "AstVariability",
+    ] {
+        assert!(
+            !compile_facade.contains(forbidden),
+            "rumoca-compile restored audited forwarding surface `{forbidden}`"
+        );
+    }
+
+    let solver_root = fs::read_to_string(root.join("crates/rumoca-solver/src/lib.rs"))
+        .expect("read solver facade");
+    assert!(
+        !solver_root.contains("pub use runtime::projection"),
+        "rumoca-solver restored component-private projection re-exports"
+    );
+    let runtime_root = fs::read_to_string(root.join("crates/rumoca-solver/src/runtime/mod.rs"))
+        .expect("read solver runtime modules");
+    assert!(
+        !runtime_root.contains("pub mod projection;"),
+        "rumoca-solver restored public access to component-private projection policy"
+    );
+}

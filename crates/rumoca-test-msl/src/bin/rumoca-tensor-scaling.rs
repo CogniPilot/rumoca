@@ -203,15 +203,13 @@ fn inventory(result: &CompilationResult) -> Result<CompileInventory> {
                 )
                 .expect("checked family domain total fits usize");
             match family.scalar_view() {
-                rumoca_compile::compile::core::ComprehensionScalarView::RowMajorProjection => {
+                rumoca_core::ComprehensionScalarView::RowMajorProjection => {
                     row_major_families += 1;
                 }
-                rumoca_compile::compile::core::ComprehensionScalarView::BinderSubstitution => {
+                rumoca_core::ComprehensionScalarView::BinderSubstitution => {
                     binder_substitution_families += 1;
                 }
-                rumoca_compile::compile::core::ComprehensionScalarView::BinderPrefixProjection {
-                    ..
-                } => {
+                rumoca_core::ComprehensionScalarView::BinderPrefixProjection { .. } => {
                     row_major_families += 1;
                 }
             }

@@ -75,7 +75,7 @@ use tool_config::ToolConfigEntry;
 
 fn simulation_error_diagnostic(
     error: &SimulationDiagnosticError,
-    source_map: Option<&rumoca_compile::compile::core::SourceMap>,
+    source_map: Option<&rumoca_core::SourceMap>,
 ) -> Option<Value> {
     let location = source_span_location(source_map?, error.source_span()?)?;
     let uri = Url::from_file_path(&location.file_name)

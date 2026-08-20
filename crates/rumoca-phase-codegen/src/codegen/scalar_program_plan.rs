@@ -346,6 +346,7 @@ fn op_field(op: &solve::LinearOp, output_targets: Option<&[usize]>, key: &str) -
 
 // SPEC_0021: Exception - exhaustive LinearOp field dispatch keeps the template
 // object schema auditable beside the equally exhaustive key catalog below.
+// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
 #[allow(clippy::too_many_lines)]
 fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
     use solve::LinearOp;
@@ -805,6 +806,7 @@ fn arithmetic_field(
 
 // SPEC_0021: Exception - exhaustive LinearOp key dispatch is the single catalog
 // used to enumerate every field exposed by the typed template object.
+// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
 #[allow(clippy::too_many_lines)]
 fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
     use solve::LinearOp;

@@ -1116,10 +1116,10 @@ mod tests {
     fn explicit_compile_target_candidates_include_modelica_test_models() {
         fn class(
             name: &str,
-            class_type: rumoca_compile::parsing::ClassType,
+            class_type: rumoca_core::ClassType,
         ) -> rumoca_compile::parsing::ClassDef {
             rumoca_compile::parsing::ClassDef {
-                name: rumoca_compile::parsing::Token {
+                name: rumoca_core::Token {
                     text: std::sync::Arc::from(name),
                     ..Default::default()
                 },
@@ -1129,21 +1129,19 @@ mod tests {
         }
 
         let mut def = rumoca_compile::parsing::StoredDefinition::default();
-        let mut modelica = class("Modelica", rumoca_compile::parsing::ClassType::Package);
-        let mut blocks = class("Blocks", rumoca_compile::parsing::ClassType::Package);
-        let mut examples = class("Examples", rumoca_compile::parsing::ClassType::Package);
+        let mut modelica = class("Modelica", rumoca_core::ClassType::Package);
+        let mut blocks = class("Blocks", rumoca_core::ClassType::Package);
+        let mut examples = class("Examples", rumoca_core::ClassType::Package);
         examples.classes.insert(
             "BooleanNetwork1".to_string(),
-            class("BooleanNetwork1", rumoca_compile::parsing::ClassType::Model),
+            class("BooleanNetwork1", rumoca_core::ClassType::Model),
         );
         blocks.classes.insert("Examples".to_string(), examples);
         modelica.classes.insert("Blocks".to_string(), blocks);
         def.classes.insert("Modelica".to_string(), modelica);
-        let source_root = CompiledSourceRoot::from_stored_definition(
-            def,
-            rumoca_compile::compile::core::SourceMap::new(),
-        )
-        .expect("source root");
+        let source_root =
+            CompiledSourceRoot::from_stored_definition(def, rumoca_core::SourceMap::new())
+                .expect("source root");
 
         let names = vec![
             "Modelica.Blocks.Examples.BooleanNetwork1".to_string(),

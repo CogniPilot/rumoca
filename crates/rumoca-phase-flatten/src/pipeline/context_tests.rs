@@ -241,11 +241,6 @@ mod tests {
     }
 
     #[test]
-    fn test_flatten_context() {
-        let _ctx = Context::new();
-    }
-
-    #[test]
     fn test_is_in_disabled_component_handles_dot_inside_bracket_expression() {
         let qn = QualifiedName {
             parts: vec![

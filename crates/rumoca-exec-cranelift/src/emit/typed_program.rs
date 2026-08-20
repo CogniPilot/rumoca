@@ -298,6 +298,7 @@ impl TableCompiler {
         )
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn compile_program(
         &mut self,
@@ -902,6 +903,7 @@ impl ProgramLowerer<'_, '_> {
     }
 
     // SPEC_0021: exhaustive dispatch over the closed typed operation vocabulary.
+    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
     #[allow(clippy::too_many_lines)]
     fn lower_operation(&mut self, operation: &solve::SolveOperation) -> Result<(), CompileError> {
         match operation {

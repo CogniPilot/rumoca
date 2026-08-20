@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 fn class(name: &str, partial: bool) -> rumoca_ir_ast::ClassDef {
     rumoca_ir_ast::ClassDef {
-        name: rumoca_compile::compile::core::Token {
+        name: rumoca_core::Token {
             text: Arc::from(name),
-            ..rumoca_compile::compile::core::Token::default()
+            ..rumoca_core::Token::default()
         },
         partial,
         ..rumoca_ir_ast::ClassDef::default()

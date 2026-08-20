@@ -520,12 +520,7 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
     },
     VerifyStep {
         label: "coverage gate",
-        args: &[
-            "coverage",
-            "gate",
-            "--allowed-workspace-line-coverage-drop",
-            "3.0",
-        ],
+        args: &["coverage", "gate", "--enforce-trim-regressions"],
         include_in_full: true,
         include_in_quick: false,
     },

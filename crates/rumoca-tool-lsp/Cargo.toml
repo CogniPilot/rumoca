@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 [[bin]]
 name = "rumoca-lsp"
@@ -12,6 +13,7 @@ path = "src/main.rs"
 required-features = ["server"]
 
 [dependencies]
+rumoca-core = { workspace = true }
 rumoca-compile = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-galec = { workspace = true }

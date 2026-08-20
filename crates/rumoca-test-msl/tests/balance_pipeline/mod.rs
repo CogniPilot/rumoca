@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::*;
 
 mod balance_pipeline_balance_cohort;

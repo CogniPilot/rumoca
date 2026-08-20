@@ -13,12 +13,19 @@ end P;
 "#;
 
 fn omc_available() -> bool {
-    Command::new("omc").arg("--version").output().is_ok()
+    Command::new("omc")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 #[test]
 fn encapsulated_scope_rejection_matches_omc() {
     if !omc_available() {
+        assert!(
+            !std::path::Path::new("target/msl/omc-differential-required").is_file(),
+            "OMC differential semantics are required in this lane, but a working `omc` is not on PATH"
+        );
         eprintln!("skipping OMC differential test: omc not available");
         return;
     }

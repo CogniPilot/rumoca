@@ -259,6 +259,7 @@ fn replay_slots<'program>(
 
 // SPEC_0021: Exception — one exhaustive match replays every serialized typed
 // operation through its corresponding checked builder method.
+// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
 #[allow(clippy::too_many_lines)]
 fn replay_operation<'program>(
     builder: &mut TypedProgramBuilder<'program>,

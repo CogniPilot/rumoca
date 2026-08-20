@@ -2149,6 +2149,7 @@ impl AdBuilder {
         self.bind(dst, out)
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn lower_dot_product(
         &mut self,
@@ -2185,6 +2186,7 @@ impl AdBuilder {
         self.bind(dst, sum)
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn lower_matrix_multiply(
         &mut self,
@@ -2239,6 +2241,7 @@ impl AdBuilder {
         Ok(())
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn lower_tensor_binary(
         &mut self,
@@ -2651,6 +2654,7 @@ impl AdBuilder {
         Ok(())
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn lower_tensor_load(
         &mut self,

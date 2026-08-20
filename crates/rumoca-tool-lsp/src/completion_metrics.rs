@@ -1,6 +1,6 @@
 use lsp_types::Position;
 use rumoca_compile::compile::SessionCacheStatsSnapshot;
-use rumoca_compile::compile::core as rumoca_core;
+use rumoca_core;
 use serde::{Deserialize, Serialize};
 
 use crate::helpers::{get_text_before_cursor, trailing_dotted_identifier_token};

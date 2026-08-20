@@ -502,6 +502,7 @@ impl SolveRuntime {
         )
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn eval_derivative_jacobian_v_at_solver_y(
         &self,
@@ -528,6 +529,7 @@ impl SolveRuntime {
         )
     }
 
+    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn eval_derivative_jacobian_v_from_settled_solver_y(
         &self,
@@ -610,7 +612,7 @@ impl SolveRuntime {
             &projection_model,
             &plan.simultaneous_plan,
             solver_y,
-            crate::AlgebraicProjectionArgs {
+            crate::runtime::projection::AlgebraicProjectionArgs {
                 parameters: lin.params,
                 time: lin.t,
                 state_count: self.state_count,

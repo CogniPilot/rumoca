@@ -146,6 +146,7 @@ impl SchemaSet {
     ///
     /// Field type indices from the .bfbs are remapped from the local schema's
     /// object array to the merged SchemaSet's object array.
+    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
     #[allow(clippy::excessive_nesting)]
     pub fn load_bfbs(&mut self, path: &Path) -> anyhow::Result<()> {
         let data = std::fs::read(path)?;

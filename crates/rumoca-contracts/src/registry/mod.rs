@@ -14,11 +14,11 @@ use serde::{Deserialize, Serialize};
 /// representation is private so the id cannot be treated as raw text; the
 /// serialized form is unchanged, since `VarName` serializes as its spelling.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ContractId(rumoca_compile::compile::VarName);
+pub struct ContractId(rumoca_core::VarName);
 
 impl ContractId {
     pub fn new(id: impl Into<String>) -> Self {
-        Self(rumoca_compile::compile::VarName::new(id))
+        Self(rumoca_core::VarName::new(id))
     }
 
     /// The contract's spec label.
