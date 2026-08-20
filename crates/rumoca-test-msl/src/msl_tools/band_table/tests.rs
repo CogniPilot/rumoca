@@ -501,7 +501,11 @@ fn a_model_that_silently_leaves_the_compared_set_is_reported() {
     );
     assert_eq!(transitions.counts.common_compared, 1);
     assert_eq!(
-        transitions.departed_strict_high().count(),
+        transitions
+            .left
+            .iter()
+            .filter(|left| left.before_band == BandLabel::High)
+            .count(),
         1,
         "a strict-high departure must be reachable on its own"
     );
@@ -1075,20 +1079,26 @@ fn a_trace_with_nothing_comparable_is_its_own_kind() {
     );
 
     assert_eq!(
-        trace_exit_kind(&entry),
+        serde_json::from_value::<TraceExitRecord>(entry.clone())
+            .ok()
+            .map(|record| record.kind),
         Some(TraceExitKind::NoComparableSamples)
     );
     assert_eq!(
-        trace_exit_kind(&exit(
+        serde_json::from_value::<TraceExitRecord>(exit(
             "comparator_failed",
             "trace compare failed: shape mismatch"
-        )),
+        ))
+        .ok()
+        .map(|record| record.kind),
         Some(TraceExitKind::ComparatorFailed)
     );
     assert_eq!(
-        trace_exit_kind(&json!(
+        serde_json::from_value::<TraceExitRecord>(json!(
             "trace compare failed: trace has no comparable variable samples"
-        )),
+        ))
+        .ok()
+        .map(|record| record.kind),
         None,
         "an untyped entry does not say which boundary stopped the comparison, and a reader must \
          not infer one from the text"

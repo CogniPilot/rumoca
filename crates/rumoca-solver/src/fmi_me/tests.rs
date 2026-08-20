@@ -1,4 +1,4 @@
-//! Contract tests for the ME operations SPEC_0038 phase 2 added.
+//! Contract tests for the SPEC_0038 ME operations.
 //!
 //! The staging tests are pure: they exercise the value-level rules a host's
 //! failure bucketing depends on without instantiating a component. The

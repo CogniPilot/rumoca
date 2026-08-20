@@ -147,7 +147,6 @@ pub(super) fn find_member_type_in_class<'a>(
             if let Some(member) = bc.classes.get(member_name) {
                 return Some(member);
             }
-            // Queue base classes for next level
             for ext in &bc.extends {
                 let next_name = ext.base_name.to_string();
                 next_visit.push(

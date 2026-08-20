@@ -92,7 +92,7 @@ function ensureTomlLanguage(monaco) {
                 [/'[^']*'/, 'string'],
                 [/\b(true|false)\b/, 'constant'],
                 [/[+-]?\d+(?:_\d+)*(?:\.\d+(?:_\d+)*)?(?:[eE][+-]?\d+)?/, 'number'],
-                [/[=,\[\]{}]/, 'delimiter'],
+                [/[=,[\]{}]/, 'delimiter'],
             ],
         },
     });
@@ -232,7 +232,7 @@ monaco.languages.setMonarchTokensProvider('jinja2', {
             [/'([^'\\]|\\.)*'/, 'string'],
             [/\d+\.?\d*/, 'number'],
             [/[|.]/, 'delimiter'],
-            [/[(),\[\]]/, 'delimiter.bracket'],
+            [/[(),[\]]/, 'delimiter.bracket'],
             [/\s+/, ''],
         ],
 
@@ -250,7 +250,7 @@ monaco.languages.setMonarchTokensProvider('jinja2', {
             [/'([^'\\]|\\.)*'/, 'string'],
             [/\d+\.?\d*/, 'number'],
             [/[|.]/, 'delimiter'],
-            [/[(),\[\]]/, 'delimiter.bracket'],
+            [/[(),[\]]/, 'delimiter.bracket'],
             [/\s+/, ''],
         ],
     }

@@ -236,11 +236,6 @@ impl StatementPin {
             StatementPin::Record { anchor, .. } => anchor.clone(),
         }
     }
-
-    /// Whether this pin is executable evidence rather than prose.
-    pub fn is_executable(&self) -> bool {
-        matches!(self, StatementPin::Test { .. } | StatementPin::Site { .. })
-    }
 }
 
 /// What the compiler currently does about a statement.
@@ -277,13 +272,6 @@ pub struct FormalStatement {
     pub related_sections: Vec<String>,
     /// Anything a reader needs that the statement itself cannot carry.
     pub note: Option<String>,
-}
-
-impl FormalStatement {
-    /// The identifier's category segment, e.g. `EQN` for `FS-EQN-001`.
-    pub fn category_prefix(&self) -> &'static str {
-        self.category.prefix()
-    }
 }
 
 /// Why a row in `data/formal_statements.toml` is not a [`FormalStatement`].

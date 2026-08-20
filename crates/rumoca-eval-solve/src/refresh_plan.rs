@@ -22,7 +22,6 @@ use indexmap::{IndexMap, IndexSet};
 use rumoca_ir_solve as solve;
 
 use crate::prepared::{assignment_shape_reads_y_index, row_y_input_ranges};
-use crate::sparsity::program_output_y_dependencies;
 use crate::{EvalSolveError, PreparedScalarProgramBlock};
 
 use capacity::{
@@ -737,129 +736,6 @@ fn compact_dependency_error(
         message: error.to_string(),
         span,
     }
-}
-
-/// Build the algebraic refresh closure required by a collection of scalar
-/// consumer blocks.
-///
-/// This keeps dependency selection on the compact scalar-program graph.  It
-/// does not execute or reconstruct unrelated algebraic/output lanes merely
-/// because the consumers run at the same runtime boundary.
-pub fn build_scalar_dependency_refresh_plan(
-    problem: &solve::SolveProblem,
-    implicit_block: &PreparedScalarProgramBlock,
-    full_plan: &RefreshPlan,
-    consumer_blocks: &[&solve::ScalarProgramBlock],
-) -> Result<RefreshPlan, EvalSolveError> {
-    build_scalar_dependency_refresh_plan_with_outputs(
-        problem,
-        implicit_block,
-        full_plan,
-        consumer_blocks,
-        &[],
-    )
-}
-
-/// Build a dependency refresh plan from whole consumer blocks plus selected
-/// logical outputs of grouped programs.
-pub fn build_scalar_dependency_refresh_plan_with_outputs(
-    problem: &solve::SolveProblem,
-    implicit_block: &PreparedScalarProgramBlock,
-    full_plan: &RefreshPlan,
-    consumer_blocks: &[&solve::ScalarProgramBlock],
-    consumer_outputs: &[(&solve::ScalarProgramBlock, &[usize])],
-) -> Result<RefreshPlan, EvalSolveError> {
-    build_scalar_dependency_refresh_plan_with_outputs_and_programs(
-        problem,
-        implicit_block,
-        full_plan,
-        consumer_blocks,
-        consumer_outputs,
-        &[],
-    )
-}
-
-/// Build a dependency refresh plan while retaining compact multi-output
-/// consumer programs that have no scalar output catalog.
-pub fn build_scalar_dependency_refresh_plan_with_outputs_and_programs(
-    problem: &solve::SolveProblem,
-    implicit_block: &PreparedScalarProgramBlock,
-    full_plan: &RefreshPlan,
-    consumer_blocks: &[&solve::ScalarProgramBlock],
-    consumer_outputs: &[(&solve::ScalarProgramBlock, &[usize])],
-    compact_consumers: &[(&[solve::LinearOp], rumoca_core::Span)],
-) -> Result<RefreshPlan, EvalSolveError> {
-    let state_count = problem.solve_layout.state_scalar_count();
-    let mut initial_deps = IndexSet::new();
-    for block in consumer_blocks {
-        let block_deps = scalar_program_block_dependencies(block, state_count)?;
-        reserve_refresh_index_set_capacity(
-            &mut initial_deps,
-            block_deps.len(),
-            "consumer dependency set",
-            first_block_span(block),
-        )?;
-        initial_deps.extend(block_deps);
-    }
-    for &(block, outputs) in consumer_outputs {
-        let positions = output_row_positions(block)?;
-        let mut dependencies_by_program = BTreeMap::new();
-        for &output in outputs {
-            let position =
-                positions
-                    .get(&output)
-                    .copied()
-                    .ok_or_else(|| EvalSolveError::InvalidRow {
-                        message: format!(
-                            "selected consumer output {output} has no scalar program producer"
-                        ),
-                        span: first_block_span(block),
-                    })?;
-            let row = &block.programs()[position.program_index];
-            let output_dependencies = match dependencies_by_program.entry(position.program_index) {
-                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::btree_map::Entry::Vacant(entry) => entry.insert(
-                    program_output_y_dependencies(row, block.program_span(position.program_index))?,
-                ),
-            };
-            let dependencies =
-                output_dependencies
-                    .get(position.output_offset)
-                    .ok_or_else(|| EvalSolveError::InvalidRow {
-                        message: format!(
-                            "selected consumer output {output} has no dependency result"
-                        ),
-                        span: block.program_span(position.program_index),
-                    })?;
-            reserve_refresh_index_set_capacity(
-                &mut initial_deps,
-                dependencies.len(),
-                "selected consumer dependency set",
-                block.program_span(position.program_index),
-            )?;
-            initial_deps.extend(dependencies.iter().copied().filter(|index| {
-                *index >= state_count && *index < problem.solve_layout.solver_scalar_count()
-            }));
-        }
-    }
-    for &(program, span) in compact_consumers {
-        for index in row_y_input_ranges(program)
-            .into_iter()
-            .flatten()
-            .filter(|index| {
-                *index >= state_count && *index < problem.solve_layout.solver_scalar_count()
-            })
-        {
-            reserve_refresh_index_set_capacity(
-                &mut initial_deps,
-                1,
-                "compact consumer dependency set",
-                Some(span),
-            )?;
-            initial_deps.insert(index);
-        }
-    }
-    build_dependency_refresh_plan(problem, implicit_block, full_plan, initial_deps)
 }
 
 fn build_dependency_refresh_plan(

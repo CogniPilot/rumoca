@@ -486,43 +486,62 @@ mod tests {
         let registry = create_registry();
 
         // Verify counts per category match SPEC_0022
-        assert_eq!(registry.count_by_category(ContractCategory::Lexical), 13);
+        assert_eq!(registry.by_category(ContractCategory::Lexical).count(), 13);
         assert_eq!(
-            registry.count_by_category(ContractCategory::Declaration),
+            registry.by_category(ContractCategory::Declaration).count(),
             36
         );
         assert_eq!(
-            registry.count_by_category(ContractCategory::Instantiation),
+            registry
+                .by_category(ContractCategory::Instantiation)
+                .count(),
             53
         );
-        assert_eq!(registry.count_by_category(ContractCategory::Expression), 40);
-        assert_eq!(registry.count_by_category(ContractCategory::Equation), 38);
-        assert_eq!(registry.count_by_category(ContractCategory::Algorithm), 17);
-        assert_eq!(registry.count_by_category(ContractCategory::Connection), 30);
-        assert_eq!(registry.count_by_category(ContractCategory::Function), 38);
-        assert_eq!(registry.count_by_category(ContractCategory::Type), 35);
-        assert_eq!(registry.count_by_category(ContractCategory::Array), 42);
-        assert_eq!(registry.count_by_category(ContractCategory::Package), 12);
         assert_eq!(
-            registry.count_by_category(ContractCategory::OperatorRecord),
+            registry.by_category(ContractCategory::Expression).count(),
+            40
+        );
+        assert_eq!(registry.by_category(ContractCategory::Equation).count(), 38);
+        assert_eq!(
+            registry.by_category(ContractCategory::Algorithm).count(),
+            17
+        );
+        assert_eq!(
+            registry.by_category(ContractCategory::Connection).count(),
+            30
+        );
+        assert_eq!(registry.by_category(ContractCategory::Function).count(), 38);
+        assert_eq!(registry.by_category(ContractCategory::Type).count(), 35);
+        assert_eq!(registry.by_category(ContractCategory::Array).count(), 42);
+        assert_eq!(registry.by_category(ContractCategory::Package).count(), 12);
+        assert_eq!(
+            registry
+                .by_category(ContractCategory::OperatorRecord)
+                .count(),
             11
         );
-        assert_eq!(registry.count_by_category(ContractCategory::Simulation), 10);
-        assert_eq!(registry.count_by_category(ContractCategory::Clock), 20);
-        assert_eq!(registry.count_by_category(ContractCategory::Stream), 11);
         assert_eq!(
-            registry.count_by_category(ContractCategory::StateMachine),
+            registry.by_category(ContractCategory::Simulation).count(),
+            10
+        );
+        assert_eq!(registry.by_category(ContractCategory::Clock).count(), 20);
+        assert_eq!(registry.by_category(ContractCategory::Stream).count(), 11);
+        assert_eq!(
+            registry.by_category(ContractCategory::StateMachine).count(),
             8
         );
-        assert_eq!(registry.count_by_category(ContractCategory::Annotation), 15);
-        assert_eq!(registry.count_by_category(ContractCategory::Unit), 9);
+        assert_eq!(
+            registry.by_category(ContractCategory::Annotation).count(),
+            15
+        );
+        assert_eq!(registry.by_category(ContractCategory::Unit).count(), 9);
     }
 
     #[test]
     fn test_registry_implemented_contract_count() {
         let registry = create_registry();
         assert_eq!(
-            registry.count_by_status(ContractStatus::Implemented),
+            registry.by_status(ContractStatus::Implemented).count(),
             IMPLEMENTED_CONTRACT_IDS.len()
         );
     }

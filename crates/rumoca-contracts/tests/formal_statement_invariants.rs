@@ -95,7 +95,7 @@ fn ids_are_unique_and_name_their_own_category() {
             "duplicate formal-statement id: {}",
             entry.id
         );
-        let expected = format!("FS-{}-", entry.category_prefix());
+        let expected = format!("FS-{}-", entry.category.prefix());
         assert!(
             entry.id.starts_with(&expected),
             "{} does not start with its own category prefix {expected}",
@@ -353,7 +353,10 @@ fn enforced_statements_pin_executable_evidence() {
             continue;
         }
         assert!(
-            entry.pin.is_executable(),
+            matches!(
+                &entry.pin,
+                StatementPin::Test { .. } | StatementPin::Site { .. }
+            ),
             "{}: an Enforced statement must pin a Test or a Site; a written record is not \
              enforcement",
             entry.id

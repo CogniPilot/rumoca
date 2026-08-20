@@ -243,7 +243,6 @@ mod tests {
 
     #[test]
     fn test_template_render_error_from_minijinja() {
-        // Create a minijinja error with template context
         let mut env = minijinja::Environment::new();
         env.add_template("test.jinja", "{{ undefined_var.foo }}")
             .unwrap();

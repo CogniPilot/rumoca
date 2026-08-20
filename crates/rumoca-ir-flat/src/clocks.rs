@@ -18,10 +18,6 @@ use crate::{Equation, VarName};
 /// expression that introduced the clock.
 pub type ClockLatticeResult<T> = Result<T, ClockLatticeError>;
 
-// =============================================================================
-// Clock Partitions (MLS §16.7)
-// =============================================================================
-
 /// MLS §16.7: Clock Partitions.
 ///
 /// After flattening, equations are partitioned into clock partitions:
@@ -88,10 +84,6 @@ impl ClockPartitions {
         Ok(())
     }
 
-    pub fn num_base_partitions(&self) -> usize {
-        self.base_partitions.len()
-    }
-
     pub fn base_partitions(&self) -> &[BaseClockPartition] {
         &self.base_partitions
     }
@@ -154,19 +146,6 @@ impl ClockPartitions {
         Ok(())
     }
 
-    pub fn continuous_source_span(&self) -> Option<Span> {
-        self.continuous_partition
-            .as_ref()
-            .map(ContinuousPartition::source_span)
-    }
-
-    pub fn continuous_variables(&self) -> impl Iterator<Item = &VarName> {
-        self.continuous_partition
-            .as_ref()
-            .into_iter()
-            .flat_map(|partition| partition.variables.keys())
-    }
-
     pub fn continuous_equations(&self) -> &[Equation] {
         self.continuous_partition
             .as_ref()
@@ -177,12 +156,6 @@ impl ClockPartitions {
         self.variable_owners
             .get(name)
             .map(|owner| owner.association)
-    }
-
-    pub fn association_span(&self, name: &VarName) -> Option<Span> {
-        self.variable_owners
-            .get(name)
-            .map(|owner| owner.span.span())
     }
 
     fn require_unowned(
@@ -294,10 +267,6 @@ impl BaseClockPartition {
 
     pub fn sub_partitions(&self) -> &[SubClockPartition] {
         &self.sub_partitions
-    }
-
-    pub fn is_discretized(&self) -> bool {
-        self.discretized_at.is_some()
     }
 
     pub fn discretized_span(&self) -> Option<Span> {
@@ -814,10 +783,6 @@ impl ContinuousPartition {
         self.source_span.span()
     }
 }
-
-// =============================================================================
-// Clock Types (MLS §16.3)
-// =============================================================================
 
 /// MLS §16.3: Base Clock.
 ///

@@ -341,6 +341,13 @@ impl MslParityMeasurement {
         match self {
             Self::Measured { input, cohort } => {
                 let table = &cohort.table;
+                let absent_for = |reason| {
+                    table
+                        .rows
+                        .iter()
+                        .filter(|row| row.exit_reason == Some(reason))
+                        .count()
+                };
                 format!(
                     "MSL parity: strict-high {}/{} sim targets ({:.2}% of the cohort); \
                      bands near {}, deviation {}; models_compared {} (skipped {}, missing-trace \
@@ -351,13 +358,13 @@ impl MslParityMeasurement {
                     table.near_models(),
                     table.deviation_models(),
                     table.models_compared(),
-                    table.absent_for(band_table::ExitReason::Excluded)
-                        + table.absent_for(band_table::ExitReason::ComparatorFailed)
-                        + table.absent_for(band_table::ExitReason::NoComparableSamples),
-                    table.absent_for(band_table::ExitReason::ReferenceMissing)
-                        + table.absent_for(band_table::ExitReason::RumocaTraceMissing)
-                        + table.absent_for(band_table::ExitReason::TraceMissingSideUnrecorded),
-                    table.absent_for(band_table::ExitReason::NotAttempted),
+                    absent_for(band_table::ExitReason::Excluded)
+                        + absent_for(band_table::ExitReason::ComparatorFailed)
+                        + absent_for(band_table::ExitReason::NoComparableSamples),
+                    absent_for(band_table::ExitReason::ReferenceMissing)
+                        + absent_for(band_table::ExitReason::RumocaTraceMissing)
+                        + absent_for(band_table::ExitReason::TraceMissingSideUnrecorded),
+                    absent_for(band_table::ExitReason::NotAttempted),
                     input.omc_version.as_deref().unwrap_or("unknown"),
                     cohort.summary_clause(),
                 )

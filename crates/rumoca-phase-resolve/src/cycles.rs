@@ -32,7 +32,6 @@ impl Resolver {
         let mut in_path: HashSet<DefId> = HashSet::new();
         let mut path: Vec<DefId> = Vec::new();
 
-        // Check each class for cycles
         let mut seen_classes = HashSet::new();
         let all_classes: Vec<DefId> = self
             .inheritance_edges

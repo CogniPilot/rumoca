@@ -160,9 +160,8 @@ pub struct ParameterJacobianProbe {
 /// `∂(der(state))/∂p` at `(state, t)` by the exact forward-mode AD JVP (one
 /// parameter unit seed at a time), naming every row (`der(name)`) and column
 /// (parameter name). States are addressed by name (`state_overrides`); unset
-/// states keep their model initial value. Backs roadmap Track 0.3
-/// (`rumoca sim --inspect jacobian` parameter block) and the forward-gradient
-/// validation.
+/// states keep their model initial value. This supplies the `rumoca sim
+/// --inspect jacobian` parameter block and forward-gradient validation.
 pub fn parameter_jacobian_for_dae(
     dae_model: &dae::Dae,
     opts: &SimOptions,
@@ -204,8 +203,8 @@ pub struct ObjectiveGradientProbe {
 
 /// Lower `dae_model` and compute the steady-state gradient `d(objective)/dp` of
 /// a designated model variable (state or output/algebraic) w.r.t. the model
-/// parameters, via the implicit-function sensitivity (roadmap Track 0.2). The
-/// caller supplies a settled state; the result is only meaningful at/near
+/// parameters via implicit-function sensitivity. The caller supplies a settled
+/// state; the result is only meaningful at/near
 /// `f(y, p) = 0`.
 pub fn steady_state_objective_gradient_for_dae(
     dae_model: &dae::Dae,
@@ -246,7 +245,7 @@ pub fn steady_state_objective_gradient_for_dae(
 /// reverse-mode adjoint (`SolveRuntime::steady_state_adjoint_objective_gradient`):
 /// the full DAE residual `[der; g]` solved transposed (matrix-free GMRES), so it
 /// handles solver algebraics and algebraic/output objectives. Same result as the
-/// forward [`steady_state_objective_gradient_for_dae`] (roadmap Track B).
+/// forward [`steady_state_objective_gradient_for_dae`].
 pub fn steady_state_adjoint_objective_gradient_for_dae(
     dae_model: &dae::Dae,
     opts: &SimOptions,
@@ -291,7 +290,7 @@ pub struct SteadyStateSensitivityProbe {
 
 /// Lower `dae_model` and compute the steady-state forward parameter sensitivity
 /// `∂y/∂p = -(∂f/∂y)⁻¹·∂f/∂p` at `(state, t)` via the implicit-function theorem
-/// (roadmap Track 0.2). The caller is responsible for supplying a settled state
+/// by implicit-function sensitivity. The caller supplies a settled state
 /// (`state_overrides`, or simulate to steady state first); the result is only
 /// meaningful at/near `f(y, p) = 0`.
 pub fn steady_state_parameter_sensitivity_for_dae(

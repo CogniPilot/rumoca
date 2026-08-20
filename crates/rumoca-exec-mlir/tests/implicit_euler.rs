@@ -1,5 +1,5 @@
 use rumoca_core::{SourceId, Span};
-/// Phase 6.7: Implicit Euler integration driven by MLIR eval_implicit_rhs + eval_jacobian_v.
+/// Implicit Euler integration driven by MLIR eval_implicit_rhs + eval_jacobian_v.
 ///
 /// Each implicit Euler step solves  G(y_new) = 0  via scalar Newton iteration:
 ///   G(y_new)   = y_new - y_old - dt * eval_implicit_rhs(y_new)

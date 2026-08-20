@@ -38,11 +38,6 @@ const pendingSimulationJobs = new Map<string, {
     }) => void;
 }>();
 
-// ============================================================================
-// Virtual Document Provider for %%modelica blocks in Python cells
-// This enables LSP features (hover, completion, diagnostics) in magic blocks
-// ============================================================================
-
 interface ModelicaBlock {
     startLine: number;      // Line in the Python cell where block starts
     endLine: number;        // Last line of the Modelica code
@@ -83,7 +78,6 @@ function findModelicaBlocks(document: vscode.TextDocument): ModelicaBlock[] {
         const trimmed = line.trim();
 
         if (trimmed.startsWith('%%modelica')) {
-            // Start of a new block
             inBlock = true;
             blockStartLine = i;
             blockLines = [];
@@ -168,7 +162,6 @@ class EmbeddedModelicaProvider implements vscode.TextDocumentContentProvider {
     readonly onDidChange = this._onDidChange.event;
 
     provideTextDocumentContent(uri: vscode.Uri): string {
-        // Parse the URI to get cell URI and block index
         const cellUri = decodeURIComponent(uri.authority);
         const blockMatch = uri.path.match(/block(\d+)\.mo/);
         if (!blockMatch) return '';
@@ -197,7 +190,6 @@ async function updateModelicaBlocksImmediate(document: vscode.TextDocument) {
     if (blocks.length > 0) {
         modelicaBlocks.set(cellUri, blocks);
 
-        // Update virtual documents and notify LSP
         if (embeddedModelicaProvider && client) {
             for (let index = 0; index < blocks.length; index++) {
                 const block = blocks[index];
@@ -1804,7 +1796,6 @@ function parseCellMagic(code: string): CellMagic {
     for (const line of lines) {
         const trimmed = line.trim();
 
-        // Check for magic comment: // @rumoca ...
         if (trimmed.startsWith('// @rumoca') || trimmed.startsWith('//@rumoca')) {
             const directive = trimmed.replace(/^\/\/\s*@rumoca\s*/, '');
 
@@ -1859,14 +1850,12 @@ async function executeModelicaCell(
             return;
         }
 
-        // Create a temporary file for the Modelica code
         const tmpDir = os.tmpdir();
         const tmpFile = path.join(tmpDir, `rumoca_cell_${Date.now()}.mo`);
 
         try {
             fs.writeFileSync(tmpFile, magic.code);
 
-            // Build rumoca arguments
             const args = ['--json', '--model', magic.model];
 
             // Add source-root paths (cell-specific + global config)
@@ -1891,7 +1880,6 @@ async function executeModelicaCell(
             });
 
             proc.on('close', (exitCode: number) => {
-                // Clean up temp file
                 try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
 
                 if (exitCode === 0) {
@@ -1938,7 +1926,6 @@ async function executeModelicaCell(
             });
 
             proc.on('error', (err: Error) => {
-                // Clean up temp file
                 try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
                 resolve({
                     success: false,
@@ -3555,10 +3542,6 @@ export async function activate(context: vscode.ExtensionContext) {
         void notebookControllerRuntime.handleConfigurationChange((section) => event.affectsConfiguration(section));
     }));
 
-    // ========================================================================
-    // Register embedded Modelica support for %%modelica blocks in Python cells
-    // ========================================================================
-
     // Register the virtual document provider
     embeddedModelicaProvider = new EmbeddedModelicaProvider();
     context.subscriptions.push(
@@ -3580,7 +3563,6 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Initialize blocks for already open documents
     vscode.workspace.textDocuments.forEach(doc => {
         updateModelicaBlocks(doc);
     });
@@ -3609,7 +3591,6 @@ export async function activate(context: vscode.ExtensionContext) {
                         return null;
                     }
 
-                    // Get the virtual document URI
                     const virtualUri = getVirtualDocumentUri(cellUri, index);
                     log(`[Hover] Virtual pos: ${virtualPos.line}:${virtualPos.character}, URI: ${virtualUri.toString()}`);
 
@@ -3842,7 +3823,6 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Clean up decoration types
     context.subscriptions.push(hiddenContentDecorationType);
     context.subscriptions.push(ellipsisDecorationType);
 

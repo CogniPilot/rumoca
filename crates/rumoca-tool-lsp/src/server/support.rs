@@ -444,9 +444,6 @@ pub(super) fn find_open_workspace_document_for_model(
     model: &str,
 ) -> Option<Url> {
     for uri in snapshot.document_uris() {
-        // Intentionally exclude live overlays on non-workspace source roots here:
-        // this helper is selecting a user workspace document to drive scenario
-        // command prewarm, not a generic source-root-backed semantic input.
         if snapshot.is_non_workspace_source_root_document(&uri) {
             continue;
         }

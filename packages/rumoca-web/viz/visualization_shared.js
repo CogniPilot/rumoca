@@ -11,18 +11,6 @@
         return values.map(trimMaybeString).filter(Boolean);
     }
 
-    function sanitizeIdentifier(input) {
-        const text = String(input || '');
-        let out = '';
-        for (const ch of text) {
-            if (/[A-Za-z0-9_]/.test(ch)) {
-                out += ch.toLowerCase();
-            } else if (/\s|-|\./.test(ch)) {
-                out += '_';
-            }
-        }
-        return out || 'model';
-    }
 
     function sanitizeResultIdentifier(input) {
         let out = '';
@@ -531,9 +519,6 @@ ctx.onFrame = (api) => {
             : `Rumoca Results: ${model}`;
     }
 
-    function cloneJson(value) {
-        return JSON.parse(JSON.stringify(value));
-    }
 
     function cloneView(view) {
         return {
@@ -1258,14 +1243,6 @@ ctx.onFrame = (api) => {
         return fileName === 'rumoca-scenario.toml'
             || (fileName.startsWith('rumoca-scenario.') && fileName.endsWith('.toml'));
     }
-
-    // --- Scenario config form model (scenario TOML dual-view GUI) ------------
-    // Pure transforms between a scenario-as-JSON config tree (from
-    // scenario_get_scenario_config_full) and a flat list of editable leaf fields,
-    // shared by the config form in both editors. Scalars (string/number/boolean)
-    // are editable leaves; nested tables recurse so the form can group by
-    // top-level section; arrays and other non-scalars are edited as raw JSON
-    // leaves in v1 and refined into richer widgets later.
 
     function scenarioConfigLeafKind(value) {
         if (typeof value === 'boolean') return 'boolean';

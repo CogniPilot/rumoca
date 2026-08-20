@@ -3,12 +3,12 @@
 //! This module provides functions for qualifying variable names with instance prefixes,
 //! used by both equation flattening and algorithm processing.
 
+#[cfg(test)]
 use rumoca_core::Token;
 use rumoca_ir_ast as ast;
-use rumoca_ir_ast::{
-    ComponentRefPart, ComponentReference, Expression, ForIndex, QualifiedName, Subscript,
-    TerminalType,
-};
+use rumoca_ir_ast::{ComponentRefPart, ComponentReference, Expression, ForIndex, QualifiedName};
+#[cfg(test)]
+use rumoca_ir_ast::{Subscript, TerminalType};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -551,17 +551,6 @@ pub fn qualify_expression(
 
 // ── Public API (import-aware) ───────────────────────────────────────────────
 
-/// Qualify a component reference, resolving imported short names via the import map.
-pub fn qualify_component_ref_with_imports(
-    cr: &ComponentReference,
-    prefix: &QualifiedName,
-    opts: QualifyOptions,
-    imports: &ImportMap,
-) -> ComponentReference {
-    let locals = HashSet::new();
-    qualify_cr_inner(cr, prefix, opts, &locals, imports)
-}
-
 /// Qualify a component reference with explicit local-scope identifiers.
 ///
 /// This is used by algorithm `for`/comprehension handling where loop indices
@@ -606,45 +595,21 @@ pub fn qualify_expression_with_imports_and_locals(
 
 // ── Utility functions ───────────────────────────────────────────────────────
 
-/// Convert integer subscripts to Subscript expressions.
-pub fn subscripts_from_indices(
-    indices: &[i64],
-    owner_span: rumoca_core::Span,
-) -> Option<Vec<Subscript>> {
-    if indices.is_empty() {
-        return None;
-    }
-    Some(
-        indices
-            .iter()
-            .map(|&i| Subscript::Expression(int_expr_with_span(i, owner_span)))
-            .collect(),
-    )
-}
-
-/// Create an integer literal expression.
-fn int_expr_with_span(value: i64, span: rumoca_core::Span) -> Expression {
+/// Create an integer literal expression for tests.
+#[cfg(test)]
+pub fn int_expr(value: i64) -> Expression {
     Expression::Terminal {
         terminal_type: TerminalType::UnsignedInteger,
         token: Token {
             text: std::sync::Arc::from(value.to_string()),
             ..Default::default()
         },
-        span,
-    }
-}
-
-/// Create an integer literal expression for tests.
-#[cfg(test)]
-pub fn int_expr(value: i64) -> Expression {
-    int_expr_with_span(
-        value,
-        rumoca_core::Span::from_offsets(
+        span: rumoca_core::Span::from_offsets(
             rumoca_core::SourceId::from_source_name("phase_flatten_qualify_source_7.mo"),
             0,
             1,
         ),
-    )
+    }
 }
 
 // ── Internal implementation ─────────────────────────────────────────────────

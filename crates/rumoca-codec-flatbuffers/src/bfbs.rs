@@ -188,17 +188,6 @@ impl SchemaSet {
     pub fn object_by_name(&self, name: &str) -> Option<&Object> {
         self.name_to_idx.get(name).map(|&i| &self.objects[i])
     }
-
-    /// Resolve a field type's object index to an Object (for Obj fields).
-    /// The index refers to the object's position within the *original* .bfbs
-    /// objects vector. Since we merge schemas, we look up by name instead
-    /// when resolving nested types during codec compilation.
-    pub fn object_by_index_in(&self, schema_objects: &[Object], index: i32) -> Option<&Object> {
-        let name = schema_objects
-            .get(index as usize)
-            .map(|o| o.name.as_str())?;
-        self.object_by_name(name)
-    }
 }
 
 // ── Low-level FlatBuffer binary helpers ──────────────────────────────────

@@ -589,7 +589,7 @@ fn require_later_bound(
 /// use rumoca_solver::fmi_me::MeStepCandidate;
 ///
 /// let candidate = MeStepCandidate::new(0.25, vec![1.5], 4);
-/// assert_eq!(candidate.declared_order(), 4);
+/// assert_eq!(candidate.accepted_time(), 0.25);
 /// ```
 #[derive(Debug)]
 pub struct MeStepCandidate {
@@ -609,12 +609,6 @@ impl MeStepCandidate {
             accepted_states,
             order,
         }
-    }
-
-    /// The declared local accuracy order, still unproved.
-    #[must_use]
-    pub fn declared_order(&self) -> u32 {
-        self.order
     }
 
     /// The reported endpoint coordinate, still unproved.

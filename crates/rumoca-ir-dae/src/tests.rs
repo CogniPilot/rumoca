@@ -345,10 +345,18 @@ fn exact_expression_provenance_resolves_through_the_source_map() {
                 Some(*expected_text)
             );
         }
-        assert_eq!(
-            view.source_text(view.subscript_provenance(0).unwrap()),
-            Some("1")
-        );
+        let indexed = view
+            .expression(view.expression_id(8).expect("indexed expression ID"))
+            .expect("indexed expression exists");
+        let ExpressionOperation::Index { subscripts, .. } = indexed.operation() else {
+            panic!("expected indexed expression");
+        };
+        let provenance = match subscripts.get(0).expect("index subscript") {
+            SubscriptView::Index { provenance, .. }
+            | SubscriptView::Whole { provenance }
+            | SubscriptView::Slice { provenance, .. } => provenance,
+        };
+        assert_eq!(view.source_text(provenance), Some("1"));
     });
 
     let encoded = serde_json::to_string(&dae).unwrap();

@@ -468,7 +468,6 @@ fn eval_size(args: &[Value], span: Span) -> Result<Value, EvalError> {
         // Return size as integer (1D case)
         Ok(Value::Integer(arr.len() as i64))
     } else {
-        // Return size of specific dimension
         let dim = args[1]
             .as_integer()
             .ok_or_else(|| EvalError::type_mismatch("Integer", args[1].type_name(), span))?;

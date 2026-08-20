@@ -88,7 +88,6 @@ pub(crate) fn retry_with_synthetic_inners(
         let synthetic = create_synthetic_inner_component(mi, inner_class, &tree.source_map)
             .map_err(SyntheticInnerError::SourceContext)?;
 
-        // Build the qualified name for the root-level synthetic inner
         let qn = ast::QualifiedName::from_ident(&mi.name);
 
         // Register in root scope so outer lookups will find it

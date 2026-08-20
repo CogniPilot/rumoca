@@ -21,10 +21,6 @@ use rumoca_ir_galec::ast::{
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedStatement(pub(crate) Spanned<Statement>);
 
-// ---------------------------------------------------------------------------
-// Statement
-// ---------------------------------------------------------------------------
-
 /// `statement : ( name_headed_statement | state_assignment | multi_assignment
 ///   | if_statement | for_loop | limit_statement | error_signal_statement ) ';'`.
 impl TryFrom<&g::Statement> for ParsedStatement {
@@ -127,10 +123,6 @@ fn multi_assignment(ast: &g::MultiAssignment) -> Statement {
     }
 }
 
-// ---------------------------------------------------------------------------
-// if / for / limit
-// ---------------------------------------------------------------------------
-
 /// `if_statement : 'if' condition 'then' { stmt }
 ///   { 'elseif' condition 'then' { stmt } } [ 'else' { stmt } ] 'end' 'if'`.
 fn if_statement(ast: &g::IfStatement) -> anyhow::Result<IfStatement> {
@@ -211,10 +203,6 @@ fn limit_target(ast: &g::LimitTarget) -> LimitTarget {
     }
 }
 
-// ---------------------------------------------------------------------------
-// condition & signal-check
-// ---------------------------------------------------------------------------
-
 /// `condition : error_signal_check | expression` (LL(1) on a leading `signal`).
 impl TryFrom<&g::Condition> for Condition {
     type Error = anyhow::Error;
@@ -259,10 +247,6 @@ impl TryFrom<&g::ErrorSignalCheck> for SignalCheck {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Shared helpers over non-`%nt_type` repetition wrappers
-// ---------------------------------------------------------------------------
 
 /// Collect a statement list whose source-backed spans were established during
 /// each statement's grammar conversion (D11).

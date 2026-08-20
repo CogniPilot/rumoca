@@ -393,7 +393,6 @@ pub fn resolve_at_position(
         return Some(def_id);
     }
 
-    // Check component def_ids
     for (_, class) in &ast.classes {
         if let Some(def_id) = resolve_in_class(class, tree, name) {
             return Some(def_id);
@@ -404,7 +403,6 @@ pub fn resolve_at_position(
 }
 
 fn resolve_in_class(class: &ast::ClassDef, tree: &ast::ClassTree, name: &str) -> Option<DefId> {
-    // Check component type references
     for (comp_name, comp) in &class.components {
         if comp_name == name {
             return comp.type_def_id;
@@ -420,7 +418,6 @@ fn resolve_in_class(class: &ast::ClassDef, tree: &ast::ClassTree, name: &str) ->
         }
     }
 
-    // Check nested classes
     for (nested_name, nested) in &class.classes {
         if nested_name == name {
             return nested.def_id;

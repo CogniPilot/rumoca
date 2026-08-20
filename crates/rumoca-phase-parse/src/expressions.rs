@@ -9,9 +9,6 @@ use crate::generated::modelica_grammar_trait;
 use rumoca_core::Span;
 use std::sync::Arc;
 
-//-----------------------------------------------------------------------------
-// Helper functions to reduce nesting in operator conversions.
-
 fn empty_expr(span: Span) -> rumoca_ir_ast::Expression {
     rumoca_ir_ast::Expression::Empty { span }
 }
@@ -101,7 +98,6 @@ fn extract_for_indices(
 fn convert_expression_function_args(
     def: &modelica_grammar_trait::FunctionArgumentsExpressionFunctionArgumentsOpt,
 ) -> anyhow::Result<ExpressionList> {
-    // Check for for-comprehension first
     if let Some(for_clause) = extract_for_indices(&def.function_arguments_opt) {
         return process_for_comprehension(&def.expression, for_clause);
     }
@@ -155,7 +151,6 @@ fn add_op_span(op: &modelica_grammar_trait::AddOperator) -> anyhow::Result<Span>
     }
 }
 
-//-----------------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
 
 pub struct ArraySubscripts {
@@ -191,9 +186,6 @@ impl TryFrom<&modelica_grammar_trait::Subscript> for rumoca_ir_ast::Subscript {
     }
 }
 
-//-----------------------------------------------------------------------------
-/// Represents a modification argument with optional `each`, `final`, `redeclare`,
-/// and `replaceable` prefixes.
 #[derive(Debug, Clone)]
 pub struct ModificationArg {
     pub expression: rumoca_ir_ast::Expression,
@@ -333,7 +325,6 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
                     is_partial_application: true,
                 };
 
-                // Start with the partial application as the first arg
                 let mut args = vec![func_call_expr];
 
                 // Collect additional arguments if present
@@ -412,9 +403,6 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for ExpressionL
         }
     }
 }
-
-//-----------------------------------------------------------------------------
-// Helper functions for Argument conversion to reduce function complexity.
 
 fn ast_name_to_comp_ref_with_local(
     name: &rumoca_ir_ast::Name,
@@ -615,7 +603,6 @@ fn extract_component_mod_args(
             modelica_grammar_trait::Modification::EquModificationExpression(eq_mod) => {
                 match &eq_mod.modification_expression {
                     modelica_grammar_trait::ModificationExpression::Expression(expr) => {
-                        // Return value modification as a direct assignment
                         Ok((vec![], Some(expr.expression.clone())))
                     }
                     modelica_grammar_trait::ModificationExpression::Break(_) => Ok((vec![], None)),
@@ -905,7 +892,6 @@ fn convert_element_mod_or_replaceable(
     }
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::ArgumentList> for ExpressionList {
     type Error = anyhow::Error;
 
@@ -957,7 +943,6 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ModificationArg {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Argument) -> std::result::Result<Self, Self::Error> {
-        // Extract the modifier flags from the argument structure.
         let (each, r#final, redeclare, replaceable) = match ast {
             modelica_grammar_trait::Argument::ElementModificationOrReplaceable(modif) => {
                 let emor = &modif.element_modification_or_replaceable;
@@ -996,7 +981,6 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ModificationArg {
     }
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
     type Error = anyhow::Error;
 
@@ -1063,9 +1047,6 @@ impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for FunctionCallArgument
         }
     }
 }
-
-//-----------------------------------------------------------------------------
-// Helper functions for Primary conversion to reduce function complexity.
 
 /// Convert ExpressionList to Vec<Expression>.
 fn expr_list_to_vec(el: &modelica_grammar_trait::ExpressionList) -> Vec<rumoca_ir_ast::Expression> {
@@ -1210,7 +1191,6 @@ fn convert_global_function_call(
     })
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
     type Error = anyhow::Error;
 
@@ -1374,7 +1354,6 @@ impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for rumoca_ir_ast::E
     fn try_from(
         ast: &modelica_grammar_trait::ArithmeticExpression,
     ) -> std::result::Result<Self, Self::Error> {
-        // handle first term
         let mut lhs = match &ast.arithmetic_expression_opt {
             Some(opt) => rumoca_ir_ast::Expression::Unary {
                 op: add_op_to_unary(&opt.add_operator),

@@ -1,4 +1,4 @@
-//! Roadmap Track 0.2: the steady-state forward parameter sensitivity
+//! The steady-state forward parameter sensitivity
 //! `∂y/∂p = -(∂f/∂y)⁻¹·∂f/∂p` (implicit-function theorem) must match the
 //! closed-form steady-state sensitivities of a small model with a known
 //! analytic steady state.
@@ -83,7 +83,7 @@ fn steady_state_sensitivity_matches_analytic() {
     close(val("x", "d"), -9.0, "∂x*/∂d = -b*c/(a*d^2)");
 }
 
-/// Roadmap Track 0.2 (M2): the steady-state objective gradient `d(obj)/dp` must
+/// The steady-state objective gradient `d(obj)/dp` must
 /// match analytic values for **both** a state objective (where it equals the
 /// `∂y/∂p` row) and a genuine nonlinear algebraic objective `z` with `z² = b*x`
 /// (where the total derivative folds the algebraic projection's own dependence on

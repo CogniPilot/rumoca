@@ -372,10 +372,6 @@ pub fn walk_class_def_default<V: Visitor + ?Sized>(
 ///
 /// Override methods to add custom behavior. Call child visitors with `?` operator.
 pub trait Visitor {
-    // =========================================================================
-    // Helper methods
-    // =========================================================================
-
     /// Visit each item in a slice, stopping on Break.
     fn visit_each<T, F>(&mut self, items: &[T], mut f: F) -> ControlFlow<()>
     where
@@ -538,10 +534,6 @@ pub trait Visitor {
         Continue(())
     }
 
-    // =========================================================================
-    // Expression methods
-    // =========================================================================
-
     /// Visit any expression.
     fn visit_expression(&mut self, expr: &Expression) -> ControlFlow<()> {
         walk_expression_default(self, expr)
@@ -574,10 +566,6 @@ pub trait Visitor {
         self.enter_for_index(idx)?;
         self.visit_expression(&idx.range)
     }
-
-    // =========================================================================
-    // Equation methods
-    // =========================================================================
 
     /// Visit any equation.
     fn visit_equation(&mut self, eq: &Equation) -> ControlFlow<()> {
@@ -666,10 +654,6 @@ pub trait Visitor {
         self.visit_expression(&block.cond)?;
         self.visit_each(&block.eqs, Self::visit_equation)
     }
-
-    // =========================================================================
-    // Statement methods
-    // =========================================================================
 
     /// Visit any statement.
     fn visit_statement(&mut self, stmt: &Statement) -> ControlFlow<()> {
@@ -767,10 +751,6 @@ pub trait Visitor {
         self.visit_expression(&block.cond)?;
         self.visit_each(&block.stmts, Self::visit_statement)
     }
-
-    // =========================================================================
-    // Class tree methods
-    // =========================================================================
 
     /// Visit a stored definition (root of class tree).
     fn visit_stored_definition(&mut self, def: &StoredDefinition) -> ControlFlow<()> {

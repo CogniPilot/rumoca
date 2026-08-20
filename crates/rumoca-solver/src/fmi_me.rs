@@ -2,12 +2,11 @@
 //! Boundary).
 //!
 //! `SolveProblem` stays compiler IR. It is projected exactly once, by
-//! [`SolveMeKernel`], into an FMI 3 ME component kernel. Integrators — the
-//! rk-like session today, Diffsol/BDF in phase 2 — reach the model only
-//! through [`SolveMeKernel`]. They MUST NOT inspect Solve rows,
+//! [`SolveMeKernel`], into an FMI 3 ME component kernel. Every integrator
+//! reaches the model only through [`SolveMeKernel`]. Integrators MUST NOT inspect Solve rows,
 //! layouts, opcodes, events, or private runtime objects.
 //!
-//! # Transitional operation map
+//! # Operation map
 //!
 //! The standard operations below map to FMI 3.0 ME entry points. Remaining
 //! non-standard operations are concrete host/kernel composition points rather
@@ -719,15 +718,21 @@ impl std::fmt::Debug for MeFmuState {
 ///
 /// One column per model output, one row per recorded sample. Kept on the host
 /// side of the boundary so the component never owns result storage.
+#[cfg(test)]
 #[derive(Debug, Default)]
-pub struct MeOutputSeries {
+pub(crate) struct MeOutputSeries {
     columns: Vec<Vec<f64>>,
 }
 
+#[cfg(test)]
 impl MeOutputSeries {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.columns.is_empty()
+    }
+
     /// Reserve `outputs` columns of `samples` rows without ever aborting on a
     /// failed reservation.
-    pub fn with_capacity(outputs: usize, samples: usize) -> Result<Self, MeError> {
+    pub(crate) fn with_capacity(outputs: usize, samples: usize) -> Result<Self, MeError> {
         let mut columns: Vec<Vec<f64>> = Vec::new();
         columns
             .try_reserve(outputs)
@@ -752,20 +757,6 @@ impl MeOutputSeries {
     pub(crate) fn columns_mut(&mut self) -> &mut [Vec<f64>] {
         &mut self.columns
     }
-
-    #[must_use]
-    pub fn into_columns(self) -> Vec<Vec<f64>> {
-        self.columns
-    }
-}
-
-/// Whether two consecutive event-indicator values bracket a crossing.
-///
-/// Pure predicate on indicator values; hosts localizing a root need it and it
-/// carries no model state.
-#[must_use]
-pub fn event_indicator_crossed(before: f64, after: f64, tolerance: f64) -> bool {
-    crate::runtime::solve_ops::root_value_crossed(before, after, tolerance)
 }
 
 /// Advance an integrator-owned state vector to an internal event-side probe.

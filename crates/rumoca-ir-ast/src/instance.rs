@@ -22,10 +22,6 @@ use crate::{
 
 type FastIndexMap<K, V> = IndexMap<K, V>;
 
-// =============================================================================
-// Core Instance Types
-// =============================================================================
-
 /// A fully qualified path with resolved subscripts.
 ///
 /// Example: `"body.position[1].x"` would be represented as:
@@ -177,19 +173,6 @@ impl QualifiedName {
         let mut parts = self.parts.clone();
         parts.extend(relative.parts.iter().cloned());
         Self { parts }
-    }
-
-    /// Return true when this path ends with the supplied top-level path.
-    pub fn ends_with_path(&self, suffix: &Self) -> bool {
-        if suffix.parts.is_empty() || suffix.parts.len() > self.parts.len() {
-            return false;
-        }
-        self.parts[self.parts.len() - suffix.parts.len()..]
-            .iter()
-            .zip(&suffix.parts)
-            .all(|((lhs_name, lhs_subs), (rhs_name, rhs_subs))| {
-                lhs_name == rhs_name && lhs_subs == rhs_subs
-            })
     }
 
     /// Return true when this path starts with a structured component path.
@@ -350,10 +333,6 @@ impl std::fmt::Display for QualifiedName {
     }
 }
 
-// =============================================================================
-// Modification Environment (MLS §7.2)
-// =============================================================================
-
 /// MLS §7.2: "modification environment determines the values of modifiers"
 ///
 /// This is built during instantiation and applied to produce instance data.
@@ -447,20 +426,6 @@ impl ModificationValue {
         }
     }
 
-    /// Create a modification value with `each` prefix (MLS §7.2.5).
-    ///
-    /// The `each` prefix means the modification applies to every element
-    /// of an array component.
-    pub fn with_each(value: Expression, each: bool) -> Self {
-        Self {
-            value,
-            source: None,
-            source_scope: None,
-            each,
-            final_: false,
-        }
-    }
-
     /// Create a modification value with both `each` and `final` prefixes.
     ///
     /// MLS §7.2.5: `each` applies modification to array elements.
@@ -506,10 +471,6 @@ impl ModificationValue {
         }
     }
 }
-
-// =============================================================================
-// Instance Data (Overlay)
-// =============================================================================
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClassOverride {
@@ -878,10 +839,6 @@ pub struct InstanceConnectionFamily {
     pub b: InstanceConnectionEndpoint,
 }
 
-// =============================================================================
-// Instance Overlay
-// =============================================================================
-
 /// Overlay containing instance-specific data keyed by InstanceId.
 ///
 /// Keeps instance data separate from the core AST types to avoid
@@ -1012,21 +969,7 @@ impl InstanceOverlay {
     pub fn get_component(&self, instance_id: InstanceId) -> Option<&InstanceData> {
         self.components.get(&instance_id)
     }
-
-    /// Get instance data for a class by InstanceId.
-    pub fn get_class(&self, instance_id: InstanceId) -> Option<&ClassInstanceData> {
-        self.classes.get(&instance_id)
-    }
-
-    /// True when automatic inner synthesis was used for this instantiation.
-    pub fn used_synthesized_inners(&self) -> bool {
-        !self.synthesized_inners.is_empty()
-    }
 }
-
-// =============================================================================
-// Instanced Tree (Phase Wrapper)
-// =============================================================================
 
 /// A ClassTree that has completed instantiation.
 ///
@@ -1065,11 +1008,6 @@ impl InstancedTree {
     pub fn overlay(&self) -> &InstanceOverlay {
         &self.overlay
     }
-
-    /// Get a mutable reference to the instance overlay.
-    pub fn overlay_mut(&mut self) -> &mut InstanceOverlay {
-        &mut self.overlay
-    }
 }
 
 impl std::ops::Deref for InstancedTree {
@@ -1085,18 +1023,10 @@ impl std::ops::DerefMut for InstancedTree {
     }
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{ComponentRefPart, ComponentReference, Location, Token};
-
-    // -------------------------------------------------------------------------
-    // QualifiedName tests
-    // -------------------------------------------------------------------------
 
     #[test]
     fn test_from_dotted_simple() {
@@ -1283,10 +1213,6 @@ mod tests {
         assert_eq!(format!("{}", qn), "matrix[1,2].element");
     }
 
-    // -------------------------------------------------------------------------
-    // ModificationEnvironment tests
-    // -------------------------------------------------------------------------
-
     /// Helper to create a distinguishable expression for testing.
     /// Uses ComponentReference with a marker name to identify values.
     fn test_expr(marker: &str) -> Expression {
@@ -1388,7 +1314,6 @@ mod tests {
 
         assert_eq!(env.active.len(), 3);
 
-        // Remove all comp1 modifications
         env.remove_with_prefix("comp1");
 
         assert_eq!(env.active.len(), 1);
@@ -1401,10 +1326,6 @@ mod tests {
                 .is_none()
         );
     }
-
-    // -------------------------------------------------------------------------
-    // ModificationValue tests
-    // -------------------------------------------------------------------------
 
     #[test]
     fn test_modification_value_simple() {

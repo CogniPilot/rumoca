@@ -137,7 +137,6 @@ fn collect_comment_folds(source: &str, ranges: &mut Vec<FoldingRange>) {
         }
     }
 
-    // Handle trailing comments at end of file
     if let Some(start) = comment_start {
         ranges.extend(make_comment_fold(start, comment_end));
     }

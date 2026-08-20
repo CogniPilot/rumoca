@@ -528,7 +528,6 @@ impl Resolver {
         self.source_map = tree.source_map.clone();
         let global_scope = self.scope_tree.global();
 
-        // Phase 1: Register all classes and their members
         self.register_stored_definition(&mut tree.definitions, global_scope, "");
         let registration_ms = maybe_elapsed_ms(registration_start);
 
@@ -698,7 +697,6 @@ fn resolve_attempt(parsed: ParsedTree) -> ResolutionAttempt {
     let mut resolver = Resolver::new();
     resolver.resolve(&mut tree);
 
-    // Run semantic checks on the AST.
     let semantic_checks_start = maybe_start_timer();
     for diag in semantic_checks::check_all_semantics(&tree.definitions, &tree.source_map) {
         resolver.diagnostics.emit(diag);

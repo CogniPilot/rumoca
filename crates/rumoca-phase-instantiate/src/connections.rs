@@ -245,7 +245,6 @@ fn extract_connections_from_for_equation(
         return Ok(());
     }
 
-    // Get the first index and expand it
     let first_index = &indices[0];
     let remaining_indices = &indices[1..];
     let index_name = &first_index.ident.text;

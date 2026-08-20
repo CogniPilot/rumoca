@@ -912,7 +912,6 @@ fn record_field_read_is_not_guessed_as_an_enumeration_literal() {
 
 #[test]
 fn test_recursion_limit() {
-    // Create a recursive function that will exceed the limit
     let mut func = Function::new("test.recurse", Span::DUMMY);
     func.add_input(integer_param("n"));
     func.add_output(integer_param("y"));

@@ -1,4 +1,4 @@
-//! SPEC_0038 phase 2: event-observation parity across the two ME hosts.
+//! Event-observation parity across the two SPEC_0038 ME hosts.
 //!
 //! Both solver plugins drive the shared FMI 3 ME kernel. These tests pin the
 //! canonical settled observation at a scheduled event boundary and the

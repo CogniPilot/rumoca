@@ -814,26 +814,6 @@ pub fn classify_trace_metric_channel_distribution(
     AgreementBand::Deviation
 }
 
-pub fn count_agreement_bands<'a>(
-    metrics: impl IntoIterator<Item = &'a ModelDeviationMetric>,
-    high_agreement_threshold: f64,
-    minor_agreement_threshold: f64,
-) -> AgreementCounts {
-    let mut counts = AgreementCounts::default();
-    for metric in metrics {
-        match classify_trace_score(
-            metric.bounded_normalized_l1_score,
-            high_agreement_threshold,
-            minor_agreement_threshold,
-        ) {
-            AgreementBand::HighAgreement => counts.high_agreement += 1,
-            AgreementBand::MinorAgreement => counts.minor_agreement += 1,
-            AgreementBand::Deviation => counts.deviation += 1,
-        }
-    }
-    counts
-}
-
 pub fn count_agreement_bands_default<'a>(
     metrics: impl IntoIterator<Item = &'a ModelDeviationMetric>,
 ) -> AgreementCounts {

@@ -227,7 +227,6 @@ fn eval_param_ref(
     // Build qualified path for multi-part references (e.g., smpmData.useDamperCage)
     let param_path = build_qualified_path(comp_ref);
 
-    // Check modification environment for an override
     if let Some(mod_value) = mod_env.get(&param_path) {
         if let Some(val) = expr_to_bool(&mod_value.value) {
             return Some(val);
@@ -1625,7 +1624,6 @@ fn eval_integer_function_call(
     depth: usize,
     local_ints: Option<&FxHashMap<String, i64>>,
 ) -> Option<i64> {
-    // Build function name from parts
     let func_name = comp
         .parts
         .iter()
@@ -1651,7 +1649,6 @@ fn eval_integer_function_call(
         )
     };
 
-    // Handle Modelica builtins that return integers
     match func_name.as_str() {
         "integer" => {
             // Integral arguments are unchanged. Real arguments are evaluated by

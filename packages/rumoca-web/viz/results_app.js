@@ -50,12 +50,6 @@ import * as shared from './visualization_shared.js';
         );
     }
 
-    function escapeHtml(text) {
-        return String(text)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-    }
 
     function sanitizeDownloadBaseName(name) {
         const text = String(name || 'rumoca_plot').trim();
@@ -72,9 +66,6 @@ import * as shared from './visualization_shared.js';
         'notify',
     ]);
 
-    function deepClone(value) {
-        return JSON.parse(JSON.stringify(value));
-    }
 
     function safeViewType(value) {
         const text = trimMaybeString(value).toLowerCase();
@@ -1093,35 +1084,6 @@ import * as shared from './visualization_shared.js';
         return root;
     }
 
-    function normalize3dPoints(points) {
-        if (!Array.isArray(points) || points.length === 0) {
-            return [];
-        }
-        const bounds = {
-            minX: Math.min.apply(null, points.map(function(value) { return value.x; })),
-            maxX: Math.max.apply(null, points.map(function(value) { return value.x; })),
-            minY: Math.min.apply(null, points.map(function(value) { return value.y; })),
-            maxY: Math.max.apply(null, points.map(function(value) { return value.y; })),
-            minZ: Math.min.apply(null, points.map(function(value) { return value.z; })),
-            maxZ: Math.max.apply(null, points.map(function(value) { return value.z; })),
-        };
-        const size = Math.max(
-            bounds.maxX - bounds.minX,
-            bounds.maxY - bounds.minY,
-            bounds.maxZ - bounds.minZ,
-            1,
-        );
-        const centerX = (bounds.minX + bounds.maxX) / 2;
-        const centerY = (bounds.minY + bounds.maxY) / 2;
-        const centerZ = (bounds.minZ + bounds.maxZ) / 2;
-        return points.map(function(point) {
-            return {
-                x: (point.x - centerX) / size * 4,
-                y: (point.y - centerY) / size * 4,
-                z: (point.z - centerZ) / size * 4,
-            };
-        });
-    }
 
     function createThreeDimensionalView(options) {
         const viewModel = options.viewModel;

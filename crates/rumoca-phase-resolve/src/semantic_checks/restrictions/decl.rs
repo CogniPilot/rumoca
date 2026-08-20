@@ -6,10 +6,6 @@ use super::{
     ClassContext, first_expression_token, is_input, reference_text, resolve_local_class_path,
 };
 
-// ---------------------------------------------------------------------------
-// Declaration and inheritance restrictions (MLS §4, §5, §7).
-// ---------------------------------------------------------------------------
-
 /// MLS §7.1.3 / INST-024 (conservative subset): functions may only take part
 /// in inheritance with other functions, and packages only with packages.
 pub(super) fn check_inheritance_compatibility(
@@ -803,12 +799,6 @@ pub(super) fn check_operator_function_defaults(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Event-generating expression rules (MLS §3.7.4, §11.2): while-statements,
-// for-statement indices, and array-comprehension iterators
-// (ALG-003, ALG-006, ARR-035).
-// ---------------------------------------------------------------------------
-
 /// MLS §3.7.4 (conservative): relations over continuous operands and the
 /// event-triggering numeric conversions generate events. Subtrees under
 /// noEvent()/smooth() are exempt.
@@ -1408,11 +1398,6 @@ fn flag_whole_array_assignments(
         ));
     }
 }
-
-// ---------------------------------------------------------------------------
-// Advisory (warning-severity) annotation rules: FUNC-032, ANN-002, ANN-013,
-// ANN-014.
-// ---------------------------------------------------------------------------
 
 pub(super) fn check_annotation_advisories(
     class: &ClassDef,

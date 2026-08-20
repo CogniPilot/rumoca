@@ -37,7 +37,6 @@ fn decode_modelica_string_literal(text: &str) -> anyhow::Result<String> {
     Ok(decoded)
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::String> for rumoca_core::Token {
     type Error = anyhow::Error;
 
@@ -48,7 +47,6 @@ impl TryFrom<&modelica_grammar_trait::String> for rumoca_core::Token {
     }
 }
 
-//-----------------------------------------------------------------------------
 #[derive(Default, Clone, Debug, PartialEq)]
 
 pub struct TokenList {
@@ -72,7 +70,6 @@ impl TryFrom<&modelica_grammar_trait::DescriptionString> for TokenList {
     }
 }
 
-//-----------------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
 
 pub struct ComponentList {

@@ -52,16 +52,6 @@ pub struct ValidationResult {
     pub unresolved: Vec<UnresolvedSymbol>,
 }
 
-impl ValidationResult {
-    pub fn is_fully_resolved(&self) -> bool {
-        self.unresolved.is_empty()
-    }
-
-    pub fn unresolved_count(&self) -> usize {
-        self.unresolved.len()
-    }
-}
-
 /// Validate that a ClassTree has all symbols resolved.
 pub fn validate_resolution(tree: &ClassTree) -> ValidationResult {
     let mut v = Validator {
@@ -380,7 +370,7 @@ mod tests {
         )
         .unwrap();
         let tree = resolve_parsed(def).unwrap();
-        assert!(validate_resolution(&tree).is_fully_resolved());
+        assert!(validate_resolution(&tree).unresolved.is_empty());
     }
 
     #[test]
@@ -492,7 +482,7 @@ end M;
         let tree = resolve_parsed(def).unwrap();
         let result = validate_resolution(&tree);
         assert!(
-            result.is_fully_resolved(),
+            result.unresolved.is_empty(),
             "Builtins should be resolved: {:?}",
             result.unresolved
         );
@@ -509,7 +499,7 @@ end M;
         let tree = resolve_parsed(def).unwrap();
         let result = validate_resolution(&tree);
         assert!(
-            result.is_fully_resolved(),
+            result.unresolved.is_empty(),
             "Builtin functions should be resolved: {:?}",
             result.unresolved
         );
@@ -538,7 +528,7 @@ end T;
         let tree = resolve_parsed(def).unwrap();
         let result = validate_resolution(&tree);
         assert!(
-            result.is_fully_resolved(),
+            result.unresolved.is_empty(),
             "clock builtins should be resolved: {:?}",
             result.unresolved
         );
@@ -558,7 +548,7 @@ end T;
         let tree = resolve_parsed(def).unwrap();
         let result = validate_resolution(&tree);
         assert!(
-            result.is_fully_resolved(),
+            result.unresolved.is_empty(),
             "array() should be resolved as a builtin function: {:?}",
             result.unresolved
         );

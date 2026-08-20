@@ -109,14 +109,6 @@ impl BltBlock<'_> {
             Self::StructuredScalar(block) => block.scalar_block_count(),
         }
     }
-
-    #[must_use]
-    pub fn loop_size(&self) -> Option<usize> {
-        match self {
-            Self::AlgebraicLoop { equations, .. } => Some(equations.len()),
-            Self::Scalar { .. } | Self::StructuredScalar(_) => None,
-        }
-    }
 }
 
 #[derive(Debug)]

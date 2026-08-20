@@ -52,7 +52,6 @@ impl Resolver {
         enclosing: ScopeId,
         qualified_name: &str,
     ) {
-        // Create a scope for this class
         let scope_kind = class_scope_kind(class);
         let class_scope = self.scope_tree.create_scope(enclosing, scope_kind);
         class.scope_id = Some(class_scope);

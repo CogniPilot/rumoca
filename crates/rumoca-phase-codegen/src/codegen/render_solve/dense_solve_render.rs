@@ -121,8 +121,6 @@ fn checked_matmul_render_count(
     Ok(count)
 }
 
-// ─── MatMul MLIR emitter ─────────────────────────────────────────────────────
-
 /// Render a `ComputeNode::MatMul` inner value as MLIR textual IR.
 ///
 /// Three dispatch paths:
@@ -178,7 +176,6 @@ pub(in crate::codegen) fn render_matmul_mlir_function(
         m, k, n, offset, end_offset
     );
 
-    // Emit scalar ops that build the A and B register values.
     emit_linear_ops_mlir(&lhs_ops, &pfx, &mut out)?;
     emit_linear_ops_mlir(&rhs_ops, &pfx, &mut out)?;
 
@@ -252,7 +249,6 @@ fn render_dense_matmul_mlir(
                         outs(%{pfx}_C : memref<{m}x{n}xf64>)\n"
     ));
 
-    // Load C results into output memref.
     for i in 0..m {
         for j in 0..n {
             let slot = checked_matmul_sum(

@@ -64,7 +64,6 @@ pub(crate) fn compute_diagnostics_with_options(
         }
     };
 
-    // Run linter on successfully parsed source
     let lint_messages = lint(source, file_name, lint_options);
     for msg in lint_messages {
         diagnostics.push(lint_to_diagnostic(&msg));

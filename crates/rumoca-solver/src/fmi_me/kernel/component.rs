@@ -1251,15 +1251,6 @@ impl SolveMeKernel {
         })
     }
 
-    pub fn has_scheduled_event_at(&self, time: f64) -> bool {
-        self.stop_schedule
-            .scheduled_event_coincidence_at(time)
-            .is_some()
-            || self
-                .pending_event_stop
-                .is_some_and(|(event_time, _)| time_match_with_tol(event_time, time))
-    }
-
     // -- event boundary ----------------------------------------------------
 
     pub(super) fn apply_discrete_event_updates(

@@ -1,4 +1,4 @@
-//! Roadmap Track 0.3: the parameter Jacobian `∂(der(state))/∂p`, assembled by
+//! The parameter Jacobian `∂(der(state))/∂p`, assembled by
 //! the exact forward-mode AD JVP (parameter-seed), must agree with a
 //! finite-difference of the primal derivative — including the path through
 //! parameter-dependent algebraics.

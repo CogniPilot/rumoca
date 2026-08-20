@@ -155,7 +155,6 @@ pub fn tear_algebraic_loop_with_causal_candidates(
     let mut tear_vars: Vec<usize> = Vec::new();
 
     loop {
-        // Phase 1: find equations with exactly 1 remaining unknown
         resolve_causal_equations(
             &mut remaining_eqs,
             &mut remaining_unknowns,
@@ -168,8 +167,6 @@ pub fn tear_algebraic_loop_with_causal_candidates(
             break;
         }
 
-        // Phase 2: select tear variable (most appearances in remaining equations,
-        // break ties by lowest index for determinism)
         let var_count = count_var_appearances(&remaining_eqs, eq_unknowns, &remaining_unknowns);
 
         if var_count.is_empty() {

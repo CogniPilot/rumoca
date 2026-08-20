@@ -1295,7 +1295,7 @@ fn assert_relative_package_function_call_is_exact(
         "canonical resolution must not replace the readable source occurrence spelling"
     );
     assert_eq!(name.target_def_id(), Some(rename_def));
-    assert!(name.has_structure());
+    assert!(name.component_ref().is_some());
 }
 
 #[test]

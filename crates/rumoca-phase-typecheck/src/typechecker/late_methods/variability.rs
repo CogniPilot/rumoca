@@ -43,7 +43,6 @@ impl TypeChecker {
             let comp_level =
                 rumoca_eval_ast::eval::VariabilityLevel::from_variability(&comp.variability);
 
-            // Check binding expression
             if let Some(binding) = &comp.binding {
                 self.check_binding_variability(name, binding, comp_level, class, &comp.location);
             }

@@ -1641,7 +1641,6 @@ pub(crate) fn collect_function_calls_from_equation(
             collect_function_calls_from_expression(rhs, calls, tree, class_index);
         }
         ast::Equation::For { indices, equations } => {
-            // Check the range expressions for function calls
             for idx in indices {
                 collect_function_calls_from_expression(&idx.range, calls, tree, class_index);
             }

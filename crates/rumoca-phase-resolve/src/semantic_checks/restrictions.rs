@@ -122,12 +122,6 @@ struct ClassContext {
     operator_record: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Evaluable-context rules (MLS §8.3): connect/when placement, subscripts,
-// assert level (EQN-014, EQN-019, EQN-026, EQN-030, EQN-036, EQN-038,
-// CONN-019).
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Copy, Default)]
 struct EqContext {
     /// Inside an if-equation whose condition is not evaluable during
@@ -789,11 +783,6 @@ fn check_impure_bindings(class: &ClassDef, def: &StoredDefinition, diags: &mut V
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Function restrictions (MLS §12): purity inheritance and input defaults
-// (FUNC-021, FUNC-034).
-// ---------------------------------------------------------------------------
 
 /// MLS §12.3 / FUNC-021: a function extending an impure function must itself
 /// be declared impure.

@@ -439,7 +439,6 @@ pub(super) fn try_extract_modification_derivative(
         no_derivative: Vec::new(),
     };
 
-    // Extract modifiers from subscripts
     extract_modifiers_from_subscripts(&target.parts[0].subs, &mut annotation);
     Some(annotation)
 }
@@ -461,7 +460,6 @@ pub(super) fn try_extract_class_mod_derivative(
         no_derivative: Vec::new(),
     };
 
-    // Extract modifiers from the modifications list
     for mod_expr in modifications {
         extract_derivative_modifier(mod_expr, &mut annotation);
         // Check if this is the function name (ComponentReference without assignment)

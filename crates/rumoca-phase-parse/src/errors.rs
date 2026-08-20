@@ -357,7 +357,6 @@ fn convert_syntax_error(err: SyntaxError, source: &str) -> ParseError {
         Some(first_token.to_string())
     };
 
-    // Build a helpful message
     let message = if keyword_in_context && !expects_semicolon {
         format!(
             "`{}` is a reserved keyword in Modelica (MLS §2.3.3) and cannot be used as an identifier",
@@ -373,7 +372,6 @@ fn convert_syntax_error(err: SyntaxError, source: &str) -> ParseError {
         format!("unexpected `{}`", first_token)
     };
 
-    // Clean up expected token names
     let expected: Vec<String> = err
         .expected_tokens
         .iter()

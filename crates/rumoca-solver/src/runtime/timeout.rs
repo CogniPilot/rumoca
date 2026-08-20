@@ -14,11 +14,6 @@ pub fn wall_clock_now() -> WallClockInstant {
 }
 
 #[inline]
-pub fn wall_clock_elapsed_seconds(started_at: WallClockInstant) -> f64 {
-    started_at.elapsed().as_secs_f64()
-}
-
-#[inline]
 fn wall_clock_deadline_after(seconds: f64) -> Option<WallClockInstant> {
     let duration = Duration::try_from_secs_f64(seconds).ok()?;
     wall_clock_now().checked_add(duration)

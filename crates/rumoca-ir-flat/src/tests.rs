@@ -183,11 +183,7 @@ fn unbound_fixed_parameters_ignore_zero_sized_parameters() {
 #[test]
 fn algorithm_outputs_drop_assignment_subscripts() {
     let statements = vec![Statement::Assignment {
-        comp: component_reference(
-            "x",
-            DefId::new(1),
-            vec![Subscript::generated_index(1, test_span())],
-        ),
+        comp: component_reference("x", DefId::new(1), vec![Subscript::index(1, test_span())]),
         value: Expression::Literal {
             value: Literal::Real(1.0),
             span: test_span(),
@@ -198,7 +194,7 @@ fn algorithm_outputs_drop_assignment_subscripts() {
     let outputs = extract_algorithm_outputs(&statements);
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].as_str(), "x");
-    assert!(outputs[0].has_structure());
+    assert!(outputs[0].component_ref().is_some());
 }
 
 /// The Flat wire carries references, so it inherits their one current shape:
@@ -315,7 +311,7 @@ fn algorithm_outputs_keep_function_call_targets() {
         outputs: vec![Some(component_reference(
             "y",
             DefId::new(3),
-            vec![Subscript::generated_index(2, test_span())],
+            vec![Subscript::index(2, test_span())],
         ))],
         span: test_span(),
     }];
@@ -323,5 +319,5 @@ fn algorithm_outputs_keep_function_call_targets() {
     let outputs = extract_algorithm_outputs(&statements);
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].as_str(), "y");
-    assert!(outputs[0].has_structure());
+    assert!(outputs[0].component_ref().is_some());
 }

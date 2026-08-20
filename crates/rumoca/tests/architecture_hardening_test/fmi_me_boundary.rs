@@ -359,11 +359,10 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 
 // -- negative controls ---------------------------------------------------
 //
-// SPEC_0038 phase 2 extends this boundary to a second host crate. Before that
-// happens the detector has to be shown to *detect*: every check below plants a
-// crate that violates the rule in one specific way and asserts the offender
-// line appears. Without these, a parser that quietly returned nothing would
-// make the real assertion above pass on any input at all.
+// The detector is proved by negative controls: every check below plants a
+// crate that violates one rule and asserts the offender line appears. Without
+// these controls, a parser that returned nothing would make the real assertion
+// pass vacuously.
 
 /// A throwaway crate tree, removed when the guard drops.
 struct PlantedCrate {

@@ -70,7 +70,6 @@ pub fn instantiate_model_with_outcome_options(
         }
     };
 
-    // Create the instance overlay
     let mut overlay = ast::InstanceOverlay::new();
 
     // MLS §4.7: Track if the root model is partial (incomplete for standalone use).

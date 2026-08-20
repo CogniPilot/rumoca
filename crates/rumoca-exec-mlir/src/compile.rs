@@ -167,11 +167,6 @@ fn compile_cpu_shared_library(
             .arg(&rt_obj_path),
     )?;
 
-    // Step 1: lower all dialects to LLVM dialect.
-    // Each memref<?xf64> arg expands to 5 LLVM params:
-    //   (alloc_ptr, aligned_ptr, offset: i64, size: i64, stride: i64)
-    // The Rust caller passes aligned_ptr twice and offset=0, size=len, stride=1.
-    // Linalg passes are no-ops when the model has no MatMul/LinSolve nodes.
     run_tool(
         "mlir-opt-18",
         Command::new("mlir-opt-18")
@@ -191,7 +186,6 @@ fn compile_cpu_shared_library(
             .arg(&opt_path),
     )?;
 
-    // Step 2: MLIR → LLVM IR text
     run_tool(
         "mlir-translate-18",
         Command::new("mlir-translate-18")
@@ -201,7 +195,6 @@ fn compile_cpu_shared_library(
             .arg(&ll_path),
     )?;
 
-    // Step 3: LLVM IR → object file (PIC required for shared library)
     let mut llc_cmd = Command::new("llc-18");
     llc_cmd
         .arg("-filetype=obj")
@@ -216,7 +209,6 @@ fn compile_cpu_shared_library(
     llc_cmd.arg(&ll_path).arg("-o").arg(&obj_path);
     run_tool("llc-18", &mut llc_cmd)?;
 
-    // Step 4: link model + runtime into a shared library
     run_tool(
         "clang-18",
         Command::new("clang-18")
@@ -237,8 +229,6 @@ fn load_compiled_residual(
     rows: usize,
     implicit_rows: usize,
 ) -> Result<CompiledMlirResidual, MlirError> {
-    // Step 5: dlopen and resolve symbols.
-    // Each memref<?xf64> expands to 5 params: (alloc_ptr, aligned_ptr, offset, size, stride).
     let lib = unsafe { libloading::Library::new(&artifacts.so_path) }?;
 
     let eval_fn: libloading::Symbol<EvalFnRaw> = unsafe {

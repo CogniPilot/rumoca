@@ -199,10 +199,6 @@ impl ColumnColoring {
     pub fn groups(&self) -> &[Box<[u32]>] {
         &self.groups
     }
-
-    pub fn compressed_seed_count(&self) -> usize {
-        self.groups.len()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1428,15 +1424,6 @@ fn banded_nonzero_count(
         count.checked_add(end.saturating_sub(start))
     })
 }
-
-// ---------------------------------------------------------------------------
-// SPEC_0039 / SOLVE-C17: exhaustive structural dependency derivation.
-//
-// This analysis is the proof that backs every sparse pattern this module
-// issues, so it lives with the pattern authority rather than with any
-// consumer. It is a pure structural walk over the checked Solve IR: it reads
-// `LinearOp` register flow only and never evaluates a value.
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DependencyState {

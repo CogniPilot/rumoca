@@ -174,10 +174,6 @@ impl<'a> SignalWalker<'a, '_> {
         declared
     }
 
-    // -----------------------------------------------------------------
-    // Dataflow over statements
-    // -----------------------------------------------------------------
-
     fn statements(&mut self, statements: &[Spanned<Statement>], mut set: SignalSet) -> SignalSet {
         for (index, statement) in statements.iter().enumerate() {
             self.cursor.push(PathSegment::Statement(index));
@@ -351,10 +347,6 @@ impl<'a> SignalWalker<'a, '_> {
         set
     }
 
-    // -----------------------------------------------------------------
-    // Signal-sets of expressions and calls (§1.5)
-    // -----------------------------------------------------------------
-
     fn expression_signals(&mut self, expression: &Expression) -> SignalSet {
         match expression {
             Expression::Bool(_)
@@ -424,10 +416,6 @@ impl<'a> SignalWalker<'a, '_> {
         }
         set
     }
-
-    // -----------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------
 
     fn closure_set(&self, name: &str) -> Option<SignalSet> {
         self.closures

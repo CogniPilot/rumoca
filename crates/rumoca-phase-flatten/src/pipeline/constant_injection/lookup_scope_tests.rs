@@ -199,7 +199,15 @@ fn const_function_call_preserves_component_reference_scope() {
     let scope = name
         .component_scope()
         .expect("constant lowering must retain component reference scope");
-    assert_eq!(scope.parent_ident(), Some("Medium"));
+    assert_eq!(
+        scope
+            .parts()
+            .len()
+            .checked_sub(2)
+            .and_then(|index| scope.parts().get(index))
+            .map(|part| part.ident.as_str()),
+        Some("Medium")
+    );
     assert_eq!(scope.leaf_ident(), Some("specificEnthalpy_pTX"));
 }
 

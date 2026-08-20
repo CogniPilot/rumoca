@@ -6,16 +6,6 @@
 
 use crate::BuiltinFunction;
 
-/// Modelica-shaped source for the predefined type/class declarations.
-///
-/// This is the single source of truth for the implicit predefined type shape
-/// from MLS §4.9. The primitive `*Type` value declarations are specification
-/// mnemonics and are not user-visible dot fields.
-pub const PREDEFINED_MODELICA_SOURCE: &str = include_str!("../modelica/Predefined.mls");
-
-/// Predefined primitive type class names with MLS §4.9 attribute shape.
-pub const PREDEFINED_COMPONENT_TYPES: &[&str] = &["Real", "Integer", "Boolean", "String"];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PredefinedComponentType {
     Real,
@@ -111,49 +101,9 @@ pub fn predefined_component_attribute_names(type_name: &str) -> &'static [&'stat
     }
 }
 
-/// Return true if `attribute_name` is an attribute of the predefined type.
-pub fn is_predefined_component_attribute(type_name: &str, attribute_name: &str) -> bool {
-    predefined_component_attribute_names(type_name).contains(&attribute_name)
-}
-
 /// Return true if `attribute_name` is any predefined primitive-type attribute.
 pub fn is_any_predefined_component_attribute(attribute_name: &str) -> bool {
     PREDEFINED_COMPONENT_ATTRIBUTES.contains(&attribute_name)
-}
-
-/// Standard string/file/scanner intrinsics that cannot be treated as ordinary
-/// numeric functions in DAE or solve IR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelicaStringIntrinsic {
-    /// The frontend must replace the call with a typed value or runtime op.
-    RequiresLowering,
-    /// `Modelica.Utilities.Strings.isEmpty`.
-    IsEmpty,
-    /// `Modelica.Utilities.Strings.hashString`.
-    HashString,
-    /// `Modelica.Utilities.Strings.length`.
-    Length,
-    /// `Modelica.Utilities.Strings.find`.
-    Find,
-    /// `Modelica.Utilities.Strings.findLast`.
-    FindLast,
-}
-
-/// Classify a Modelica string/file/scanner intrinsic by its short name.
-pub fn modelica_string_intrinsic_short_name(short_name: &str) -> Option<ModelicaStringIntrinsic> {
-    match short_name {
-        "getInstanceName" | "fullPathName" | "loadResource" | "readLine" | "substring"
-        | "scanBoolean" | "scanDelimiter" | "scanIdentifier" | "scanInteger" | "scanNoToken"
-        | "scanReal" | "scanString" | "scanToken" | "skipWhiteSpace" => {
-            Some(ModelicaStringIntrinsic::RequiresLowering)
-        }
-        "isEmpty" => Some(ModelicaStringIntrinsic::IsEmpty),
-        "hashString" => Some(ModelicaStringIntrinsic::HashString),
-        "length" => Some(ModelicaStringIntrinsic::Length),
-        "find" => Some(ModelicaStringIntrinsic::Find),
-        "findLast" => Some(ModelicaStringIntrinsic::FindLast),
-        _ => None,
-    }
 }
 
 /// Modification names accepted by the parser on primitive typed components.
@@ -278,26 +228,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn predefined_source_contains_all_component_type_shapes() {
-        for type_name in PREDEFINED_COMPONENT_TYPES {
-            assert!(
-                PREDEFINED_MODELICA_SOURCE.contains(&format!("type {type_name}")),
-                "missing predefined source for {type_name}"
-            );
-            for attribute in predefined_component_attribute_names(type_name) {
-                assert!(
-                    PREDEFINED_MODELICA_SOURCE.contains(attribute),
-                    "predefined source for {type_name} should mention {attribute}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn boolean_shape_does_not_inherit_real_only_attributes() {
-        assert!(is_predefined_component_attribute("Boolean", "start"));
-        assert!(!is_predefined_component_attribute("Boolean", "min"));
-        assert!(!is_predefined_component_attribute("Boolean", "unit"));
+        let attributes = predefined_component_attribute_names("Boolean");
+        assert!(attributes.contains(&"start"));
+        assert!(!attributes.contains(&"min"));
+        assert!(!attributes.contains(&"unit"));
     }
 
     #[test]

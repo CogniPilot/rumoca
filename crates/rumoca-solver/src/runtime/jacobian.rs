@@ -175,8 +175,8 @@ impl SolveRuntime {
     /// time. Rows are `der(state)`; columns are the model parameters. The seed
     /// spans `[solver-y | parameter]`, so parameter `p` is seeded at offset
     /// `y_scalars + p`; the path through algebraics is included because the
-    /// projection JVP is lowered with parameter seeds too. Backs roadmap Track
-    /// 0.3 (`--inspect jacobian` parameter block).
+    /// projection JVP is lowered with parameter seeds too. This supplies the
+    /// `--inspect jacobian` parameter block.
     pub fn eval_parameter_jacobian(
         &self,
         t: f64,
@@ -269,13 +269,13 @@ impl SolveRuntime {
     /// `∂y/∂p = -(∂f/∂y)⁻¹ · ∂f/∂p`. Both Jacobians come from the exact
     /// forward-mode AD, and each parameter column is one dense solve of the
     /// state Jacobian. This is the natural derivative for design objectives that
-    /// are functions of the *converged* state (roadmap §6); it assumes the
+    /// are functions of the *converged* state; it assumes the
     /// linearization point is at (or near) steady state.
     ///
     /// Dense — appropriate for small models / small parameter counts; the
     /// state-Jacobian is re-eliminated per column. Grid-scale models want a
-    /// sparse factorization (factor once) or the steady adjoint (reverse mode,
-    /// Track C), which this does not attempt.
+    /// sparse factorization (factor once) or the steady adjoint (reverse mode),
+    /// which this does not attempt.
     pub fn steady_state_parameter_sensitivity(
         &self,
         t: f64,

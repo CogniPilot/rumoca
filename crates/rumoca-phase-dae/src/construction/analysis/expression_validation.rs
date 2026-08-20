@@ -722,11 +722,11 @@ impl ExpressionValidator<'_> {
     /// `when sample(...) then y_last = f*pre(x); reinit(x, 0); end when;` reads
     /// the integrator state accumulated up to the tick.
     ///
-    /// Two accept-side gaps are deliberate and out of contract for now, each
-    /// with its own typed rejection rather than a silent miss:
+    /// Two forms are rejected at this typed boundary rather than accepted
+    /// without the event-entry semantics they require:
     ///
     /// * `pre()` of a continuous `input` — OMC accepts it; rumoca has no
-    ///   event-entry lane for an externally driven coordinate yet.
+    ///   event-entry lane for an externally driven coordinate.
     /// * `pre()` of a continuous coordinate in a when-*statement* of an
     ///   algorithm section — OMC accepts it;
     ///   `model_algorithm_statements.rs` still validates statement values with

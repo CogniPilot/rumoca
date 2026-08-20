@@ -1,5 +1,5 @@
 use rumoca_core::{SourceId, Span};
-/// Phase 6.6: Multi-function MLIR module tests.
+/// Multi-function MLIR module tests.
 ///
 /// The MLIR shared library now exports three functions from a single compilation:
 ///   - `eval_derivative`   — explicit ODE RHS: xdot = f(y, p, t)
@@ -109,23 +109,6 @@ fn compile_or_skip(
 }
 
 #[test]
-fn multi_fn_all_three_symbols_present() {
-    let solve = decay_solve_problem();
-    let compiled = match compile_or_skip(&solve, "multi_presence") {
-        Some(c) => c,
-        None => return,
-    };
-    assert!(
-        compiled.has_implicit_rhs(),
-        "eval_implicit_rhs symbol not found in .so"
-    );
-    assert!(
-        compiled.has_jacobian_v(),
-        "eval_jacobian_v symbol not found in .so"
-    );
-}
-
-#[test]
 fn multi_fn_implicit_rhs_numerics() {
     let solve = decay_solve_problem();
     let compiled = match compile_or_skip(&solve, "multi_implicit") {
@@ -221,12 +204,10 @@ fn multi_fn_empty_implicit_no_symbol() {
         Some(c) => c,
         None => return,
     };
+    assert!(compiled.call_implicit_rhs(&[], &[], 0.0, &mut []).is_none());
     assert!(
-        !compiled.has_implicit_rhs(),
-        "eval_implicit_rhs should be absent when implicit_rhs is empty"
-    );
-    assert!(
-        !compiled.has_jacobian_v(),
-        "eval_jacobian_v should be absent when jacobian is empty"
+        compiled
+            .call_jacobian_v(&[], &[], &[], 0.0, &mut [])
+            .is_none()
     );
 }

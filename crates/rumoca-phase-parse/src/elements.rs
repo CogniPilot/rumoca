@@ -9,9 +9,6 @@ use crate::errors::{semantic_error_from_component_reference, semantic_error_from
 use crate::generated::modelica_grammar_trait;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 
-//-----------------------------------------------------------------------------
-// Helper functions for extracting type prefix attributes
-
 /// Extract connection type (flow/stream) from type prefix.
 fn extract_connection(
     type_prefix: &modelica_grammar_trait::TypePrefix,
@@ -382,7 +379,6 @@ fn extract_extends_mods(
     let mut mods = Vec::new();
     let mut break_names = Vec::new();
 
-    // Process first item
     match &list.argument_or_inheritance_modification_list_group {
         modelica_grammar_trait::ArgumentOrInheritanceModificationListGroup::Argument(arg) => {
             mods.push(rumoca_ir_ast::ExtendModification {
@@ -401,7 +397,6 @@ fn extract_extends_mods(
         }
     }
 
-    // Process remaining items
     for item in &list.argument_or_inheritance_modification_list_list {
         match &item.argument_or_inheritance_modification_list_list_group {
             modelica_grammar_trait::ArgumentOrInheritanceModificationListListGroup::Argument(
@@ -555,7 +550,6 @@ fn process_single_component(
         .shape_expr
         .extend(ctx.type_level_shape_expr.iter().cloned());
 
-    // Handle component modification
     if let Some(modif) = &c.declaration.declaration_opt0 {
         preserve_component_source_modification(&mut value, modif);
         process_component_modification(&mut value, modif)?;
@@ -705,9 +699,6 @@ fn merge_constraining_clause_modifications(
         let Some(target_name) = constraining_arg_target_name(arg) else {
             continue;
         };
-        // Keep built-in attribute handling in declaration modifications only.
-        // For constrainedby mods we stash component-target defaults and apply them
-        // when a redeclare actually replaces the component type.
         if is_builtin_attribute_name(&target_name) {
             continue;
         }
@@ -879,9 +870,6 @@ fn process_element_definition(
     Ok(())
 }
 
-//-----------------------------------------------------------------------------
-// Helper functions for component modification processing
-
 /// Check if a type is a builtin type.
 fn is_builtin_type(type_name: &str) -> bool {
     rumoca_core::is_predefined_component_type(type_name)
@@ -1052,7 +1040,6 @@ fn process_mod_arg(
 ) -> anyhow::Result<()> {
     let type_name = value.type_name.to_string();
 
-    // Check for invalid sub-modifications on builtin attributes
     if let rumoca_ir_ast::Expression::FunctionCall { comp, .. } = arg {
         check_builtin_submod(comp, &type_name)?;
     }
@@ -1066,7 +1053,6 @@ fn process_mod_arg(
         process_named_arg(value, &param_name, rhs, has_each, has_final, comp)?;
     }
 
-    // Handle Expression::Modification variant
     if let rumoca_ir_ast::Expression::Modification {
         target,
         value: mod_value,

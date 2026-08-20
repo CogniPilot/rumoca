@@ -27,10 +27,6 @@ use rumoca_ir_galec::ast::{
     UserFunction, VariableDeclaration,
 };
 
-// ---------------------------------------------------------------------------
-// Block
-// ---------------------------------------------------------------------------
-
 /// `block : 'block' name { interface } 'protected' { compartment }
 ///   { protected-entity } { error-signal } { function } 'public' { function }
 ///   'end' name ';'` — folded into the strict [`Block`] (contract §4.3).
@@ -149,10 +145,6 @@ fn method_kind(name: &Name) -> Option<BlockMethodKind> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Methods & user functions
-// ---------------------------------------------------------------------------
-
 /// Build a fixed [`BlockMethod`]: parameter-free (trap T1) with only predefined
 /// signals in its `signals` clause (§3.2.5 §1.3).
 fn block_method(fd: &g::FunctionDeclaration) -> anyhow::Result<BlockMethod> {
@@ -268,10 +260,6 @@ fn function_statements(fd: &g::FunctionDeclaration) -> Vec<Spanned<Statement>> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// State entities & compartments
-// ---------------------------------------------------------------------------
-
 /// An interface variable (before `protected`) must carry an `input`/`output`/
 /// `parameter` causality; `constant` or a bare declaration is unrepresentable
 /// and rejected fail-early.
@@ -343,10 +331,6 @@ fn compartment(scd: &g::StateCompartmentDeclaration) -> anyhow::Result<StateComp
         entities,
     })
 }
-
-// ---------------------------------------------------------------------------
-// Variable declaration / dimension / range attributes (%nt_type targets)
-// ---------------------------------------------------------------------------
 
 /// `variable_declaration : type name [ '[' dimension,… ']' ] [ range ] ';'`.
 impl TryFrom<&g::VariableDeclaration> for VariableDeclaration {
@@ -433,10 +417,6 @@ fn apply_range_attr(range: &mut RangeAttributes, attr: &g::RangeAttr) -> anyhow:
     *slot = Some(attr.expression.clone());
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
 
 /// Reject an `end <Name>;` terminator that does not lexically equal its header
 /// name (contract §4.3 point 4). Compares the lexeme text only: names carry

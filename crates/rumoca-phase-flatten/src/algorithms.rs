@@ -1,8 +1,8 @@
 //! `flat::Algorithm` section flattening for SPEC_0007 / MLS §11 compliance.
 //!
 //! This module handles:
-//! - Variable name qualification in algorithm statements (Task 3.1)
-//! - Output variable identification (Task 3.2)
+//! - Variable name qualification in algorithm statements
+//! - Output variable identification
 //!
 //! Algorithms are preserved as structured statements through the DAE phase,
 //! with expansion to flat equations deferred to code generation.
@@ -16,10 +16,6 @@ use std::collections::HashSet;
 use crate::ast_lower;
 use crate::errors::FlattenError;
 use crate::qualify::{self, ImportMap, QualifyOptions};
-
-// =============================================================================
-// Task 3.1: Variable Name Qualification
-// =============================================================================
 
 /// Qualify all variable references in an algorithm section.
 ///
@@ -204,10 +200,6 @@ fn qualify_expr(
     )
 }
 
-// =============================================================================
-// Task 3.2: Output Variable Identification
-// =============================================================================
-
 /// Extract all output variables (left-hand sides of assignments) from statements.
 ///
 /// Per SPEC_0007 / MLS §11: track variables assigned in algorithms.
@@ -217,10 +209,6 @@ pub(crate) fn extract_outputs(
 ) -> Vec<rumoca_core::Reference> {
     extract_algorithm_outputs(statements)
 }
-
-// =============================================================================
-// Write targets: owning instance path materialization
-// =============================================================================
 
 /// Materialize the owning component instance path into an algorithm section's
 /// write targets.
@@ -332,10 +320,6 @@ fn prepend_owner_path(
     Ok(())
 }
 
-// =============================================================================
-// Main Entry Point
-// =============================================================================
-
 pub(crate) struct AlgorithmSectionContext<'a> {
     pub(crate) prefix: &'a ast::QualifiedName,
     pub(crate) imports: &'a ImportMap,
@@ -359,14 +343,14 @@ impl AlgorithmSectionMetadata {
 
 /// Flatten an algorithm section with variable qualification and output extraction.
 ///
-/// This is the main entry point for algorithm flattening, implementing
-/// Tasks 3.1 (qualification) and 3.2 (outputs).
+/// This is the main entry point for algorithm qualification and output
+/// extraction.
 pub(crate) fn flatten_algorithm_section(
     statements: &[ast::Statement],
     context: AlgorithmSectionContext<'_>,
     metadata: AlgorithmSectionMetadata,
 ) -> Result<flat::Algorithm, FlattenError> {
-    // Task 3.1: Qualify all variable names
+    // Qualify all variable names before lowering statements.
     let qualified_ast = qualify_algorithm(
         statements,
         context.prefix,
@@ -388,7 +372,7 @@ pub(crate) fn flatten_algorithm_section(
         })
         .collect::<Result<_, FlattenError>>()?;
 
-    // Task 3.2: Extract output variables
+    // Derive output variables from the lowered statements.
     let outputs = extract_outputs(&qualified_statements);
 
     Ok(flat::Algorithm {
@@ -398,10 +382,6 @@ pub(crate) fn flatten_algorithm_section(
         origin: metadata.origin,
     })
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 #[cfg(test)]
 mod tests {

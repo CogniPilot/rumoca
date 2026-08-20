@@ -149,7 +149,7 @@ fn reference_carries_component_ref_and_target_def_id_without_owning_def_id() {
             ComponentRefPart {
                 ident: "body".to_string(),
                 span: Span::DUMMY,
-                subs: vec![Subscript::generated_index(2, Span::DUMMY)],
+                subs: vec![Subscript::index(2, Span::DUMMY)],
                 def_id: DefId::new(7),
             },
             ComponentRefPart {
@@ -378,7 +378,7 @@ fn function_param_shape_contract_rejects_mismatched_shape_expr() {
 fn function_param_shape_contract_rejects_negative_shape_index() {
     let span = test_span();
     let param = FunctionParam::new("x", "Real", real_value_type(vec![0]), span)
-        .with_shape_expr(vec![Subscript::generated_index(-1, Span::DUMMY)]);
+        .with_shape_expr(vec![Subscript::index(-1, Span::DUMMY)]);
 
     assert_eq!(
         param.validate_shape_contract(),
@@ -396,7 +396,7 @@ fn function_shape_contract_reports_bad_local_param() {
     let mut function = Function::new("Pkg.f", Span::DUMMY);
     function.add_local(
         FunctionParam::new("tmp", "Real", real_value_type(vec![0]), span)
-            .with_shape_expr(vec![Subscript::generated_index(-1, Span::DUMMY)]),
+            .with_shape_expr(vec![Subscript::index(-1, Span::DUMMY)]),
     );
 
     assert_eq!(
@@ -472,7 +472,7 @@ fn component_path_preserves_component_reference_subscripts() {
             ComponentRefPart {
                 ident: "body".to_string(),
                 span: Span::DUMMY,
-                subs: vec![Subscript::generated_index(2, Span::DUMMY)],
+                subs: vec![Subscript::index(2, Span::DUMMY)],
                 def_id: DefId::new(42),
             },
             ComponentRefPart {
@@ -924,10 +924,6 @@ fn pre_slot_detection_rejects_non_pre_names() {
         assert!(!is_pre_slot(name), "{name}");
     }
 }
-
-// ---------------------------------------------------------------------------
-// Location source identity (P4 parser allocation work)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn location_is_allocation_free() {

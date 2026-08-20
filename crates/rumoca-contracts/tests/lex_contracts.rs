@@ -386,25 +386,26 @@ fn test_lex_contracts_runner() {
     runner.run_category(ContractCategory::Lexical);
 
     // Report results
-    println!(
-        "LEX contracts: {} passed, {} failed",
-        runner.passed_count(),
-        runner.failed_count()
-    );
+    let passed = runner
+        .results()
+        .values()
+        .filter(|result| result.passed)
+        .count();
+    let failed = runner.results().len() - passed;
+    println!("LEX contracts: {passed} passed, {failed} failed");
 
     assert_eq!(
         runner.results().len(),
-        runner.test_count(),
+        runner
+            .registry()
+            .by_category(ContractCategory::Lexical)
+            .count(),
         "All registered LEX runner tests should execute"
     );
+    assert_eq!(failed, 0, "LEX runner test failures detected");
     assert_eq!(
-        runner.failed_count(),
-        0,
-        "LEX runner test failures detected"
-    );
-    assert_eq!(
-        runner.passed_count(),
-        runner.test_count(),
+        passed,
+        runner.results().len(),
         "All registered LEX runner tests must pass"
     );
 }

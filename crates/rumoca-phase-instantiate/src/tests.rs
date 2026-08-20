@@ -1000,10 +1000,6 @@ fn test_register_known_integer_instance_uses_modifier_source_scope() {
     assert_eq!(ctx.known_int_params.get("holder.n"), Some(&2));
 }
 
-// -------------------------------------------------------------------------
-// Inner/Outer tests (MLS §5.4)
-// -------------------------------------------------------------------------
-
 #[test]
 fn test_register_and_find_inner() {
     let mut ctx = InstantiateContext::new();
@@ -1231,10 +1227,6 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
     assert_eq!(shared_classes[0].equations.len(), 1);
 }
 
-// -------------------------------------------------------------------------
-// Type compatibility tests (MLS §5.4)
-// -------------------------------------------------------------------------
-
 #[test]
 fn test_type_compatible_exact_match() {
     // Exact type name match is always compatible
@@ -1319,7 +1311,6 @@ fn test_type_compatible_class_inheritance() {
 fn test_class_extends_direct() {
     let tree = ast::ClassTree::default();
 
-    // Create a class that directly extends BaseConnector
     let derived = ast::ClassDef {
         name: make_token("Derived"),
         extends: vec![ast::Extend {
@@ -1335,7 +1326,6 @@ fn test_class_extends_direct() {
 
 #[test]
 fn test_class_extends_transitive() {
-    // Create hierarchy: C extends B extends A
     let mut tree = ast::ClassTree::default();
 
     let class_a = ast::ClassDef {

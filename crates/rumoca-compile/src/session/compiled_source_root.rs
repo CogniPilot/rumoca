@@ -123,19 +123,6 @@ impl CompiledSourceRoot {
         })
     }
 
-    /// Create a compiled source root from an already-resolved tree.
-    ///
-    /// This avoids re-running resolve and is intended for callers that already
-    /// hold a validated resolved tree (e.g., MSL regression harness).
-    pub fn from_resolved_tree(resolved: ResolvedTree, model_names: Vec<String>) -> Self {
-        let resolved = Arc::new(resolved);
-        Self::from_indexed_state(
-            resolved.clone(),
-            model_names,
-            collect_class_type_counts(&resolved.inner().definitions),
-        )
-    }
-
     /// Get all model names in the source root.
     ///
     /// Names come from the construction-time planning tree and remain
@@ -572,23 +559,6 @@ impl CompiledSourceRoot {
     /// Compile all models in parallel.
     pub fn compile_all_parallel(&self) -> Result<Vec<(String, PhaseResult)>> {
         self.compile_targets_with_cache(&self.model_names)
-    }
-
-    /// Compile all models in parallel and stream each result to `consume`.
-    pub fn compile_all_streaming<F>(&self, max_in_flight_results: usize, consume: F) -> Result<()>
-    where
-        F: FnMut(String, PhaseResult) + Send,
-    {
-        self.compile_targets_streaming_with_cache(&self.model_names, max_in_flight_results, consume)
-    }
-
-    /// Compile all models and return summary.
-    pub fn compile_all_parallel_with_summary(
-        &self,
-    ) -> Result<(Vec<(String, PhaseResult)>, CompilationSummary)> {
-        let results = self.compile_all_parallel()?;
-        let summary = CompilationSummary::from_results(&results);
-        Ok((results, summary))
     }
 }
 

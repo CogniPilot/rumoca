@@ -162,7 +162,6 @@ fn build_element_plan<'a>(
         ctx.mod_env_mut().active.shift_remove(&qn);
     }
 
-    // Create indexed components.
     let mut scalar_comp = comp.clone();
     scalar_comp.shape = vec![];
     scalar_comp.shape_expr = vec![];
@@ -771,7 +770,6 @@ fn resolve_single_ref(
     tree: &ast::ClassTree,
     depth: usize,
 ) -> Option<ast::Expression> {
-    // Check mod_env first
     let qn = ast::QualifiedName::from_ident(name);
     if let Some(mv) = mod_env.active.get(&qn) {
         let resolved =

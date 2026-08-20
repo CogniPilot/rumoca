@@ -9,9 +9,6 @@ use crate::take_cell::TakeCell;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
 
-//-----------------------------------------------------------------------------
-// Helper functions to reduce nesting in conversion code.
-
 /// Extract modifiers from an optional extends class specifier.
 fn extract_extends_modifiers(
     opt: &Option<modelica_grammar_trait::ExtendsClassSpecifierOpt>,
@@ -302,7 +299,6 @@ pub(crate) fn validate_annotation_modifiers(
     Ok(())
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::StoredDefinition> for rumoca_ir_ast::StoredDefinition {
     type Error = anyhow::Error;
 
@@ -317,7 +313,6 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for rumoca_ir_ast::Store
         for class in &ast.stored_definition_list {
             let class_name = &class.class_definition.name.text;
 
-            // Check for redeclaration of predefined types
             if rumoca_core::is_predefined_user_redeclaration(class_name) {
                 return Err(semantic_error_from_token(
                     format!("Cannot redeclare predefined type '{class_name}'"),
@@ -348,13 +343,6 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for rumoca_ir_ast::Store
     }
 }
 
-//-----------------------------------------------------------------------------
-/// Validate class-specific restrictions per Modelica spec
-///
-/// - Connectors cannot have equation/algorithm sections or protected elements
-/// - Packages cannot have equation/algorithm sections or non-constant components
-/// - Records cannot have equation/algorithm sections
-/// - Functions cannot have equation sections (only algorithm sections)
 fn validate_class_restrictions(class_def: &rumoca_ir_ast::ClassDef) -> anyhow::Result<()> {
     match class_def.class_type {
         rumoca_core::ClassType::Connector => validate_connector_restrictions(class_def)?,
@@ -364,7 +352,6 @@ fn validate_class_restrictions(class_def: &rumoca_ir_ast::ClassDef) -> anyhow::R
         _ => {}
     }
 
-    // Check that the end name matches the class name
     if let Some(end_name) = &class_def.end_name_token
         && end_name.text != class_def.name.text
     {
@@ -568,9 +555,6 @@ fn get_class_type_token(class_type: &modelica_grammar_trait::ClassType) -> rumoc
     }
 }
 
-//-----------------------------------------------------------------------------
-// Helper functions for converting class specifiers to reduce nesting
-
 /// Context for class conversion - common fields from ClassDefinition
 struct ClassConversionContext {
     class_type: rumoca_core::ClassType,
@@ -658,7 +642,6 @@ fn convert_extends_class_specifier(
     spec: &modelica_grammar_trait::ExtendsClassSpecifier,
     ctx: &ClassConversionContext,
 ) -> Result<rumoca_ir_ast::ClassDef, anyhow::Error> {
-    // Create an extends clause for the inherited class
     let extends_modifiers = extract_extends_modifiers(&spec.extends_class_specifier_opt);
     let extends_name = rumoca_ir_ast::Name {
         name: vec![spec.ident.clone()],
@@ -982,7 +965,6 @@ fn convert_der_class_specifier(
     }
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::ClassDefinition> for rumoca_ir_ast::ClassDef {
     type Error = anyhow::Error;
 
@@ -1025,8 +1007,6 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for rumoca_ir_ast::ClassD
     }
 }
 
-//-----------------------------------------------------------------------------
-/// Everything a `composition` production contributes to a class body.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct CompositionPayload {
     pub(crate) extends: Vec<rumoca_ir_ast::Extend>,
@@ -1101,7 +1081,6 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
             merge_composition_list_group(&mut comp, &comp_list.composition_list_group)?;
         }
 
-        // Extract annotation from composition_opt0
         if let Some(annotation_opt) = &ast.composition_opt0
             && let Some(class_mod_opt) = &annotation_opt
                 .annotation_clause
@@ -1192,7 +1171,6 @@ fn extract_external_function(
     if let Some(func_call) = &external_opt.composition_opt2 {
         let ext_call = &func_call.external_function_call;
 
-        // Get the external function name
         external.function_name = Some(ext_call.ident.clone());
 
         // Get the output assignment (if any): result = external_func(...)
@@ -1229,8 +1207,6 @@ fn extract_external_function(
     Ok(external)
 }
 
-//-----------------------------------------------------------------------------
-/// Elements collected from one `element_list` production.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ElementListPayload {
     pub(crate) components: IndexMap<String, rumoca_ir_ast::Component>,

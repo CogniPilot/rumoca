@@ -143,23 +143,6 @@ impl<'dae> Clocks<'_, 'dae> {
         self.scheduled(schedule, provenance)
     }
 
-    /// Construct a periodic clock whose exact phase is relative to the
-    /// simulation start instant.
-    pub fn periodic_from_simulation_start(
-        &mut self,
-        lattice: ClockLattice,
-        provenance: DaeProvenance,
-    ) -> Result<PeriodicClockId<'dae>, DaeConstructionError> {
-        let schedule =
-            PeriodicClockSchedule::simulation_start_relative(lattice).map_err(|source| {
-                DaeConstructionError::InvalidClockLattice {
-                    source,
-                    span: provenance.span(),
-                }
-            })?;
-        self.scheduled(schedule, provenance)
-    }
-
     pub fn scheduled(
         &mut self,
         schedule: PeriodicClockSchedule,

@@ -185,7 +185,6 @@ impl Resolver {
                 .filter(|target| *target != class_def_id);
         }
 
-        // Remove from resolving set after extends are processed
         self.resolving_extends.remove(&class_def_id);
     }
 

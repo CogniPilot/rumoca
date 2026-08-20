@@ -286,21 +286,6 @@ impl ExactRefreshAssignmentProgram {
         &self.assignment_shapes
     }
 
-    /// Whether one checked assignment value reads a solver-Y coordinate.
-    ///
-    /// The dependency is derived with the canonical assignment certificate at
-    /// construction/wire replay. Target preparation can therefore check its
-    /// execution profile without reinterpreting residual operations.
-    #[must_use]
-    pub fn assignment_reads_y_index(&self, position: usize, y_index: usize) -> Option<bool> {
-        self.assignment_shapes
-            .get(position)
-            .zip(self.assignment_y_dependencies.get(position))
-            .map(|(shape, dependencies)| {
-                dependencies.contains(&y_index) && y_index != shape.target_y_index()
-            })
-    }
-
     #[must_use]
     pub fn assignment_y_dependencies(&self, position: usize) -> Option<&[usize]> {
         self.assignment_y_dependencies

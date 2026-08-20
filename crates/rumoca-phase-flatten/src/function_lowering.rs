@@ -637,10 +637,6 @@ fn record_param_reference(param: &str, _span: rumoca_core::Span) -> rumoca_core:
     rumoca_core::Reference::generated(param)
 }
 
-// =============================================================================
-// Post-collection passes: record decomposition
-// =============================================================================
-
 /// Decompose record-typed function parameters and rewrite call sites.
 ///
 /// For each function with a known record-typed input (e.g., `Complex`):

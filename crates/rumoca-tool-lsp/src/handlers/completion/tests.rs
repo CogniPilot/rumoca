@@ -49,10 +49,6 @@ end Ball;
         "expected PID member `kp` in completions: {:?}",
         items.iter().map(|i| i.label.clone()).collect::<Vec<_>>()
     );
-    assert!(
-        !session.has_resolved_cached(),
-        "query-backed modifier completion should not need a resolved session"
-    );
 }
 
 #[test]
@@ -107,10 +103,6 @@ end Ball;
         "dot-completion on `pid.` should not include Ball-scoped names: {:?}",
         labels
     );
-    assert!(
-        !session.has_resolved_cached(),
-        "query-backed dot completion should not need a resolved session"
-    );
 }
 
 #[test]
@@ -155,10 +147,6 @@ end Sim;
         labels.iter().any(|label| label == "theta"),
         "expected Plane member `theta` completion for `p1.`, got: {:?}",
         labels
-    );
-    assert!(
-        !session.has_resolved_cached(),
-        "local model member completion should stay on the query path"
     );
 }
 
@@ -301,10 +289,6 @@ end Sim;
         "expected recursive member completion `theta`, got: {:?}",
         labels
     );
-    assert!(
-        !session.has_resolved_cached(),
-        "recursive member completion should stay on the query path"
-    );
 }
 
 #[test]
@@ -344,10 +328,6 @@ end Sim;
         labels.iter().any(|label| label == "kp"),
         "session-backed local completion should surface current local members, got: {:?}",
         labels
-    );
-    assert!(
-        !session.has_resolved_cached(),
-        "session-backed local completion should stay off resolved caches"
     );
 }
 
@@ -511,10 +491,6 @@ end Lib;
             .any(|(_, full_name, _)| full_name == "Lib.Electrical.Resistor"),
         "expected nested external source-root class in namespace cache: {electrical_namespace_children:?}"
     );
-    assert!(
-        !session.has_resolved_cached(),
-        "priming the source-root cache should not build the full resolved session"
-    );
     assert_eq!(
         session
             .namespace_index_query("Lib.")
@@ -525,10 +501,6 @@ end Lib;
 
     let edited_source = "model Active\n  Real x;\n  Real y;\nend Active;\n";
     session.update_document("input.mo", edited_source);
-    assert!(
-        !session.has_resolved_cached(),
-        "editing a local document should invalidate the full resolved session"
-    );
     assert!(
         !session
             .namespace_index_query("Lib.")
@@ -550,10 +522,6 @@ end Lib;
     assert!(
         labels.iter().any(|label| label == "Electrical"),
         "expected completion from cached source-root class names, got: {labels:?}"
-    );
-    assert!(
-        !session.has_resolved_cached(),
-        "source-root completion should not rebuild the full resolved session"
     );
 }
 

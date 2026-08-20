@@ -360,32 +360,6 @@ pub(crate) fn non_causal_linear_op(op: &LinearOp) -> bool {
     )
 }
 
-pub(super) fn prepared_seed_loads(
-    row: &[LinearOp],
-    span: Option<rumoca_core::Span>,
-) -> Result<Box<[PreparedSeedLoad]>, EvalSolveError> {
-    let count = row
-        .iter()
-        .filter(|op| {
-            matches!(
-                op,
-                LinearOp::LoadSeed { .. } | LinearOp::LoadIndexedSeed { .. }
-            )
-        })
-        .count();
-    let mut loads = prepared_vec_with_capacity(count, "prepared row seed loads", span)?;
-    for op in row {
-        match *op {
-            LinearOp::LoadSeed { index, .. } => loads.push(PreparedSeedLoad::Direct(index)),
-            LinearOp::LoadIndexedSeed { base, count, .. } => {
-                loads.push(PreparedSeedLoad::Indexed { base, count });
-            }
-            _ => {}
-        }
-    }
-    Ok(loads.into_boxed_slice())
-}
-
 pub(super) fn prepared_vec_with_capacity<T>(
     capacity: usize,
     context: &'static str,

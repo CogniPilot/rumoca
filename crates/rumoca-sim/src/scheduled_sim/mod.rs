@@ -208,7 +208,6 @@ pub fn run(args: ScheduledSimArgs) -> std::result::Result<(), ScheduledSimError>
         })?;
     eprintln!("  Inputs: {:?}", session.input_names());
 
-    // Start HTTP viewer server in background
     let http_port = args.http_port;
     let ws_port = args.ws_port;
     let scene_script = args.scene_script.clone();

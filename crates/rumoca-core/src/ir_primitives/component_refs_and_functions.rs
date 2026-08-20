@@ -145,14 +145,6 @@ impl<'a> ComponentReferenceScope<'a> {
         self.parts.last().map(|part| part.ident.as_str())
     }
 
-    pub fn parent_ident(self) -> Option<&'a str> {
-        self.parts
-            .len()
-            .checked_sub(2)
-            .and_then(|index| self.parts.get(index))
-            .map(|part| part.ident.as_str())
-    }
-
     pub fn prefix_parts(self) -> &'a [ComponentRefPart] {
         self.parts
             .len()
@@ -640,11 +632,6 @@ pub(super) fn derivative_state_name(name: &VarName) -> VarName {
     strip_trailing_subscript_suffix(name.as_str()).map_or_else(|| name.clone(), VarName::new)
 }
 
-pub(super) fn derivative_name_matches_state(name: &VarName, state: &VarName) -> bool {
-    name == state
-        || strip_trailing_subscript_suffix(name.as_str()).is_some_and(|base| base == state.as_str())
-}
-
 fn collect_statement_outputs(statement: &Statement, outputs: &mut Vec<Reference>) {
     match statement.as_unspanned() {
         Statement::Assignment { comp, .. } => {
@@ -1073,11 +1060,6 @@ impl FunctionParam {
 
     pub fn dimensions(&self) -> &[i64] {
         self.effective_type.dimensions()
-    }
-
-    pub fn with_effective_type(mut self, effective_type: EffectiveType) -> Self {
-        self.effective_type = effective_type;
-        self
     }
 
     pub fn with_shape_expr(mut self, shape_expr: Vec<Subscript>) -> Self {

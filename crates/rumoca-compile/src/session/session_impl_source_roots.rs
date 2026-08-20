@@ -302,7 +302,8 @@ impl Session {
             .collect()
     }
 
-    pub fn dirty_source_root_class_prefixes(&self, source_root_key: &str) -> Vec<String> {
+    #[cfg(test)]
+    pub(crate) fn dirty_source_root_class_prefixes(&self, source_root_key: &str) -> Vec<String> {
         self.source_sets
             .get(source_root_key)
             .map(|record| record.dirty_class_prefixes.iter().cloned().collect())
@@ -348,7 +349,8 @@ impl Session {
             .contains(path_key)
     }
 
-    pub fn source_root_load_reservation_epoch(&self, path_key: &str) -> Option<u64> {
+    #[cfg(test)]
+    pub(crate) fn source_root_load_reservation_epoch(&self, path_key: &str) -> Option<u64> {
         self.source_root_indexing
             .loading_path_keys
             .get(path_key)

@@ -1,5 +1,4 @@
-//! GALEC three-leg differential-execution harness (SPEC_0034 GAL-027/GAL-038,
-//! roadmap Phase 7 — Runtime and Conformance).
+//! GALEC three-leg differential-execution harness (SPEC_0034 GAL-027/GAL-038).
 // SPEC_0021 file-size exception: the three-leg harness and its fixture catalog
 // remain together to share one checked package. split plan: move model fixture
 // definitions and CSV comparison helpers into dedicated test support modules.

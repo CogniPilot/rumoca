@@ -149,7 +149,6 @@ impl Context {
             return None;
         }
 
-        // Get dimensions from direct lookup and alias resolution
         let direct_dims = self.array_dimensions.get(&target_name);
         let resolved_name = self.resolve_alias(&target_name);
         let alias_dims = (resolved_name != target_name)

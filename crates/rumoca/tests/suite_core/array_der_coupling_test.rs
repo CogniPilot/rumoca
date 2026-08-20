@@ -68,5 +68,8 @@ fn array_der_rows_do_not_form_spurious_coupled_scc() {
         "eval error: {:?}",
         probe.report.error
     );
-    assert!(!probe.report.has_nonfinite(), "derivatives must be finite");
+    assert!(
+        probe.report.nonfinite().next().is_none(),
+        "derivatives must be finite"
+    );
 }

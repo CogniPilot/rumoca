@@ -1,5 +1,5 @@
 use rumoca_core::{SourceId, Span};
-/// Phase 6.5: ComputeNode::LinSolve and LinearSolveComponent end-to-end tests.
+/// ComputeNode::LinSolve and LinearSolveComponent end-to-end tests.
 ///
 /// Model: xdot = A⁻¹ · b(y)   where A = [[2,1],[1,3]]
 ///

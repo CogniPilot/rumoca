@@ -141,11 +141,14 @@ fn derivative_lowering_is_structurally_discoverable() {
 
     let lowered = expression_from_ast(&call).unwrap();
     assert_eq!(lowered.span(), Some(derivative_span));
-    assert!(lowered.contains_der());
-    assert_eq!(
-        lowered.get_der_variable().map(|name| name.as_str()),
-        Some("x")
-    );
+    assert!(lowered.contains_subexpression(|expression| matches!(
+        expression,
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args,
+            ..
+        } if matches!(args.first(), Some(rumoca_core::Expression::VarRef { name, .. }) if name.as_str() == "x")
+    )));
     let mut states = Vec::new();
     lowered.collect_state_variables(&mut states);
     assert_eq!(states, vec![rumoca_core::VarName::new("x")]);

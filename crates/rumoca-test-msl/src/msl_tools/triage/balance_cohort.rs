@@ -1,12 +1,8 @@
 //! Measured ED001 balance cohort for the MSL triage report.
 //!
-//! The roadmap's open question was whether the residual ToDae gap is a balance
-//! cohort. It could not be answered before, because the harness had no way to
-//! tell an unbalanced model from any other ToDae failure. Now that the worker
-//! records the real SPEC_0008 code and the balance breakdown, this module
-//! reports the cohort as measured data: how many ToDae failures there are, how
-//! many of them are actually ED001, and for each ED001 model which component
-//! dominates the gap and which balance clamps were exercised.
+//! The worker records the typed SPEC_0008 code and balance breakdown. This
+//! module reports how many ToDae failures are ED001 and, for each ED001 model,
+//! which component dominates the gap and which balance clamps were exercised.
 
 use rumoca_core::split_first_top_level;
 use rumoca_worker::ModelFailureBucket;

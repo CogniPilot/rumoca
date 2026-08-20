@@ -27,10 +27,6 @@ fn render_block(block: &Block) -> Result<String, String> {
     .map_err(|error| error.to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Builders
-// ---------------------------------------------------------------------------
-
 fn n(name: &str) -> Name {
     Name::ident(name)
 }
@@ -129,10 +125,6 @@ fn call(function: &str, arguments: Vec<Expression>) -> FunctionCall {
         arguments,
     }
 }
-
-// ---------------------------------------------------------------------------
-// PID-shaped golden fixture (independently authored)
-// ---------------------------------------------------------------------------
 
 fn rate_controller_interface() -> Vec<InterfaceVariable> {
     vec![
@@ -392,10 +384,6 @@ fn golden_pid_shaped_block_validates() {
     rumoca_ir_galec::validate(&rate_controller()).expect("golden PID fixture must validate");
 }
 
-// ---------------------------------------------------------------------------
-// 2D array + for-loop fixture (array-nativeness, GAL-026)
-// ---------------------------------------------------------------------------
-
 fn matrix_startup() -> BlockMethod {
     let zero_row = || Expression::Array(vec![r(0.0), r(0.0), r(0.0)]);
     BlockMethod {
@@ -530,10 +518,6 @@ fn golden_array_native_block() {
 fn golden_array_native_block_validates() {
     rumoca_ir_galec::validate(&matrix_averager()).expect("array-native fixture must validate");
 }
-
-// ---------------------------------------------------------------------------
-// Signal machinery fixture (GAL-018)
-// ---------------------------------------------------------------------------
 
 fn classify_function() -> UserFunction {
     UserFunction {
@@ -776,10 +760,6 @@ fn golden_signal_machinery_block() {
 fn golden_signal_machinery_block_validates() {
     rumoca_ir_galec::validate(&signal_guard()).expect("signal fixture must validate");
 }
-
-// ---------------------------------------------------------------------------
-// Structural errors and layout details
-// ---------------------------------------------------------------------------
 
 fn minimal_block(statements: Vec<Spanned<Statement>>) -> Block {
     let mut block = Block::new(n("Minimal"));

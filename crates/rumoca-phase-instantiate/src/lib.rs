@@ -380,7 +380,6 @@ impl InstantiateContext {
             context_path_def_ids: Vec::new(),
             next_instance_id: 0,
             mod_env: ast::ModificationEnvironment::new(),
-            // Start with one empty scope for the root
             inner_scopes: vec![IndexMap::default()],
             missing_inners: Vec::new(),
             scope_frames: vec![ScopeFrame::default()],
@@ -1730,13 +1729,8 @@ fn instantiate_nested_class(
     let shifted_parent_keys = collect_shifted_parent_mod_keys(comp, &mod_env_snapshot);
     let targeted_keys = collect_targeted_mod_keys(comp, &mod_env_snapshot);
 
-    // Step 1: Shift existing modifications that target this component's children.
-    // These are resolved with the parent scope's mod_env available, then collected.
     shift_modifications_down(ctx, &comp.name);
 
-    // Step 2: Add this component's own modifications to mod_env.
-    // Resolution of modification values (e.g., resolving `n` in `sub(n=n)`) uses
-    // the parent scope's mod_env, which is still fully available at this point.
     populate_modification_environment(
         ctx,
         tree,
@@ -1751,7 +1745,6 @@ fn instantiate_nested_class(
         },
     )?;
 
-    // Step 2.5: Propagate record bindings to field bindings (MLS §7.2)
     let record_projected_keys = if let Some(binding_expr) = binding_for_record_expansion {
         propagate_record_binding_to_fields(
             tree,
@@ -1769,12 +1762,6 @@ fn instantiate_nested_class(
         IndexMap::default()
     };
 
-    // Step 2.6: Scope the mod_env to only contain entries relevant to this nested class.
-    // After steps 1-2.5, the mod_env contains both parent-scope entries and newly added
-    // entries (shifted, populated, record-propagated). We remove parent-scope entries that
-    // were NOT explicitly targeted at this component. This prevents name collisions where
-    // a parent parameter (e.g., `T`) leaks into a nested class that has a component with
-    // the same name (e.g., HeatPort's `T` field). See MLS §7.2.
     let referenced_mod_roots = collect_referenced_mod_roots(comp);
     ctx.mod_env_mut().active.retain(|key, _| {
         // Keep entries not in the snapshot (they were newly added)
@@ -1791,7 +1778,6 @@ fn instantiate_nested_class(
 
     let eq_size = inheritance::equality_constraint_output_size(nested_class);
 
-    // Step 3: Push inherited scope metadata and instantiate nested class.
     ctx.push_scope_frame(ScopeFrameInput {
         variability: effective_variability,
         causality,

@@ -45,14 +45,6 @@ pub(super) use template_partition::{
     wgsl_kernel_schedule_entry_count, wgsl_kernel_workgroup_total,
 };
 
-// ─── Typed scalar-program rows ───────────────────────────────────────────────
-//
-// Templates receive scalar-program rows as these objects instead of
-// serde-bridged values: per-row value bridging dominated render time on
-// large models (each access re-serialized op subtrees). The row renderers
-// downcast and walk the typed ops directly; plain-value rows (tests,
-// custom contexts) keep the original walk.
-
 #[derive(Debug)]
 
 pub(super) struct SolveRowValue {

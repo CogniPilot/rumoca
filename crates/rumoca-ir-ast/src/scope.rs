@@ -38,7 +38,6 @@ impl ScopeTree {
     /// Create a new scope tree with a global scope.
     pub fn new() -> Self {
         let mut tree = Self::default();
-        // Create the global scope
         tree.scopes.push(Scope {
             kind: ScopeKind::Global,
             parent: None,
@@ -139,12 +138,10 @@ impl ScopeTree {
                 break;
             };
 
-            // Check direct members
             if let Some(&def_id) = s.members.get(name) {
                 return Some(def_id);
             }
 
-            // Check imports
             if let Some(def_id) = s.imports.iter().find_map(|import| import.resolves(name)) {
                 return Some(def_id);
             }

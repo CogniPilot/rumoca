@@ -68,10 +68,6 @@ pub(super) fn check(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Identifier and quoted-identifier legality
-// ---------------------------------------------------------------------------
-
 /// Check a declared [`Name`] (plain or quoted) at a location.
 fn check_name(
     name: &Name,
@@ -217,10 +213,6 @@ fn is_positive_integer(text: &str) -> bool {
     chars.next().is_some_and(|c| c.is_ascii_digit() && c != '0')
         && chars.all(|c| c.is_ascii_digit())
 }
-
-// ---------------------------------------------------------------------------
-// Section checks
-// ---------------------------------------------------------------------------
 
 fn check_interface(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
     let rank = |kind: InterfaceKind| match kind {
@@ -444,10 +436,6 @@ fn check_if_declarations(
         check_statement_declarations(else_body, &else_path, diags);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn note_duplicate(
     seen: &mut Vec<String>,

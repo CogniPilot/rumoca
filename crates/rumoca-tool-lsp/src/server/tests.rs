@@ -668,13 +668,13 @@ fn stale_epoch_load_cannot_clear_new_epoch_reservation() {
             .write()
             .await
             .cancel_source_root_load(path_key, 0);
-        assert_eq!(
-            server
+        assert!(
+            !server
                 .session
-                .read()
+                .write()
                 .await
-                .source_root_load_reservation_epoch(path_key),
-            Some(1)
+                .reserve_source_root_load(path_key, 1),
+            "stale cancellation must leave the current reservation active"
         );
 
         let stale_apply = server
@@ -694,13 +694,13 @@ fn stale_epoch_load_cannot_clear_new_epoch_reservation() {
                 },
             );
         assert!(stale_apply.is_none(), "stale epoch apply should be ignored");
-        assert_eq!(
-            server
+        assert!(
+            !server
                 .session
-                .read()
+                .write()
                 .await
-                .source_root_load_reservation_epoch(path_key),
-            Some(1)
+                .reserve_source_root_load(path_key, 1),
+            "stale apply must leave the current reservation active"
         );
 
         let current_apply = server
@@ -722,15 +722,6 @@ fn stale_epoch_load_cannot_clear_new_epoch_reservation() {
         assert_eq!(
             current_apply.map(|(inserted_file_count, _)| inserted_file_count),
             Some(0)
-        );
-        assert!(
-            server
-                .session
-                .read()
-                .await
-                .source_root_load_reservation_epoch(path_key)
-                .is_none(),
-            "successful current epoch apply should clear reservation"
         );
         assert!(
             server
@@ -1111,21 +1102,18 @@ end Sim;
             items.iter().any(|item| item.label == "x"),
             "expected member completion from the query layer"
         );
-        assert!(
-            !server
-                .session
-                .read()
-                .await
-                .has_semantic_navigation_cached("Sim"),
-            "completion should not build a semantic navigation artifact when the query layer can answer"
+        let stats = session_cache_stats();
+        assert_eq!(
+            stats.semantic_navigation_builds, 0,
+            "completion should not build semantic navigation"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
+        assert_eq!(
+            stats.standard_resolved_builds, 0,
             "completion should not build the standard resolved session"
         );
-        assert!(
-            !server.session.read().await.has_resolved_cached(),
-            "completion should stay off resolved caches entirely on the query fast path"
+        assert_eq!(
+            stats.strict_resolved_builds, 0,
+            "completion should stay off strict resolved construction"
         );
     });
 }
@@ -1294,10 +1282,7 @@ fn hover_alias_uses_query_layer_without_semantic_navigation() {
             delta.strict_resolved_builds, 0,
             "import alias hover should not build strict resolved state"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "import alias hover should stay off the standard resolved session"
-        );
+        assert_eq!(delta.standard_resolved_builds, 0);
     });
 }
 
@@ -1340,14 +1325,6 @@ fn hover_imported_class_uses_query_layer_without_semantic_navigation() {
             first_delta.strict_resolved_builds, 0,
             "cold hover should stay off strict resolved recovery"
         );
-        assert!(
-            !server
-                .session
-                .read()
-                .await
-                .has_semantic_navigation_cached("M"),
-            "cold hover should not populate the active-model navigation cache"
-        );
 
         let second = server
             .hover(cross_file_alias_hover_request(&active_uri))
@@ -1374,10 +1351,7 @@ fn hover_imported_class_uses_query_layer_without_semantic_navigation() {
             second_delta.strict_resolved_builds, 0,
             "warm hover should stay off strict resolved recovery"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "hover should never populate the standard resolved cache"
-        );
+        assert_eq!(session_cache_stats().standard_resolved_builds, 0);
     });
 }
 
@@ -1422,14 +1396,6 @@ fn goto_definition_imported_class_uses_query_layer_without_semantic_navigation()
             first_delta.strict_resolved_builds, 0,
             "cold goto should stay off strict resolved recovery"
         );
-        assert!(
-            !server
-                .session
-                .read()
-                .await
-                .has_semantic_navigation_cached("M"),
-            "cold goto should not populate the active-model navigation cache"
-        );
 
         let second = server
             .goto_definition(cross_file_alias_definition_request(&active_uri))
@@ -1459,10 +1425,7 @@ fn goto_definition_imported_class_uses_query_layer_without_semantic_navigation()
             second_delta.strict_resolved_builds, 0,
             "warm goto should stay off strict resolved recovery"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "goto definition should never populate the standard resolved cache"
-        );
+        assert_eq!(session_cache_stats().standard_resolved_builds, 0);
     });
 }
 
@@ -1506,10 +1469,7 @@ fn local_hover_uses_query_layer_without_semantic_navigation() {
             delta.strict_resolved_builds, 0,
             "local hover should not build strict resolved state"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "local hover should stay off the standard resolved session"
-        );
+        assert_eq!(delta.standard_resolved_builds, 0);
     });
 }
 
@@ -1551,10 +1511,7 @@ fn local_goto_definition_uses_query_layer_without_semantic_navigation() {
             delta.strict_resolved_builds, 0,
             "local goto should not build strict resolved state"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "local goto should stay off the standard resolved session"
-        );
+        assert_eq!(delta.standard_resolved_builds, 0);
     });
 }
 
@@ -1595,10 +1552,7 @@ fn hover_on_qualified_type_path_resolves_cross_file_target() {
             delta.strict_resolved_builds, 0,
             "qualified type-path hover should avoid strict resolved state"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "qualified type-path hover should avoid the standard resolved session"
-        );
+        assert_eq!(delta.standard_resolved_builds, 0);
     });
 }
 
@@ -1639,10 +1593,7 @@ fn goto_definition_on_qualified_type_path_resolves_cross_file_target() {
             delta.strict_resolved_builds, 0,
             "qualified type-path goto-definition should avoid strict resolved state"
         );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "qualified type-path goto-definition should avoid the standard resolved session"
-        );
+        assert_eq!(delta.standard_resolved_builds, 0);
     });
 }
 

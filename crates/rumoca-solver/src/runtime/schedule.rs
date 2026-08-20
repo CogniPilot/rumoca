@@ -8,7 +8,6 @@ use crate::timeline::{
 
 #[derive(Debug, Clone)]
 pub struct RuntimeStopSchedule {
-    scheduled_time_events: ScheduledTimeEvents,
     active_stop: f64,
 }
 
@@ -434,18 +433,10 @@ impl RuntimeStopSchedule {
     pub fn new(events: Vec<f64>, t_start: f64, t_current: f64, t_end: f64) -> Self {
         let mut scheduled_time_events = ScheduledTimeEvents::new(events, t_start);
         let active_stop = scheduled_time_events.next_stop_time(t_current, t_end);
-        Self {
-            scheduled_time_events,
-            active_stop,
-        }
+        Self { active_stop }
     }
 
     pub fn active_stop(&self) -> f64 {
-        self.active_stop
-    }
-
-    pub fn rearm(&mut self, t_current: f64, t_end: f64) -> f64 {
-        self.active_stop = self.scheduled_time_events.next_stop_time(t_current, t_end);
         self.active_stop
     }
 }
@@ -470,14 +461,6 @@ mod tests {
             initial_static_event_pre_mode(&problem, 0.0),
             Some(EventPreMode::FollowCurrent)
         );
-    }
-
-    #[test]
-    fn runtime_stop_schedule_advances_across_discontinuities() {
-        let mut schedule = RuntimeStopSchedule::new(vec![0.2, 0.5], 0.0, 0.0, 1.0);
-        assert!((schedule.active_stop() - 0.2).abs() <= 1.0e-15);
-        assert!((schedule.rearm(0.2, 1.0) - 0.5).abs() <= 1.0e-15);
-        assert!((schedule.rearm(0.5, 1.0) - 1.0).abs() <= 1.0e-15);
     }
 
     #[test]

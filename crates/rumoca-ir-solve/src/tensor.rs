@@ -1100,7 +1100,7 @@ impl<'de> Deserialize<'de> for ComputeBlock {
 
 /// Register range for a tensor operand in a `ComputeNode`.
 ///
-/// Shapes follow Modelica's row-major convention. Used in Phase 2 tensor ops.
+/// Shapes follow Modelica's row-major convention.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum TensorSource {
     /// Contiguous virtual registers `start..start+product(shape)`, row-major.

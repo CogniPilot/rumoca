@@ -68,13 +68,13 @@ export function registerModelicaLanguage(monaco) {
                         '@default': 'identifier'
                     }
                 }],
-                [/[{}()\[\]]/, 'delimiter.bracket'],
+                [/[{}()[\]]/, 'delimiter.bracket'],
                 [/[;,.]/, 'delimiter'],
                 // Comments must be matched before '/' operator tokens.
                 [/\/\/.*$/, 'comment'],
                 [/\/\*/, 'comment', '@comment'],
                 [/[<>=!]+/, 'operator'],
-                [/[+\-*\/^:]/, 'operator'],
+                [/[+\-*/^:]/, 'operator'],
                 [/\d+\.?\d*([eE][-+]?\d+)?/, 'number'],
                 [/"([^"\\]|\\.)*"/, 'string'],
             ],

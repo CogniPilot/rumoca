@@ -235,7 +235,6 @@ fn build_conditional_residual_from_simple(
         .map(|(cond, eqs)| (cond.clone(), build_simple_equation_residual(&eqs[eq_idx])))
         .collect();
 
-    // Get else branch residual.
     let else_residual = else_simple_eqs
         .get(eq_idx)
         .map(build_simple_equation_residual)
@@ -474,7 +473,6 @@ pub(crate) fn expand_range_indices(
             }
             Ok(indices)
         }
-        // Handle a single integer as 1:n
         _ => {
             if let Some(n) = try_eval_integer_with_ctx(ctx, range_expr, prefix) {
                 Ok((1..=n).collect())
@@ -820,7 +818,6 @@ fn try_eval_size_call(
     #[cfg(feature = "tracing")]
     debug!(array = %array_name, "looking up array dimensions for size()");
 
-    // Get array dimensions with scope resolution
     let dims = match lookup_array_dimensions_in_scope(ctx, cr, prefix) {
         Some(d) => d,
         None => {

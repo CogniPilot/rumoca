@@ -244,12 +244,6 @@ impl SourceMap {
         Some(Span::from_offsets(source, start, end))
     }
 
-    /// Try to create a Span from a file name and byte offsets.
-    pub fn try_location_to_span(&self, file_name: &str, start: usize, end: usize) -> Option<Span> {
-        let source_id = self.get_id(file_name)?;
-        Some(Span::from_offsets(source_id, start, end))
-    }
-
     /// Snapshot file-name to source-id mappings.
     pub fn source_ids(&self) -> HashMap<String, SourceId> {
         self.storage.name_to_id.clone()
@@ -279,15 +273,12 @@ mod tests {
     use crate::{Diagnostic, Label, PrimaryLabel};
 
     #[test]
-    fn try_location_to_span_does_not_misattribute_unknown_files_to_source_zero() {
+    fn source_name_lookup_does_not_misattribute_unknown_files_to_source_zero() {
         let mut source_map = SourceMap::new();
         let source = source_map.add("known.mo", "model Known end Known;");
 
-        assert_eq!(
-            source_map.try_location_to_span("known.mo", 1, 5),
-            Some(Span::from_offsets(source, 1, 5))
-        );
-        assert_eq!(source_map.try_location_to_span("missing.mo", 1, 5), None);
+        assert_eq!(source_map.get_id("known.mo"), Some(source));
+        assert_eq!(source_map.get_id("missing.mo"), None);
     }
 
     #[test]
@@ -332,14 +323,10 @@ mod tests {
     }
 
     #[test]
-    fn try_span_matches_try_location_to_span() {
+    fn try_span_returns_registered_source_span() {
         let mut map = SourceMap::new();
         map.add("pkg/A.mo", "model A end A;");
         let source = SourceId::from_source_name("pkg/A.mo");
-        assert_eq!(
-            map.try_span(source, 6, 7),
-            map.try_location_to_span("pkg/A.mo", 6, 7)
-        );
         assert_eq!(
             map.try_span(source, 6, 7),
             Some(Span::from_offsets(source, 6, 7))

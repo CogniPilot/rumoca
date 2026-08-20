@@ -13,7 +13,7 @@ pub(crate) struct ReviewPacketArgs {
     /// Head git ref for the diff packet
     #[arg(long, default_value = "HEAD")]
     head: String,
-    /// Roadmap phase or milestone identifier
+    /// Review milestone identifier
     #[arg(long)]
     phase: String,
     /// Markdown output path

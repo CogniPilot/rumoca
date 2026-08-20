@@ -111,7 +111,6 @@ fn merge_single_definition(
     file_path: &str,
 ) -> Result<()> {
     let ast::StoredDefinition { classes, within } = def;
-    // Get the package prefix from the within clause
     let prefix = within.as_ref().map(|n| n.to_string()).unwrap_or_default();
 
     for (class_name, class_def) in classes {
@@ -191,7 +190,6 @@ fn place_class_in_hierarchy(
         if i == 0 {
             // Top-level package
             if !current_map.contains_key(*part) {
-                // Create the package
                 let location = package_placeholder_location(within, i, part, &class_def)?;
                 let pkg = package_placeholder(part, location);
                 current_map.insert(part.to_string(), pkg);

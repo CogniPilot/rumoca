@@ -605,18 +605,6 @@ fn external_object_descendants(
     descendants
 }
 
-// =============================================================================
-// Phase Wrappers - Newtype wrappers for type-safe phase transitions
-// =============================================================================
-//
-// These wrappers enforce that the correct phase has been completed before
-// proceeding. The underlying ClassTree is the same, but the wrappers provide
-// compile-time guarantees about which fields have been populated.
-//
-// Standalone progression: ParsedTree -> phase-resolve::ResolvedTree -> TypedTree.
-// Production model compilation instantiates after resolve, then annotates the
-// InstanceOverlay with post-instantiation type information before flattening.
-
 /// A ClassTree that has been parsed but not yet resolved.
 ///
 /// At this stage:

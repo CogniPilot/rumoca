@@ -91,29 +91,6 @@ pub(crate) fn simulate_model_with_workspace_sources_impl(
     })
 }
 
-pub(crate) fn simulate_model_with_source_roots_impl(
-    source: &str,
-    model_name: &str,
-    source_roots_json: &str,
-    t_end: f64,
-    dt: f64,
-    solver: &str,
-    parameter_overrides_json: &str,
-) -> Result<String, WasmError> {
-    with_singleton_session(|session| {
-        load_source_root_sources_in_session(session, source_roots_json)?;
-        simulate_model_in_session(
-            session,
-            source,
-            model_name,
-            t_end,
-            dt,
-            solver,
-            parameter_overrides_json,
-        )
-    })
-}
-
 pub(crate) fn model_parameter_metadata_impl(
     source: &str,
     model_name: &str,

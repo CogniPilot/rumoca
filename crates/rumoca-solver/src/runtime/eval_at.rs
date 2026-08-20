@@ -65,12 +65,6 @@ impl EvalAtReport {
             .chain(self.derivatives.iter().map(|slot| ("derivative", slot)))
             .filter(|(_, slot)| !slot.is_finite())
     }
-
-    /// Whether any solver value or derivative is non-finite.
-    #[must_use]
-    pub fn has_nonfinite(&self) -> bool {
-        self.nonfinite().next().is_some()
-    }
 }
 
 impl SolveRuntime {

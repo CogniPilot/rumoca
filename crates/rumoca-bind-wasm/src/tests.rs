@@ -166,14 +166,6 @@ fn with_singleton_document(source: &str) {
     session.update_document("input.mo", source);
 }
 
-fn singleton_session_has_standard_resolved_cached() -> bool {
-    let lock = SESSION.lock().expect("session lock");
-    let Some(session) = lock.as_ref() else {
-        return false;
-    };
-    session.has_standard_resolved_cached()
-}
-
 fn decode_semantic_tokens(tokens: &[lsp_types::SemanticToken]) -> Vec<(u32, u32, u32, u32)> {
     let mut decoded = Vec::with_capacity(tokens.len());
     let mut line = 0u32;
@@ -876,10 +868,7 @@ fn test_lsp_completion_uses_loaded_source_root_completion_cache() {
         first_delta.strict_resolved_builds, 0,
         "source-root namespace completion should avoid strict resolved state"
     );
-    assert!(
-        !singleton_session_has_standard_resolved_cached(),
-        "source-root namespace completion should avoid populating the standard resolved session"
-    );
+    assert_eq!(session_cache_stats().standard_resolved_builds, 0);
 
     let second = lsp_completion(source, line, character).expect("warm completion should succeed");
     let second_delta = session_cache_stats().delta_since(after_first);
@@ -956,6 +945,7 @@ fn test_lsp_completion_with_timing_reports_cache_breakdown() {
 fn test_lsp_completion_keeps_local_member_lookup_on_ast_fast_path() {
     let _guard = session_test_guard();
     clear_source_root_cache().expect("clear source-root cache");
+    reset_session_cache_stats();
 
     let source = r#"model Plane
   Real x, y, theta;
@@ -981,14 +971,7 @@ end Sim;
         first_items.iter().any(|item| item.label == "x"),
         "expected semantic member completion items, got: {first_items:?}"
     );
-    {
-        let lock = SESSION.lock().expect("session lock");
-        let session = lock.as_ref().expect("singleton session should exist");
-        assert!(
-            !session.has_semantic_navigation_cached("Sim"),
-            "local member completion should stay on the AST fast path"
-        );
-    }
+    assert_eq!(session_cache_stats().semantic_navigation_builds, 0);
 
     let second = lsp_completion(source, line, character).expect("warm completion should succeed");
     let second_items: Vec<lsp_types::CompletionItem> =
@@ -1037,6 +1020,7 @@ end PIDMSL;
 fn test_lsp_diagnostics_reuses_semantic_diagnostics_cache() {
     let _guard = session_test_guard();
     clear_source_root_cache().expect("clear source-root cache");
+    reset_session_cache_stats();
 
     let source = "model Active\n  Real x;\nequation\n  der(x) = -x;\nend Active;\n";
 
@@ -1047,14 +1031,11 @@ fn test_lsp_diagnostics_reuses_semantic_diagnostics_cache() {
         first_diags.is_empty(),
         "expected a clean model to produce no diagnostics, got: {first_diags:?}"
     );
-    {
-        let lock = SESSION.lock().expect("session lock");
-        let session = lock.as_ref().expect("singleton session should exist");
-        assert!(
-            session.has_semantic_diagnostics_cached("Active"),
-            "cold diagnostics should populate the semantic diagnostics cache"
-        );
-    }
+    let after_first = session_cache_stats();
+    let first_builds = after_first.interface_semantic_diagnostics_builds
+        + after_first.body_semantic_diagnostics_builds
+        + after_first.model_stage_semantic_diagnostics_builds;
+    assert!(first_builds > 0);
 
     let second = lsp_diagnostics(source).expect("warm diagnostics should succeed");
     let second_diags: Vec<lsp_types::Diagnostic> =
@@ -1063,6 +1044,11 @@ fn test_lsp_diagnostics_reuses_semantic_diagnostics_cache() {
         second_diags.is_empty(),
         "warm diagnostics should reuse cached semantic diagnostics for clean models"
     );
+    let second_delta = session_cache_stats().delta_since(after_first);
+    let second_hits = second_delta.interface_semantic_diagnostics_cache_hits
+        + second_delta.body_semantic_diagnostics_cache_hits
+        + second_delta.model_stage_semantic_diagnostics_cache_hits;
+    assert!(second_hits > 0);
 
     clear_source_root_cache().expect("clear source-root cache");
 }
@@ -1102,10 +1088,7 @@ end M;
         first_delta.semantic_navigation_builds, 0,
         "import-line hover should stay off semantic navigation"
     );
-    assert!(
-        !singleton_session_has_standard_resolved_cached(),
-        "hover should avoid populating the standard resolved session"
-    );
+    assert_eq!(session_cache_stats().standard_resolved_builds, 0);
 
     let second_json = lsp_hover(source, 1, char_pos).expect("warm hover");
     let second_delta = session_cache_stats().delta_since(after_first);
@@ -1118,10 +1101,7 @@ end M;
         second_delta.semantic_navigation_builds, 0,
         "warm hover should keep using the parsed-source-root fast path"
     );
-    assert!(
-        !singleton_session_has_standard_resolved_cached(),
-        "warm hover should continue avoiding the standard resolved session"
-    );
+    assert_eq!(session_cache_stats().standard_resolved_builds, 0);
 
     clear_source_root_cache().expect("clear source-root cache");
 }
@@ -1152,10 +1132,7 @@ end UsesModelica;
         delta.semantic_navigation_builds, 0,
         "qualified source-root hover should stay off semantic navigation"
     );
-    assert!(
-        !singleton_session_has_standard_resolved_cached(),
-        "qualified source-root hover should avoid populating the standard resolved session"
-    );
+    assert_eq!(session_cache_stats().standard_resolved_builds, 0);
 
     clear_source_root_cache().expect("clear source-root cache");
 }
@@ -1205,10 +1182,7 @@ end M;
         first_delta.semantic_navigation_builds, 0,
         "import-line goto-definition should stay off semantic navigation"
     );
-    assert!(
-        !singleton_session_has_standard_resolved_cached(),
-        "goto-definition should avoid populating the standard resolved session"
-    );
+    assert_eq!(session_cache_stats().standard_resolved_builds, 0);
 
     let second_json = lsp_definition(source, 1, char_pos).expect("warm definition");
     let second_delta = session_cache_stats().delta_since(after_first);
@@ -1222,10 +1196,7 @@ end M;
         second_delta.semantic_navigation_builds, 0,
         "warm goto-definition should keep using the parsed-source-root fast path"
     );
-    assert!(
-        !singleton_session_has_standard_resolved_cached(),
-        "warm goto-definition should continue avoiding the standard resolved session"
-    );
+    assert_eq!(session_cache_stats().standard_resolved_builds, 0);
 
     clear_source_root_cache().expect("clear source-root cache");
 }
@@ -1262,10 +1233,7 @@ end UsesModelica;
         delta.semantic_navigation_builds, 0,
         "qualified source-root goto-definition should stay off semantic navigation"
     );
-    assert!(
-        !singleton_session_has_standard_resolved_cached(),
-        "qualified source-root goto-definition should avoid populating the standard resolved session"
-    );
+    assert_eq!(session_cache_stats().standard_resolved_builds, 0);
 
     clear_source_root_cache().expect("clear source-root cache");
 }
@@ -1273,6 +1241,7 @@ end UsesModelica;
 #[test]
 fn test_lsp_completion_rebuilds_ast_local_members_after_source_edit() {
     let _guard = session_test_guard();
+    reset_session_cache_stats();
     clear_source_root_cache().expect("clear source-root cache");
 
     let source_v1 = r#"model Plane
@@ -1312,14 +1281,7 @@ end Sim;
         first_labels.iter().any(|label| label == "x"),
         "expected semantic member completion for x, got: {first_labels:?}"
     );
-    {
-        let lock = SESSION.lock().expect("session lock");
-        let session = lock.as_ref().expect("singleton session");
-        assert!(
-            !session.has_semantic_navigation_cached("Sim"),
-            "local member completion should stay on the AST fast path"
-        );
-    }
+    assert_eq!(session_cache_stats().semantic_navigation_builds, 0);
 
     let second = lsp_completion(source_v2, line, character).expect("edited completion should work");
     let second_labels = completion_labels(&second);

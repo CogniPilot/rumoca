@@ -324,10 +324,6 @@ pub trait FallibleStatementVisitor: FallibleExpressionVisitor {
     }
 }
 
-// =============================================================================
-// Common visitor implementations
-// =============================================================================
-
 /// Collector for function call names.
 ///
 /// Usage:
@@ -807,7 +803,7 @@ mod tests {
                     comp: component_reference(
                         "x",
                         rumoca_core::DefId::new(1),
-                        vec![Subscript::generated_index(1, test_span())],
+                        vec![Subscript::index(1, test_span())],
                     ),
                     value: make_var("u"),
                     span: test_span(),
@@ -829,6 +825,10 @@ mod tests {
 
         assert!(outputs.iter().any(|output| output.as_str() == "x"));
         assert!(outputs.iter().any(|output| output.as_str() == "y"));
-        assert!(outputs.iter().all(rumoca_core::Reference::has_structure));
+        assert!(
+            outputs
+                .iter()
+                .all(|reference| reference.component_ref().is_some())
+        );
     }
 }

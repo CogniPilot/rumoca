@@ -7,17 +7,17 @@ mod diagnostics;
 mod document_symbols;
 mod semantic_tokens;
 
-// Phase 1: Foundation
+// Editing and workspace queries
 mod completion;
 mod folding;
 mod formatting;
 pub mod hover;
 pub mod workspace_symbols;
 
-// Phase 2: Navigation
+// Navigation
 mod goto_definition;
 
-// Phase 3: Rich Intelligence
+// Semantic editor features
 mod code_actions;
 mod code_lens;
 mod document_links;

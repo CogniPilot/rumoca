@@ -24,10 +24,6 @@ fn messages(rule: &dyn LintRule, source: &str) -> Vec<String> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// naming-convention
-// ---------------------------------------------------------------------------
-
 #[test]
 fn naming_convention_flags_lowercase_class_names() {
     let found = check(&NamingConventionRule, "model myModel Real x; end myModel;");
@@ -90,10 +86,6 @@ fn naming_convention_ignores_functions_and_types() {
     assert!(check(&NamingConventionRule, source).is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// missing-documentation
-// ---------------------------------------------------------------------------
-
 #[test]
 fn missing_documentation_accepts_description_string_after_class_name() {
     let source = "model Foo \"A documented model\"\n  Real x;\nend Foo;\n";
@@ -137,10 +129,6 @@ fn missing_documentation_covers_functions_but_not_packages() {
     let found = messages(&MissingDocumentationRule, source);
     assert_eq!(found, vec!["function 'f' is missing a description string"]);
 }
-
-// ---------------------------------------------------------------------------
-// magic-number
-// ---------------------------------------------------------------------------
 
 #[test]
 fn magic_number_reads_exponent_literal_as_one_number() {
@@ -237,10 +225,6 @@ fn magic_number_still_reports_literals_inside_a_for_loop_body() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// external-purity-undeclared
-// ---------------------------------------------------------------------------
-
 #[test]
 fn bare_external_function_is_reported() {
     let source = "function f \"bare\"\n  input Real u;\n  output Real y;\nexternal \"C\" y = my_func(u);\nend f;\n";
@@ -270,10 +254,6 @@ fn modelica_function_without_a_purity_prefix_reports_nothing() {
         "function f \"body\"\n  input Real u;\n  output Real y;\nalgorithm\n  y := u;\nend f;\n";
     assert!(messages(&ExternalPurityRule, source).is_empty());
 }
-
-// ---------------------------------------------------------------------------
-// end-to-end through `lint`
-// ---------------------------------------------------------------------------
 
 #[test]
 fn documented_model_reports_nothing_even_at_help_level() {

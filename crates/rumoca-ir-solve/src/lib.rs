@@ -88,23 +88,6 @@ impl ExternalTables {
     pub fn len(&self) -> usize {
         self.tables.len()
     }
-
-    pub fn push_table(
-        &mut self,
-        id: u64,
-        data: Vec<Vec<f64>>,
-        columns: Vec<usize>,
-        smoothness: i64,
-        extrapolation: i64,
-    ) {
-        self.tables.push(ExternalTableData {
-            id,
-            data,
-            columns,
-            smoothness,
-            extrapolation,
-        });
-    }
 }
 
 /// A checked block of scalar programs with exact row provenance and output identity.
@@ -233,20 +216,6 @@ impl ScalarProgramBlock {
             output_indices,
             program_register_counts,
         }
-    }
-
-    pub fn with_contiguous_output_indices(
-        programs: Vec<Vec<LinearOp>>,
-        program_spans: Vec<Span>,
-        start: usize,
-    ) -> Result<Self, SolveProblemShapeContractError> {
-        let end = start
-            .checked_add(stored_output_count(&programs))
-            .ok_or_else(|| {
-                output_index_overflow("ScalarProgramBlock", 0, first_span(&program_spans))
-            })?;
-        let output_indices = (start..end).collect();
-        Self::with_output_indices(programs, program_spans, output_indices)
     }
 
     /// Constructs dense-output programs owned by one exact source occurrence.
@@ -402,19 +371,6 @@ impl ScalarProgramBlock {
         } else {
             Ok(self.output_indices.clone())
         }
-    }
-
-    pub fn placed_in_compute_block(
-        &self,
-        context: &str,
-        node_index: usize,
-        output_cursor: usize,
-    ) -> Result<Self, SolveProblemShapeContractError> {
-        Self::with_output_indices(
-            self.programs.clone(),
-            self.program_spans.clone(),
-            self.compute_block_output_indices(context, node_index, output_cursor)?,
-        )
     }
 
     pub fn advance_compute_block_output_cursor(

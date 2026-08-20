@@ -1,7 +1,6 @@
-//! Roadmap Track A (scalar reverse core): the reverse-mode VJP `Jᵀλ` of the
-//! state-derivative function must be the exact transpose of the forward JVP `Jv`.
-//! The correctness gate is the dot-product identity `λᵀ(J v) = (Jᵀλ)ᵀ v`
-//! (roadmap §9.1), checked here against the existing forward parameter-seed AD.
+//! The reverse-mode VJP `Jᵀλ` of the state-derivative function must be the exact
+//! transpose of the forward JVP `Jv`. The correctness gate is the dot-product
+//! identity `λᵀ(J v) = (Jᵀλ)ᵀ v`, checked against forward parameter-seed AD.
 
 use rumoca::Compiler;
 use rumoca_sim::SimOptions;

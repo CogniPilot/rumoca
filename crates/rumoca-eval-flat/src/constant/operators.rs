@@ -347,7 +347,6 @@ fn eval_negate(v: &Value, span: Span) -> Result<Value, EvalError> {
 // Comparison operations
 
 fn eval_eq(lhs: &Value, rhs: &Value) -> Result<Value, EvalError> {
-    // Handle mixed Integer/Real comparisons
     match (lhs, rhs) {
         (Value::Integer(a), Value::Real(b)) => Ok(Value::Bool((*a as f64) == *b)),
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Bool(*a == (*b as f64))),
@@ -356,7 +355,6 @@ fn eval_eq(lhs: &Value, rhs: &Value) -> Result<Value, EvalError> {
 }
 
 fn eval_neq(lhs: &Value, rhs: &Value) -> Result<Value, EvalError> {
-    // Handle mixed Integer/Real comparisons
     match (lhs, rhs) {
         (Value::Integer(a), Value::Real(b)) => Ok(Value::Bool((*a as f64) != *b)),
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Bool(*a != (*b as f64))),

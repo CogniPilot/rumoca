@@ -364,15 +364,6 @@ impl SolveValue {
     pub const fn kind(&self) -> SolveValueKind {
         self.kind
     }
-
-    #[must_use]
-    pub fn real_as_f64(&self) -> Option<f64> {
-        match self.kind {
-            SolveValueKind::Real32(bits) => Some(f64::from(f32::from_bits(bits))),
-            SolveValueKind::Real64(bits) => Some(f64::from_bits(bits)),
-            SolveValueKind::Integer(_) | SolveValueKind::Boolean(_) => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -621,7 +621,6 @@ fn type_default_value(type_name: &str, dims: &[i64]) -> Value {
     if dims.is_empty() {
         scalar
     } else {
-        // Create nested arrays for each dimension
         create_array_value(&scalar, dims)
     }
 }
@@ -1206,15 +1205,12 @@ fn eval_var_ref(
     eval: &EvalState<'_>,
 ) -> Result<Value, EvalError> {
     let name = reference.as_str();
-    // Check function environment
     if let Some(val) = env.get(name) {
         return apply_subscripts_flat(val.clone(), subscripts, env, eval);
     }
-    // Check global context
     if let Some(val) = eval.ctx.get(name) {
         return Ok(val.clone());
     }
-    // Check for enum literals
     if let Some((type_name, literal)) = eval.ctx.get_enum(name) {
         return Ok(Value::Enum(type_name.clone(), literal.clone()));
     }
@@ -1423,7 +1419,6 @@ fn eval_comprehension_recursive(
         return eval_expr_in_function(expr, env, eval);
     }
 
-    // Get current index and remaining indices
     let index = &indices[0];
     let var_name = index.name.to_string();
     let range_values = eval_range_expr(&index.range, env, eval)?;

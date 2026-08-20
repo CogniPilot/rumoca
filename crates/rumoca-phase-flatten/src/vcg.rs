@@ -1069,14 +1069,12 @@ fn select_root<'a>(
     definite_roots: &FxHashSet<String>,
     potential_roots: &[(String, i64)],
 ) -> &'a str {
-    // Check for definite root
     for &node in component {
         if definite_roots.contains(node) {
             return node;
         }
     }
 
-    // Check for potential root with lowest priority
     if let Some(node) = find_best_potential_root(component, potential_roots) {
         return node;
     }

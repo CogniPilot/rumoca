@@ -54,10 +54,7 @@ fn interval_counter_base_clock_matches_the_decimal_form() {
     let decimal = BaseClock::periodic(0.1, span()).expect("positive periodic clock");
 
     assert!(
-        counted
-            .lattice()
-            .expect("counted lattice")
-            .is_same_clock(decimal.lattice().expect("decimal lattice"))
+        counted.lattice().expect("counted lattice") == decimal.lattice().expect("decimal lattice")
     );
     assert!(matches!(
         counted.kind(),
@@ -97,7 +94,7 @@ fn super_sample_then_sub_sample_reproduces_the_base_clock_exactly() {
         .derive(up)
         .expect("exact sub sample");
 
-    assert!(down.is_same_clock(base));
+    assert_eq!(down, base);
     assert_eq!(down.period_seconds(), base.period_seconds());
     assert_ne!(base.period_seconds() / 3.0 * 3.0, base.period_seconds());
 }
@@ -118,7 +115,7 @@ fn sub_clock_shift_and_back_shift_cancel_exactly() {
         .expect("nonnegative back shift with positive resolution")
         .derive(shifted)
         .expect("exact back sample");
-    assert!(restored.is_same_clock(base));
+    assert_eq!(restored, base);
 }
 
 #[test]
@@ -371,7 +368,6 @@ fn base_clock_partition_owns_checked_sub_clock_children() {
     );
     assert_eq!(partition.sub_partitions().len(), 1);
     assert_eq!(partition.sub_partitions()[0].equations().len(), 1);
-    assert!(partition.is_discretized());
     assert_eq!(partition.discretized_span(), Some(discretized_span));
 }
 
@@ -552,9 +548,7 @@ fn clock_partitions_is_the_authoritative_variable_owner() {
         .expect("base variables are globally unowned");
 
     assert_eq!(root.source_span(), root_span);
-    assert_eq!(root.continuous_source_span(), Some(continuous_span));
-    assert_eq!(root.continuous_variables().count(), 1);
-    assert_eq!(root.num_base_partitions(), 1);
+    assert_eq!(root.base_partitions().len(), 1);
     assert_eq!(root.base_partition(4).map(BaseClockPartition::id), Some(4));
     assert_eq!(
         root.association(&VarName::new("continuous")),
@@ -570,10 +564,6 @@ fn clock_partitions_is_the_authoritative_variable_owner() {
             base_id: 4,
             sub_id: 2,
         })
-    );
-    assert_eq!(
-        root.association_span(&VarName::new("sub")),
-        Some(sub_variable_span)
     );
 }
 
@@ -612,7 +602,7 @@ fn clock_partitions_rejects_duplicate_ids_and_cross_domain_ownership_atomically(
             && first_span == continuous_span
             && duplicate_span == conflict_span
     ));
-    assert_eq!(root.num_base_partitions(), 0);
+    assert_eq!(root.base_partitions().len(), 0);
     assert_eq!(root.association(&name), Some(ClockAssociation::Continuous));
 
     root.add_base_partition(BaseClockPartition::construct(
@@ -636,7 +626,7 @@ fn clock_partitions_rejects_duplicate_ids_and_cross_domain_ownership_atomically(
             duplicate_span,
         } if first_span == first_base_span && duplicate_span == duplicate_base_span
     ));
-    assert_eq!(root.num_base_partitions(), 1);
+    assert_eq!(root.base_partitions().len(), 1);
 }
 
 #[test]

@@ -3,7 +3,6 @@
 use crate::generated::modelica_grammar_trait;
 use crate::helpers::{loc_info, merge_spans, token_span};
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::ComponentReference> for rumoca_ir_ast::ComponentReference {
     type Error = anyhow::Error;
 
@@ -42,7 +41,6 @@ impl TryFrom<&modelica_grammar_trait::ComponentReference> for rumoca_ir_ast::Com
     }
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::ComponentRefPart> for rumoca_ir_ast::ComponentRefPart {
     type Error = anyhow::Error;
 
@@ -60,7 +58,6 @@ impl TryFrom<&modelica_grammar_trait::ComponentRefPart> for rumoca_ir_ast::Compo
     }
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::Name> for rumoca_ir_ast::Name {
     type Error = anyhow::Error;
 

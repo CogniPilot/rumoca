@@ -1,5 +1,5 @@
 use rumoca_core::{SourceId, Span};
-/// Phase 5.4 — Drone Monte Carlo simulation on NVIDIA RTX 3090.
+/// Drone Monte Carlo simulation on NVIDIA RTX 3090.
 ///
 /// Planar quadrotor — small-angle linearisation (valid near hover, θ << 1 rad):
 ///   States  y = [x, y, theta, vx, vy, omega]
@@ -403,7 +403,7 @@ fn drone_monte_carlo_gpu() {
     );
 }
 
-/// Phase 6.2 — device-side Euler: verify `batch_euler_cuda_device` produces
+/// Device-side Euler: verify `batch_euler_cuda_device` produces
 /// identical results to `batch_euler_cuda` (host-side update reference).
 ///
 /// The device-side variant eliminates all per-step h2d/d2h round-trips by

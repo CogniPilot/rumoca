@@ -6,7 +6,7 @@
 use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
 use rayon::prelude::*;
-use rumoca_core::{DefId, Span};
+use rumoca_core::Span;
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, OptionalTimer,
     PhaseError, PrimaryLabel, SourceMap, maybe_elapsed_duration, maybe_start_timer,
@@ -111,14 +111,13 @@ pub use compile_phase_timing::{
 use compile_phase_timing::{maybe_record_compile_phase_timing, notify_compile_phase};
 mod compile_support;
 use compile_support::{
-    collect_class_component_members, compile_model_dae_internal,
-    compile_model_dae_internal_with_options, compile_model_internal,
+    compile_model_dae_internal, compile_model_dae_internal_with_options, compile_model_internal,
     compile_model_internal_with_options, compile_phase_result_from_dae,
     dae_model_outcome_from_flat, dae_phase_result_from_dae, diagnostics_from_vec,
     diagnostics_to_anyhow, finalize_strict_compile_report,
     finalize_strict_compile_report_from_uncached_targets, flat_model_outcome_from_typed,
-    is_simulatable_class_type, missing_inner_label, resolve_class_for_completion,
-    split_cached_target_results, typed_model_outcome_from_instantiated,
+    is_simulatable_class_type, missing_inner_label, split_cached_target_results,
+    typed_model_outcome_from_instantiated,
 };
 mod compiled_source_root;
 pub use compiled_source_root::CompiledSourceRoot;
@@ -493,9 +492,6 @@ enum SourceRootInputChange {
         kind: SourceRootKind,
         uris: IndexSet<String>,
     },
-    Remove {
-        key: String,
-    },
 }
 
 /// Transactional input change applied to a [`Session`].
@@ -543,13 +539,6 @@ impl SessionChange {
                 kind,
                 uris: members,
             });
-        self
-    }
-
-    /// Remove one source root from the session.
-    pub fn remove_source_root(&mut self, key: impl Into<String>) -> &mut Self {
-        self.source_root_changes
-            .push(SourceRootInputChange::Remove { key: key.into() });
         self
     }
 
@@ -675,6 +664,7 @@ impl ResolutionPlanningTree {
         }
     }
 
+    #[cfg(test)]
     fn completed(&self) -> Option<&Arc<ResolvedTree>> {
         match self {
             Self::Complete(resolved) => Some(resolved),
@@ -746,6 +736,7 @@ impl ResolvedBuildCache {
             })
     }
 
+    #[cfg(test)]
     fn has_completed_tree(&self) -> bool {
         self.standard.is_some()
             || self
@@ -1841,11 +1832,6 @@ impl PhaseResult {
     pub fn needs_inner(&self) -> bool {
         matches!(self, Self::NeedsInner { .. })
     }
-
-    /// Returns true if this is an actual failure.
-    pub fn is_failed(&self) -> bool {
-        matches!(self, Self::Failed { .. })
-    }
 }
 
 /// Summary statistics for bulk compilation.
@@ -1868,15 +1854,6 @@ pub struct CompilationSummary {
 }
 
 impl CompilationSummary {
-    /// Create a summary from compilation results.
-    pub fn from_results(results: &[(String, PhaseResult)]) -> Self {
-        let mut summary = Self::default();
-        for (_, result) in results {
-            summary.add_result(result);
-        }
-        summary
-    }
-
     pub(in crate::session) fn add_result(&mut self, result: &PhaseResult) {
         match result {
             PhaseResult::Success(r) => {

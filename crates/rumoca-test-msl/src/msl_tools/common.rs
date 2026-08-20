@@ -2,11 +2,10 @@ use anyhow::{Context, Result, bail};
 use rumoca_core::{msl_cache_dir_from_manifest, workspace_root_from_manifest_dir};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -19,7 +18,6 @@ pub const BATCH_SIZE_OMC_SIMULATION_DEFAULT: usize = 1;
 // simulate a model — a model is only fairly comparable under an equal budget.
 pub const BATCH_TIMEOUT_SECONDS_DEFAULT: u64 = rumoca_worker::MSL_SIM_TIMEOUT_SECS as u64;
 pub const AUTO_WORKERS_DEFAULT: usize = 0;
-pub const AUTO_WORKERS_RESERVED_CPUS: usize = 3;
 pub const OMC_THREADS_DEFAULT: usize = 1;
 pub const SIM_STOP_TIME_DEFAULT: f64 = 1.0;
 pub const OMC_BATCH_TIMEOUT_POLL: Duration = Duration::from_millis(25);
@@ -120,17 +118,6 @@ impl MslPaths {
         self.results_dir = results_dir;
         self
     }
-
-    pub fn work_dir_for_run_id(&self, run_id: Option<&str>) -> PathBuf {
-        let Some(run_id) = run_id else {
-            return self.work_dir.clone();
-        };
-        if run_id.is_empty() {
-            self.work_dir.clone()
-        } else {
-            self.work_dir.join(run_id)
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,14 +128,6 @@ pub struct BatchTimingDetail {
     pub elapsed_seconds: f64,
     pub timed_out: bool,
     pub skipped: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingBatch {
-    pub batch_idx: usize,
-    pub start_idx: usize,
-    pub end_idx: usize,
-    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -164,16 +143,6 @@ pub struct CommandRunOutput {
     pub stdout: String,
     pub stderr: String,
     pub timed_out: bool,
-}
-
-pub fn resolve_worker_count(workers_requested: usize) -> Result<usize> {
-    if workers_requested == 0 {
-        let cpu_count = std::thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(1);
-        return Ok(cpu_count.saturating_sub(AUTO_WORKERS_RESERVED_CPUS).max(1));
-    }
-    Ok(workers_requested.max(1))
 }
 
 pub fn choose_effective_batch_size(
@@ -234,13 +203,6 @@ pub fn msl_load_lines(paths: &MslPaths) -> Vec<String> {
     resolve_msl_packages(paths)
         .into_iter()
         .map(|(_, path)| format!("loadFile(\"{}\");", path.display()))
-        .collect()
-}
-
-pub fn msl_top_packages(paths: &MslPaths) -> Vec<&'static str> {
-    resolve_msl_packages(paths)
-        .into_iter()
-        .map(|(package_name, _)| package_name)
         .collect()
 }
 
@@ -392,77 +354,6 @@ pub fn apply_omc_thread_env(command: &mut Command, omc_threads: usize) {
     command.env("OPENBLAS_NUM_THREADS", &threads);
     command.env("MKL_NUM_THREADS", &threads);
     command.env("NUMEXPR_NUM_THREADS", &threads);
-}
-
-pub fn run_parallel_batches_with_progress<R, F, P>(
-    pending_batches: Vec<PendingBatch>,
-    workers: usize,
-    task: F,
-    mut on_complete: P,
-) -> Result<Vec<(PendingBatch, R)>>
-where
-    R: Send + 'static,
-    F: Fn(PendingBatch) -> Result<R> + Send + Sync + 'static,
-    P: FnMut(&PendingBatch, &R),
-{
-    if pending_batches.is_empty() {
-        return Ok(Vec::new());
-    }
-    if workers <= 1 {
-        let mut outputs = Vec::with_capacity(pending_batches.len());
-        for batch in pending_batches {
-            let output = task(batch.clone())?;
-            on_complete(&batch, &output);
-            outputs.push((batch, output));
-        }
-        return Ok(outputs);
-    }
-
-    let worker_count = workers.min(pending_batches.len()).max(1);
-    let queue = Arc::new(Mutex::new(VecDeque::from(pending_batches)));
-    let task = Arc::new(task);
-    let (tx, rx) = mpsc::channel::<Result<(PendingBatch, R)>>();
-    let mut handles = Vec::with_capacity(worker_count);
-
-    for _ in 0..worker_count {
-        let queue = Arc::clone(&queue);
-        let task = Arc::clone(&task);
-        let tx = tx.clone();
-        handles.push(thread::spawn(move || {
-            while let Some(batch) = pop_pending_batch(&queue) {
-                let result = task(batch.clone()).map(|output| (batch, output));
-                let _ = tx.send(result);
-            }
-        }));
-    }
-    drop(tx);
-
-    let mut outputs = Vec::new();
-    let mut first_error: Option<anyhow::Error> = None;
-    for message in rx {
-        match message {
-            Ok((batch, output)) => {
-                on_complete(&batch, &output);
-                outputs.push((batch, output));
-            }
-            Err(error) => {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
-            }
-        }
-    }
-    for handle in handles {
-        let _ = handle.join();
-    }
-    if let Some(error) = first_error {
-        return Err(error);
-    }
-    Ok(outputs)
-}
-
-fn pop_pending_batch(queue: &Arc<Mutex<VecDeque<PendingBatch>>>) -> Option<PendingBatch> {
-    queue.lock().ok().and_then(|mut queue| queue.pop_front())
 }
 
 pub fn has_fatal_omc_error(error_text: &str) -> bool {
@@ -744,10 +635,6 @@ mod tests {
                 .any(|line| line.contains("ModelicaTest 4.1.0/package.mo")),
             "expected ModelicaTest release-layout package load"
         );
-        assert_eq!(
-            msl_top_packages(&paths),
-            vec!["Complex", "ModelicaServices", "Modelica", "ModelicaTest"]
-        );
     }
 
     #[test]
@@ -767,7 +654,6 @@ mod tests {
                 .any(|line| line.contains("ModelicaTest/package.mo")),
             "expected source-tree ModelicaTest package load"
         );
-        assert_eq!(msl_top_packages(&paths), vec!["ModelicaTest"]);
     }
 
     #[test]

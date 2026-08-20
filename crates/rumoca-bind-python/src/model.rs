@@ -15,8 +15,8 @@ use std::time::Instant;
 use rumoca_sim::{SimOptions, SimSolverMode, simulate_with_diagnostics};
 
 /// Solver controls, bundled so `Model.simulate` stays ergonomic without a long
-/// argument list. Mirrors the roadmap `SimConfig`. The common `dt`/`solver`
-/// remain direct `simulate` kwargs (and override the config when both are set).
+/// argument list. The common `dt`/`solver` remain direct `simulate` kwargs and
+/// override the config when both are set.
 #[pyclass(module = "rumoca")]
 #[derive(Clone, Default)]
 pub struct SimConfig {

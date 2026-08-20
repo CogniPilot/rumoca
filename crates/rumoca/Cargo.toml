@@ -183,6 +183,7 @@ mimalloc = { workspace = true }
 walkdir = { workspace = true }
 serde = { workspace = true }
 syn = { workspace = true }
+proc-macro2 = { workspace = true }
 # Direct phase access for debugging/analysis tests
 rumoca-ir-ast = { workspace = true }
 rumoca-ir-flat = { workspace = true }

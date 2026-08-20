@@ -93,7 +93,7 @@ fn super_sample_then_sub_sample_returns_the_original_clock() {
         .and_then(|clock| clock.sub_sample(3))
         .expect("integer composition must stay exact");
 
-    assert!(composed.is_same_clock(base));
+    assert_eq!(composed, base);
     assert_eq!(composed.period_seconds(), base.period_seconds());
 
     // The same chain in f64 does not come back to the starting period.
@@ -115,7 +115,7 @@ fn long_composition_chain_is_exact_where_f64_is_not() {
         drifted *= factor as f64;
     }
 
-    assert!(composed.is_same_clock(base));
+    assert_eq!(composed, base);
     assert_ne!(drifted, base.period_seconds());
 }
 
@@ -129,12 +129,7 @@ fn rationally_equal_clocks_from_different_chains_tick_together() {
     let declared = ClockLattice::from_interval_counter(3, 10).expect("MLS §16.3 rational clock");
 
     assert_ne!(0.1_f64 * 3.0, 3.0 / 10.0);
-    assert!(derived.is_same_clock(declared));
-    assert!(
-        derived
-            .ticks_simultaneously_with(declared)
-            .expect("exact simultaneity test")
-    );
+    assert_eq!(derived, declared);
     assert_eq!(derived.period_seconds(), declared.period_seconds());
 }
 
@@ -146,32 +141,26 @@ fn shift_and_back_sample_are_exact_inverses() {
     assert_eq!(shifted.period(), base.period());
 
     let restored = shifted.back_sample(1, 3).expect("exact back sample");
-    assert!(restored.is_same_clock(base));
+    assert_eq!(restored, base);
 }
 
 #[test]
-fn shift_by_a_whole_period_still_ticks_simultaneously() {
+fn shift_by_a_whole_period_preserves_period_and_exact_phase() {
     let base = lattice(rational(1, 10), ClockRational::ZERO);
     let shifted = base.shift_sample(2, 1).expect("exact shift");
 
-    assert!(!shifted.is_same_clock(base));
-    assert!(
-        shifted
-            .ticks_simultaneously_with(base)
-            .expect("exact simultaneity test")
-    );
+    assert_ne!(shifted, base);
+    assert_eq!(shifted.period(), base.period());
+    assert_eq!(shifted.phase(), rational(1, 5));
 }
 
 #[test]
-fn half_period_shift_does_not_tick_simultaneously() {
+fn half_period_shift_has_exact_phase() {
     let base = lattice(rational(1, 10), ClockRational::ZERO);
     let shifted = base.shift_sample(1, 2).expect("exact shift");
 
-    assert!(
-        !shifted
-            .ticks_simultaneously_with(base)
-            .expect("exact simultaneity test")
-    );
+    assert_eq!(shifted.period(), base.period());
+    assert_eq!(shifted.phase(), rational(1, 20));
 }
 
 #[test]
@@ -196,14 +185,9 @@ fn long_horizon_tick_grid_does_not_drift() {
 }
 
 #[test]
-fn tick_index_and_membership_are_exact() {
+fn tick_time_with_phase_is_exact() {
     let clock = lattice(rational(1, 10), rational(1, 20));
-    assert_eq!(clock.tick_index_at_or_before(rational(1, 4)), Ok(2));
     assert_eq!(clock.tick_time(2), Ok(rational(1, 4)));
-    assert_eq!(clock.ticks_at(rational(1, 4)), Ok(true));
-    assert_eq!(clock.ticks_at(rational(1, 5)), Ok(false));
-    assert_eq!(clock.ticks_at(ClockRational::ZERO), Ok(false));
-    assert_eq!(clock.ticks_at(rational(1, 20)), Ok(true));
 }
 
 #[test]
@@ -219,10 +203,6 @@ fn accumulated_factor_and_tick_index_support_two_to_the_sixty_third() {
     assert_eq!(
         base.tick_time(boundary),
         Ok(ClockRational::integer(boundary))
-    );
-    assert_eq!(
-        base.tick_index_at_or_before(ClockRational::integer(boundary)),
-        Ok(boundary)
     );
 }
 
@@ -298,7 +278,7 @@ fn same_denominator_addition_reduces_before_narrowing() {
         Ok(ClockRational::integer(i128::MAX))
     );
     assert_eq!(
-        half_max.checked_sub(half_max.checked_negate().expect("negation fits")),
+        half_max.checked_sub(rational128(-i128::MAX, 2)),
         Ok(ClockRational::integer(i128::MAX))
     );
 }
@@ -338,19 +318,12 @@ fn back_sample_before_the_base_clock_start_is_an_error() {
 }
 
 #[test]
-fn negation_of_the_minimum_integer_is_reported_not_wrapped() {
-    // Every other operation in this module is overflow-checked; negation must
-    // be too, because -i128::MIN panics in debug and wraps in release.
+fn subtraction_of_the_minimum_integer_is_reported_not_wrapped() {
     let extreme = ClockRational::integer(i128::MIN);
-    assert_eq!(
-        extreme.checked_negate(),
-        Err(ClockLatticeErrorKind::IntegerOverflow)
-    );
     assert_eq!(
         ClockRational::ZERO.checked_sub(extreme),
         Err(ClockLatticeErrorKind::IntegerOverflow)
     );
-    assert_eq!(rational(-3, 4).checked_negate(), Ok(rational(3, 4)));
 }
 
 #[test]

@@ -21,10 +21,6 @@ use std::path::{Path, PathBuf};
 
 const PROFILES: [FormatProfile; 2] = [FormatProfile::Dymola, FormatProfile::Canonical];
 
-// ---------------------------------------------------------------------------
-// Significant-token scanner
-// ---------------------------------------------------------------------------
-
 fn is_word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
@@ -107,10 +103,6 @@ fn significant_tokens(source: &str) -> Vec<String> {
     tokens
 }
 
-// ---------------------------------------------------------------------------
-// Property harness
-// ---------------------------------------------------------------------------
-
 /// `None` when the two token streams agree, otherwise a compact excerpt around
 /// the first divergence (whole streams would be unreadable for MSL files).
 fn token_mismatch_summary(before: &[String], after: &[String]) -> Option<String> {
@@ -178,10 +170,6 @@ fn assert_format_stable(source: &str, label: &str) {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
 
 const FIXTURES: &[(&str, &str)] = &[
     (
@@ -296,10 +284,6 @@ fn significant_tokens_ignores_layout_but_keeps_comment_text() {
         "trailing whitespace inside a line comment is trimmable layout"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Repository corpora
-// ---------------------------------------------------------------------------
 
 fn crate_manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

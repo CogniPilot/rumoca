@@ -29,7 +29,10 @@ fn after(instant: f64) -> Expr {
 }
 
 fn when_assign(condition: Expr, target: &str, value: Expr) -> Equation {
-    Equation::When(vec![WhenBranch::assigning(condition, target, value)])
+    Equation::When(vec![WhenBranch {
+        condition,
+        body: vec![(target.to_string(), value)],
+    }])
 }
 
 fn counter(condition: Expr) -> Model {
@@ -96,8 +99,14 @@ fn the_first_elsewhen_branch_wins_a_simultaneous_rise() {
     let model = Model::new()
         .with_variable(Variable::discrete("y", Value::Real(0.0)))
         .with_equation(Equation::When(vec![
-            WhenBranch::assigning(after(0.5), "y", Expr::real(1.0)),
-            WhenBranch::assigning(after(0.5), "y", Expr::real(2.0)),
+            WhenBranch {
+                condition: after(0.5),
+                body: vec![("y".to_string(), Expr::real(1.0))],
+            },
+            WhenBranch {
+                condition: after(0.5),
+                body: vec![("y".to_string(), Expr::real(2.0))],
+            },
         ]));
     assert_eq!(run(&model).final_value("y"), Some(Value::Real(1.0)));
 }
@@ -189,9 +198,9 @@ fn a_self_rescheduling_guard_already_met_at_the_start_never_arms() {
 
 /// A discrete equation that negates its own `pre` never reaches `z == pre(z)`.
 ///
-/// This is the witness for "the Appendix B event iteration does not terminate in
-/// general" (see `ROADMAP.md`, proof obligation 4). It has to be a *bare*
-/// equation: an activation-driven flip converges instead, because advancing
+/// This witnesses that Appendix B event iteration does not terminate in
+/// general. It has to be a *bare* equation: an activation-driven flip converges
+/// instead, because advancing
 /// `pre` clears the edge after one iteration, which is why the obvious
 /// candidate `when b then b = not pre(b)` is not a witness.
 #[test]

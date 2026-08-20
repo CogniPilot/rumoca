@@ -417,7 +417,6 @@ impl Resolver {
             part.def_id = None;
         }
 
-        // Get the first part of the reference
         let first_name = &comp.parts[0].ident.text;
 
         // Look up the name in the scope tree

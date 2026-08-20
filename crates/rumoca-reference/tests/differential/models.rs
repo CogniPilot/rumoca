@@ -51,7 +51,10 @@ fn after(instant: f64) -> Expr {
 
 /// `when <condition> then <target> = <value>; end when;`
 fn when_assign(condition: Expr, target: &str, value: Expr) -> Equation {
-    Equation::When(vec![WhenBranch::assigning(condition, target, value)])
+    Equation::When(vec![WhenBranch {
+        condition,
+        body: vec![(target.to_string(), value)],
+    }])
 }
 
 /// Every hand-written case.
@@ -290,8 +293,14 @@ end ElsewhenPriority;
         model: Model::new()
             .with_variable(Variable::discrete("y", Value::Real(0.0)))
             .with_equation(Equation::When(vec![
-                WhenBranch::assigning(after(0.5), "y", Expr::real(1.0)),
-                WhenBranch::assigning(after(0.5), "y", Expr::real(2.0)),
+                WhenBranch {
+                    condition: after(0.5),
+                    body: vec![("y".to_string(), Expr::real(1.0))],
+                },
+                WhenBranch {
+                    condition: after(0.5),
+                    body: vec![("y".to_string(), Expr::real(2.0))],
+                },
             ])),
         observed: &["y"],
         slopes: &[],

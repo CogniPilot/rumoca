@@ -155,10 +155,6 @@ fn function_location(ctx: &BlockContext<'_>, name: &str) -> Location {
     ])
 }
 
-// ---------------------------------------------------------------------------
-// Call collection
-// ---------------------------------------------------------------------------
-
 /// Visit every function call in a statement list, including calls nested in
 /// expressions, with a statement-precise location.
 fn for_each_call(

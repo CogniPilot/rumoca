@@ -970,10 +970,6 @@ pub fn write_model_worker_response_file(
     write_json_file(path, response)
 }
 
-pub fn last_active_worker_phase(progress_jsonl: &Path) -> Option<WorkerProgressPhase> {
-    worker_progress_state(progress_jsonl).active_phase
-}
-
 struct WorkerProgressState {
     active_phase: Option<WorkerProgressPhase>,
     seen_progress: bool,

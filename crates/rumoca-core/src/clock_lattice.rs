@@ -245,21 +245,6 @@ impl ClockRational {
         Self::reduce(num, den)
     }
 
-    /// Exact negation.
-    ///
-    /// `-i128::MIN` is not representable, so negation is checked like every
-    /// other operation in this module: it reports `IntegerOverflow` rather than
-    /// panicking in debug builds or wrapping in release builds.
-    pub fn checked_negate(self) -> LatticeResult<Self> {
-        Ok(Self {
-            num: self
-                .num
-                .checked_neg()
-                .ok_or(ClockLatticeErrorKind::IntegerOverflow)?,
-            den: self.den,
-        })
-    }
-
     /// Exact product.
     pub fn checked_mul(self, other: Self) -> LatticeResult<Self> {
         if self.is_zero() || other.is_zero() {
@@ -321,11 +306,6 @@ impl ClockRational {
     /// numeric-scheduler boundary.
     pub fn to_f64(self) -> f64 {
         self.num as f64 / self.den as f64
-    }
-
-    /// Largest integer `k` with `k <= self`.
-    pub fn floor_integer(self) -> LatticeResult<i128> {
-        Ok(self.num.div_euclid(self.den))
     }
 
     /// The reduced rational that is closest to `seconds` and reproduces it
@@ -778,44 +758,6 @@ impl ClockLattice {
     /// Instant of tick `index` in seconds, rounded exactly once.
     pub fn tick_time_seconds(self, index: impl Into<i128>) -> LatticeResult<f64> {
         Ok(self.tick_time(index)?.to_f64())
-    }
-
-    /// Index of the last tick at or before `instant`, clamped at tick zero.
-    pub fn tick_index_at_or_before(self, instant: ClockRational) -> LatticeResult<i128> {
-        let elapsed = instant.checked_sub(self.phase)?;
-        if !elapsed.is_positive() {
-            return Ok(0);
-        }
-        elapsed.checked_div(self.period)?.floor_integer()
-    }
-
-    /// Whether `instant` is exactly a tick of this clock.
-    pub fn ticks_at(self, instant: ClockRational) -> LatticeResult<bool> {
-        let elapsed = instant.checked_sub(self.phase)?;
-        if elapsed.is_zero() {
-            return Ok(true);
-        }
-        if !elapsed.is_positive() {
-            return Ok(false);
-        }
-        let ratio = elapsed.checked_div(self.period)?;
-        Ok(ratio.denominator() == 1)
-    }
-
-    /// Exact clock identity (MLS §16.5: same base clock and same conversion
-    /// chain give the same lattice point).
-    pub fn is_same_clock(self, other: Self) -> bool {
-        self == other
-    }
-
-    /// Whether both clocks activate at the same instants, i.e. equal periods
-    /// and phases differing by a whole number of periods.
-    pub fn ticks_simultaneously_with(self, other: Self) -> LatticeResult<bool> {
-        if self.period != other.period {
-            return Ok(false);
-        }
-        let offset = self.phase.checked_sub(other.phase)?;
-        Ok(offset.checked_div(self.period)?.denominator() == 1)
     }
 }
 

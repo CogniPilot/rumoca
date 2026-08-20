@@ -531,7 +531,6 @@ impl Compiler {
             eprintln!("[rumoca] Source file: {}", file_name);
         }
 
-        // Create a session and add the document
         let mut session = Session::new(SessionConfig::default());
         self.load_required_source_roots(&mut session, source)?;
 

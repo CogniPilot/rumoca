@@ -107,10 +107,6 @@ impl ast::Visitor for DerInFunctionVisitor<'_> {
     }
 }
 
-// ============================================================================
-// DECL-020: der() on discrete variables
-// ============================================================================
-
 /// Check equations for der() applied to discrete variables.
 pub(super) fn check_der_on_discrete_eq(
     eq: &Equation,
@@ -190,10 +186,6 @@ impl ast::Visitor for DerOnDiscreteVisitor<'_> {
     }
 }
 
-// ============================================================================
-// DECL-009: Protected dot access
-// ============================================================================
-
 /// Check equations for protected component access (e.g., `a.x` where x is protected).
 pub(super) fn check_protected_access_eq(
     eq: &Equation,
@@ -256,10 +248,6 @@ impl ast::Visitor for ProtectedAccessVisitor<'_> {
         ast::Visitor::visit_component_reference(self, cref)
     }
 }
-
-// ============================================================================
-// CONN-029: Connect requires connectors
-// ============================================================================
 
 /// Check that connect() arguments refer to connector types.
 /// Check if a component reference accesses a protected member.
@@ -443,10 +431,6 @@ fn check_connect_expandable_compatibility(
     ));
 }
 
-// ============================================================================
-// EXPR-013: 'end' outside subscript context
-// ============================================================================
-
 /// Check equations for 'end' used outside of array subscripts.
 pub(super) fn check_end_outside_subscript_eq(eq: &Equation, diags: &mut Vec<Diagnostic>) {
     let mut visitor = EndOutsideSubscriptVisitor {
@@ -525,10 +509,6 @@ impl ast::Visitor for EndOutsideSubscriptVisitor<'_> {
         Continue(())
     }
 }
-
-// ============================================================================
-// EXPR-002: Real equality, EXPR-016: non-Boolean if, TYPE-005: class as value
-// ============================================================================
 
 /// Check equations for expression-level type issues that can be detected without
 /// full type inference.

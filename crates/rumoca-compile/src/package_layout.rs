@@ -1096,7 +1096,6 @@ mod tests {
         // Simulate a bare filename by using just the file name component
         let bare = Path::new(file.file_name().unwrap());
 
-        // Run from the temp directory so the bare filename resolves
         let prev = std::env::current_dir().expect("cwd");
         std::env::set_current_dir(temp.path()).expect("chdir");
         let result = collect_compile_unit_source_files(bare);

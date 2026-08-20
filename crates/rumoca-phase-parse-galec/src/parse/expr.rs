@@ -12,10 +12,6 @@ use crate::parse::generated::galec_grammar_trait as g;
 use crate::parse::refs::{computed_dimensions_to_vec, state_reference_tail_parts};
 use rumoca_ir_galec::ast::{BinaryOp, Expression};
 
-// ---------------------------------------------------------------------------
-// Precedence cascade — left folds
-// ---------------------------------------------------------------------------
-
 /// `expression : logical_or_expr` — the cascade entry; nothing to fold.
 impl TryFrom<&g::Expression> for Expression {
     type Error = anyhow::Error;
@@ -121,10 +117,6 @@ impl TryFrom<&g::MultiplicativeExpr> for Expression {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Precedence cascade — right fold (power)
-// ---------------------------------------------------------------------------
-
 /// `power_expr : unary_expr { '^' unary_expr }` — `^` is right-associative
 /// (`a^b^c == a^(b^c)`), so fold from the right.
 impl TryFrom<&g::PowerExpr> for Expression {
@@ -146,10 +138,6 @@ impl TryFrom<&g::PowerExpr> for Expression {
         Ok(acc)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Unary & primary
-// ---------------------------------------------------------------------------
 
 /// `unary_expr : neg | not_expr | primary`.
 ///
@@ -214,10 +202,6 @@ impl TryFrom<&g::ParenthesizedOrIf> for Expression {
     }
 }
 
-// ---------------------------------------------------------------------------
-// if-expression & function call
-// ---------------------------------------------------------------------------
-
 /// `if_expression : 'if' e 'then' e { 'elseif' e 'then' e } 'else' e`.
 impl TryFrom<&g::IfExpression> for rumoca_ir_galec::ast::IfExpression {
     type Error = anyhow::Error;
@@ -243,10 +227,6 @@ impl TryFrom<&g::FunctionCall> for rumoca_ir_galec::ast::FunctionCall {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers over non-`%nt_type` sub-productions (consumed inline, not via TryFrom)
-// ---------------------------------------------------------------------------
 
 /// `constant : 'true' | 'false' | integer | real` → the literal expression.
 ///

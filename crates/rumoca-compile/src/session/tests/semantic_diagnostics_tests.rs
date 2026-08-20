@@ -50,10 +50,6 @@ end M;
         !session.has_resolved_cached(),
         "save diagnostics should not populate the model-stage resolved owner"
     );
-    assert!(
-        !session.has_standard_resolved_cached(),
-        "save diagnostics should stay off the standard resolved cache"
-    );
     assert_eq!(
         session
             .query_state

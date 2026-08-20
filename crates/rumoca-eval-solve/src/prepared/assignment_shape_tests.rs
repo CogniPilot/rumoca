@@ -315,7 +315,7 @@ fn affine_residual_shape_isolates_nested_connection_difference() {
     y[6] = 2.0;
 
     assert!(!prepared.certifies_direct_target_assignment(0, 0, 4));
-    assert!(prepared.certifies_exact_target_assignment(0, 4));
+    assert!(prepared.certifies_exact_target_assignment_output(0, 0, 4));
     let value = prepared
         .eval_target_assignment_row_with_context(0, 4, &y, &[], 0.0, RowEvalContext::default())
         .expect("nested connection difference is exactly isolatable");

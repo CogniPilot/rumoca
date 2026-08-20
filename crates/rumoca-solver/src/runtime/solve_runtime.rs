@@ -25,8 +25,7 @@ use crate::runtime::solve_events::{
 use crate::runtime::solve_ops::write_clock_activation_params;
 use crate::{
     EventActionOutcome, RuntimeEventStop, RuntimeSolveError, SolveStopSchedule,
-    push_visible_values, relation_memory_value_from_root, replace_last_visible_values,
-    timeline::sample_time_match_with_tol,
+    push_visible_values, relation_memory_value_from_root,
 };
 use rumoca_eval_solve::refresh_plan::trace_refresh_plan;
 use rumoca_eval_solve::{
@@ -68,9 +67,9 @@ pub use initial_event::{
 };
 use plans::{
     RootConditionPlan, RootConditionPlanEntry, VisibleValuePlan, VisibleValuePlanEntry,
-    copy_grouped_expression_values, direct_time_root_search_default, direct_time_root_time,
-    direct_time_root_value, direct_visible_value, prepare_manifold_projection_programs,
-    root_condition_plan, total_root_condition_count, visible_value_plan,
+    copy_grouped_expression_values, direct_time_root_search_default, direct_time_root_value,
+    direct_visible_value, prepare_manifold_projection_programs, root_condition_plan,
+    total_root_condition_count, visible_value_plan,
 };
 use refresh_execution::static_refresh_parameter_indices;
 use refresh_projection::*;
@@ -365,11 +364,7 @@ impl SolveRuntime {
         Self::new(&model)
     }
 
-    // SPEC_0021: Exception - this top-level runtime entry point binds the
-    // complete construction-issued Solve owner inventory into the flat fields
-    // used by the hot path. Keeping the one-to-one binding visible makes
-    // coverage review safer than distributing it across partial builders.
-    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
+    // SPEC_0021: Exception - construction-issued owner binding stays contiguous for auditability.
     #[allow(clippy::too_many_lines)]
     pub fn new_with_execution_backend(
         model: &solve::SolveModel,
@@ -1016,29 +1011,6 @@ impl SolveRuntime {
             .map_err(Into::into)
     }
 
-    /// Commit an accepted delay-history point whose source expression must be
-    /// evaluated at a different time coordinate.
-    ///
-    /// Event left limits are owned by the event instant in accepted history,
-    /// but their expressions are evaluated at the previous representable time.
-    pub fn commit_delay_history_evaluated_at(
-        &self,
-        accepted_time: f64,
-        evaluation_time: f64,
-        solver_y: &[f64],
-        params: &[f64],
-    ) -> Result<(), RuntimeSolveError> {
-        self.delay_runtime
-            .commit_evaluated_at(
-                accepted_time,
-                evaluation_time,
-                solver_y,
-                params,
-                self.row_eval_context(),
-            )
-            .map_err(Into::into)
-    }
-
     pub fn root_condition_count(&self) -> usize {
         self.root_condition_count
     }
@@ -1391,34 +1363,6 @@ impl SolveRuntime {
             )
             .map_err(RuntimeSolveError::from)?;
         validate_finite_runtime_output("root search output", out)
-    }
-
-    pub fn next_planned_time_root(
-        &self,
-        params: &[f64],
-        current_t: f64,
-        target: f64,
-        tol: f64,
-    ) -> Result<Option<f64>, RuntimeSolveError> {
-        let Some(plan) = &self.root_condition_plan else {
-            return Ok(None);
-        };
-        let mut next = None;
-        for entry in &plan.entries {
-            let RootConditionPlanEntry::DirectTime(root) = entry else {
-                continue;
-            };
-            let event_time = direct_time_root_time(*root, params)?;
-            if !event_time.is_finite() {
-                continue;
-            }
-            if event_time > current_t + tol
-                && (event_time < target || sample_time_match_with_tol(event_time, target))
-            {
-                next = Some(next.map_or(event_time, |current: f64| current.min(event_time)));
-            }
-        }
-        Ok(next)
     }
 
     fn eval_root_conditions_from_refreshed_solver_y(

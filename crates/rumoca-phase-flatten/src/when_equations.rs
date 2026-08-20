@@ -235,7 +235,6 @@ fn flatten_when_if_equation(
         branches.push((condition, branch_eqs));
     }
 
-    // Process else branch
     let else_eqs = if let Some(else_equations) = else_block {
         let mut eqs = Vec::new();
         for eq in else_equations {
@@ -516,7 +515,6 @@ fn flatten_when_simple_equation(
     let target_span = lhs.span();
     // Check for tuple assignment (multi-output function call)
     if let ast::Expression::Tuple { elements, .. } = lhs {
-        // Extract output variable names from the tuple
         let mut outputs = Vec::new();
         for elem in elements {
             match elem {

@@ -485,10 +485,6 @@ fn nanos_to_ms(nanos: u64) -> f64 {
     nanos as f64 / 1.0e6
 }
 
-pub fn hydrate_solve_model_external_tables(model: &rumoca_ir_solve::SolveModel) {
-    let _ = model;
-}
-
 /// Reset process-global solve evaluator state before a simulation boundary.
 pub fn clear_runtime_state() {}
 
@@ -555,10 +551,6 @@ impl SimulationContext {
         Self {
             runtime_state: SimulationRuntimeState::new(),
         }
-    }
-
-    pub fn hydrate_solve_model(&self, model: &rumoca_ir_solve::SolveModel) {
-        hydrate_solve_model_external_tables(model);
     }
 
     pub fn runtime_state(&self) -> &SimulationRuntimeState {
@@ -1146,31 +1138,6 @@ pub fn eval_event_action_request(
         context,
         &mut values,
     )?;
-    event_action_request_from_values(events, y, p, t, context, values)
-}
-
-/// Evaluate event-action guards through a block whose register-flow and input
-/// requirements were validated once at runtime construction.
-pub fn eval_prepared_event_action_request(
-    events: &SolveEventPartition,
-    action_conditions: &PreparedScalarProgramBlock,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    context: RowEvalContext<'_>,
-) -> Result<EventActionRequest, EvalSolveError> {
-    if events.actions.is_empty() {
-        return Ok(EventActionRequest::Continue);
-    }
-    if action_conditions.len() != events.actions.len() {
-        return Err(EvalSolveError::EventActionConditionMismatch {
-            rows: action_conditions.len(),
-            actions: events.actions.len(),
-        });
-    }
-    let mut values =
-        eval_solve_f64_values(events.actions.len(), 0.0, "event action condition values")?;
-    action_conditions.eval_with_context(y, p, t, context, &mut values)?;
     event_action_request_from_values(events, y, p, t, context, values)
 }
 

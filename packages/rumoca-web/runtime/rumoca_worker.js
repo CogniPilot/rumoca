@@ -238,12 +238,10 @@ async function initialize() {
     }
 }
 
-// Initialize and report status
 initialize().then(success => {
     self.postMessage({ ready: true, success });
 });
 
-// Handle messages from main thread
 self.onmessage = async (e) => {
     const { id, action, source, modelName, line, character, daeJson, tEnd, dt } = e.data;
 

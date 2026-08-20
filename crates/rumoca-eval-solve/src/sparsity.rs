@@ -460,7 +460,7 @@ mod tests {
         assert!(!pattern.contains(1, 1));
         let coloring = derive_column_coloring(&pattern);
         assert_eq!(coloring.column_count(), 3);
-        assert_eq!(coloring.compressed_seed_count(), 1);
+        assert_eq!(coloring.groups().len(), 1);
     }
 
     #[test]

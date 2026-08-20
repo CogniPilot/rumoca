@@ -64,33 +64,9 @@ pub enum ResolveError {
 }
 
 impl ResolveError {
-    /// Create a DuplicateDefinition error.
-    pub fn duplicate_definition(name: impl Into<String>, span: Span) -> Self {
-        Self::DuplicateDefinition {
-            name: name.into(),
-            span,
-        }
-    }
-
-    /// Create an UndefinedReference error.
-    pub fn undefined_reference(name: impl Into<String>, span: Span) -> Self {
-        Self::UndefinedReference {
-            name: name.into(),
-            span,
-        }
-    }
-
     /// Create a BaseClassNotFound error.
     pub fn base_class_not_found(name: impl Into<String>, span: Span) -> Self {
         Self::BaseClassNotFound {
-            name: name.into(),
-            span,
-        }
-    }
-
-    /// Create a CircularInheritance error.
-    pub fn circular_inheritance(name: impl Into<String>, span: Span) -> Self {
-        Self::CircularInheritance {
             name: name.into(),
             span,
         }

@@ -4219,6 +4219,7 @@ dependencies = [
  "miette",
  "mimalloc",
  "minijinja",
+ "proc-macro2",
  "quick-xml",
  "rumoca-compile",
  "rumoca-core",

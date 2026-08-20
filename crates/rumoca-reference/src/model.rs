@@ -186,17 +186,6 @@ pub struct WhenBranch {
     pub body: Vec<(String, Expr)>,
 }
 
-impl WhenBranch {
-    /// A branch assigning one variable.
-    #[must_use]
-    pub fn assigning(condition: Expr, target: &str, value: Expr) -> Self {
-        Self {
-            condition,
-            body: vec![(target.to_owned(), value)],
-        }
-    }
-}
-
 /// A flat scalar equation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Equation {

@@ -571,7 +571,6 @@ fn make_residual(
     def_map: Option<&crate::ResolveDefMap>,
     locals: Option<&HashSet<String>>,
 ) -> Result<rumoca_core::Expression, FlattenError> {
-    // Create: lhs - rhs
     let residual = ast::Expression::Binary {
         op: rumoca_core::OpBinary::Sub,
         lhs: Arc::new(lhs.clone()),
@@ -846,10 +845,6 @@ fn expand_array_comprehension_recursive(
     }
     Ok(())
 }
-
-// ============================================================================
-// Array flat::Equation Expansion (MLS §10.5)
-// ============================================================================
 
 /// Find array variables in an expression that need index expansion.
 ///

@@ -239,14 +239,6 @@ pub fn parse_family_budget(raw: &str) -> Result<CacheFamilyBudget> {
     })
 }
 
-pub fn parse_family_budgets(raw: &str) -> Result<Vec<CacheFamilyBudget>> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(parse_family_budget)
-        .collect()
-}
-
 pub fn prune_cache(root: Option<&Path>, max_bytes: u64, dry_run: bool) -> Result<CachePruneReport> {
     prune_cache_with_options(
         root,
@@ -695,23 +687,6 @@ mod tests {
         assert_eq!(parse_byte_size("2K").unwrap(), 2 * 1024);
         assert_eq!(parse_byte_size("3MiB").unwrap(), 3 * 1024 * 1024);
         assert_eq!(parse_byte_size("4gb").unwrap(), 4 * 1024 * 1024 * 1024);
-    }
-
-    #[test]
-    fn parse_family_budgets_accepts_comma_list() {
-        assert_eq!(
-            parse_family_budgets("results=2G,source-roots=512M").unwrap(),
-            vec![
-                CacheFamilyBudget {
-                    family: "results".to_string(),
-                    max_bytes: 2 * 1024 * 1024 * 1024,
-                },
-                CacheFamilyBudget {
-                    family: "source-roots".to_string(),
-                    max_bytes: 512 * 1024 * 1024,
-                },
-            ]
-        );
     }
 
     #[test]

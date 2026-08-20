@@ -296,8 +296,6 @@ impl CompiledResidualRows {
         for compiled in &self.jits {
             let output =
                 &mut out[compiled.output_start..compiled.output_start + compiled.output_count];
-            // SAFETY: compile-time row validation proves the register and output
-            // extents used by this finalized function.
             unsafe {
                 call_residual_jit(
                     &compiled.jit,
@@ -478,9 +476,6 @@ static NEXT_FOLD_KERNEL_ID: AtomicUsize = AtomicUsize::new(0);
 static NEXT_RESIDUAL_KERNEL_ID: AtomicUsize = AtomicUsize::new(0);
 static NEXT_ASSIGNMENT_KERNEL_ID: AtomicUsize = AtomicUsize::new(0);
 
-// Final native emission keeps small fixed folds in their caller. Eight points
-// covers the short dot-product reductions used by fixed-size estimator
-// matrices without turning larger tensor domains into straight-line code.
 const INLINE_FIXED_FOLD_POINT_LIMIT: usize = 8;
 
 impl RowKind {

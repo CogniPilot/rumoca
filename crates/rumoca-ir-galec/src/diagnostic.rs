@@ -175,11 +175,6 @@ pub enum GalecError {
     #[error("{location}: if-expression with no branches [EG009]")]
     IfExpressionWithoutBranches { location: Location },
 
-    // -----------------------------------------------------------------
-    // Validator: name analysis (trap T13)
-    // -----------------------------------------------------------------
-    /// Identifier violates the lexical rules (ASCII-letter-first,
-    /// `[A-Za-z0-9_]*` continuation).
     #[error("{location}: illegal identifier `{name}`: {reason} [EG010]")]
     IllegalIdentifier {
         location: Location,
@@ -208,11 +203,6 @@ pub enum GalecError {
     )]
     InterfaceVariableOrder { location: Location, name: String },
 
-    // -----------------------------------------------------------------
-    // Validator: resolution
-    // -----------------------------------------------------------------
-    /// A reference does not resolve to a declared entity, parameter, local,
-    /// or loop iterator.
     #[error("{location}: unresolved reference `{name}` [EG014]")]
     UnresolvedReference { location: Location, name: String },
 
@@ -220,14 +210,6 @@ pub enum GalecError {
     #[error("{location}: call to unknown function `{name}` [EG015]")]
     UnknownFunction { location: Location, name: String },
 
-    // -----------------------------------------------------------------
-    // Validator: type analysis (trap T5)
-    // -----------------------------------------------------------------
-    /// Binary operands violate S-3.4 (equal element types, `/` Real-only,
-    /// logical operators Boolean-only, arithmetic shape agreement — equal
-    /// ranks or scalar broadcast — and scalar-only relational/equality/
-    /// logical operands). `operands` spells the offending typing, e.g.
-    /// `Integer + Real`.
     #[error("{location}: mistyped operands of `{op}` ({operands}): {requirement} [EG016]")]
     BinaryOperandTypes {
         location: Location,
@@ -283,11 +265,6 @@ pub enum GalecError {
     )]
     ComponentValueUse { location: Location, name: String },
 
-    // -----------------------------------------------------------------
-    // Validator: dimensionality analysis (trap T11)
-    // -----------------------------------------------------------------
-    /// Subscripts, dimensions, and loop bounds must be constant scalar
-    /// Integer expressions (loop iterators + `size()` + builtins only).
     #[error("{location}: {context} is not statically evaluable: {reason} [EG022]")]
     NonStaticExpression {
         location: Location,
@@ -334,10 +311,6 @@ pub enum GalecError {
         size: i64,
     },
 
-    // -----------------------------------------------------------------
-    // Validator: termination analysis (S-2.10, S-2.11, GAL-017)
-    // -----------------------------------------------------------------
-    /// The static function call graph must be cycle-free.
     #[error("{location}: recursive call cycle: {cycle} [EG026]")]
     RecursiveCall { location: Location, cycle: String },
 
@@ -350,10 +323,6 @@ pub enum GalecError {
     #[error("{location}: Startup may call builtins only, but calls user function `{name}` [EG028]")]
     StartupCallsUserFunction { location: Location, name: String },
 
-    // -----------------------------------------------------------------
-    // Validator: side-effect analysis (S-2.3, trap T12)
-    // -----------------------------------------------------------------
-    /// Stateless functions must not write state variables.
     #[error("{location}: stateless function writes state `{target}` [EG029]")]
     StatelessWritesState { location: Location, target: String },
 
@@ -385,11 +354,6 @@ pub enum GalecError {
         name: String,
     },
 
-    // -----------------------------------------------------------------
-    // Validator: signal analysis (§3.2.5, GAL-018, trap T10)
-    // -----------------------------------------------------------------
-    /// An identifier used as an error signal names neither a declared signal
-    /// nor a signal-closure in scope.
     #[error("{location}: `{name}` does not name an error signal in scope [EG034]")]
     UnknownSignal { location: Location, name: String },
 

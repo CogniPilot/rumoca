@@ -195,7 +195,6 @@ impl UnpackCodec {
             return values;
         }
 
-        // Get vtable
         let soff = get_i32(buf, table_off);
         let vtable = ((table_off as i64) - (soff as i64)) as usize;
         if vtable >= buf.len() {
@@ -440,7 +439,6 @@ impl PackCodec {
         let object_size = align_up(cursor, max_align);
         let total_size = table_off + object_size;
 
-        // Build template buffer
         let mut template = vec![0u8; total_size];
 
         // Root offset (points to table)
@@ -499,24 +497,9 @@ impl PackCodec {
 /// Find the file_identifier for a given root type by checking which
 /// .bfbs schema declared it (the schema's file_ident matches).
 fn find_file_ident_for_root(schema: &SchemaSet, root_type: &str) -> Option<String> {
-    // The file_ident is associated with the schema that declares the root_type.
-    // Since we merged schemas, we stored file_idents in order.
-    // A .bfbs's file_ident applies to its root_type declaration.
-    // For now, find the schema whose file_ident is non-None and whose objects
-    // include the root_type.
-    //
-    // Since SchemaSet doesn't track which schema each object came from,
-    // we use a heuristic: return the first non-None file_ident that matches
-    // the root_type's namespace prefix.
-
-    // Check if root_type namespace matches any file_ident
-    // cerebri2.sil.SimInput → file_ident "C2SI"
-    // cerebri2.topic.MotorOutput → no file_ident (topics.fbs has no root_type)
-
-    // Actually, the .bfbs file_ident comes from the `file_identifier` declaration
-    // in the .fbs source. Only schemas with root_type have file_identifier.
-    // cerebri2_sil.fbs: root_type SimInput, file_identifier "C2SI"
-    // cerebri2_topics.fbs: no root_type declaration
+    // SchemaSet preserves file identifiers but not their declaring schema.
+    // Select the first non-empty identifier whose namespace matches the root;
+    // schemas without a root declaration carry no identifier.
 
     for fi in &schema.file_idents {
         if let Some(s) = fi

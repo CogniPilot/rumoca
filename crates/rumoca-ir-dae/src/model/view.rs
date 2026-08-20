@@ -758,15 +758,6 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
-    pub fn subscript_provenance(self, index: usize) -> Option<DaeProvenance> {
-        self.dae
-            .storage
-            .expressions
-            .subscripts
-            .get(index)
-            .map(|subscript| subscript.provenance)
-    }
-
     pub fn source_text(self, provenance: DaeProvenance) -> Option<&'dae str> {
         source_text(&self.dae.source_map, provenance)
     }

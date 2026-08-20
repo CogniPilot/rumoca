@@ -557,44 +557,6 @@ impl Default for ClassDef {
     }
 }
 
-impl ClassDef {
-    /// Iterate over all component declarations with their names.
-    ///
-    /// This provides a convenient way to iterate over components without
-    /// directly accessing the `components` field.
-    pub fn iter_components(&self) -> impl Iterator<Item = (&str, &Component)> {
-        self.components
-            .iter()
-            .map(|(name, comp)| (name.as_str(), comp))
-    }
-
-    /// Iterate over all nested class definitions with their names.
-    ///
-    /// This includes functions, models, packages, types, etc. defined within this class.
-    pub fn iter_classes(&self) -> impl Iterator<Item = (&str, &ClassDef)> {
-        self.classes
-            .iter()
-            .map(|(name, class)| (name.as_str(), class))
-    }
-
-    /// Iterate over all equations (regular + initial).
-    ///
-    /// This chains `equations` and `initial_equations` into a single iterator.
-    pub fn iter_all_equations(&self) -> impl Iterator<Item = &Equation> {
-        self.equations.iter().chain(self.initial_equations.iter())
-    }
-
-    /// Iterate over all statements from all algorithm sections (regular + initial).
-    ///
-    /// This flattens all algorithm blocks and chains regular and initial algorithms.
-    pub fn iter_all_statements(&self) -> impl Iterator<Item = &Statement> {
-        self.algorithms
-            .iter()
-            .flatten()
-            .chain(self.initial_algorithms.iter().flatten())
-    }
-}
-
 /// MLS §7.1: Extends clause for inheritance.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Extend {
@@ -689,16 +651,6 @@ impl Import {
             Import::Renamed { location, .. } => location,
             Import::Unqualified { location, .. } => location,
             Import::Selective { location, .. } => location,
-        }
-    }
-
-    /// Returns true if this import uses global scope (leading dot)
-    pub fn is_global_scope(&self) -> bool {
-        match self {
-            Import::Qualified { global_scope, .. } => *global_scope,
-            Import::Renamed { global_scope, .. } => *global_scope,
-            Import::Unqualified { global_scope, .. } => *global_scope,
-            Import::Selective { global_scope, .. } => *global_scope,
         }
     }
 }

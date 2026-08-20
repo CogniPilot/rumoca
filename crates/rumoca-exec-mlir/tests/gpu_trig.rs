@@ -1,5 +1,5 @@
 use rumoca_core::{SourceId, Span};
-/// Phase 6.1 — GPU trig test via libdevice.
+/// GPU trigonometric evaluation through libdevice.
 ///
 /// Tests the full nonlinear planar quadrotor with actual sin/cos (no small-angle approx).
 /// Requires `libdevice.10.bc` (from `nvidia-cuda-toolkit`) and the MLIR/LLVM toolchain.

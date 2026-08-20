@@ -504,7 +504,6 @@ impl TypeChecker {
                 !has_colon_dim && self.negative_dimension_value(instance_data).is_some();
             let reason = base_reason;
 
-            // Emit as error per MLS §10.1.
             let Some(span) =
                 self.diagnostic_location_span(&instance_data.source_location, "array dimensions")
             else {

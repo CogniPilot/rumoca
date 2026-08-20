@@ -130,22 +130,6 @@ impl TypeCheckError {
         }
     }
 
-    /// Create a VariabilityError.
-    pub fn variability_error(message: impl Into<String>, span: Span) -> Self {
-        Self::VariabilityError {
-            message: message.into(),
-            span,
-        }
-    }
-
-    /// Create an UnevaluableDimensions error.
-    pub fn unevaluable_dimensions(name: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::UnevaluableDimensions {
-            name: name.into(),
-            reason: reason.into(),
-        }
-    }
-
     pub fn missing_source_context(reason: impl Into<String>) -> Self {
         Self::MissingSourceContext {
             reason: reason.into(),

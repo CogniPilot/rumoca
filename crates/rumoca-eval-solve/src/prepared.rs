@@ -108,7 +108,6 @@ pub struct PreparedScalarProgramBlock {
     row_registers: Vec<usize>,
     row_lazy_plans: Vec<Option<PreparedLazyRowPlan>>,
     row_requirements: Vec<RowInputRequirements>,
-    row_seed_loads: Vec<Box<[PreparedSeedLoad]>>,
     row_assignment_shapes: Vec<Box<[(usize, TargetAssignmentShape)]>>,
     row_parameter_indices: Vec<Box<[usize]>>,
     row_parameter_static_y_gradient_params: Vec<Option<Box<[usize]>>>,
@@ -126,12 +125,6 @@ pub struct TargetAssignmentOutputRequest<'a> {
     pub p: &'a [f64],
     pub t: f64,
     pub context: RowEvalContext<'a>,
-}
-
-#[derive(Clone, Copy)]
-enum PreparedSeedLoad {
-    Direct(usize),
-    Indexed { base: usize, count: usize },
 }
 
 impl PreparedScalarProgramBlock {
@@ -276,68 +269,6 @@ impl PreparedScalarProgramBlock {
         self.eval_rows_unchecked(y, p, t, context, out, &mut scratch)
     }
 
-    pub fn eval_prefix_with_context(
-        &self,
-        rows: usize,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        context: RowEvalContext<'_>,
-        out: &mut [f64],
-    ) -> Result<(), EvalSolveError> {
-        let rows = rows.min(self.block.row_count());
-        let prefix = &self.block.programs()[..rows];
-        let stored_output_count = self.row_outputs.offsets[rows];
-        let local_runtime_state;
-        let context = match context.runtime_state {
-            Some(_) => context,
-            None => {
-                local_runtime_state = SimulationRuntimeState::new();
-                context.with_runtime_state(&local_runtime_state)
-            }
-        };
-        let prefix_output_indices = self
-            .block
-            .output_indices()
-            .get(..stored_output_count)
-            .ok_or_else(|| EvalSolveError::ShapeContract {
-                message: format!(
-                    "prepared prefix has {stored_output_count} stored outputs but only {} output indices",
-                    self.block.output_indices().len()
-                ),
-                span: self.block.program_span(0),
-            })?;
-        let output_count = prefix_output_indices
-            .iter()
-            .cloned()
-            .max()
-            .map_or(0, |index| index + 1);
-        validate_output_len(out, output_count)?;
-        let requirements = self
-            .row_requirements
-            .iter()
-            .take(rows)
-            .cloned()
-            .fold(RowInputRequirements::default(), RowInputRequirements::merge);
-        validate_input_requirements(requirements, y, p, context.seed)?;
-        out[..output_count].fill(0.0);
-        let mut scratch = self.scratch.borrow_mut();
-        record_solve_block_eval("scalar_prefix", self.output_count, output_count);
-        let mut sink = OutputCursor::with_output_indices(out, prefix_output_indices);
-        for (row_idx, row) in prefix.iter().enumerate() {
-            eval_row_prepared_maybe_fast(
-                PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
-                    .with_lazy_plan(self.row_lazy_plans[row_idx].as_ref())
-                    .with_source_span(self.block.program_span(row_idx)),
-                true,
-                &mut scratch,
-                &mut sink,
-            )
-            .map_err(|error| error.with_source_span(self.block.program_span(row_idx)))?;
-        }
-        Ok(())
-    }
-
     pub fn eval_row_with_context(
         &self,
         row_idx: usize,
@@ -395,51 +326,6 @@ impl PreparedScalarProgramBlock {
             validate_inputs: false,
             label: "scalar_row_output_unchecked",
         })
-    }
-
-    pub fn eval_single_output_rows_unchecked_with_context(
-        &self,
-        row_indices: &[usize],
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        context: RowEvalContext<'_>,
-        out: &mut [f64],
-    ) -> Result<(), EvalSolveError> {
-        let mut scratch = self.scratch.borrow_mut();
-        record_solve_block_eval(
-            "scalar_selected_rows_unchecked",
-            self.output_count,
-            row_indices.len(),
-        );
-        let out_len = out.len();
-        for &row_idx in row_indices {
-            let row = self
-                .block
-                .programs()
-                .get(row_idx)
-                .ok_or(EvalSolveError::OutputTooSmall {
-                    required: checked_required_row_count(row_idx)?,
-                    len: self.block.row_count(),
-                    span: self.block.program_span(row_idx),
-                })?;
-            let slot = out.get_mut(row_idx).ok_or(EvalSolveError::OutputTooSmall {
-                required: checked_required_row_count(row_idx)?,
-                len: out_len,
-                span: self.block.program_span(row_idx),
-            })?;
-            let mut sink = OutputCursor::new(std::slice::from_mut(slot));
-            eval_row_prepared_maybe_fast(
-                PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
-                    .with_lazy_plan(self.row_lazy_plans[row_idx].as_ref())
-                    .with_source_span(self.block.program_span(row_idx)),
-                true,
-                &mut scratch,
-                &mut sink,
-            )
-            .map_err(|error| error.with_source_span(self.block.program_span(row_idx)))?;
-        }
-        Ok(())
     }
 
     fn eval_row_inner(&self, request: RowEvalRequest<'_>) -> Result<f64, EvalSolveError> {
@@ -574,17 +460,6 @@ impl PreparedScalarProgramBlock {
             .is_some_and(|row| row_reads_y_index(row, y_index))
     }
 
-    pub fn row_seed_depends_on(&self, row_idx: usize, seed_index: usize) -> bool {
-        self.row_seed_loads.get(row_idx).is_none_or(|loads| {
-            loads.iter().any(|load| match *load {
-                PreparedSeedLoad::Direct(index) => index == seed_index,
-                PreparedSeedLoad::Indexed { base, count } => seed_index
-                    .checked_sub(base)
-                    .is_some_and(|offset| offset < count),
-            })
-        })
-    }
-
     /// True when the row was lowered with an explicit assignment shape
     /// (`target = expr`); its full program then evaluates the residual, while
     /// shapeless rows with an implicit target evaluate the target value.
@@ -687,22 +562,6 @@ impl PreparedScalarProgramBlock {
             && self
                 .assignment_shape_for_output(row_idx, output_offset, target_y_index)
                 .is_some()
-    }
-
-    pub fn certifies_exact_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
-        self.certifies_exact_target_assignment_output(row_idx, 0, target_y_index)
-    }
-
-    /// Materialize the compiler-proven target isolator as an ordinary Solve-IR
-    /// expression program. Backends can compile this program and write its one
-    /// output directly to `target_y_index`; executing such programs in refresh
-    /// order preserves the same causal semantics as the prepared interpreter.
-    pub fn exact_target_assignment_program(
-        &self,
-        row_idx: usize,
-        target_y_index: usize,
-    ) -> Option<Vec<LinearOp>> {
-        self.exact_target_assignment_output_program(row_idx, 0, target_y_index)
     }
 
     pub fn exact_target_assignment_output_program(

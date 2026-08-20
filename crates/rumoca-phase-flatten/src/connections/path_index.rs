@@ -118,7 +118,6 @@ pub(super) fn extract_suffix(full_name: &str, prefix: &str) -> Option<(String, S
         append_indices(&mut indices, name_part, segment, true);
     }
 
-    // Build the suffix from remaining parts.
     let suffix = name_parts[prefix_segments.len()..].join(".");
     Some((suffix, indices))
 }

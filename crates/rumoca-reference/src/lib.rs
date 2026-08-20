@@ -61,8 +61,6 @@
 //!   name, because an oracle that guessed would let the compiler agree with it
 //!   for the wrong reason.
 //!
-//! See `ROADMAP.md` for slices 2–4.
-//!
 //! # Status of the evidence this crate produces
 //!
 //! Agreement between this reference and the compiler is *validation* evidence,
@@ -83,15 +81,14 @@
 //! // model M discrete Real y(start = 0); equation when time >= 0.5 then y = 1; end when; end M;
 //! let model = Model::new()
 //!     .with_variable(Variable::discrete("y", Value::Real(0.0)))
-//!     .with_equation(Equation::When(vec![WhenBranch::assigning(
-//!         Expr::binary(
+//!     .with_equation(Equation::When(vec![WhenBranch {
+//!         condition: Expr::binary(
 //!             rumoca_reference::model::BinaryOp::GreaterEqual,
 //!             Expr::Time,
 //!             Expr::real(0.5),
 //!         ),
-//!         "y",
-//!         Expr::real(1.0),
-//!     )]));
+//!         body: vec![("y".to_string(), Expr::real(1.0))],
+//!     }]));
 //!
 //! let trace = simulate(&model, &NoContinuousState, Options::default()).unwrap();
 //! assert_eq!(trace.event_times(), vec![0.5]);

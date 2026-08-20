@@ -10,7 +10,6 @@ impl Clone for PreparedScalarProgramBlock {
             row_registers: self.row_registers.clone(),
             row_lazy_plans: self.row_lazy_plans.clone(),
             row_requirements: self.row_requirements.clone(),
-            row_seed_loads: self.row_seed_loads.clone(),
             row_assignment_shapes: self.row_assignment_shapes.clone(),
             row_parameter_indices: self.row_parameter_indices.clone(),
             row_parameter_static_y_gradient_params: self
@@ -35,8 +34,6 @@ impl PreparedScalarProgramBlock {
             prepared_vec_with_capacity(row_count, "prepared lazy row plan count", block_span)?;
         let mut row_requirements =
             prepared_vec_with_capacity(row_count, "prepared row requirement count", block_span)?;
-        let mut row_seed_loads =
-            prepared_vec_with_capacity(row_count, "prepared row seed load count", block_span)?;
         let mut row_assignment_shapes = prepared_vec_with_capacity(
             row_count,
             "prepared row assignment shape count",
@@ -64,7 +61,6 @@ impl PreparedScalarProgramBlock {
             row_registers.push(register_count);
             row_lazy_plans.push(PreparedLazyRowPlan::new(row, register_count));
             row_requirements.push(row_requirement);
-            row_seed_loads.push(prepared_seed_loads(row, span)?);
             row_assignment_shapes.push(
                 target_assignment_shapes_with_output_offsets(row)
                     .map_err(|error| error.with_source_span(span))?
@@ -83,7 +79,6 @@ impl PreparedScalarProgramBlock {
             row_registers,
             row_lazy_plans,
             row_requirements,
-            row_seed_loads,
             row_assignment_shapes,
             row_parameter_indices: prepared_row_parameter_indices,
             row_parameter_static_y_gradient_params,

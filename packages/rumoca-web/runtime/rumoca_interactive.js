@@ -329,7 +329,7 @@ export function createInputRuntime(config) {
     }
     if (action === 'toggle') {
       const state = trimMaybeString(binding.state);
-      locals.set(state, !Boolean(locals.get(state)));
+      locals.set(state, !locals.get(state));
     } else if (action === 'signal') {
       signal(binding.signal);
     }

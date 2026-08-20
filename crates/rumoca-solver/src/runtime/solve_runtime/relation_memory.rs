@@ -372,16 +372,6 @@ impl SolveRuntime {
         Ok(changed)
     }
 
-    pub fn update_relation_memory_from_solver_y(
-        &self,
-        t: f64,
-        y: &[f64],
-        p: &mut [f64],
-        tol: f64,
-    ) -> Result<bool, RuntimeSolveError> {
-        self.update_relation_memory_from_solver_y_except_overrides(t, y, p, tol, &[])
-    }
-
     pub(crate) fn update_relation_memory_from_solver_y_except_overrides(
         &self,
         t: f64,
@@ -615,31 +605,6 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         let mut values = self.visible_scratch.borrow_mut();
         self.visible_values_into(solver_y, params, t, &mut values)?;
-        push_visible_values(data, &values)
-    }
-
-    pub fn record_visible_sample_if_new(
-        &self,
-        recorded_times: &mut Vec<f64>,
-        data: &mut [Vec<f64>],
-        solver_y: &[f64],
-        params: &[f64],
-        t: f64,
-    ) -> Result<(), RuntimeSolveError> {
-        let mut values = self.visible_scratch.borrow_mut();
-        self.visible_values_into(solver_y, params, t, &mut values)?;
-        if recorded_times
-            .last()
-            .is_some_and(|last| sample_time_match_with_tol(*last, t))
-        {
-            if let Some(last) = recorded_times.last_mut() {
-                *last = t;
-            }
-            replace_last_visible_values(data, &values)?;
-            return Ok(());
-        }
-        reserve_runtime_vec_capacity(recorded_times, 1, "recorded sample times")?;
-        recorded_times.push(t);
         push_visible_values(data, &values)
     }
 

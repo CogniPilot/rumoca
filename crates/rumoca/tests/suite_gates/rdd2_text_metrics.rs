@@ -12,12 +12,9 @@
 //! that an earlier revision of this code got wrong, so the detectors cannot
 //! quietly regress to counting substrings.
 //!
-//! Known and accepted limitation: none of these scanners skip C comments or
-//! string literals, so a `(void)` or a `for (` written inside one would be
-//! counted. That is deliberate for now -- the emitter does not generate such
-//! text, and a real tokenizer would cost more than the metric is worth. If the
-//! templates ever start emitting prose containing these tokens, this is the
-//! first place to look.
+//! Scope limitation: these scanners consume the emitted C dialect and do not
+//! skip comments or string literals. The emitter contract therefore excludes
+//! metric tokens such as `(void)` and `for (` from generated prose.
 
 use std::collections::BTreeSet;
 

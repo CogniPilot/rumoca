@@ -197,8 +197,8 @@ pub(crate) fn run_jacobian(
         println!("\njacobian error: {error}");
     }
 
-    // Parameter-sensitivity block (roadmap Track 0.3): d(der(state))/d(p), the
-    // forward parameter gradient building block.
+    // Parameter-sensitivity block: d(der(state))/d(p), the forward parameter
+    // gradient building block.
     println!(
         "\nparameter jacobian: ({}x{}, d(der(state))/d(p))",
         param.rows(),

@@ -335,10 +335,6 @@ impl ast::Visitor for SemanticClassCheckVisitor<'_> {
     }
 }
 
-// ============================================================================
-// Batch 1: Structural ClassDef checks
-// ============================================================================
-
 fn check_class_structural(
     class: &ClassDef,
     def: &StoredDefinition,
@@ -791,10 +787,6 @@ fn check_selective_import_dupes(
         }
     }
 }
-
-// ============================================================================
-// Cross-class checks (need access to full StoredDefinition)
-// ============================================================================
 
 struct ResolvedComponentTarget<'a> {
     component: &'a ast::Component,
@@ -1368,10 +1360,6 @@ fn collect_component_refs(
     let _ = collector.visit_expression(expr);
 }
 
-// ============================================================================
-// Batch 2: Context-sensitive checks
-// ============================================================================
-
 /// Check equations for context-sensitive issues.
 fn check_equation(eq: &Equation, ctx: &mut CheckContext, diags: &mut Vec<Diagnostic>) {
     let mut visitor = ContextSensitiveVisitor { ctx, diags };
@@ -1783,10 +1771,6 @@ fn check_for_variable_assignment_eq(
         ));
     }
 }
-
-// ============================================================================
-// Batch 3: Expression checks
-// ============================================================================
 
 #[cfg(test)]
 mod tests {

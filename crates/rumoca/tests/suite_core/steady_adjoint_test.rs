@@ -1,4 +1,4 @@
-//! Roadmap Track B (steady-state adjoint): the reverse-mode adjoint objective
+//! The reverse-mode steady-state adjoint objective
 //! gradient `dJ/dp = -(∂f/∂p)ᵀ λ` with `(∂f/∂y)ᵀ λ = (∂J/∂y)ᵀ` must equal the
 //! forward implicit-function gradient (M2) and the closed-form analytic values.
 //! Pure-ODE model so `solver_y == states` and the bare reverse VJP is exact.

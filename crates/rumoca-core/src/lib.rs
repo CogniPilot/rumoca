@@ -75,13 +75,6 @@ pub use subscript::Subscript;
 /// clocked rows and runtime scheduling from recognizing different instants.
 pub const SCHEDULE_TIME_RELATIVE_TOLERANCE: f64 = 1.0e-12;
 
-/// MLS §16.5.1: `sample(u)` is the clocked value-sampling operator with an
-/// inferred clock. It is not the event-generating `sample(start, interval)`
-/// form from MLS §3.7.3 / §16.
-pub fn sample_call_is_inferred_clock_value_form(args: &[Expression]) -> bool {
-    args.len() == 1
-}
-
 /// Return the canonical name for source temporal function-call operators that
 /// must be lowered before DAE/Solve exits.
 pub fn source_temporal_function_name(name: &str) -> Option<&'static str> {
@@ -102,20 +95,6 @@ pub fn source_temporal_function_name(name: &str) -> Option<&'static str> {
 /// Callers with a structured [`Reference`] should pass `reference.last_segment()`;
 /// this exact-name table is the shared vocabulary owner and does not recover
 /// hierarchy from rendered strings.
-pub fn source_dae_forbidden_function_name(name: &str) -> Option<&'static str> {
-    source_temporal_function_name(name).or(match name {
-        "Clock" => Some("Clock"),
-        "hold" => Some("hold"),
-        "subSample" => Some("subSample"),
-        "superSample" => Some("superSample"),
-        "shiftSample" => Some("shiftSample"),
-        "backSample" => Some("backSample"),
-        "noClock" => Some("noClock"),
-        "firstTick" => Some("firstTick"),
-        _ => None,
-    })
-}
-
 /// Return the canonical name for source temporal function-call operators after
 /// removing a qualified package prefix.
 pub fn source_temporal_function_short_name(name: &str) -> Option<&'static str> {
@@ -188,10 +167,6 @@ pub fn workspace_root_from_manifest_dir(manifest_dir: &str) -> PathBuf {
 pub fn msl_cache_dir_from_manifest(manifest_dir: &str) -> PathBuf {
     workspace_root_from_manifest_dir(manifest_dir).join("target/msl")
 }
-
-// =============================================================================
-// Solver names (the single authority every entry point resolves through)
-// =============================================================================
 
 /// Every solver a user may name, in the spelling reports and errors use.
 ///
@@ -283,10 +258,6 @@ mod solver_name_tests {
         }
     }
 }
-
-// =============================================================================
-// Path Utilities (shared across compiler phases)
-// =============================================================================
 
 /// Split a dotted path while preserving dots inside bracket expressions.
 ///
@@ -462,13 +433,6 @@ pub fn qualified_type_name_matches(candidate: &str, expected: &str) -> bool {
     top_level_path_ends_with(candidate, expected)
 }
 
-/// True when any top-level path segment equals `segment`.
-pub fn top_level_path_contains_segment(path: &str, segment: &str) -> bool {
-    let mut found = false;
-    visit_top_level_path_segments(path, |part| found |= part == segment);
-    found
-}
-
 /// Strip array indexing from one path segment.
 ///
 /// Examples:
@@ -511,11 +475,6 @@ pub fn normalize_top_level_segment(segment: &str) -> &str {
     strip_array_index(segment)
 }
 
-/// Extract the normalized top-level prefix from a variable path.
-pub fn get_top_level_prefix(path: &str) -> Option<String> {
-    rendered_top_level_segment(path).map(|segment| normalize_top_level_segment(segment).to_string())
-}
-
 /// Strip all bracketed subscript groups from a path while preserving dots and identifiers.
 ///
 /// Examples:
@@ -542,20 +501,6 @@ pub fn normalized_top_level_names<'a>(names: impl Iterator<Item = &'a String>) -
     names
         .map(|name| normalize_top_level_segment(name).to_string())
         .collect()
-}
-
-/// Check whether a path belongs to a known top-level component set.
-///
-/// The provided set is expected to contain normalized top-level names.
-pub fn path_is_in_top_level_set(path: &str, normalized_top_level_names: &IndexSet<String>) -> bool {
-    get_top_level_prefix(path)
-        .is_some_and(|prefix| normalized_top_level_names.contains(prefix.as_str()))
-}
-
-/// Check whether a variable belongs to a top-level member path.
-pub fn is_top_level_member(name: &VarName, normalized_top_level_names: &IndexSet<String>) -> bool {
-    has_top_level_dot(name.as_str())
-        && path_is_in_top_level_set(name.as_str(), normalized_top_level_names)
 }
 
 /// Strip the last top-level array subscript group from a variable name.
@@ -612,11 +557,6 @@ pub fn last_top_level_subscript_span(name: &str) -> Option<(usize, usize)> {
     (depth == 0).then_some(last_group).flatten()
 }
 
-/// True when `name` contains a balanced top-level subscript group.
-pub fn has_top_level_subscript(name: &str) -> bool {
-    last_top_level_subscript_span(name).is_some()
-}
-
 /// Convert an IR source span to miette's SourceSpan for error reporting.
 ///
 /// This is used by phase-specific error types to create miette diagnostics
@@ -632,10 +572,6 @@ impl From<Span> for SourceSpan {
         span_to_source_span(span)
     }
 }
-
-// =============================================================================
-// Modelica Built-in Types and Functions (MLS §3.7, §4.9, §16)
-// =============================================================================
 
 /// Built-in types that can be extended (MLS §4.9, §16).
 ///
@@ -864,11 +800,6 @@ pub fn is_builtin_function(name: &str) -> bool {
             | "connect"
             | "pure"
     )
-}
-
-/// Check if a name is a built-in variable.
-pub fn is_builtin_variable(name: &str) -> bool {
-    matches!(name, "time" | "Connections")
 }
 
 /// Severity level for diagnostics.
@@ -1266,10 +1197,6 @@ impl Diagnostics {
     }
 }
 
-// =============================================================================
-// Error Infrastructure for Compiler Phases
-// =============================================================================
-
 /// Re-export SourceSpan from miette for use in phase error types.
 ///
 /// This allows phase crates to use `SourceSpan` without directly depending
@@ -1443,7 +1370,6 @@ mod path_utils_tests {
     fn rendered_top_level_segment_rejects_unbalanced_brackets() {
         assert_eq!(rendered_top_level_segment("arr[record.value.field"), None);
         assert_eq!(rendered_top_level_segment("arr].field"), None);
-        assert_eq!(get_top_level_prefix("arr[record.value.field"), None);
     }
 
     #[test]
@@ -1535,12 +1461,12 @@ mod path_utils_tests {
     }
 
     #[test]
-    fn top_level_subscript_detection_requires_balanced_brackets() {
-        assert!(has_top_level_subscript("a[index.with.dot]"));
-        assert!(has_top_level_subscript("a[1].b"));
-        assert!(!has_top_level_subscript("a"));
-        assert!(!has_top_level_subscript("a[1"));
-        assert!(!has_top_level_subscript("a]"));
+    fn top_level_subscript_span_requires_balanced_brackets() {
+        assert!(last_top_level_subscript_span("a[index.with.dot]").is_some());
+        assert!(last_top_level_subscript_span("a[1].b").is_some());
+        assert!(last_top_level_subscript_span("a").is_none());
+        assert!(last_top_level_subscript_span("a[1").is_none());
+        assert!(last_top_level_subscript_span("a]").is_none());
     }
 
     #[test]

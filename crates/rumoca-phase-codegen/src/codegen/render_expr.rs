@@ -1050,7 +1050,6 @@ fn try_unroll_c_comprehension_elements(
         .map(|v| v.to_string())
         .unwrap_or_else(|_| "i".to_string());
 
-    // Get the range and try to extract integer bounds
     let range_val = get_field(&index, "range")?;
     let range_str = render_expression(&range_val, cfg)?;
     let parts: Vec<&str> = range_str.splitn(2, ':').collect();
@@ -1178,10 +1177,7 @@ mod tests {
     fn test_render_expr_can_inline_condition_aliases_at_backend_boundary() {
         let condition_ref = rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::generated("c"),
-            subscripts: vec![rumoca_core::Subscript::generated_index(
-                1,
-                rumoca_core::Span::DUMMY,
-            )],
+            subscripts: vec![rumoca_core::Subscript::index(1, rumoca_core::Span::DUMMY)],
             span: rumoca_core::Span::DUMMY,
         };
         let relation = rumoca_core::Expression::Binary {

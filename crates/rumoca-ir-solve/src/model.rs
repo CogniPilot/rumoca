@@ -1889,12 +1889,6 @@ impl SolveLayout {
             })
     }
 
-    pub fn has_runtime_parameter_tail(&self) -> bool {
-        !self.input_scalar_names.is_empty()
-            || !self.discrete_real_scalar_names.is_empty()
-            || !self.discrete_valued_scalar_names.is_empty()
-    }
-
     pub fn solver_idx_for_target(&self, target: &str) -> Option<usize> {
         solver_idx_for_target(target, &self.solver_maps.name_to_idx)
     }
@@ -1986,10 +1980,6 @@ impl SolveModel {
 
     pub fn solver_scalar_count(&self) -> usize {
         self.problem.solve_layout.solver_scalar_count()
-    }
-
-    pub fn initialization_projection_unknowns(&self) -> &[ScalarSlot] {
-        &self.problem.initialization.projection_unknowns
     }
 
     /// Return a finite positive scale for one solver variable.

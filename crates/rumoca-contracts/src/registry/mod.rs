@@ -135,30 +135,6 @@ impl ContractCategory {
             .into_iter()
             .find(|category| category.prefix() == prefix)
     }
-
-    /// Get the MLS section reference.
-    pub fn mls_section(&self) -> &'static str {
-        match self {
-            ContractCategory::Lexical => "§2",
-            ContractCategory::Declaration => "§4",
-            ContractCategory::Instantiation => "§5, §7",
-            ContractCategory::Expression => "§3",
-            ContractCategory::Equation => "§8",
-            ContractCategory::Algorithm => "§11",
-            ContractCategory::Connection => "§9",
-            ContractCategory::Function => "§12",
-            ContractCategory::Type => "§6",
-            ContractCategory::Array => "§10",
-            ContractCategory::Package => "§13",
-            ContractCategory::OperatorRecord => "§14",
-            ContractCategory::Simulation => "§8.6, App B",
-            ContractCategory::Clock => "§16",
-            ContractCategory::Stream => "§15",
-            ContractCategory::StateMachine => "§17",
-            ContractCategory::Annotation => "§18",
-            ContractCategory::Unit => "§19",
-        }
-    }
 }
 
 /// Implementation status of a contract.
@@ -270,16 +246,6 @@ impl ContractRegistry {
     /// Get contracts by status.
     pub fn by_status(&self, status: ContractStatus) -> impl Iterator<Item = &Contract> {
         self.contracts.values().filter(move |c| c.status == status)
-    }
-
-    /// Count contracts by category.
-    pub fn count_by_category(&self, category: ContractCategory) -> usize {
-        self.by_category(category).count()
-    }
-
-    /// Count contracts by status.
-    pub fn count_by_status(&self, status: ContractStatus) -> usize {
-        self.by_status(status).count()
     }
 
     /// Get total number of contracts.

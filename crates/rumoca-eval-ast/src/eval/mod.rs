@@ -1186,7 +1186,6 @@ fn infer_array_dims(
     if is_matrix {
         return infer_matrix_constructor_dims(elements, ctx, scope);
     }
-    // Check for nested arrays
     if let Some(inner) = elements
         .first()
         .and_then(|f| infer_dimensions_from_binding_with_scope(f, ctx, scope))

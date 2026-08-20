@@ -1088,10 +1088,6 @@ fn curated_fixture_traces_produce_expected_agreement_counts() {
     assert_eq!(counts.deviation, 2);
 }
 
-// ---------------------------------------------------------------------------
-// Reference-scale normalization (near-zero channels)
-// ---------------------------------------------------------------------------
-
 /// Constant-zero reference channels (a grounded current, a disabled actuator)
 /// used to divide solver noise by the old `1e-12` floor and report a *severe*
 /// deviation. They must now normalize against the absolute tolerance floor.
@@ -1277,10 +1273,6 @@ fn large_dc_offset_channel_still_reports_a_real_deviation() {
         metric.bounded_normalized_l1_error
     );
 }
-
-// ---------------------------------------------------------------------------
-// Array-valued quantities: components with no scale of their own
-// ---------------------------------------------------------------------------
 
 fn channel_metric<'a>(metric: &'a ModelDeviationMetric, name: &str) -> &'a ChannelDeviationMetric {
     metric

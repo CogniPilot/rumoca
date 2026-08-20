@@ -277,7 +277,6 @@ pub(crate) fn flatten_algorithm_section(
             ))
         })?;
 
-    // Extract raw statements from InstanceStatements
     let raw_statements: Vec<_> = statements.iter().map(|s| s.statement.clone()).collect();
 
     let origin = format!("algorithm from {}", prefix.to_flat_string());

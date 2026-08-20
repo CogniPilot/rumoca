@@ -637,46 +637,6 @@ fn algebraic_output_root_model(implicit_row: Vec<solve::LinearOp>) -> solve::Sol
 }
 
 #[test]
-fn root_condition_plan_reports_next_direct_time_root() {
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            events: solve::SolveEventPartition {
-                root_conditions: spanned_block(
-                    vec![param_minus_time_root_row(0)],
-                    "direct_time_root.mo",
-                ),
-                root_relation_memory_targets: vec![None],
-                root_zero_domains: vec![solve::RootZeroDomain::Previous],
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        parameters: vec![2.5],
-        ..Default::default()
-    };
-    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
-
-    assert_eq!(
-        runtime
-            .next_planned_time_root(&model.parameters, 1.0, 3.0, 1.0e-12)
-            .expect("direct time root should be found"),
-        Some(2.5)
-    );
-    assert_eq!(
-        runtime
-            .next_planned_time_root(&model.parameters, 2.5, 3.0, 1.0e-12)
-            .expect("current root should not be rescheduled"),
-        None
-    );
-    assert_eq!(
-        runtime
-            .next_planned_time_root(&model.parameters, 1.0, 2.0, 1.0e-12)
-            .expect("future root beyond target should be ignored"),
-        None
-    );
-}
-
-#[test]
 fn visible_value_runtime_errors_keep_row_span() {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("visible.mo"),

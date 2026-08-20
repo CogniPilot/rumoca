@@ -69,7 +69,7 @@ use crate::simulation_api::{
     lower_model_to_solve_json_impl, model_parameter_metadata_impl,
     model_parameter_metadata_with_source_roots_impl,
     model_parameter_metadata_with_workspace_sources_impl, simulate_model_impl,
-    simulate_model_with_source_roots_impl, simulate_model_with_workspace_sources_impl,
+    simulate_model_with_workspace_sources_impl,
 };
 #[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 pub use crate::simulation_session_api::WasmSimulationSession;
@@ -1943,29 +1943,6 @@ pub fn simulate_model_with_workspace_sources(
         source,
         model_name,
         workspace_sources_json,
-        t_end,
-        dt,
-        solver,
-        parameter_overrides_json,
-    )
-}
-
-/// Compile with additional source-root libraries and simulate a Modelica model.
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-#[wasm_bindgen]
-pub fn simulate_model_with_source_roots(
-    source: &str,
-    model_name: &str,
-    source_roots_json: &str,
-    t_end: f64,
-    dt: f64,
-    solver: &str,
-    parameter_overrides_json: &str,
-) -> Result<String, WasmError> {
-    simulate_model_with_source_roots_impl(
-        source,
-        model_name,
-        source_roots_json,
         t_end,
         dt,
         solver,

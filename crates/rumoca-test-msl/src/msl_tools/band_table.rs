@@ -555,17 +555,6 @@ impl BandTable {
         self.rows.iter().filter(|row| row.band == band).count()
     }
 
-    /// Absent models carrying `reason`, read off the rows.
-    ///
-    /// Every consumer that quotes a population reads it from the rows, so no
-    /// number a run publishes can differ from the per-model evidence behind it.
-    pub fn absent_for(&self, reason: ExitReason) -> usize {
-        self.rows
-            .iter()
-            .filter(|row| row.exit_reason == Some(reason))
-            .count()
-    }
-
     /// Whether two tables describe the same comparator output. This is run
     /// identity: it is what keeps a re-persist from rotating a run's own table
     /// into the previous slot.
@@ -805,10 +794,6 @@ fn ensure_banded_row_well_formed(row: &BandRow, band: BandLabel) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Derivation
-// ---------------------------------------------------------------------------
-
 /// Cohort model whose sim outcome the results file recorded.
 struct SimAttempt {
     /// `None` when the run recorded no `sim_status` at all: the model never
@@ -959,18 +944,6 @@ fn exit_row(
         return BandRow::absent(model_name, ExitReason::Excluded, detail);
     }
     BandRow::absent(model_name, untyped, detail)
-}
-
-/// The comparator's recorded kind for one `skipped` / `missing_trace` entry.
-///
-/// `None` for a certification written before the comparator recorded kinds: that
-/// artifact genuinely does not say which boundary stopped the comparison, and a
-/// consumer must treat "not recorded" as its own answer rather than guessing
-/// from the reason text.
-pub fn trace_exit_kind(entry: &Value) -> Option<TraceExitKind> {
-    serde_json::from_value::<TraceExitRecord>(entry.clone())
-        .ok()
-        .map(|record| record.kind)
 }
 
 /// The operator-facing detail of one `skipped` / `missing_trace` entry,
@@ -1185,10 +1158,6 @@ fn sim_detail(attempt: &SimAttempt, status: &str) -> String {
         None => status.to_string(),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Persistence
-// ---------------------------------------------------------------------------
 
 /// Path of the band table inside `results_dir`.
 pub fn band_table_path(results_dir: &Path) -> PathBuf {
@@ -1632,10 +1601,6 @@ fn read_optional_json(path: &Path) -> Result<Option<Value>> {
     read_required_json(path).map(Some)
 }
 
-// ---------------------------------------------------------------------------
-// Transitions
-// ---------------------------------------------------------------------------
-
 /// A model that joined the compared set.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct EnteredModel {
@@ -1721,14 +1686,6 @@ impl BandTransitions {
             self.counts.after_compared,
             self.counts.common_compared,
         )
-    }
-
-    /// Models that held the strict-high band in `before` and are no longer
-    /// compared. This is the departure that silently shrinks a parity claim.
-    pub fn departed_strict_high(&self) -> impl Iterator<Item = &LeftModel> {
-        self.left
-            .iter()
-            .filter(|left| left.before_band == BandLabel::High)
     }
 }
 
@@ -1854,10 +1811,6 @@ fn transition_counts(
         left_by_reason,
     }
 }
-
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct Args {

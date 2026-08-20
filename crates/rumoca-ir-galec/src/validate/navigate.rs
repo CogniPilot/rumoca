@@ -88,7 +88,6 @@ fn statement_at<'a>(
                 .and_then(|body| statements_at(ctx, scope, body, offset))
         }
         Statement::For(for_loop) => {
-            // Loop bounds are evaluated in the enclosing scope.
             for bound in [
                 Some(&for_loop.start),
                 for_loop.step.as_ref(),

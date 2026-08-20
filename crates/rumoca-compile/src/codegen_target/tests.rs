@@ -1702,8 +1702,6 @@ structured_equation_families = true
     assert_eq!(files[0].content, "1");
 }
 
-// --- checksum-web / asset-bundle validators (each fail-early branch) ---
-
 /// A well-formed checksum web (one producer, one consumer edge) parses and
 /// validates — the positive control for the rejection tests below.
 #[test]

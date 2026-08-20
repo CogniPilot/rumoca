@@ -81,9 +81,6 @@ pub fn crossing_expressions(model: &Model) -> Vec<(&Expr, Crossing)> {
             Equation::Assign { value, .. } | Equation::InitialAssign { value, .. } => {
                 collect_crossings(value, &mut found);
             }
-            // Unreachable on an expanded model, and deliberately not an error:
-            // this function reports what it can see, and a caller that skipped
-            // the expansion gets an empty schedule rather than a panic.
             Equation::When(_) => {}
         }
     }

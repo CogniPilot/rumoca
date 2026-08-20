@@ -14,6 +14,7 @@ mod phase_diagnostics;
 mod public_api_surface;
 mod size_and_validation;
 mod solver_backend_boundary;
+mod source_comment_hygiene;
 mod string_hashing;
 
 use std::collections::BTreeSet;
@@ -1110,7 +1111,7 @@ fn test_eval_dae_silent_default_fallback_inventory_is_explicit() {
 
     assert!(
         unexpected.is_empty() && missing.is_empty(),
-        "rumoca-eval-dae default fallbacks are Phase 0 migration debt and must not change without updating the roadmap backlog; unexpected={unexpected:#?}, missing={missing:#?}"
+        "rumoca-eval-dae default fallbacks are an audited exception set; unexpected={unexpected:#?}, missing={missing:#?}"
     );
 }
 

@@ -225,10 +225,6 @@ impl<'a> TypeChecker<'a, '_> {
         }
     }
 
-    // -----------------------------------------------------------------
-    // Expression typing
-    // -----------------------------------------------------------------
-
     fn type_of(&mut self, expression: &'a Expression) -> Ty {
         let ty = match expression {
             Expression::Bool(_) => Ty::Scalar(ScalarType::Boolean),
@@ -550,10 +546,6 @@ impl<'a> TypeChecker<'a, '_> {
             self.operands_error(operands, "requires Boolean operands");
         }
     }
-
-    // -----------------------------------------------------------------
-    // Reporting helpers
-    // -----------------------------------------------------------------
 
     fn expect_boolean(&mut self, expression: &'a Expression, context: &str) {
         let found = self.type_of(expression);

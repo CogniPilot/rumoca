@@ -37,7 +37,7 @@ use crate::value::Type;
 ///
 /// `$` cannot begin a Modelica identifier (MLS §2.3.1), so a generated buffer
 /// can never collide with a name the model declares.
-pub const BUFFER_PREFIX: &str = "$when";
+pub(crate) const BUFFER_PREFIX: &str = "$when";
 
 /// The buffer name for branch `branch` of the when-equation at `equation`.
 #[must_use]

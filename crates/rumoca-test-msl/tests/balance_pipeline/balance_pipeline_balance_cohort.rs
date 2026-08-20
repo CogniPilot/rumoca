@@ -1,12 +1,8 @@
 //! Derived balance-failure cohort for `msl_results.json`.
 //!
-//! Before this section existed the MSL harness could not tell a balance
-//! failure from any other ToDae failure: the worker hard-coded `error_code:
-//! None` and re-derived the phase by sniffing the summary text, so
-//! parse/resolve failures (which render without a phase marker) were counted
-//! into the ToDae bucket. This module turns the now-structured `error_code` +
-//! `balance_detail` fields into an explicit, measured cohort so the roadmap
-//! question ("is the ToDae gap a balance cohort?") is answered by data.
+//! Typed worker `error_code` and `balance_detail` fields distinguish balance
+//! failures from every other ToDae failure. This module derives the measured
+//! cohort exclusively from those structured fields.
 
 use super::MslModelResult;
 use rumoca_core::split_first_top_level;

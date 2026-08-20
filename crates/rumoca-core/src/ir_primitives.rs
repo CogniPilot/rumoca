@@ -66,13 +66,6 @@ impl Display for InstanceId {
     }
 }
 
-/// Shared declaration ancestry for one resolved source or instance symbol.
-///
-/// Many concrete instances can originate from the same declaration. Sharing
-/// the immutable chain keeps that semantic relationship explicit without
-/// cloning an identical allocation for every flattened scalar variable.
-pub type SymbolAncestry = Arc<[DefId]>;
-
 impl DefId {
     /// Create a new DefId from an index.
     pub fn new(index: u32) -> Self {
@@ -325,7 +318,7 @@ impl Span {
         *self == Self::DUMMY
     }
 
-    pub fn source_free_serde_default() -> Self {
+    pub(crate) fn source_free_serde_default() -> Self {
         Self::DUMMY
     }
 
@@ -680,10 +673,6 @@ impl Reference {
         &self.name
     }
 
-    pub fn into_var_name(self) -> VarName {
-        self.name
-    }
-
     pub fn component_ref(&self) -> Option<&ComponentReference> {
         self.component_ref.as_ref()
     }
@@ -816,10 +805,6 @@ impl Reference {
         self.component_ref
             .as_ref()
             .map(ComponentReference::root_def_id)
-    }
-
-    pub fn has_structure(&self) -> bool {
-        self.component_ref.is_some()
     }
 
     pub fn last_segment(&self) -> &str {
@@ -1712,10 +1697,6 @@ impl Expression {
             .unwrap_or_else(|| Err(MissingProvenanceSpan::new(context)))
     }
 
-    pub fn unspan(&self) -> &Expression {
-        self
-    }
-
     fn map_span(mut self, f: impl FnOnce(Span) -> Span) -> Self {
         let span_slot = match &mut self {
             Expression::Binary { span, .. }
@@ -1738,41 +1719,6 @@ impl Expression {
         self
     }
 
-    pub fn contains_der(&self) -> bool {
-        self.contains_subexpression(|expr| {
-            matches!(
-                expr,
-                Expression::BuiltinCall {
-                    function: BuiltinFunction::Der,
-                    ..
-                }
-            )
-        })
-    }
-
-    pub fn contains_relational_operator(&self) -> bool {
-        self.contains_subexpression(
-            |expr| matches!(expr, Expression::Binary { op, .. } if op.is_relational()),
-        )
-    }
-
-    pub fn contains_der_of_state<'a>(
-        &self,
-        state_vars: impl IntoIterator<Item = &'a VarName>,
-    ) -> bool {
-        let state_vars = state_vars.into_iter().collect::<Vec<_>>();
-        self.contains_subexpression(|expr| {
-            matches!(
-                expr,
-                Expression::BuiltinCall {
-                    function: BuiltinFunction::Der,
-                    args,
-                    ..
-                } if der_call_matches_any_state(args, &state_vars)
-            )
-        })
-    }
-
     pub fn contains_subexpression(&self, mut predicate: impl FnMut(&Expression) -> bool) -> bool {
         let mut checker = ContainsExpressionChecker {
             found: false,
@@ -1780,18 +1726,6 @@ impl Expression {
         };
         crate::ExpressionVisitor::visit_expression(&mut checker, self);
         checker.found
-    }
-
-    pub fn get_der_variable(&self) -> Option<&VarName> {
-        match self {
-            Expression::BuiltinCall { function, args, .. } if *function == BuiltinFunction::Der => {
-                args.first().and_then(|arg| match arg {
-                    Expression::VarRef { name, .. } => Some(name.var_name()),
-                    _ => None,
-                })
-            }
-            _ => None,
-        }
     }
 
     pub fn collect_state_variables(&self, states: &mut impl Extend<VarName>) {
@@ -1879,16 +1813,6 @@ where
         }
         self.walk_expression(expr);
     }
-}
-
-fn der_call_matches_any_state(args: &[Expression], state_vars: &[&VarName]) -> bool {
-    matches!(
-        args.first(),
-        Some(Expression::VarRef { name, .. })
-            if state_vars
-                .iter()
-                .any(|state| derivative_name_matches_state(name.var_name(), state))
-    )
 }
 
 struct StateVariableCollector<'a> {

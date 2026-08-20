@@ -698,10 +698,6 @@ fn test_transformer_recurses_into_function_call_target_subscripts() {
     assert_eq!(token.text.as_ref(), "2");
 }
 
-// ---------------------------------------------------------------------------
-// Arc reuse in the rewrite transformer (P4 parser allocation work)
-// ---------------------------------------------------------------------------
-
 struct Identity;
 impl ExpressionTransformer for Identity {}
 

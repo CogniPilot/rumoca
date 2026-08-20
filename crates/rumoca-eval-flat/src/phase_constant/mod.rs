@@ -192,27 +192,6 @@ impl ParamEvaluator {
     }
 }
 
-/// Try to evaluate a flat expression to an integer value with context and array dimensions.
-///
-/// Same as try_eval_flat_expr_integer but also handles size() calls using array dimensions.
-pub fn try_eval_flat_expr_integer_with_dims(
-    expr: &rumoca_core::Expression,
-    known_ints: &FxHashMap<String, i64>,
-    array_dims: &FxHashMap<String, Vec<i64>>,
-) -> Option<i64> {
-    // Call with empty bools/enums/functions (convenience for callers without those contexts)
-    let ctx = ParamEvalContext {
-        known_ints,
-        known_reals: &FxHashMap::default(),
-        known_bools: &FxHashMap::default(),
-        known_enums: &FxHashMap::default(),
-        array_dims,
-        functions: &FxHashMap::default(),
-        var_context: None,
-    };
-    try_eval_integer_with_context(expr, &ctx)
-}
-
 /// Integer evaluation with full context.
 pub fn try_eval_integer_with_context(
     expr: &rumoca_core::Expression,
@@ -853,24 +832,6 @@ pub fn eval_user_func_real(
         ctx,
     )
     .and_then(|value| value.to_real())
-}
-
-/// Try to evaluate a flat expression to a real value.
-pub fn try_eval_flat_expr_real(
-    expr: &rumoca_core::Expression,
-    known_ints: &FxHashMap<String, i64>,
-    known_reals: &FxHashMap<String, f64>,
-) -> Option<f64> {
-    let eval_ctx = build_eval_context(
-        known_ints,
-        known_reals,
-        &FxHashMap::default(),
-        &FxHashMap::default(),
-        &FxHashMap::default(),
-    );
-    crate::constant::eval_expr(expr, &eval_ctx)
-        .ok()
-        .and_then(|value| value.to_real())
 }
 
 /// Try to extract an enumeration value from a flat expression.

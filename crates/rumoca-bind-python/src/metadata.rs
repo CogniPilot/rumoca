@@ -90,7 +90,7 @@ impl VariableInfo {
         Self {
             name: variable.name().to_string(),
             unit: variable.unit().map(str::to_string),
-            // quantity is not yet carried to the DAE boundary (roadmap §5.1).
+            // The checked DAE boundary carries unit but not quantity metadata.
             quantity: None,
             min: opt_literal(view, variable.minimum()),
             max: opt_literal(view, variable.maximum()),

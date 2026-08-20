@@ -389,7 +389,7 @@ fn property_rejected_host_buffers_are_transactional(case: u8) {
                 .record_outputs(&observation, START_TIME, &mut series)
                 .expect_err("an output series with no declared columns must be rejected");
             assert!(matches!(error.kind(), MeError::Contract { .. }));
-            assert!(series.into_columns().is_empty());
+            assert!(series.is_empty());
         }
         _ => unreachable!("case modulo nine is covered above"),
     }

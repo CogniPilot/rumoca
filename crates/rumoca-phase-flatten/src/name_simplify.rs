@@ -1032,12 +1032,12 @@ mod tests {
         };
         assert_eq!(name.as_str(), "x");
         assert_eq!(name.target_def_id(), Some(rumoca_core::DefId::new(17)));
-        assert!(name.has_structure());
+        assert!(name.component_ref().is_some());
         assert_eq!(flat.algorithms[0].outputs[0].as_str(), "x");
         assert_eq!(
             flat.algorithms[0].outputs[0].target_def_id(),
             Some(rumoca_core::DefId::new(17))
         );
-        assert!(flat.algorithms[0].outputs[0].has_structure());
+        assert!(flat.algorithms[0].outputs[0].component_ref().is_some());
     }
 }

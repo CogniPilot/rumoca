@@ -136,7 +136,7 @@ struct SimRunState {
     // (the compile reference genuinely batches); here each entry is one model.
     batch_timings: Vec<BatchTimingDetail>,
     // The session pool pulls models one at a time, so the queue is a flat model
-    // list — no `PendingBatch` wrapping (that is the compile reference's model).
+    // list, so scheduling stays explicit at the subprocess boundary.
     pending_models: Vec<String>,
 }
 

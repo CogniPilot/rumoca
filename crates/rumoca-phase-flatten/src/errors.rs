@@ -476,17 +476,6 @@ impl FlattenError {
         }
     }
 
-    /// Create a MissingFlowVariable error (no span).
-    pub fn missing_flow_variable(
-        connector: impl Into<String>,
-        flow_var: impl Into<String>,
-    ) -> Self {
-        Self::MissingFlowVariable {
-            connector: connector.into(),
-            flow_var: flow_var.into(),
-        }
-    }
-
     /// Create an Internal error (no span).
     pub fn internal(message: impl Into<String>) -> Self {
         Self::Internal(message.into())
@@ -639,13 +628,6 @@ impl FlattenError {
         }
     }
 
-    pub fn unresolved_flat_reference(name: impl Into<String>, span: Span) -> Self {
-        Self::UnresolvedFlatReference {
-            name: name.into(),
-            span,
-        }
-    }
-
     pub fn missing_flat_variable_identity(name: impl Into<String>, span: Span) -> Self {
         Self::MissingFlatVariableIdentity {
             name: name.into(),
@@ -761,7 +743,6 @@ mod tests {
         let err = FlattenError::undefined_variable("x", span);
         assert_eq!(format!("{err}"), "undefined variable: x");
 
-        // Check that miette code is present
         use miette::Diagnostic;
         let code = err.code().map(|c| c.to_string());
         assert_eq!(code, Some("rumoca::flatten::EF001".to_string()));
@@ -776,7 +757,6 @@ mod tests {
         );
         let err = FlattenError::incompatible_connectors("A", "B", span);
 
-        // Check that help text is present
         use miette::Diagnostic;
         let help = err.help().map(|h| h.to_string());
         assert!(help.is_some());

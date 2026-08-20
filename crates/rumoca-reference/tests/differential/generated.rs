@@ -105,15 +105,14 @@ impl Spec {
             } else {
                 Expr::real(1.0)
             };
-            model = model.with_equation(Equation::When(vec![WhenBranch::assigning(
-                Expr::binary(
+            model = model.with_equation(Equation::When(vec![WhenBranch {
+                condition: Expr::binary(
                     BinaryOp::GreaterEqual,
                     Expr::Time,
                     Expr::real(self.instant(index)),
                 ),
-                target,
-                body,
-            )]));
+                body: vec![(target.to_string(), body)],
+            }]));
         }
         model
     }

@@ -38,10 +38,6 @@ use rumoca_phase_codegen::{render_checked_algorithm_block_template_with_artifact
 use crate::GalecSyntaxError;
 use crate::parse::{parse_block as parse, parse_expression};
 
-// ===========================================================================
-// Builders (our own, mirroring checked-construction fixture style)
-// ===========================================================================
-
 fn n(name: &str) -> Name {
     Name::ident(name)
 }
@@ -166,10 +162,6 @@ fn out_real(name: &str) -> Parameter {
         decl: real_decl(n(name)),
     }
 }
-
-// ===========================================================================
-// Round-trip harness
-// ===========================================================================
 
 fn render_block(block: &Block) -> Result<String, String> {
     let checked =
@@ -419,10 +411,6 @@ fn norm_expr(expression: &mut Expression) {
     }
 }
 
-// ===========================================================================
-// Expression cascade coverage (F11 machinery + §7.1 per-production checks)
-// ===========================================================================
-
 #[test]
 fn cascade_levels_round_trip() {
     assert_expr_parses_as(
@@ -499,10 +487,6 @@ fn references_round_trip() {
     );
 }
 
-// ===========================================================================
-// F1 — scalar assignment; F2 — quoted state commit
-// ===========================================================================
-
 fn minimal_do_step(do_step: BlockMethod) -> Block {
     Block {
         do_step,
@@ -543,10 +527,6 @@ fn f2_quoted_state_commit() {
     assert_block_round_trips(&block);
 }
 
-// ===========================================================================
-// F3 — if-expression with mandatory `else`, self-parens, negative-literal parens
-// ===========================================================================
-
 #[test]
 fn f3_if_expression() {
     let limiter = Expression::If(IfExpression::new(
@@ -562,10 +542,6 @@ fn f3_if_expression() {
     );
 }
 
-// ===========================================================================
-// F4 — builtin calls: any-name callee, subscripted argument, zero-arg
-// ===========================================================================
-
 #[test]
 fn f4_builtin_calls() {
     assert_expr_parses_as("absolute(v)", &ecall("absolute", vec![lref("v")]));
@@ -576,11 +552,6 @@ fn f4_builtin_calls() {
     assert_expr_parses_as("sqrt(x)", &ecall("sqrt", vec![lref("x")]));
     assert_expr_parses_as("now()", &ecall("now", vec![]));
 }
-
-// ===========================================================================
-// F5 — quoted hierarchical names: atomic quoted lexeme (Flag G),
-//      structural vs literal `[ ]` / `.`
-// ===========================================================================
 
 #[test]
 fn f5_quoted_names() {
@@ -606,10 +577,6 @@ fn f5_quoted_names() {
     );
 }
 
-// ===========================================================================
-// F6 — whole-array (matrix) assignment
-// ===========================================================================
-
 #[test]
 fn f6_matrix_assignment() {
     let zero_row = || Expression::Array(vec![r(0.0), r(0.0), r(0.0)]);
@@ -630,10 +597,6 @@ fn f6_matrix_assignment() {
     };
     assert_block_round_trips(&block);
 }
-
-// ===========================================================================
-// F7 — full projected PID-shaped block
-// ===========================================================================
 
 fn dependent_gain_update() -> Spanned<Statement> {
     assign(
@@ -817,10 +780,6 @@ fn f7_pid_block() {
     assert_block_round_trips(&pid_block());
 }
 
-// ===========================================================================
-// F8 — matrix averager with nested for-loops and a state compartment
-// ===========================================================================
-
 fn matrix_do_step() -> BlockMethod {
     let size_dim = |d: i64| Expression::Size {
         array: state("accumulator"),
@@ -922,10 +881,6 @@ fn matrix_averager() -> Block {
 fn f8_matrix_averager() {
     assert_block_round_trips(&matrix_averager());
 }
-
-// ===========================================================================
-// F9 — signal-guard block: user function, MultiAssignment, signal checks
-// ===========================================================================
 
 fn classify_function() -> UserFunction {
     UserFunction {
@@ -1096,10 +1051,6 @@ fn f9_signal_guard() {
     assert_block_round_trips(&signal_guard());
 }
 
-// ===========================================================================
-// F10 — T7 real-literal accept / reject table
-// ===========================================================================
-
 /// The lexer accepts each conformant spelling and yields the exact `f64`, which
 /// then prints stably.
 #[test]
@@ -1141,10 +1092,6 @@ fn f10_real_literals_rejected() {
         );
     }
 }
-
-// ===========================================================================
-// F11 — expression micro-table
-// ===========================================================================
 
 #[test]
 fn f11_expression_micro_table() {
@@ -1215,15 +1162,6 @@ fn f11_expression_micro_table() {
         },
     );
 }
-
-// ===========================================================================
-// Secondary AST-level property over the canonical generator (§5.1, §5.2)
-//
-// `tests/validate.rs`-style valid blocks are canonical by construction:
-// `start: None`, finite Reals, and only observable parentheses. They must
-// round-trip cleanly at AST level (after `normalize`, which is a no-op on
-// `start` here and only strips parens the target template re-inserts).
-// ===========================================================================
 
 /// Smallest interesting valid block: one input, one output, empty methods.
 fn canonical_minimal() -> Block {
@@ -1340,11 +1278,6 @@ fn canonical_generator_minimal() {
 fn canonical_generator_estimator() {
     assert_block_round_trips(&canonical_estimator());
 }
-
-// ===========================================================================
-// Negative parse cases (§7.3): each malformed input → a specific typed
-// `GalecSyntaxError` variant carrying its stable EG050–EG055 code.
-// ===========================================================================
 
 /// A well-formed minimal block whose text the negative cases perturb.
 const OK: &str = "block M

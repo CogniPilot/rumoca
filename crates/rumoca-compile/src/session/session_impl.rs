@@ -262,26 +262,6 @@ impl Session {
         self.apply_text_document_change_at_revision(uri, content, revision)
     }
 
-    /// Add a pre-parsed definition to the session.
-    ///
-    /// This is more efficient than `add_document` when you've already parsed
-    /// the file (e.g., using parallel parsing).
-    pub fn add_parsed(&mut self, uri: &str, parsed: ast::StoredDefinition) {
-        let revision = self.bump_revision();
-        self.detach_uri_from_source_sets(uri, revision, false);
-        self.insert_document(
-            Document::new(
-                uri.to_string(),
-                String::new(), // Content not needed when pre-parsed
-                crate::parse::SyntaxFile::from_parsed(parsed),
-            ),
-            revision,
-        );
-        // Invalidate cached state
-        self.invalidate_resolved_state(CacheInvalidationCause::SourceSetMutation);
-        self.invalidate_source_root_completion_state(CacheInvalidationCause::SourceSetMutation);
-    }
-
     /// Add multiple pre-parsed definitions to the session.
     ///
     /// This is the most efficient way to load a large source root like MSL.
@@ -877,18 +857,6 @@ impl Session {
         true
     }
 
-    pub fn namespace_class_names_for_completion(&mut self) -> Result<Vec<String>> {
-        self.refresh_source_root_namespace_cache();
-        Ok(self
-            .query_state
-            .ast
-            .source_root_namespace_cache
-            .as_ref()
-            .and_then(|cache| cache.merged_cache.as_ref())
-            .map(|cache| cache.class_names().to_vec())
-            .unwrap_or_default())
-    }
-
     /// Get cached immediate namespace children for a completion prefix.
     ///
     /// Prefixes use the editor completion form (`""`, `Modelica.`, `Modelica.Blocks.`).
@@ -949,79 +917,18 @@ impl Session {
     ///
     /// This is useful for latency-sensitive paths (like editor completion)
     /// to avoid rebuilding resolution unless it is actually needed.
-    pub fn has_resolved_cached(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn has_resolved_cached(&self) -> bool {
         self.query_state.resolved.builds.has_completed_tree()
     }
 
-    /// Returns true when the standard resolved session is already cached.
-    pub fn has_standard_resolved_cached(&self) -> bool {
-        self.query_state.resolved.builds.standard().is_some()
-    }
-
     /// Returns true when semantic navigation artifacts already exist for a model.
-    pub fn has_semantic_navigation_cached(&self, model_name: &str) -> bool {
+    #[cfg(test)]
+    pub(crate) fn has_semantic_navigation_cached(&self, model_name: &str) -> bool {
         self.query_state
             .resolved
             .semantic_navigation
             .contains_key(model_name)
-    }
-
-    /// Returns true when semantic diagnostics artifacts already exist for a model.
-    pub fn has_semantic_diagnostics_cached(&self, model_name: &str) -> bool {
-        self.query_state
-            .flat
-            .semantic_diagnostics
-            .interface_artifacts
-            .keys()
-            .chain(
-                self.query_state
-                    .flat
-                    .semantic_diagnostics
-                    .body_artifacts
-                    .keys(),
-            )
-            .chain(
-                self.query_state
-                    .flat
-                    .semantic_diagnostics
-                    .model_stage_artifacts
-                    .keys(),
-            )
-            .any(|key| key.model_name.as_str() == model_name)
-    }
-
-    /// Get component members for a class name from cached resolved state.
-    ///
-    /// Returns `(member_name, member_type_name)` pairs, including inherited members
-    /// after applying extends `break` exclusions. If resolution is not available
-    /// or the class name is ambiguous, returns an empty vector.
-    ///
-    /// This does not trigger resolution and is safe for read-only contexts.
-    pub fn class_component_members_cached(&self, class_name: &str) -> Vec<(String, String)> {
-        self.query_state
-            .resolved
-            .builds
-            .any_tree()
-            .map(|tree| class_component_members_from_tree(tree, class_name))
-            .unwrap_or_default()
-    }
-
-    /// Get component members from cached active-target semantic navigation state.
-    ///
-    /// Falls back to the generic resolved cache when no active-target artifact is
-    /// available for the requested model.
-    pub fn class_component_members_for_navigation_cached(
-        &self,
-        model_name: &str,
-        class_name: &str,
-    ) -> Vec<(String, String)> {
-        self.query_state
-            .resolved
-            .semantic_navigation
-            .get(model_name)
-            .map(|artifact| class_component_members_from_tree(&artifact.tree, class_name))
-            .filter(|members| !members.is_empty())
-            .unwrap_or_else(|| self.class_component_members_cached(class_name))
     }
 
     /// Get the class tree.
@@ -1094,40 +1001,6 @@ impl Session {
                 } else {
                     Err(anyhow::anyhow!("{} error: {}", phase, error))
                 }
-            }
-        }
-    }
-
-    /// Compile a model through flattening for diagnostics.
-    ///
-    /// This is for focused debug tooling that needs the last successful IR
-    /// artifact after ToDae rejects a model. Production callers must compile
-    /// through `compile_model` or `compile_model_dae_strict_reachable_*`.
-    pub fn compile_model_flat_for_diagnostics(
-        &mut self,
-        model_name: &str,
-    ) -> Result<rumoca_ir_flat::Model> {
-        self.build_resolved()?;
-        let resolved = self.ensure_resolved()?.clone();
-        match self.flat_model_query_impl(
-            resolved.inner(),
-            ResolveBuildMode::Standard,
-            model_name,
-            false,
-        ) {
-            FlatModelOutcome::Success(result) => Ok(result.flat),
-            FlatModelOutcome::NeedsInner { missing_inners, .. } => Err(anyhow::anyhow!(
-                "Instantiate error: missing inner declarations: {}",
-                missing_inners.join(", ")
-            )),
-            FlatModelOutcome::InstantiateError(error) => {
-                Err(anyhow::anyhow!("Instantiate error: {error}"))
-            }
-            FlatModelOutcome::TypecheckError(diags) => {
-                Err(anyhow::anyhow!("Typecheck error: {}", diags.len()))
-            }
-            FlatModelOutcome::FlattenError { error } => {
-                Err(anyhow::anyhow!("Flatten error: {error}"))
             }
         }
     }
@@ -1222,15 +1095,6 @@ impl Session {
         Ok(self.compile_models_with_cache(resolved.inner(), ResolveBuildMode::Standard, &names))
     }
 
-    /// Compile all models and return summary.
-    pub fn compile_all_with_summary(
-        &mut self,
-    ) -> Result<(Vec<(String, PhaseResult)>, CompilationSummary)> {
-        let results = self.compile_all_parallel()?;
-        let summary = CompilationSummary::from_results(&results);
-        Ok((results, summary))
-    }
-
     /// Compile the requested model using strict-reachable semantics with
     /// internal recovery to surface additional diagnostics.
     ///
@@ -1255,17 +1119,7 @@ impl Session {
         report.into_compilation(resolved)
     }
 
-    /// Check strict-recovery compilation for the requested model without
-    /// materializing full `CompilationResult` payloads.
-    ///
-    /// This avoids expensive DAE/flat deep clones in memory-constrained wasm
-    /// surfaces while preserving strict-recovery diagnostics.
-    pub fn check_model_strict_requested_only(&mut self, model_name: &str) -> Result<(), String> {
-        self.check_model_strict_requested_only_with_timing(model_name)
-            .map(|_| ())
-    }
-
-    /// Same as `check_model_strict_requested_only`, but returns coarse timing
+    /// Check strict-recovery compilation for the requested model and return coarse timing
     /// stats to help diagnose strict-check latency hotspots.
     pub fn check_model_strict_requested_only_with_timing(
         &mut self,

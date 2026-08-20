@@ -1,5 +1,5 @@
 use rumoca_core::{SourceId, Span};
-/// Phase 5.2 tests: compile solve-IR to GPU-native code blobs (PTX / AMDGPU ISA).
+/// Compile Solve IR to GPU-native code blobs (PTX / AMDGPU ISA).
 ///
 /// These tests exercise the full GPU compilation pipeline
 /// (mlir-opt-18 → mlir-translate-18 → llc-18 with NVPTX/AMDGCN backend) and

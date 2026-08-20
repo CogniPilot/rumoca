@@ -7,7 +7,9 @@ use rumoca_compile::scenario::SimulationModelOverride;
 
 #[test]
 fn code_lens_request_stays_parse_only_until_resolved() {
+    let _guard = session_stats_test_guard();
     run_async_test(async {
+        reset_session_cache_stats();
         let temp = new_temp_dir("code-lens-parse-only");
         let active_path = temp.join("active.mo");
         let active_uri = Url::from_file_path(&active_path).expect("file uri");
@@ -49,10 +51,9 @@ fn code_lens_request_stays_parse_only_until_resolved() {
             lenses[0].data.is_some(),
             "initial code lens response should carry resolve data"
         );
-        assert!(
-            !server.session.read().await.has_resolved_cached(),
-            "code lens list request should stay parse-only"
-        );
+        let list_stats = session_cache_stats();
+        assert_eq!(list_stats.standard_resolved_builds, 0);
+        assert_eq!(list_stats.strict_resolved_builds, 0);
 
         let resolved = server
             .code_lens_resolve(lenses[0].clone())
@@ -67,14 +68,9 @@ fn code_lens_request_stays_parse_only_until_resolved() {
             title.starts_with("Balanced"),
             "resolved code lens should reflect the strict compile result: {title}"
         );
-        assert!(
-            server.session.read().await.has_resolved_cached(),
-            "code lens resolve should build resolved state on a cold request"
-        );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "code lens resolve should avoid the standard resolved session"
-        );
+        let resolve_stats = session_cache_stats();
+        assert!(resolve_stats.strict_resolved_builds > 0);
+        assert_eq!(resolve_stats.standard_resolved_builds, 0);
     });
 }
 
@@ -248,6 +244,7 @@ fn code_lens_resolve_skips_when_request_becomes_stale() {
 fn code_lens_resolve_failure_warms_save_diagnostics_for_problems() {
     let _guard = session_stats_test_guard();
     run_async_test(async {
+        reset_session_cache_stats();
         let temp = new_temp_dir("code-lens-save-diagnostics-on-failure");
         let active_path = temp.join("active.mo");
         let active_uri = Url::from_file_path(&active_path).expect("file uri");
@@ -261,15 +258,6 @@ fn code_lens_resolve_failure_warms_save_diagnostics_for_problems() {
             let mut session = server.session.write().await;
             session.update_document(&active_key, active_source);
         }
-        assert!(
-            !server
-                .session
-                .read()
-                .await
-                .has_semantic_diagnostics_cached("Test2"),
-            "failure test should start with a cold save-diagnostics cache"
-        );
-
         let lenses = server
             .code_lens(CodeLensParams {
                 text_document: TextDocumentIdentifier { uri: active_uri },
@@ -297,18 +285,12 @@ fn code_lens_resolve_failure_warms_save_diagnostics_for_problems() {
             title.starts_with("Compile failed"),
             "expected strict compile failure title, got: {title}"
         );
-        assert!(
-            server
-                .session
-                .read()
-                .await
-                .has_semantic_diagnostics_cached("Test2"),
-            "code lens failure should warm save diagnostics so Problems can publish semantic errors"
-        );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "warming save diagnostics from code lens failure should stay off the standard resolved cache"
-        );
+        let stats = session_cache_stats();
+        let semantic_builds = stats.interface_semantic_diagnostics_builds
+            + stats.body_semantic_diagnostics_builds
+            + stats.model_stage_semantic_diagnostics_builds;
+        assert!(semantic_builds > 0);
+        assert_eq!(stats.standard_resolved_builds, 0);
     });
 }
 

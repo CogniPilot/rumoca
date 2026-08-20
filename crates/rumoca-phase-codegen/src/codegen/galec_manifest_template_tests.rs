@@ -678,15 +678,6 @@ fn galec_c_templates_do_not_use_lossy_sanitization() {
     }
 }
 
-// ===========================================================================
-// Declared ranges (SPEC_0042 T3) decided in the target's own numeric domain.
-//
-// The block state a generated method saturates is `float`/`int32_t` in
-// caller-allocated memory, so two things are only decidable here and not in
-// the checked block: whether a declared bound is expressible at all in that
-// domain, and whether a slot is determinate at the boundary being emitted.
-// ===========================================================================
-
 /// The bound spelling a Modelica `Modelica.Constants.inf` declaration reaches
 /// this target as. MSL defines it as `1e60`, which is finite in the checked
 /// block's `f64` and *not* representable as a `float`: rendering it produces

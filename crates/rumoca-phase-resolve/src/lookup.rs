@@ -41,7 +41,6 @@ impl Resolver {
             return None;
         }
 
-        // Get the first part of the name
         let first_part = &name.name[0].text;
         let first_path = ComponentPath::from_flat_path(first_part);
 

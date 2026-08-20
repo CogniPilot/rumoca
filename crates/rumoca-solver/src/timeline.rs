@@ -292,13 +292,6 @@ pub fn scheduled_root_indices_at_time(
         .collect()
 }
 
-pub fn scheduled_root_index_is_known(
-    roots: &[solve::ScheduledRootCondition],
-    root_index: usize,
-) -> bool {
-    roots.iter().any(|root| root.root_index == root_index)
-}
-
 pub fn runtime_parameter_index(layout: &solve::SolveLayout, name: &str) -> Option<usize> {
     layout
         .input_parameter_index(name)

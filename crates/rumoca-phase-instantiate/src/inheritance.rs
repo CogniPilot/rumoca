@@ -3,25 +3,8 @@
 //! This module handles the `extends` clause processing, merging inherited
 //! components and equations into the derived class.
 //!
-//! ## MLS Compliance Status
-//!
-//! ### Extends/Inheritance (MLS §7)
-//! - [x] MLS §7.1 - Basic extends clause processing
-//! - [x] MLS §7.1 - Multiple inheritance order preservation
-//! - [x] MLS §7.1 - O(1) base class lookup via DefId
-//! - [x] MLS §7.1 - Inheritance caching for diamond inheritance
-//! - [x] MLS §7.1.2 - Protected extends visibility
-//! - [x] MLS §7.2 - Modification environment (outer overrides inner)
-//! - [x] MLS §7.2.5 - `each` modifier prefix (tracked via `ModificationValue.each`)
-//! - [x] MLS §7.2.6 - `final` modifier prefix (validation implemented)
-//! - [x] MLS §7.3 - Redeclarations (replaceable/final validation)
-//! - [x] MLS §7.3.2 - Constrainedby validation (subtype checking)
-//! - [x] MLS §7.4 - Selective model extension (`break` names with validation)
-//!
-//! ### Inner/Outer (MLS §5.4) - implemented in lib.rs
-//! - [x] MLS §5.4 - Inner declaration tracking (scope-based)
-//! - [x] MLS §5.4 - Outer reference resolution (nearest inner)
-//! - [x] MLS §5.4 - Type compatibility checking (inheritance-aware)
+//! MLS support status is owned by the `rumoca-contracts` registry rather than
+//! duplicated in implementation comments.
 
 use crate::path_utils;
 use indexmap::IndexSet;
@@ -521,7 +504,6 @@ fn types_share_common_base(
     type_b: &ast::ClassDef,
     cache: &mut SubtypeCache,
 ) -> bool {
-    // Get direct base classes of type_a
     for extend_a in &type_a.extends {
         let base_a_name = extend_a.base_name.to_string();
 
@@ -529,7 +511,6 @@ fn types_share_common_base(
         for extend_b in &type_b.extends {
             let base_b_name = extend_b.base_name.to_string();
 
-            // Check for exact match or name equivalence
             if base_a_name == base_b_name || type_names_match(tree, &base_a_name, &base_b_name) {
                 return true;
             }
@@ -619,8 +600,8 @@ fn redeclare_reference_target(reference: &ast::ComponentReference) -> Option<Def
 /// for `connector BooleanInput extends Boolean; end BooleanInput;` with causality.
 /// Such classes should be treated as primitive for variable creation purposes.
 ///
-/// Per Flatten Phase Roadmap: Components using such types should become flat variables with the
-/// type's causality applied.
+/// Components using such types become flat variables with the type's causality
+/// applied.
 ///
 /// Check if a type is effectively primitive, resolving type alias chains transitively.
 ///
@@ -651,7 +632,6 @@ pub(crate) fn is_effectively_primitive_transitive(
         return false;
     }
 
-    // Check for enumeration types - they are primitive values
     if !class.enum_literals.is_empty() {
         return true;
     }
@@ -1541,9 +1521,7 @@ fn merge_class_content(
     // This updates the component's type so that instantiation uses the new type's fields
     for (comp_name, new_type_name) in &redeclarations.types {
         if let Some(comp) = target.components.get_mut(comp_name) {
-            // Update the type_name to the new type
             comp.type_name = rumoca_ir_ast::Name::from_string(new_type_name);
-            // Update type_def_id by looking up the new type in the tree
             comp.type_def_id = tree.name_map.get(new_type_name).copied().or_else(|| {
                 // Try with shorter name (last segment) for unqualified lookups
                 let short_name = path_utils::class_name_leaf(new_type_name);
@@ -1558,9 +1536,6 @@ fn merge_class_content(
 
     apply_value_modifications(target, value_modifications, extend_span)?;
 
-    // MLS §7.2: Merge nested class modifications into inherited components
-    // Handles extends clauses like: extends Foo(friction(useHeatPort=true))
-    // where the modification targets a sub-parameter of an inherited component
     merge_nested_extends_modifications(target, extend);
 
     // Merge equations

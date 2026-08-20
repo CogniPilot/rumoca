@@ -306,10 +306,6 @@ fn test_classes_are_compatible_for_equivalent_declarations() {
     assert!(classes_are_compatible(&helper_a, &helper_b));
 }
 
-// -------------------------------------------------------------------------
-// Constrainedby validation tests (MLS §7.3.2)
-// -------------------------------------------------------------------------
-
 /// Create a component with constrainedby for testing.
 fn make_constrained_component(
     name: &str,
@@ -365,13 +361,11 @@ fn test_constrainedby_subtype_allowed() {
     let derived_def_id = DefId::new(101);
     register_predefined_external_object(&mut tree);
 
-    // Create base class
     let base = ast::ClassDef {
         name: make_token("BaseConnector"),
         ..Default::default()
     };
 
-    // Create derived class that extends base
     let derived = ast::ClassDef {
         name: make_token("DerivedConnector"),
         extends: vec![ast::Extend {
@@ -583,7 +577,6 @@ fn test_constrainedby_non_subtype_rejected() {
     // Redeclaring to a non-subtype should fail
     let mut tree = ast::ClassTree::default();
 
-    // Create two unrelated classes
     let class_a = ast::ClassDef {
         name: make_token("ClassA"),
         ..Default::default()
@@ -877,10 +870,6 @@ fn test_nested_class_redeclaration_shadows_inherited_replaceable_merged_later() 
     assert_eq!(effective_state.def_id, Some(simple_state_id));
 }
 
-// -------------------------------------------------------------------------
-// is_type_subtype tests
-// -------------------------------------------------------------------------
-
 #[test]
 fn test_is_type_subtype_exact_match() {
     let tree = ast::ClassTree::default();
@@ -1162,7 +1151,6 @@ fn test_is_effectively_primitive_transitive_enumeration_chain() {
     // connector DigitalSignal = Logic
     // connector DigitalInput = input DigitalSignal
 
-    // Create a tree with these classes
     let mut tree = ast::ClassTree::new();
 
     // Logic enumeration

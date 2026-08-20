@@ -37,7 +37,6 @@ pub use generated::modelica_grammar_trait as grammar_trait;
 // Re-export for convenience
 pub use generated::modelica_parser;
 
-// Re-export types used by modelica_grammar_trait (generated code references these)
 pub use components::{ComponentList, TokenList};
 pub use definitions::{Composition, ElementList};
 pub use expressions::{ArraySubscripts, ExpressionList, FunctionCallArguments, ModificationArg};
@@ -642,7 +641,6 @@ end Derived;
 
         assert_eq!(ast.classes.len(), 2, "Expected 2 definitions");
 
-        // Check the Derived model has an extends element
         let derived = ast.classes.get("Derived").expect("Derived should exist");
         assert_eq!(&*derived.name.text, "Derived");
 
@@ -1441,7 +1439,6 @@ end Outer;
         let outer = ast.classes.get("Outer").expect("Outer should exist");
         let sub = outer.components.get("sub").expect("sub should exist");
 
-        // Print modifications to understand the structure
         println!("sub.modifications = {:?}", sub.modifications);
         println!("sub.start = {:?}", sub.start);
 

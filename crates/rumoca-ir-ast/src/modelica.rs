@@ -259,7 +259,6 @@ impl ClassDef {
 
         writeln!(out).expect("write to String never fails");
 
-        // Imports
         for import in &self.imports {
             writeln!(out, "{}{};", inner_indent, import.to_modelica())
                 .expect("write to String never fails");
@@ -427,7 +426,6 @@ impl Component {
         if self.has_explicit_binding {
             write!(out, " = {}", self.start).expect("write to String never fails");
         } else if !matches!(self.start, Expression::Empty { .. }) && self.start_is_modification {
-            // Start value from modification
             if self.start_has_each {
                 write!(out, "(each start = {})", self.start).expect("write to String never fails");
             } else {

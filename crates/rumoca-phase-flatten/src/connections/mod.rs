@@ -283,10 +283,6 @@ impl ConnectionSubMatchIndex {
     }
 }
 
-// =============================================================================
-// Task 2.1: Flow Variable Identification (CONN-003)
-// =============================================================================
-
 /// Check if a variable is a flow variable.
 ///
 /// Per MLS §9.2 and CONN-003: Flow variables have the `flow` prefix
@@ -409,10 +405,6 @@ fn is_subscripted_variable_inner(var: &rumoca_core::VarName, flat: &flat::Model)
     subscripted_base_var(var, flat).map(|_| true)
 }
 
-// =============================================================================
-// Connection Set Building
-// =============================================================================
-
 /// A set of variables that are connected together.
 #[derive(Debug)]
 struct ConnectionSet {
@@ -511,7 +503,6 @@ impl UnionFind {
     fn find(&mut self, var: &rumoca_core::VarName) -> rumoca_core::VarName {
         let idx = self.get_or_insert_idx(var);
         let root_idx = self.find_idx(idx);
-        // Get the rumoca_core::VarName at root_idx
         self.var_to_idx
             .get_index(root_idx)
             .map(|(name, _)| name.clone())
@@ -575,18 +566,12 @@ impl UnionFind {
     }
 }
 
-// =============================================================================
-// Task 2.4: Connector Validation (CONN-001, CONN-003, CONN-008)
-// =============================================================================
-
 /// Validate all connections before processing.
 ///
 /// Checks for:
 /// - CONN-001/CONN-003: Flow/non-flow prefix consistency (homogeneity)
 /// - CONN-002: Type compatibility (Real vs Integer vs Boolean)
 /// - CONN-008: Array dimension compatibility
-///
-/// Note: CONN-005 (quantity matching) and other contracts are not yet implemented.
 ///
 /// For connector-level connections (non-primitive paths), validation is
 /// performed on the expanded sub-variables during connection set building.
@@ -920,10 +905,6 @@ fn reject_expandable_connector_augmentation(
     }
     Ok(())
 }
-
-// =============================================================================
-// Connection Set Building
-// =============================================================================
 
 /// Find all primitive sub-variables under a connector path.
 ///
@@ -1437,7 +1418,6 @@ fn process_connection(
         return expand_connector_connection(&subs_a, &path_a, &path_b, &subs_b, &mut ctx);
     }
 
-    // Handle output-to-output connections with array expansion
     let ctx = ArrayConnCtx {
         path_a: &path_a,
         path_b: &path_b,
@@ -1597,7 +1577,6 @@ fn build_connection_sets(
             )?;
         }
 
-        // Build flow union-find for this scope
         let mut scope_uf = UnionFind::new();
         for (a, b) in flow_pairs {
             scope_uf.union(&a, &b);
@@ -1704,10 +1683,6 @@ fn require_flat_variable_provenance(
     require_connection_provenance(span, context)
 }
 
-// =============================================================================
-// flat::Equation Generation
-// =============================================================================
-
 /// Create a component reference expression for a variable name.
 fn var_to_expr(var_name: &rumoca_core::VarName, span: ProvenanceSpan) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
@@ -1795,10 +1770,6 @@ fn create_sum(
 
     result
 }
-
-// =============================================================================
-// Task 2.2: Generate Effort (Potential) Equality Equations (CONN-001, CONN-026)
-// =============================================================================
 
 #[cfg(test)]
 mod endpoint_subscript_tests;

@@ -356,10 +356,6 @@ fn generate_equality_constraint_equation(
     Ok(())
 }
 
-// =============================================================================
-// Task 2.3: Generate Flow Sum Equations (CONN-003, CONN-026)
-// =============================================================================
-
 /// Generate sum-to-zero equation for flow variables.
 ///
 /// For n flow variables in a connection set: `sign_1*f1 + sign_2*f2 + ... + sign_n*fn = 0`
@@ -447,7 +443,6 @@ pub(super) fn generate_flow_equation(
         .collect();
     let sum = create_sum(flow_exprs, provenance);
 
-    // Build origin string with signs for clarity
     let signed_vars: Vec<String> = variables
         .iter()
         .map(|v| {
@@ -515,10 +510,6 @@ fn has_outside_connector_role(
     strip_embedded_array_indices(var_name.as_str())
         .is_some_and(|base_name| is_interface_member(&rumoca_core::VarName::new(base_name)))
 }
-
-// =============================================================================
-// Main Entry Point
-// =============================================================================
 
 /// Process all connections in the instance overlay.
 ///
@@ -632,7 +623,7 @@ pub(crate) fn process_connections(
         }
     }
 
-    // Validate connections first (Task 2.4)
+    // Validation establishes the connector invariants consumed below.
     if strict_validation {
         validate_connections(
             &all_connections,
@@ -1206,10 +1197,6 @@ fn redirect_connection_for_inner_outer(
     }
     redirected
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 #[cfg(test)]
 mod equation_generation_tests {

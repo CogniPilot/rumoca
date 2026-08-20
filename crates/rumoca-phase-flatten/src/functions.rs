@@ -880,8 +880,6 @@ fn resolve_function_in_package_chain_class<'a>(
                 let target_name = target.def_id.and_then(|def_id| tree.def_map.get(&def_id))?;
                 return resolve_inner(tree, class_index, target_name, function_leaf, visited);
             };
-        // MLS §7.3: an extends-clause class redeclare replaces the inherited
-        // member, so it wins over the (possibly partial) lexical base member.
         if let Some(target) = crate::pipeline::extends_class_redeclare_target(
             tree,
             class_index,
@@ -1123,7 +1121,6 @@ fn convert_function<'tree>(
     let prefix = ast::QualifiedName::new();
     let function_locals: HashSet<String> = effective_components.keys().cloned().collect();
 
-    // Process components to find inputs, outputs, and locals
     for (comp_name, component) in &effective_components {
         let param = convert_component_to_param(
             class_index,

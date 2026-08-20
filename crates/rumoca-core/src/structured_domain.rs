@@ -263,7 +263,7 @@ pub enum ComprehensionScalarView {
 }
 
 impl ComprehensionScalarView {
-    pub fn is_binder_substitution(&self) -> bool {
+    pub(crate) fn is_binder_substitution(&self) -> bool {
         matches!(self, Self::BinderSubstitution)
     }
 

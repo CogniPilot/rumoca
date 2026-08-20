@@ -1,5 +1,5 @@
 use super::*;
-use crate::{SolveRealFormat, SolveRoundingMode, SolveTypeConstructionError};
+use crate::{SolveRealFormat, SolveRoundingMode, SolveTypeConstructionError, SolveValueKind};
 use rumoca_core::{SourceId, StructuredIndexBinder, StructuredIndexDomain};
 
 fn span(start: usize) -> Span {
@@ -46,7 +46,7 @@ fn aggregate_copy_stays_one_typed_load_and_store() {
 #[test]
 fn profile_rounds_real_constants_at_construction() {
     let value = SolveValue::real(profile(), 1.0 + f64::from(f32::EPSILON) / 4.0);
-    assert_eq!(value.real_as_f64(), Some(1.0));
+    assert_eq!(value.kind(), SolveValueKind::Real32(1.0_f32.to_bits()));
 }
 
 #[test]

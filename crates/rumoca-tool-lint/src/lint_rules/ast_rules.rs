@@ -31,10 +31,6 @@ fn requires_description(class_type: &ClassType) -> bool {
     matches!(class_type, ClassType::Model | ClassType::Function)
 }
 
-// ---------------------------------------------------------------------------
-// naming-convention
-// ---------------------------------------------------------------------------
-
 /// Rule: Check naming conventions.
 pub(crate) struct NamingConventionRule;
 
@@ -76,10 +72,6 @@ impl LintRule for NamingConventionRule {
         visitor.messages
     }
 }
-
-// ---------------------------------------------------------------------------
-// external-purity-undeclared
-// ---------------------------------------------------------------------------
 
 /// Rule: an external function must state `pure` or `impure` (MLS 3.7 §12.3).
 ///
@@ -138,10 +130,6 @@ impl LintRule for ExternalPurityRule {
     }
 }
 
-// ---------------------------------------------------------------------------
-// missing-documentation
-// ---------------------------------------------------------------------------
-
 /// Rule: Check for missing documentation.
 pub(crate) struct MissingDocumentationRule;
 
@@ -188,10 +176,6 @@ impl LintRule for MissingDocumentationRule {
         visitor.messages
     }
 }
-
-// ---------------------------------------------------------------------------
-// magic-number
-// ---------------------------------------------------------------------------
 
 /// Rule: Check for magic numbers.
 pub(crate) struct MagicNumberRule;

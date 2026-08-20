@@ -364,9 +364,6 @@ async function saveCodegenSettingsForModel(modelName, settings) {
     return response;
 }
 
-async function resetCodegenSettingsForModel(modelName) {
-    return await saveCodegenSettingsForModel(modelName, defaultCodegenSettings());
-}
 
 function currentCodegenModel() {
     return trimMaybeString(window.selectedModel || currentSimulationModel());
@@ -755,9 +752,6 @@ function normalizeOpenDocumentPaths(paths, fallbackPath = '') {
     return next;
 }
 
-function otherEditorPaneId(paneId) {
-    return paneId === 'secondary' ? 'primary' : 'secondary';
-}
 
 function normalizeEditorPaneId(paneId) {
     return paneId === 'secondary' ? 'secondary' : 'primary';
@@ -812,9 +806,6 @@ function removePathFromOtherEditorPane(path, keepPaneId) {
     rebuildOpenDocumentPaths();
 }
 
-function hasSecondaryEditorPane() {
-    return editorPaneSplit !== 'single';
-}
 
 function setFileMenuOpen(isOpen) {
     if (!fileMenuButton || !fileMenuPanel) {
@@ -2993,7 +2984,6 @@ window.switchBottomTab = function(tabName) {
     document.querySelectorAll('.panel-header-bottom .bottom-tab').forEach(tab => {
         tab.classList.toggle('active', tab.dataset.tab === nextTab);
     });
-    // Update sections
     document.getElementById('outputSection').classList.toggle('active', nextTab === 'output');
     document.getElementById('errorsSection').classList.toggle('active', nextTab === 'errors');
     scheduleWorkspacePersistence();
@@ -3504,7 +3494,6 @@ window.addEventListener('pagehide', () => {
 // DAE format state (Pretty vs JSON in DAE tab)
 window.daeFormat = 'pretty';
 
-// Update DAE format toggle
 window.updateDaeFormat = function() {
     window.daeFormat = document.getElementById('daeFormatSelect').value;
     const modelName = document.getElementById('modelSelect').value;
@@ -3671,10 +3660,6 @@ window.runScenarioForPane = async function(paneId) {
     }
 };
 
-// Display output for the active tab
-function displayModelOutput(modelName) {
-    displayDaeOutput(modelName);
-}
 
 // Display DAE output (Pretty or JSON)
 function displayDaeOutput(modelName) {
@@ -4064,7 +4049,6 @@ worker.onmessage = (e) => {
             }
             refreshWorkbenchNavigation();
             requestStartupCompileIfReady();
-            // Fetch version and show welcome message
             sendWorkspaceCommand('rumoca.workspace.getVersion', {}).then(version => {
                 setTerminalOutput(`Rumoca v${version} - Modelica Compiler\nHover over tabs/buttons for help.`);
             }).catch(() => {
@@ -5070,7 +5054,6 @@ require(['vs/editor/editor.main'], function() {
 
         try {
         let diagnostics = [];
-        // Run diagnostics
         try {
             setCompileStatus('Checking diagnostics...', '#9a6700');
             const diagJson = await sendLanguageCommand('rumoca.language.diagnostics', { source });
@@ -5215,7 +5198,6 @@ require(['vs/editor/editor.main'], function() {
             return;
         }
 
-        // Update display with selected model
         let selectedModel = modelSelect.value;
 
         // If no selection but we have models, select the first one

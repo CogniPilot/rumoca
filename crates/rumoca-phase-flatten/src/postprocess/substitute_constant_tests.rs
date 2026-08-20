@@ -296,10 +296,7 @@ fn collapse_index_refs_collapses_indexed_field_access_to_known_var() {
                     subscripts: vec![],
                     span: rumoca_core::Span::DUMMY,
                 }),
-                subscripts: vec![rumoca_core::Subscript::generated_index(
-                    1,
-                    rumoca_core::Span::DUMMY,
-                )],
+                subscripts: vec![rumoca_core::Subscript::index(1, rumoca_core::Span::DUMMY)],
                 span: rumoca_core::Span::DUMMY,
             }),
             field: "Q_flow".to_string(),
@@ -332,10 +329,7 @@ fn collapse_index_refs_collapses_indexed_var_ref_to_known_scalar_var() {
                 subscripts: vec![],
                 span: rumoca_core::Span::DUMMY,
             }),
-            subscripts: vec![rumoca_core::Subscript::generated_index(
-                1,
-                rumoca_core::Span::DUMMY,
-            )],
+            subscripts: vec![rumoca_core::Subscript::index(1, rumoca_core::Span::DUMMY)],
             span: rumoca_core::Span::DUMMY,
         },
         rumoca_core::Span::DUMMY,
@@ -805,7 +799,7 @@ fn does_not_substitute_indexed_function_local_names() {
         .push(simple_assignment(rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new("table"),
             subscripts: vec![
-                rumoca_core::Subscript::generated_expr(
+                rumoca_core::Subscript::expr(
                     Box::new(rumoca_core::Expression::VarRef {
                         name: rumoca_core::Reference::new("next"),
                         subscripts: vec![],
@@ -813,7 +807,7 @@ fn does_not_substitute_indexed_function_local_names() {
                     }),
                     rumoca_core::Span::DUMMY,
                 ),
-                rumoca_core::Subscript::generated_index(1, rumoca_core::Span::DUMMY),
+                rumoca_core::Subscript::index(1, rumoca_core::Span::DUMMY),
             ],
             span: rumoca_core::Span::DUMMY,
         }));

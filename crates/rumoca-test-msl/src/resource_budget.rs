@@ -300,17 +300,6 @@ impl std::fmt::Display for SolveIrBudgetMeasureError {
     }
 }
 
-impl SolveIrBudgetMeasureError {
-    /// The typed failure family, or `None` when this was not a budget overrun.
-    #[must_use]
-    pub fn budget_failure_bucket(&self) -> Option<ModelFailureBucket> {
-        match self {
-            Self::BudgetExceeded(exceeded) => Some(exceeded.failure_bucket()),
-            Self::Serialize(_) => None,
-        }
-    }
-}
-
 /// A writer that counts bytes and refuses to pass the ceiling.
 struct BudgetedWriter<W: Write> {
     inner: W,
@@ -507,6 +496,5 @@ mod tests {
             matches!(error, SolveIrBudgetMeasureError::Serialize(_)),
             "an IO fault must not be attributed to the resource budget, got {error}"
         );
-        assert_eq!(error.budget_failure_bucket(), None);
     }
 }

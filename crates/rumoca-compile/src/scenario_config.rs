@@ -462,11 +462,6 @@ impl ScenarioConfig {
             .unwrap_or_default()
     }
 
-    /// Scenario-local source roots configured for a model (empty when none).
-    pub fn source_roots_for_model(&self, model: &str) -> Vec<String> {
-        self.source_roots_for_model_task(model, ScenarioTask::Simulate)
-    }
-
     pub fn source_roots_for_model_task(&self, model: &str, task: ScenarioTask) -> Vec<String> {
         self.config_for_task(model, task)
             .map(|config| config.data.source_roots.clone())
@@ -481,12 +476,6 @@ impl ScenarioConfig {
         let entry = self.ensure_config_for_task(model, ScenarioTask::Codegen);
         entry.data.model.name = Some(model.to_string());
         entry.data.codegen = codegen;
-    }
-
-    /// Set top-level scenario-local `source_roots`, creating a colocated
-    /// scenario if necessary.
-    pub fn set_source_roots(&mut self, model: &str, source_roots: Vec<String>) {
-        self.set_source_roots_for_task(model, ScenarioTask::Simulate, source_roots);
     }
 
     pub fn set_source_roots_for_task(
@@ -526,10 +515,6 @@ impl ScenarioConfig {
             apply_model_config(&self.workspace_root, &mut effective, config);
         }
         effective
-    }
-
-    pub fn resolve_scenario_source_root_paths(&self) -> Vec<String> {
-        Vec::new()
     }
 
     pub fn resolve_all_source_root_paths(&self) -> Vec<String> {
@@ -573,13 +558,6 @@ impl ScenarioConfig {
             scenario_path,
             diagnostics: self.diagnostics.clone(),
         }
-    }
-
-    /// Default colocated `rumoca-scenario.<model>.toml` (path + rendered
-    /// content) for a model: a minimal `[rumoca]` + `[model]` scenario, used by
-    /// the editor's create-config action. The GUI fills in the rest.
-    pub fn default_scenario_config(&self, model: &str) -> Result<(PathBuf, String)> {
-        self.default_scenario_config_for_task(model, ScenarioTask::Simulate)
     }
 
     pub fn default_scenario_config_for_task(

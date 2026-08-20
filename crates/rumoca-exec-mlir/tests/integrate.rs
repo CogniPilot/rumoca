@@ -1,4 +1,4 @@
-/// End-to-end Phase 4 test: compile an ODE via MLIR, integrate with a simple
+/// End-to-end test: compile an ODE via MLIR, integrate with a simple
 /// fixed-step Euler loop, and verify numerics against the analytical solution.
 ///
 /// Model: der(x) = -x   with   x(0) = 1

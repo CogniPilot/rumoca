@@ -1,4 +1,4 @@
-//! Scalar reverse-mode AD (vector-Jacobian product) — Track A core.
+//! Scalar reverse-mode AD (vector-Jacobian product).
 //!
 //! For a scalar Solve-IR program `f`, the reverse sweep computes `Jᵀλ` for an
 //! output cotangent `λ` in a single pass, where `J = ∂f/∂(inputs)`. It records
@@ -6,7 +6,7 @@
 //! backward accumulating adjoints, reading the input cotangents at the
 //! `LoadY` / `LoadP` / `LoadSeed` sites.
 //!
-//! Correctness gate (roadmap §9.1): the dot-product identity
+//! The dot-product identity
 //! `λᵀ(J v) = (Jᵀλ)ᵀ v` must hold against the forward JVP for random `v`, `λ`.
 //!
 //! Scope: scalar ops plus `LinearSolveComponent` (the linear-solve VJP — adjoint

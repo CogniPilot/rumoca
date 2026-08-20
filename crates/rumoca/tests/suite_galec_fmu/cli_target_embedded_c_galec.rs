@@ -6,7 +6,7 @@
 //! template context → thin C templates. The emitted sources are then
 //! compiled with `cc -Wall -Werror` and LINKED against a generated driver
 //! (`-lm`), and the driver is executed to check the discrete dynamics —
-//! the roadmap-mandated compile check plus a behavioral check on top
+//! the required compile check plus a behavioral check
 //! (GAL-012: generated C is compile-checked, never skip-and-mark-covered).
 //! Like the `galec` suite's `xmllint` requirement, a missing `cc` is a
 //! hard failure, never a skip.

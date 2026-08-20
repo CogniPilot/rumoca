@@ -608,7 +608,6 @@ mod tests {
         let err = InstantiateError::model_not_found_with_span("TestModel", span);
         assert_eq!(format!("{err}"), "model `TestModel` not found");
 
-        // Check that miette code is present
         use miette::Diagnostic;
         let code = err.code().map(|c| c.to_string());
         assert_eq!(code, Some("rumoca::instantiate::EI001".to_string()));
@@ -623,7 +622,6 @@ mod tests {
         );
         let err = InstantiateError::conflicting_inheritance("x", "Base1", "Base2", span);
 
-        // Check that help text is present
         use miette::Diagnostic;
         let help = err.help().map(|h| h.to_string());
         assert!(help.is_some());

@@ -162,7 +162,6 @@ mod tests {
             MeAdvanceRequest::new(empty(0.0), Some(0.5), 2.0, None, None).expect("checked request");
         let candidate = plugin.advance(&request).expect("one accepted step");
         assert!((candidate.accepted_time() - 0.5).abs() <= f64::EPSILON);
-        assert_eq!(candidate.declared_order(), TIME_ONLY_ORDER);
         assert!(candidate.accepted_states().is_empty());
     }
 

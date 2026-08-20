@@ -1,65 +1,5 @@
 use super::*;
 
-pub(super) fn resolve_class_for_completion<'a>(
-    tree: &'a ast::ClassTree,
-    class_name: &str,
-) -> Option<&'a ast::ClassDef> {
-    if let Some(class) = tree.get_class_by_qualified_name(class_name) {
-        return Some(class);
-    }
-
-    let mut matched_name: Option<&str> = None;
-    for name in tree.name_map.keys() {
-        if !class_name_matches_completion_target(name, class_name) {
-            continue;
-        }
-        if matched_name.is_some() {
-            return None;
-        }
-        matched_name = Some(name);
-    }
-    matched_name.and_then(|name| tree.get_class_by_qualified_name(name))
-}
-
-fn class_name_matches_completion_target(qualified_name: &str, class_name: &str) -> bool {
-    qualified_name == class_name
-        || rumoca_core::top_level_path_ends_with(qualified_name, class_name)
-}
-
-pub(super) fn collect_class_component_members(
-    tree: &ast::ClassTree,
-    class: &ast::ClassDef,
-    members: &mut IndexMap<String, String>,
-    visiting: &mut std::collections::HashSet<DefId>,
-) {
-    if let Some(def_id) = class.def_id
-        && !visiting.insert(def_id)
-    {
-        return;
-    }
-
-    for ext in &class.extends {
-        let Some(base_def_id) = ext.base_def_id else {
-            continue;
-        };
-        let Some(base_class) = tree.get_class_by_def_id(base_def_id) else {
-            continue;
-        };
-        collect_class_component_members(tree, base_class, members, visiting);
-        for break_name in &ext.break_names {
-            members.shift_remove(break_name);
-        }
-    }
-
-    for (name, component) in &class.components {
-        members.insert(name.clone(), component.type_name.to_string());
-    }
-
-    if let Some(def_id) = class.def_id {
-        visiting.remove(&def_id);
-    }
-}
-
 pub(super) fn missing_inner_label(idx: usize, span: Span) -> Label {
     let label = match idx {
         0 => Label::primary(span),
@@ -655,30 +595,4 @@ fn finalize_strict_compile_report_from_uncached_targets_impl(
             .join()
             .expect("strict compile result consumer panicked")
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn completion_class_match_requires_top_level_segment_boundary() {
-        assert!(class_name_matches_completion_target("Pkg.Target", "Target"));
-        assert!(class_name_matches_completion_target(
-            "Root.Pkg.Target",
-            "Pkg.Target"
-        ));
-        assert!(!class_name_matches_completion_target(
-            "Pkg.MyTarget",
-            "Target"
-        ));
-        assert!(!class_name_matches_completion_target(
-            "Pkg.TargetAlias",
-            "Target"
-        ));
-        assert!(!class_name_matches_completion_target(
-            "Pkg[index.Target]",
-            "Target"
-        ));
-    }
 }

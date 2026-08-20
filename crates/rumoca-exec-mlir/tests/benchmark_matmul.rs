@@ -1,16 +1,16 @@
 use rumoca_core::{SourceId, Span};
-/// Phase 6.3/6.4: linalg.matmul, Explicit sparsity, and scalarized path comparison.
+/// Dense, structured-sparse, and scalarized matrix multiplication comparison.
 ///
-/// Phase 6.3 model: dx/dt = A * x   where A = diag(-1, -2), x(0) = [1, 1]
+/// Diagonal model: dx/dt = A * x where A = diag(-1, -2), x(0) = [1, 1]
 ///   Analytical: x1(t) = exp(-t),  x2(t) = exp(-2t)
 ///
-/// Phase 6.4 model: dx/dt = B * x   where B is 3×3 sparse (5 nonzeros), x = [1,1,1]
+/// Sparse model: dx/dt = B * x where B is 3×3 sparse (5 nonzeros), x = [1,1,1]
 ///   B = [[1,0,2],[0,3,0],[4,0,5]]   → xdot = [3, 3, 9] at x=[1,1,1]
 ///
 /// Four compute paths are compared:
 ///   1. Dense MatMul node     → linalg.matmul in MLIR
 ///   2. Diagonal MatMul node  → element-wise multiply (fast path)
-///   3. Explicit MatMul node  → scalar FMA over each nonzero (Phase 6.4)
+///   3. Explicit MatMul node  → scalar FMA over each nonzero
 ///   4. Scalarized ScalarProgramBlock   → scalar-row path
 use rumoca_exec_mlir::{
     CompiledMlirResidual, MlirError, compile_derivative_rhs as exec_compile_derivative_rhs,
@@ -362,7 +362,7 @@ fn matmul_euler_integration_matches_analytical() {
     );
 }
 
-// ── Phase 6.4: Explicit sparsity tests ───────────────────────────────────────
+// ── Explicit sparsity tests ─────────────────────────────────────────────────
 
 /// Build a 3×3 sparse `ComputeBlock` with checked structural dependencies.
 ///

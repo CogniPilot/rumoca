@@ -323,19 +323,9 @@ impl Model {
         instance_id
     }
 
-    /// Get the number of variables.
-    pub fn num_variables(&self) -> usize {
-        self.variables.len()
-    }
-
     /// Get the number of equations.
     pub fn num_equations(&self) -> usize {
         self.equations.len()
-    }
-
-    /// Get the number of functions.
-    pub fn num_functions(&self) -> usize {
-        self.functions.len()
     }
 
     /// Return parameter names that are fixed at initialization but have no binding equation.
@@ -1249,7 +1239,7 @@ mod variable_shape_contract_tests {
                 .expect("fixture type is valid");
         function.add_output(
             rumoca_core::FunctionParam::new("y", "Real", effective_type, test_span())
-                .with_shape_expr(vec![Subscript::generated_index(-1, test_span())]),
+                .with_shape_expr(vec![Subscript::index(-1, test_span())]),
         );
         model.add_function(function);
 
@@ -1325,16 +1315,6 @@ impl std::fmt::Display for EquationOrigin {
 }
 
 impl EquationOrigin {
-    /// Check if this origin represents a connection equation.
-    pub fn is_connection(&self) -> bool {
-        matches!(self, EquationOrigin::Connection { .. })
-    }
-
-    /// Check if this origin represents a component equation.
-    pub fn is_component_equation(&self) -> bool {
-        matches!(self, EquationOrigin::ComponentEquation { .. })
-    }
-
     /// Get the component name if this is a component equation origin.
     pub fn component_name(&self) -> Option<&str> {
         match self {
@@ -1456,17 +1436,6 @@ impl Equation {
             span,
             origin,
             scalar_count,
-        }
-    }
-
-    /// Create a flat equation with a dummy span (for testing only).
-    #[cfg(test)]
-    pub fn new_without_span(residual: Expression, origin: EquationOrigin) -> Self {
-        Self {
-            residual,
-            span: Span::DUMMY,
-            origin,
-            scalar_count: 1,
         }
     }
 }
