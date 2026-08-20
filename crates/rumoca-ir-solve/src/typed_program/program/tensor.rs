@@ -201,7 +201,11 @@ impl<'program> TypedProgramBuilder<'program> {
             .first()
             .ok_or(SolveProgramConstructionError::InvalidTensorAlgebra { provenance })?;
         let first_type = self.register_type(*first, provenance)?.clone();
-        let first_dimensions = promoted_concatenate_dimensions(&first_type);
+        let rank = operands.iter().try_fold(2usize, |rank, operand| {
+            self.register_type(*operand, provenance)
+                .map(|value_type| rank.max(value_type.dimensions().len()))
+        })?;
+        let first_dimensions = promoted_concatenate_dimensions(&first_type, rank);
         let axis = axis as usize;
         if axis >= first_dimensions.len() {
             return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });
@@ -210,7 +214,7 @@ impl<'program> TypedProgramBuilder<'program> {
         let mut axis_extent = 0u32;
         for operand in operands {
             let value_type = self.register_type(*operand, provenance)?;
-            let operand_dimensions = promoted_concatenate_dimensions(value_type);
+            let operand_dimensions = promoted_concatenate_dimensions(value_type, rank);
             if value_type.element_type() != first_type.element_type()
                 || operand_dimensions.len() != dimensions.len()
                 || operand_dimensions
@@ -397,12 +401,13 @@ fn encode_view_axes(axes: &[ProgramTensorViewAxis<'_>]) -> Box<[SolveTensorViewA
         .into_boxed_slice()
 }
 
-fn promoted_concatenate_dimensions(value_type: &SolveValueType) -> Vec<u32> {
-    match value_type.dimensions() {
-        [] => vec![1, 1],
-        [extent] => vec![1, *extent],
-        dimensions => dimensions.to_vec(),
-    }
+fn promoted_concatenate_dimensions(value_type: &SolveValueType, rank: usize) -> Vec<u32> {
+    value_type
+        .dimensions()
+        .iter()
+        .copied()
+        .chain(std::iter::repeat_n(1, rank - value_type.dimensions().len()))
+        .collect()
 }
 
 fn matrix_product_dimensions(lhs: &SolveValueType, rhs: &SolveValueType) -> Option<Vec<u32>> {

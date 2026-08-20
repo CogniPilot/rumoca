@@ -1,5 +1,6 @@
 use super::*;
 use crate::source_spans::required_location_span;
+use std::sync::Arc;
 
 pub(crate) struct FlattenGraphData {
     pub(crate) vcg_data: vcg::VcgPreScanData,
@@ -14,9 +15,11 @@ pub(crate) struct OverlayScopeIndex<'a> {
 
 #[derive(Default)]
 pub(crate) struct ImportCaches<'tree> {
-    instance: rustc_hash::FxHashMap<ast::QualifiedName, qualify::ImportMap>,
-    source: rustc_hash::FxHashMap<ast::QualifiedName, qualify::ImportMap>,
-    lexical_packages: rustc_hash::FxHashMap<String, qualify::ImportMap>,
+    instance: rustc_hash::FxHashMap<ast::QualifiedName, Arc<qualify::ImportMap>>,
+    source: rustc_hash::FxHashMap<ast::QualifiedName, Arc<qualify::ImportMap>>,
+    lexical_packages: rustc_hash::FxHashMap<String, Arc<qualify::ImportMap>>,
+    lexical_constants:
+        rustc_hash::FxHashMap<(ast::QualifiedName, Vec<String>), Arc<qualify::ImportMap>>,
     member_def_ids: qualify::MemberDefIdCache<'tree>,
 }
 
@@ -92,12 +95,13 @@ pub(crate) fn variable_import_context_for_instance<'tree>(
     // A replaceable package alias is an instance occurrence, not an import.
     // Keep the alias spelling so the already-resolved declaration target and
     // the owning InstanceId remain paired through Flat construction.
-    collect_lexical_constant_aliases_for_scope(
+    extend_cached_lexical_constant_aliases(
         tree,
         class_index,
         declaration_scope,
         &declaration_override_imports.package_names,
         &mut declaration,
+        &mut import_cache.lexical_constants,
         &mut import_cache.member_def_ids,
     );
     augment_imports_for_instance_exprs(
@@ -130,7 +134,7 @@ pub(crate) fn variable_import_context_for_instance<'tree>(
             tree,
             class_index,
             binding_expr,
-            &mut binding,
+            Arc::make_mut(&mut binding),
             scope_index,
         );
     }
@@ -176,15 +180,15 @@ struct ImportContextBuild<'a, 'tree> {
     import_cache: &'a mut ImportCaches<'tree>,
     scope_index: &'a OverlayScopeIndex<'a>,
     component_override_map: &'a ComponentOverrideMap,
-    declaration: &'a qualify::ImportMap,
+    declaration: &'a Arc<qualify::ImportMap>,
     binding_expr: Option<&'a ast::Expression>,
 }
 
 fn binding_import_context_for_instance(
     request: ImportContextBuild<'_, '_>,
-) -> Result<qualify::ImportMap, FlattenError> {
+) -> Result<Arc<qualify::ImportMap>, FlattenError> {
     if !(request.instance.binding_from_modification && request.binding_expr.is_some()) {
-        return Ok(request.declaration.clone());
+        return Ok(Arc::clone(request.declaration));
     }
     let binding_scope = request
         .instance
@@ -202,12 +206,13 @@ fn binding_import_context_for_instance(
     );
     let binding_override_imports =
         override_import_data_for_qualified_scope(binding_scope, request.component_override_map);
-    collect_lexical_constant_aliases_for_scope(
+    extend_cached_lexical_constant_aliases(
         request.tree,
         request.class_index,
         binding_scope,
         &binding_override_imports.package_names,
         &mut imports,
+        &mut request.import_cache.lexical_constants,
         &mut request.import_cache.member_def_ids,
     );
     Ok(imports)
@@ -215,7 +220,7 @@ fn binding_import_context_for_instance(
 
 fn attribute_import_contexts_for_instance(
     request: ImportContextBuild<'_, '_>,
-) -> rustc_hash::FxHashMap<String, qualify::ImportMap> {
+) -> rustc_hash::FxHashMap<String, Arc<qualify::ImportMap>> {
     request
         .instance
         .attribute_source_scopes
@@ -230,12 +235,13 @@ fn attribute_import_contexts_for_instance(
             );
             let override_imports =
                 override_import_data_for_qualified_scope(scope, request.component_override_map);
-            collect_lexical_constant_aliases_for_scope(
+            extend_cached_lexical_constant_aliases(
                 request.tree,
                 request.class_index,
                 scope,
                 &override_imports.package_names,
                 &mut imports,
+                &mut request.import_cache.lexical_constants,
                 &mut request.import_cache.member_def_ids,
             );
             if let Some(expr) = instance_attribute_expr(request.instance, attr_name) {
@@ -244,7 +250,7 @@ fn attribute_import_contexts_for_instance(
                     request.tree,
                     request.class_index,
                     expr,
-                    &mut imports,
+                    Arc::make_mut(&mut imports),
                     request.scope_index,
                 );
             }
@@ -415,20 +421,22 @@ fn augment_imports_for_instance_exprs(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     instance: &ast::InstanceData,
-    imports: &mut qualify::ImportMap,
+    imports: &mut Arc<qualify::ImportMap>,
     scope_index: &OverlayScopeIndex<'_>,
 ) {
-    for expr in [
+    let expressions = [
         instance.binding_source.as_ref(),
         instance.binding.as_ref(),
         instance.start.as_ref(),
         instance.min.as_ref(),
         instance.max.as_ref(),
         instance.nominal.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    ];
+    if !expressions.iter().any(|expr| expr.is_some()) {
+        return;
+    }
+    let imports = Arc::make_mut(imports);
+    for expr in expressions.into_iter().flatten() {
         augment_imports_for_expr(scope, tree, class_index, expr, imports, scope_index);
     }
 }
@@ -607,12 +615,13 @@ fn cached_import_map_for_instance_scope<'tree>(
     class_index: &ast::ClassDefIndex<'tree>,
     cache: &mut ImportCaches<'tree>,
     scope_index: &OverlayScopeIndex<'_>,
-) -> qualify::ImportMap {
+) -> Arc<qualify::ImportMap> {
     if let Some(imports) = cache.instance.get(scope) {
-        return imports.clone();
+        return Arc::clone(imports);
     }
     let imports = import_map_for_instance_scope(scope, tree, class_index, cache, scope_index);
-    cache.instance.insert(scope.clone(), imports.clone());
+    let imports = Arc::new(imports);
+    cache.instance.insert(scope.clone(), Arc::clone(&imports));
     imports
 }
 
@@ -631,13 +640,18 @@ fn import_map_for_instance_scope<'tree>(
             let mut imports: qualify::ImportMap =
                 class_data.resolved_imports.iter().cloned().collect();
             if let Some(source_scope) = class_data.source_scope.as_ref() {
-                imports.extend(cached_source_import_map(
+                let source_imports = cached_source_import_map(
                     source_scope,
                     tree,
                     class_index,
                     &mut cache.source,
                     &mut cache.member_def_ids,
-                ));
+                );
+                imports.extend(
+                    source_imports
+                        .iter()
+                        .map(|(name, target)| (name.clone(), target.clone())),
+                );
             }
             imports
         })
@@ -662,15 +676,18 @@ fn import_map_for_instance_scope<'tree>(
                 class_index,
                 &mut cache.lexical_packages,
                 &mut cache.member_def_ids,
-            ),
+            )
+            .as_ref(),
         );
     }
     imports
 }
 
-fn extend_imports_if_absent(imports: &mut qualify::ImportMap, aliases: qualify::ImportMap) {
+fn extend_imports_if_absent(imports: &mut qualify::ImportMap, aliases: &qualify::ImportMap) {
     for (name, target) in aliases {
-        imports.entry(name).or_insert(target);
+        imports
+            .entry(name.clone())
+            .or_insert_with(|| target.clone());
     }
 }
 
@@ -678,11 +695,11 @@ fn cached_lexical_package_aliases<'tree>(
     class_name: &str,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'tree>,
-    cache: &mut rustc_hash::FxHashMap<String, qualify::ImportMap>,
+    cache: &mut rustc_hash::FxHashMap<String, Arc<qualify::ImportMap>>,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
-) -> qualify::ImportMap {
+) -> Arc<qualify::ImportMap> {
     if let Some(imports) = cache.get(class_name) {
-        return imports.clone();
+        return Arc::clone(imports);
     }
 
     let mut imports = qualify::ImportMap::default();
@@ -695,7 +712,8 @@ fn cached_lexical_package_aliases<'tree>(
             Some(member_cache),
         );
     }
-    cache.insert(class_name.to_string(), imports.clone());
+    let imports = Arc::new(imports);
+    cache.insert(class_name.to_string(), Arc::clone(&imports));
     imports
 }
 
@@ -703,11 +721,11 @@ fn cached_source_import_map<'tree>(
     source_scope: &ast::QualifiedName,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'tree>,
-    cache: &mut rustc_hash::FxHashMap<ast::QualifiedName, qualify::ImportMap>,
+    cache: &mut rustc_hash::FxHashMap<ast::QualifiedName, Arc<qualify::ImportMap>>,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
-) -> qualify::ImportMap {
+) -> Arc<qualify::ImportMap> {
     if let Some(imports) = cache.get(source_scope) {
-        return imports.clone();
+        return Arc::clone(imports);
     }
     let mut imports = qualify::ImportMap::default();
     qualify::collect_imports_for_source_scope(class_index, source_scope, &mut imports);
@@ -728,8 +746,42 @@ fn cached_source_import_map<'tree>(
             Some(member_cache),
         );
     }
-    cache.insert(source_scope.clone(), imports.clone());
+    let imports = Arc::new(imports);
+    cache.insert(source_scope.clone(), Arc::clone(&imports));
     imports
+}
+
+fn extend_cached_lexical_constant_aliases<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    source_scope: &ast::QualifiedName,
+    active_packages: &[String],
+    imports: &mut Arc<qualify::ImportMap>,
+    cache: &mut rustc_hash::FxHashMap<(ast::QualifiedName, Vec<String>), Arc<qualify::ImportMap>>,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) {
+    // The base instance/source maps already contain the empty-package result.
+    if active_packages.is_empty() {
+        return;
+    }
+    let key = (source_scope.clone(), active_packages.to_vec());
+    let aliases = if let Some(aliases) = cache.get(&key) {
+        Arc::clone(aliases)
+    } else {
+        let mut aliases = qualify::ImportMap::default();
+        collect_lexical_constant_aliases_for_scope(
+            tree,
+            class_index,
+            source_scope,
+            active_packages,
+            &mut aliases,
+            member_cache,
+        );
+        let aliases = Arc::new(aliases);
+        cache.insert(key, Arc::clone(&aliases));
+        aliases
+    };
+    extend_imports_if_absent(Arc::make_mut(imports), aliases.as_ref());
 }
 
 fn collect_lexical_constant_aliases_for_scope<'tree>(
@@ -821,10 +873,7 @@ pub(crate) fn prepare_context_for_equation_flattening(
     pre_collect_functions(ctx, overlay, tree, class_index)?;
     extract_record_aliases(ctx, overlay, tree)?;
     for (outer, inner) in &overlay.outer_prefix_to_inner {
-        ctx.record_aliases.insert(
-            rumoca_core::ComponentPath::from_flat_path(outer),
-            rumoca_core::ComponentPath::from_flat_path(inner),
-        );
+        ctx.record_aliases.insert(outer.clone(), inner.clone());
     }
     compute_transitive_alias_closure(&mut ctx.record_aliases);
     array_comprehension::extract_component_array_dimensions(ctx, overlay);
@@ -865,11 +914,8 @@ pub(crate) fn prepare_context_for_equation_flattening(
     // parameter/constant key set is stable, so the cheapen gate in equation
     // expansion can drop their time-invariant per-cell bodies (the DAE promotes them
     // array-natively from the comprehension template).
-    ctx.param_variability_family_bases =
-        crate::param_variability::parameter_variability_family_bases(
-            overlay,
-            &ctx.flat_parameter_constant_keys,
-        );
+    ctx.param_variability_families =
+        crate::param_variability::prove_parameter_variability_families(overlay);
 
     let vcg_data = vcg::pre_collect_vcg_data(overlay, ctx)?;
     let optional_edges = vcg::derive_optional_edges(overlay, &vcg_data)?;

@@ -178,36 +178,6 @@ pub fn report_state_derivative(
     });
 }
 
-/// Report non-finite state-Jacobian entries with directional context, naming the
-/// differentiated state derivative and the seeded column(s) with their source
-/// spans. Effectively free when tracing is off.
-pub fn report_state_jacobian(model: &solve::SolveModel, t: f64, seed: &[f64], jacobian_v: &[f64]) {
-    if !nan_trace_enabled() {
-        return;
-    }
-    report_nonfinite_jacobian(
-        "state-derivative Jacobian (finite difference)",
-        t,
-        seed,
-        jacobian_v,
-        |row| format!("der({})", solver_var_label(model, row)),
-        |col| solver_var_label(model, col),
-    );
-}
-
-/// Human-readable label for a solver slot: variable name plus source span
-/// (looked up from `variable_meta`) so traces are traceable back to source.
-fn solver_var_label(model: &solve::SolveModel, index: usize) -> String {
-    let names = &model.problem.solve_layout.solver_maps.names;
-    let Some(name) = names.get(index) else {
-        return format!("y[{index}]");
-    };
-    match model.variable_meta.iter().find(|meta| &meta.name == name) {
-        Some(meta) => format!("{name} @ {:?}", meta.source_span),
-        None => name.clone(),
-    }
-}
-
 /// Out-of-line slow path so the enabled-only work stays out of the caller's hot
 /// path (keeps the inlined fast path to just the flag check + branch).
 #[cold]

@@ -43,11 +43,9 @@ pub(super) struct TypedBlockView<'a> {
 /// nonetheless *overlaid*: see [`ScratchLayoutView`] for the one rule that
 /// decides which regions may share storage, and why it is sound.
 ///
-/// **Instancing.** The overlaid aggregate is a file-scope object private to the
-/// generated translation unit, not a member of the caller-provided block state.
-/// That is a deliberate single-instance assumption, stated in the generated
-/// header: two block-state objects in one program would share one set of
-/// working-memory slots.
+/// **Instancing.** The overlaid aggregate is a member of the caller-provided
+/// block state. Distinct block-state objects therefore own disjoint mutable
+/// working-memory slots by construction (SPEC_0034 GAL-039).
 #[derive(Debug, Clone, Serialize)]
 struct ScratchRegionView<'a> {
     /// Nonempty exactly when the owner needs a region at all.

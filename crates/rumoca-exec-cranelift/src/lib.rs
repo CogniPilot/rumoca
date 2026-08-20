@@ -163,39 +163,6 @@ impl CompiledInputRequirements {
     }
 }
 
-pub struct CompiledResidual {
-    jit: emit::CompiledResidualRows,
-    output_placement: Option<OutputPlacement>,
-}
-
-impl CompiledResidual {
-    pub fn call(&self, y: &[f64], p: &[f64], t: f64, out: &mut [f64]) -> Result<(), CompileError> {
-        self.call_with_external_tables(y, p, t, &[], out)
-    }
-
-    pub fn call_with_external_tables(
-        &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        external_tables: &[ExternalTableData],
-        out: &mut [f64],
-    ) -> Result<(), CompileError> {
-        call_with_output_placement(self.output_placement.as_ref(), out, |dense| {
-            self.jit
-                .call_with_external_tables(y, p, t, external_tables, dense)
-        })
-    }
-
-    pub fn rows(&self) -> usize {
-        self.jit.rows()
-    }
-
-    pub fn input_requirements(&self) -> CompiledInputRequirements {
-        CompiledInputRequirements::from_emit(self.jit.input_requirements())
-    }
-}
-
 pub struct CompiledJacobianV {
     jit: emit::CompiledJacobianRows,
     output_placement: Option<OutputPlacement>,
@@ -357,16 +324,6 @@ impl CompiledExpressionRows {
     pub fn input_requirements(&self) -> CompiledInputRequirements {
         CompiledInputRequirements::from_emit(self.jit.input_requirements())
     }
-}
-
-pub fn compile_residual_scalar_program_block(
-    rows: &ScalarProgramBlock,
-) -> Result<CompiledResidual, CompileError> {
-    let jit = emit::compile_residual_rows(rows.programs())?;
-    Ok(CompiledResidual {
-        jit,
-        output_placement: OutputPlacement::for_block(rows),
-    })
 }
 
 pub fn compile_jacobian_scalar_program_block(

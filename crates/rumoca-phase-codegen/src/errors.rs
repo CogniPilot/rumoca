@@ -76,15 +76,13 @@ pub enum CodegenError {
         span: Option<rumoca_core::Span>,
     },
 
-    /// A DAE template requested scalar residual rows whose authoritative body
+    /// A template requested scalar equation rows whose authoritative body
     /// exists only in a compact structured family.
-    #[error(
-        "DAE scalar residual view is unavailable for structured family `{origin}` in {partition}"
-    )]
+    #[error("scalar equation view is unavailable for structured family `{origin}` in {partition}")]
     #[diagnostic(
         code(rumoca::codegen::EC007),
         help(
-            "select a target that declares and consumes structured equation families, or lower through Solve IR"
+            "select a target that consumes structured equation families, or lower through DAE/Solve IR"
         )
     )]
     NonMaterializedStructuredFamily {

@@ -166,6 +166,14 @@ pub mod templates {
                 .map(|template| template.source)
         }
 
+        /// Return the exact bytes of one manifest-declared target asset.
+        pub fn asset_bytes(&self, path: &str) -> Option<&'static [u8]> {
+            self.assets
+                .iter()
+                .find(|asset| asset.path == path)
+                .map(|asset| asset.bytes)
+        }
+
         pub fn asset_files(&self, source: &str) -> Option<Vec<(&'static str, &'static [u8])>> {
             let prefix = source.trim_end_matches('/');
             let prefix_with_separator = format!("{prefix}/");

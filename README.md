@@ -99,8 +99,8 @@ Rumoca focuses on five things:
 
 - Full compiler pipeline: parse -> resolve -> typecheck -> instantiate -> flatten -> DAE
 - Multi-file session API for CLI, LSP, WASM, and tests (`rumoca-compile`)
-- DAE simulation with exact AD Jacobians/mass terms and solver fallbacks (`rumoca-sim-core`)
-- Structural preparation and IC planning for robust initialization (`rumoca-phase-structural`, `rumoca-sim-core`)
+- DAE simulation with exact AD Jacobians/mass terms and solver fallbacks (`rumoca-sim`)
+- Structural preparation and IC planning for robust initialization (`rumoca-phase-structural`, `rumoca-sim`)
 - Explicit template rendering support for custom code generation
 - MLS contract test framework (`rumoca-contracts`)
 - Spec-driven quality gates (including SPEC_0021 and SPEC_0025)
@@ -162,7 +162,7 @@ cargo run -p rumoca -- lint path/to/model.mo
 cargo run -p rumoca -- \
   compile path/to/model.mo \
   --model MyModel \
-  --target solve-ir
+  --emit solve-json
 
 # simulate a model directly
 cargo run -p rumoca -- \
@@ -172,7 +172,7 @@ cargo run -p rumoca -- \
 
 # run a colocated scenario TOML
 cargo run -p rumoca --release -- \
-  sim -c examples/simulation/ball_sim.toml
+  sim -c examples/simulation/rumoca-scenario.ball.toml
 
 # run the LSP server
 cargo run -p rumoca-tool-lsp --bin rumoca-lsp
@@ -204,13 +204,13 @@ Runnable examples are configured by colocated TOML files:
 
 ```bash
 # batch/results-panel simulation
-cargo run -p rumoca --release -- sim -c examples/simulation/ball_sim.toml
+cargo run -p rumoca --release -- sim -c examples/simulation/rumoca-scenario.ball.toml
 
 # interactive quadrotor SIL viewer
-cargo run -p rumoca --release -- sim -c examples/interactive/quadrotor/quadrotor_acro.toml
+cargo run -p rumoca --release -- sim -c examples/interactive/quadrotor/rumoca-scenario.acro.toml
 
 # validate a scenario without running it
-cargo run -p rumoca -- sim check -c examples/interactive/quadrotor/quadrotor_acro.toml
+cargo run -p rumoca -- sim check -c examples/interactive/quadrotor/rumoca-scenario.acro.toml
 ```
 
 Each scenario declares one task:
@@ -392,7 +392,7 @@ equivalent Cargo command for opt-in example-template runtime checks:
 | Flatten     | `rumoca-phase-flatten`     | Hierarchy flattening, connection expansion, residual equations |
 | ToDAE       | `rumoca-phase-dae`         | Variable classification and DAE construction                   |
 | Structural  | `rumoca-phase-structural`  | BLT, incidence/matching, IC plan generation                    |
-| Simulate    | `rumoca-sim-core`               | IC solving + runtime integration                               |
+| Simulate    | `rumoca-sim`                    | IC solving + runtime integration                               |
 | Codegen     | `rumoca-phase-codegen`     | Template-driven target generation                              |
 
 ## Code Generation Targets

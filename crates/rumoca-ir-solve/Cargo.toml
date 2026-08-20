@@ -7,7 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-strict-ir-validation = []
 # SPEC_0039 / SOLVE-C17: exposes `StructuralPattern::from_row_dependencies`,
 # the fixture constructor that accepts caller-supplied dependency rows. It has
 # no semantic owner to derive from, so it must never be reachable from a

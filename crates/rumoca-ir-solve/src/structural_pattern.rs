@@ -2,10 +2,12 @@
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 
-use rumoca_core::Span;
+use rumoca_core::{Span, StructuredIndexDomain};
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::{BinaryOp, LinearOp, Reg, ScalarProgramBlock};
+use crate::{
+    AffineStencilLoadStride, BinaryOp, LinearOp, Reg, ScalarProgramBlock, TensorOutputMap,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -147,6 +149,20 @@ enum PatternRepresentation {
         row_offsets: Box<[u32]>,
         column_indices: Box<[u32]>,
     },
+    Affine {
+        domain: StructuredIndexDomain,
+        row_start: u32,
+        column_maps: Box<[AffineColumnMap]>,
+    },
+}
+
+/// One seed coordinate propagated affinely across a compact tensor domain.
+/// Strides are expressed in domain ordinals, not Modelica binder values.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AffineColumnMap {
+    start: u32,
+    strides: Box<[isize]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,6 +177,10 @@ pub enum StructuralPatternView<'pattern> {
     Csr {
         row_offsets: &'pattern [u32],
         column_indices: &'pattern [u32],
+    },
+    Affine {
+        domain_rank: usize,
+        access_count: usize,
     },
 }
 
@@ -361,6 +381,172 @@ impl StructuralPattern {
         })
     }
 
+    /// Derive the exact compact dependency relation of one checked affine JVP
+    /// tensor owner without materializing any domain point or scalar row.
+    pub fn derive_from_affine_jvp(
+        domain: &StructuredIndexDomain,
+        output_map: &TensorOutputMap,
+        base_ops: &[LinearOp],
+        load_strides: &[AffineStencilLoadStride],
+        rows: usize,
+        columns: usize,
+        owner_span: Span,
+    ) -> Result<Self, StructuralPatternError> {
+        if owner_span.is_dummy() {
+            return Err(dependency_error(
+                "affine Jacobian sparsity requires source-backed owner provenance",
+                None,
+            ));
+        }
+        let dense_output =
+            TensorOutputMap::dense_contiguous(output_map.start, domain).map_err(|error| {
+                dependency_error(
+                    format!("invalid affine output domain: {error:?}"),
+                    Some(owner_span),
+                )
+            })?;
+        if output_map != &dense_output {
+            return Err(dependency_error(
+                "affine Jacobian output map is not dense-contiguous",
+                Some(owner_span),
+            ));
+        }
+        let expected_rows = output_map.output_count(domain).map_err(|error| {
+            dependency_error(
+                format!("invalid affine output map: {error:?}"),
+                Some(owner_span),
+            )
+        })?;
+        if expected_rows != rows {
+            return Err(dependency_error(
+                format!(
+                    "affine Jacobian row extent {rows} does not match output extent {expected_rows}"
+                ),
+                Some(owner_span),
+            ));
+        }
+
+        let mut symbolic_ops = base_ops.to_vec();
+        let mut seed_positions = Vec::new();
+        for (position, operation) in symbolic_ops.iter_mut().enumerate() {
+            if let LinearOp::LoadSeed { index, .. } = operation {
+                *index = position;
+                seed_positions.push(position);
+            }
+        }
+        let outputs = program_output_dependencies(&symbolic_ops, Some(owner_span))?;
+        let [dependencies] = outputs.as_slice() else {
+            return Err(dependency_error(
+                format!(
+                    "affine Jacobian base program must produce exactly one output, found {}",
+                    outputs.len()
+                ),
+                Some(owner_span),
+            ));
+        };
+        let DependencyState::Known(dependencies) = dependencies else {
+            let provenance =
+                PatternProvenance::derived(PatternDerivation::ConservativeFull, owner_span)?;
+            return Self::full(rows, columns, provenance);
+        };
+        let mut column_maps = Vec::new();
+        for &position in dependencies {
+            if !seed_positions.contains(&position) {
+                return Err(dependency_error(
+                    format!("affine dependency {position} is not a seed-load owner"),
+                    Some(owner_span),
+                ));
+            }
+            let LinearOp::LoadSeed { index: start, .. } = &base_ops[position] else {
+                return Err(dependency_error(
+                    format!("affine dependency operation {position} is not LoadSeed"),
+                    Some(owner_span),
+                ));
+            };
+            let mut strides = vec![0isize; domain.binders.len()];
+            for stride in load_strides
+                .iter()
+                .filter(|stride| stride.op_position == position)
+            {
+                for term in &stride.terms {
+                    let dimension_count = strides.len();
+                    let target = strides.get_mut(term.dimension).ok_or_else(|| {
+                        dependency_error(
+                            format!(
+                                "affine seed stride dimension {} is outside 0..{dimension_count}",
+                                term.dimension
+                            ),
+                            Some(owner_span),
+                        )
+                    })?;
+                    *target = target.checked_add(term.stride).ok_or_else(|| {
+                        dependency_error(
+                            "affine seed stride accumulation overflowed",
+                            Some(owner_span),
+                        )
+                    })?;
+                }
+            }
+            column_maps.push(AffineColumnMap {
+                start: checked_dimension(*start)?,
+                strides: strides.into_boxed_slice(),
+            });
+        }
+        column_maps.sort_by(|lhs, rhs| {
+            (lhs.start, lhs.strides.as_ref()).cmp(&(rhs.start, rhs.strides.as_ref()))
+        });
+        column_maps.dedup();
+        let provenance = PatternProvenance::derived(PatternDerivation::AffineDomain, owner_span)?;
+        Self::checked_affine(
+            rows,
+            columns,
+            domain.clone(),
+            checked_dimension(output_map.start)?,
+            column_maps.into_boxed_slice(),
+            provenance,
+        )
+    }
+
+    fn checked_affine(
+        rows: usize,
+        columns: usize,
+        domain: StructuredIndexDomain,
+        row_start: u32,
+        column_maps: Box<[AffineColumnMap]>,
+        provenance: PatternProvenance,
+    ) -> Result<Self, StructuralPatternError> {
+        let checked_rows = checked_dimension(rows)?;
+        let checked_columns = checked_dimension(columns)?;
+        validate_affine_pattern(
+            &domain,
+            row_start,
+            &column_maps,
+            checked_rows,
+            checked_columns,
+            Some(provenance.span()),
+        )?;
+        if domain.scalar_count().map_err(|error| {
+            dependency_error(
+                format!("invalid affine domain: {error}"),
+                Some(provenance.span()),
+            )
+        })? == 0
+            || column_maps.is_empty()
+        {
+            return Self::empty(rows, columns, provenance);
+        }
+        Ok(Self {
+            rows: checked_rows,
+            columns: checked_columns,
+            representation: PatternRepresentation::Affine {
+                domain,
+                row_start,
+                column_maps,
+            },
+            provenance,
+        })
+    }
+
     pub const fn rows(&self) -> u32 {
         self.rows
     }
@@ -391,6 +577,14 @@ impl StructuralPattern {
             } => StructuralPatternView::Csr {
                 row_offsets,
                 column_indices,
+            },
+            PatternRepresentation::Affine {
+                domain,
+                column_maps,
+                ..
+            } => StructuralPatternView::Affine {
+                domain_rank: domain.binders.len(),
+                access_count: column_maps.len(),
             },
         }
     }
@@ -423,6 +617,12 @@ impl StructuralPattern {
                     row_columns.binary_search(&column).is_ok()
                 }
             }
+            PatternRepresentation::Affine {
+                domain,
+                row_start,
+                column_maps,
+            } => affine_columns_for_row(domain, *row_start, column_maps, row as usize)
+                .is_some_and(|columns| columns.binary_search(&(column as usize)).is_ok()),
         }
     }
 
@@ -443,6 +643,11 @@ impl StructuralPattern {
                 *upper_bandwidth as usize,
             ),
             PatternRepresentation::Csr { column_indices, .. } => Some(column_indices.len()),
+            PatternRepresentation::Affine {
+                domain,
+                column_maps,
+                ..
+            } => domain.scalar_count().ok()?.checked_mul(column_maps.len()),
         }
     }
 
@@ -493,6 +698,16 @@ impl StructuralPattern {
                 column_indices[start..end]
                     .iter()
                     .for_each(|column| visitor(*column as usize));
+            }
+            PatternRepresentation::Affine {
+                domain,
+                row_start,
+                column_maps,
+            } => {
+                if let Some(columns) = affine_columns_for_row(domain, *row_start, column_maps, row)
+                {
+                    columns.into_iter().for_each(&mut visitor);
+                }
             }
         }
     }
@@ -739,6 +954,11 @@ impl StructuralPattern {
                 row_offsets,
                 column_indices,
             } => append_csr_column_rows(&mut columns, row_offsets, column_indices),
+            PatternRepresentation::Affine { .. } => {
+                for row in 0..self.rows as usize {
+                    self.visit_row_columns(row, |column| columns[column].push(row));
+                }
+            }
         }
         columns
     }
@@ -777,6 +997,104 @@ impl StructuralPattern {
                 .into_boxed_slice(),
         }
     }
+}
+
+fn validate_affine_pattern(
+    domain: &StructuredIndexDomain,
+    row_start: u32,
+    column_maps: &[AffineColumnMap],
+    rows: u32,
+    columns: u32,
+    span: Option<Span>,
+) -> Result<(), StructuralPatternError> {
+    let point_count = domain
+        .scalar_count()
+        .map_err(|error| dependency_error(format!("invalid affine domain: {error}"), span))?;
+    let row_end = (row_start as usize)
+        .checked_add(point_count)
+        .ok_or_else(|| dependency_error("affine row extent overflows", span))?;
+    if row_end > rows as usize {
+        return Err(dependency_error(
+            format!("affine rows {row_start}..{row_end} exceed 0..{rows}"),
+            span,
+        ));
+    }
+    let extents = domain
+        .extents()
+        .map_err(|error| dependency_error(format!("invalid affine domain: {error}"), span))?;
+    for map in column_maps {
+        if map.strides.len() != extents.len() {
+            return Err(dependency_error(
+                format!(
+                    "affine column map rank {} does not match domain rank {}",
+                    map.strides.len(),
+                    extents.len()
+                ),
+                span,
+            ));
+        }
+        let mut minimum = i128::from(map.start);
+        let mut maximum = minimum;
+        for (&extent, &stride) in extents.iter().zip(map.strides.iter()) {
+            let last = i128::try_from(extent.saturating_sub(1))
+                .map_err(|_| dependency_error("affine extent exceeds arithmetic range", span))?;
+            let offset = last
+                .checked_mul(stride as i128)
+                .ok_or_else(|| dependency_error("affine column bound overflowed", span))?;
+            if offset < 0 {
+                minimum = minimum
+                    .checked_add(offset)
+                    .ok_or_else(|| dependency_error("affine column bound overflowed", span))?;
+            } else {
+                maximum = maximum
+                    .checked_add(offset)
+                    .ok_or_else(|| dependency_error("affine column bound overflowed", span))?;
+            }
+        }
+        if minimum < 0 || maximum >= i128::from(columns) {
+            return Err(dependency_error(
+                format!("affine column range {minimum}..={maximum} exceeds 0..{columns}"),
+                span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn affine_columns_for_row(
+    domain: &StructuredIndexDomain,
+    row_start: u32,
+    column_maps: &[AffineColumnMap],
+    row: usize,
+) -> Option<Vec<usize>> {
+    let ordinal = row.checked_sub(row_start as usize)?;
+    let extents = domain.extents().ok()?;
+    let point_count = extents
+        .iter()
+        .try_fold(1usize, |count, extent| count.checked_mul(*extent))?;
+    if ordinal >= point_count {
+        return None;
+    }
+    let mut remainder = ordinal;
+    let mut positions = vec![0usize; extents.len()];
+    for (position, extent) in positions.iter_mut().zip(extents.iter()).rev() {
+        if *extent == 0 {
+            return None;
+        }
+        *position = remainder % *extent;
+        remainder /= *extent;
+    }
+    let mut columns = Vec::with_capacity(column_maps.len());
+    for map in column_maps {
+        let mut column = i128::from(map.start);
+        for (&position, &stride) in positions.iter().zip(map.strides.iter()) {
+            column = column.checked_add((position as i128).checked_mul(stride as i128)?)?;
+        }
+        columns.push(usize::try_from(column).ok()?);
+    }
+    columns.sort_unstable();
+    columns.dedup();
+    Some(columns)
 }
 
 /// Exhaustive structural-Jacobian derivation over the checked semantic owner.
@@ -2649,6 +2967,11 @@ enum PatternRepresentationWire {
         row_offsets: Box<[u32]>,
         column_indices: Box<[u32]>,
     },
+    Affine {
+        domain: StructuredIndexDomain,
+        row_start: u32,
+        column_maps: Box<[AffineColumnMap]>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -2692,6 +3015,18 @@ impl StructuralPatternWire {
                 row_offsets,
                 column_indices,
             } => StructuralPattern::csr(rows, columns, row_offsets, column_indices, provenance),
+            PatternRepresentationWire::Affine {
+                domain,
+                row_start,
+                column_maps,
+            } => StructuralPattern::checked_affine(
+                rows,
+                columns,
+                domain,
+                row_start,
+                column_maps,
+                provenance,
+            ),
         }
     }
 }

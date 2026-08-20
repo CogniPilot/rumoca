@@ -484,17 +484,10 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
         // ArrayComprehension argument for C targets: unroll to chained sum
         if func_name == "Sum"
             && matches!(cfg.if_style, super::IfStyle::Ternary)
-            && get_field(&first_arg, "ArrayComprehension").is_ok()
+            && let Ok(comprehension) = get_field(&first_arg, "ArrayComprehension")
+            && let Ok(elements) = try_unroll_c_comprehension_elements(&comprehension, cfg)
         {
-            let unrolled = render_expression(&first_arg, cfg)?;
-            // If the comprehension unrolled to a scalar (e.g., REAL_C(0.0)
-            // for empty range), return it directly
-            if !unrolled.starts_with(&cfg.array_start) {
-                return Ok(unrolled);
-            }
-            // Otherwise it's a C array literal — not valid for __rumoca_sum
-            // since it needs (arr, n). For now, return 0 for empty results.
-            return Ok(format!("({unrolled})"));
+            return render_chained_minmaxsum_elements(&func_name, elements, cfg);
         }
     }
 
@@ -670,9 +663,17 @@ fn render_chained_minmaxsum(
             }
         }
     }
+    render_chained_minmaxsum_elements(func_name, elem_strs, cfg)
+}
+
+fn render_chained_minmaxsum_elements(
+    func_name: &str,
+    mut elem_strs: Vec<String>,
+    cfg: &ExprConfig,
+) -> RenderResult {
     if elem_strs.is_empty() {
         if func_name == "Sum" {
-            return Ok("0".to_string());
+            return Ok("REAL_C(0.0)".to_string());
         }
         return Err(render_err(format!("{func_name} array argument is empty")));
     }
@@ -986,9 +987,17 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
     // For C targets, try to unroll the comprehension at render time
     if matches!(cfg.if_style, super::IfStyle::Ternary)
         && len == 1
-        && let Ok(unrolled) = try_unroll_c_comprehension(array_comp, cfg)
+        && let Ok(elements) = try_unroll_c_comprehension_elements(array_comp, cfg)
     {
-        return Ok(unrolled);
+        if elements.is_empty() {
+            return Ok("REAL_C(0.0)".to_string());
+        }
+        return Ok(format!(
+            "{}{}{}",
+            cfg.array_start,
+            elements.join(", "),
+            cfg.array_end
+        ));
     }
 
     let body = get_field(array_comp, "expr")
@@ -1031,10 +1040,10 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
 /// Try to unroll an array comprehension for C targets.
 /// Returns the unrolled expression if the range is statically known,
 /// or Err if unrolling is not possible.
-fn try_unroll_c_comprehension(
+fn try_unroll_c_comprehension_elements(
     array_comp: &Value,
     cfg: &ExprConfig,
-) -> Result<String, minijinja::Error> {
+) -> Result<Vec<String>, minijinja::Error> {
     let indices = get_field(array_comp, "indices")?;
     let index = indices.get_item(&Value::from(0))?;
     let var_name = get_field(&index, "name")
@@ -1059,7 +1068,7 @@ fn try_unroll_c_comprehension(
 
     // Empty range
     if start > end {
-        return Ok("REAL_C(0.0)".to_string());
+        return Ok(Vec::new());
     }
 
     // Get the body expression node (not yet rendered — we need to re-render per iteration)
@@ -1074,12 +1083,7 @@ fn try_unroll_c_comprehension(
         elements.push(render_expression(&body_node, &iter_cfg)?);
     }
 
-    Ok(format!(
-        "{}{}{}",
-        cfg.array_start,
-        elements.join(", "),
-        cfg.array_end
-    ))
+    Ok(elements)
 }
 
 /// Render an index expression as `base[subscripts]`.
@@ -1126,8 +1130,37 @@ fn render_field_access(fa: &Value, cfg: &ExprConfig) -> RenderResult {
 #[cfg(test)]
 mod tests {
     use super::{render_c_float_literal, render_expression};
-    use crate::codegen::ExprConfig;
+    use crate::codegen::{ExprConfig, IfStyle};
     use minijinja::Value;
+
+    fn c_sum_comprehension(start: i64, end: i64) -> rumoca_core::Expression {
+        let integer = |value| rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            span: rumoca_core::Span::DUMMY,
+        };
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sum,
+            args: vec![rumoca_core::Expression::ArrayComprehension {
+                expr: Box::new(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new("i"),
+                    subscripts: Vec::new(),
+                    span: rumoca_core::Span::DUMMY,
+                }),
+                indices: vec![rumoca_core::ComprehensionIndex {
+                    name: "i".to_string(),
+                    range: rumoca_core::Expression::Range {
+                        start: Box::new(integer(start)),
+                        step: None,
+                        end: Box::new(integer(end)),
+                        span: rumoca_core::Span::DUMMY,
+                    },
+                }],
+                filter: None,
+                span: rumoca_core::Span::DUMMY,
+            }],
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
 
     #[test]
     fn test_render_c_float_literal_preserves_scientific_notation() {
@@ -1259,5 +1292,39 @@ mod tests {
             render_expression(&Value::from_serialize(&expression), &cfg).unwrap(),
             "jnp.swapaxes(tensor, 0, 1)"
         );
+    }
+
+    #[test]
+    fn c_sum_of_static_comprehension_is_a_scalar_expression() {
+        let cfg = ExprConfig {
+            if_style: IfStyle::Ternary,
+            array_start: "{".to_string(),
+            array_end: "}".to_string(),
+            ..ExprConfig::default()
+        };
+
+        let rendered = render_expression(&Value::from_serialize(c_sum_comprehension(1, 3)), &cfg)
+            .expect("render static comprehension sum");
+
+        assert_eq!(rendered, "((1) + (2) + (3))");
+        assert!(
+            !rendered.contains('{'),
+            "a scalar sum must not be an initializer"
+        );
+    }
+
+    #[test]
+    fn c_sum_of_empty_static_comprehension_is_the_additive_identity() {
+        let cfg = ExprConfig {
+            if_style: IfStyle::Ternary,
+            array_start: "{".to_string(),
+            array_end: "}".to_string(),
+            ..ExprConfig::default()
+        };
+
+        let rendered = render_expression(&Value::from_serialize(c_sum_comprehension(3, 1)), &cfg)
+            .expect("render empty comprehension sum");
+
+        assert_eq!(rendered, "REAL_C(0.0)");
     }
 }

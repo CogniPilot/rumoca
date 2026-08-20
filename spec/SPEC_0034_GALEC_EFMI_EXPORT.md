@@ -83,6 +83,7 @@ rumoca -> generic artifact/checksum/container graph + vendored schemas
 | GAL-036 | One aggregate source call becomes one action with exact result cardinality and semantic identities. | GALEC → Solve refinement | Preserve readable dataflow. |
 | GAL-037 | C renders checked aggregate operations without constructing, scalarizing, fusing, or rescheduling them. | Solve view + templates | Bound source growth. |
 | GAL-038 | Independent GALEC, Solve, and C execution are compared over all lifecycle-visible effects. | evaluator/codegen tests | Avoid self-confirming defects. |
+| GAL-039 | Generated C working memory is owned by the caller-allocated block instance: distinct state objects have disjoint working storage, and no mutable file-scope scratch arena exists. The generated header reports the checked slot-storage budget and exposes the concrete instance/scratch types for `sizeof`-based target accounting. Working slots are execution storage, not GALEC LogicalData, so Production Code manifests do not map them as block variables. | checked view + C templates | Reentrancy and RAM admission must be construction properties, not deployment assumptions. |
 
 **Why (GAL-016):** GALEC has no `previous()`/`sample()` (T2); `pre(x)` becomes
 protected state `'previous(x)'` committed at end of DoStep; the sample period is a

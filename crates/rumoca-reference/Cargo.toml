@@ -15,11 +15,10 @@ repository.workspace = true
 # independence above survives: nothing a consumer links pulls the compiler in.
 [dev-dependencies]
 proptest = { workspace = true }
-rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
+rumoca-compile = { workspace = true }
 rumoca-sim = { workspace = true, features = [
     "solver-diffsol",
     "solver-rk45",
-    "strict-ir-validation",
 ] }
 
 [lints]

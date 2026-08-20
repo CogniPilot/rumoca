@@ -1380,6 +1380,7 @@ impl EventTransactionProducerClaims<'_> {
                     transaction_index,
                     transaction,
                     storage,
+                    target.clock_owner(),
                     update_index,
                 ),
             EventTransactionProducerOwner::GuardedAssignment {
@@ -1390,6 +1391,7 @@ impl EventTransactionProducerClaims<'_> {
                 transaction_index,
                 transaction,
                 storage,
+                target.clock_owner(),
                 (program_index, target_range_index),
             ),
         }
@@ -1429,7 +1431,7 @@ impl EventTransactionProducerClaims<'_> {
         }
         require_transaction_clock(
             problem.discrete.clock_owners[start_row],
-            transaction.clock_owner(),
+            target.clock_owner(),
             transaction_index,
             transaction.span(),
         )
@@ -1441,6 +1443,7 @@ impl EventTransactionProducerClaims<'_> {
         transaction_index: usize,
         transaction: &EventTransactionProgram,
         storage: SolveVariableStorageRun,
+        target_clock: Option<PeriodicClockId>,
         update_index: usize,
     ) -> Result<(), SolveProblemShapeContractError> {
         validate_structured_event_owner(
@@ -1452,7 +1455,7 @@ impl EventTransactionProducerClaims<'_> {
         )?;
         require_transaction_clock(
             problem.discrete.structured_updates[update_index].clock_owner,
-            transaction.clock_owner(),
+            target_clock,
             transaction_index,
             transaction.span(),
         )
@@ -1464,6 +1467,7 @@ impl EventTransactionProducerClaims<'_> {
         transaction_index: usize,
         transaction: &EventTransactionProgram,
         storage: SolveVariableStorageRun,
+        target_clock: Option<PeriodicClockId>,
         guarded: (usize, usize),
     ) -> Result<(), SolveProblemShapeContractError> {
         let (program_index, target_range_index) = guarded;
@@ -1488,7 +1492,7 @@ impl EventTransactionProducerClaims<'_> {
         }
         require_transaction_clock(
             problem.discrete.guarded_assignments[program_index].clock_owner(),
-            transaction.clock_owner(),
+            target_clock,
             transaction_index,
             transaction.span(),
         )
@@ -2233,9 +2237,9 @@ fn validate_event_transaction_shape(
 ) -> Result<(), SolveProblemShapeContractError> {
     let mut claimed_actions = BTreeSet::new();
     for (program_index, program) in problem.discrete.event_transactions.iter().enumerate() {
-        if let Some(clock) = program.clock_owner() {
+        for &clock in program.clock_owners() {
             validate_indices(
-                "discrete.event_transactions.clock_owner",
+                "discrete.event_transactions.clock_owners",
                 &[clock.index()],
                 clock_count,
             )?;

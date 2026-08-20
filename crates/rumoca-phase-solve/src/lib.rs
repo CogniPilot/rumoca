@@ -76,12 +76,3 @@ pub fn lower_solve_artifacts(
 ) -> Result<solve::SolveArtifacts, LowerError> {
     artifacts::lower_solve_artifacts(problem, solve::MassMatrix::Identity)
 }
-
-/// Materialize optional solver artifacts with an explicitly selected mass
-/// matrix representation.
-pub fn lower_solve_artifacts_with_mass_matrix(
-    problem: &solve::SolveProblem,
-    mass_matrix: solve::MassMatrix,
-) -> Result<solve::SolveArtifacts, LowerError> {
-    artifacts::lower_solve_artifacts(problem, mass_matrix)
-}

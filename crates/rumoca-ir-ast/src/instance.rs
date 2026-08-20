@@ -919,17 +919,17 @@ pub struct InstanceOverlay {
     /// When an array component like `plug_p.pin[3]` is expanded to indexed instances
     /// (`plug_p.pin[1]`, `plug_p.pin[2]`, `plug_p.pin[3]`), this map stores the parent
     /// path `plug_p.pin` with dimensions `[3]` for use in array equation expansion.
-    pub array_parent_dims: IndexMap<String, Vec<i64>>,
+    pub array_parent_dims: IndexMap<ComponentPath, Vec<i64>>,
     /// Mapping from outer-prefixed paths to their corresponding inner paths (MLS §5.4).
     /// When an outer component `initialStep.stateGraphRoot` references inner `stateGraphRoot`,
     /// equations/connections using the outer prefix are redirected to the inner path.
-    pub outer_prefix_to_inner: IndexMap<String, String>,
+    pub outer_prefix_to_inner: IndexMap<ComponentPath, ComponentPath>,
     /// Mapping from inner-outer component paths to their parent inner paths (MLS §5.4).
     /// When a component is declared `inner outer` (e.g., `inner outer StateGraphRoot stateGraphRoot`),
     /// it bridges two scopes: it serves as `inner` for children and as `outer` referencing the parent.
     /// Same-level connections involving the `inner outer` component should redirect to the parent's
     /// inner for flow equation scoping (e.g., `makeProduct.stateGraphRoot` → `stateGraphRoot`).
-    pub inner_outer_to_parent_inner: IndexMap<String, String>,
+    pub inner_outer_to_parent_inner: IndexMap<ComponentPath, ComponentPath>,
     /// Names of inner declarations synthesized during instantiation retry (MLS §5.4).
     /// Populated when `outer` components had no matching `inner` and automatic
     /// synthesis succeeded.

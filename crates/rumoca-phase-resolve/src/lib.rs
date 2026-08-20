@@ -681,7 +681,6 @@ pub fn resolve_with_diagnostics(parsed: ParsedTree) -> Result<ResolveSuccess, Re
 struct ResolutionAttempt {
     tree: ClassTree,
     diagnostics: Diagnostics,
-    stats: ResolutionStats,
 }
 
 fn resolve_attempt(parsed: ParsedTree) -> ResolutionAttempt {
@@ -730,11 +729,9 @@ fn resolve_attempt(parsed: ParsedTree) -> ResolutionAttempt {
         class_count: count_declared_classes(&tree.definitions),
     });
 
-    let stats = resolver.stats.clone();
     ResolutionAttempt {
         tree,
         diagnostics: resolver.take_diagnostics(),
-        stats,
     }
 }
 
@@ -750,29 +747,6 @@ fn complete_resolution(attempt: ResolutionAttempt) -> Result<ResolveSuccess, Res
             diagnostics: attempt.diagnostics,
         })
     }
-}
-
-/// Result of resolution with statistics.
-pub struct ResolveWithStatsResult {
-    /// The resolved tree (if successful).
-    pub tree: Result<ResolvedTree, Diagnostics>,
-    /// Statistics collected during resolution.
-    pub stats: ResolutionStats,
-}
-
-/// Resolve names in a ParsedTree and return both the result and statistics.
-///
-/// This is useful for diagnosing resolution behavior - it always returns stats
-/// even if resolution fails.
-pub fn resolve_with_stats(parsed: ParsedTree) -> ResolveWithStatsResult {
-    let attempt = resolve_attempt(parsed);
-    let stats = attempt.stats.clone();
-    let tree = match complete_resolution(attempt) {
-        Ok(success) => Ok(success.into_tree()),
-        Err(failure) => Err(failure.into_diagnostics()),
-    };
-
-    ResolveWithStatsResult { tree, stats }
 }
 
 /// Resolve names in a parsed StoredDefinition and return a ResolvedTree.

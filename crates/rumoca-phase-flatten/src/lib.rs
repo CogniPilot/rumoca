@@ -87,7 +87,6 @@ type ClassInstanceData = ast::ClassInstanceData;
 type ClassTree = ast::ClassTree;
 type InstanceOverlay = ast::InstanceOverlay;
 type InstanceStatement = ast::InstanceStatement;
-type OpBinary = rumoca_core::OpBinary;
 type OpUnary = rumoca_core::OpUnary;
 type QualifiedName = ast::QualifiedName;
 type Algorithm = flat::Algorithm;

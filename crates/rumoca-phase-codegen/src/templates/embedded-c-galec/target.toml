@@ -20,7 +20,7 @@ This is a GALEC-derived embedded C export, NOT an eFMI Production Code
 container (SPEC_0034 GAL-024): no eFMU manifest mapping is emitted.
 Safety assurance: designed for the MISRA C:2023 profile in GAL-029/030;
 MISRA compliance and DO-178C compliance are not claimed.
-Compile preflight: cc -std=c99 -pedantic -Wall -Wextra -Wconversion
+Compile preflight: cc -O2 -std=c99 -pedantic -Wall -Wextra -Wconversion
   -Wsign-conversion -Wshadow -Wundef -Wcast-qual -Wstrict-prototypes
   -Wmissing-prototypes -Werror -c {{ out_dir }}/rumoca_galec_kernels.c {{ out_dir }}/{{ model_name }}.c
 Both translation units must be compiled; the model calls into the kernel
@@ -66,6 +66,10 @@ host_callbacks = false
 [[partials]]
 template = "symbols.jinja"
 name = "galec-c-symbols.jinja"
+
+[[partials]]
+template = "scratch.jinja"
+name = "galec-c-scratch.jinja"
 
 # D2/GAL-008 split: Rust lowers to a closed typed semantic context
 # (collision-checked names, typed variables, recursive expressions/statements,

@@ -12,7 +12,7 @@ pub(super) fn register_zero_sized_array_component(
     dims: &[i64],
 ) {
     ctx.push_path(name);
-    let parent_path = ctx.current_path().to_string();
+    let parent_path = ctx.current_path().to_component_path();
     ctx.pop_path();
     overlay.array_parent_dims.insert(parent_path, dims.to_vec());
 }

@@ -1,0 +1,36 @@
+{#- Single declaration site for the instance-owned GALEC C working-memory
+    types. The generated source includes the header and only addresses these
+    types; it never redeclares their layout. -#}
+{%- macro c_type(kind) -%}
+{%- if kind == "real" -%}float{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
+{%- endmacro -%}
+{%- macro region_name(region, c_symbols) -%}
+{%- if region.function is not none -%}{{ symbol(c_symbols, region.function) }}{%- else -%}{{ region.method }}{%- endif -%}
+{%- endmacro -%}
+{%- macro region_dimensions(value) -%}
+{%- for dimension in value %}{% if dimension.kind == "expr" and dimension.value.kind == "integer" %}[{{ dimension.value.value }}]{% else %}{{ fail("unsupported-feature:embedded-c-scratch-dimension") }}{% endif %}{% endfor -%}
+{%- endmacro -%}
+{%- macro declarations(c_model, scratch_layout, c_symbols) -%}
+{%- for group in scratch_layout.groups %}
+{%- for region in group.regions %}
+typedef struct {{ c_model }}Scratch_{{ region_name(region, c_symbols) }}Tag {
+{%- for slot in region.slots %}
+    {{ c_type(slot.ty.value.kind) }} {{ symbol(c_symbols, slot.name.value[0]) }}{{ region_dimensions(slot.dimensions) }};
+{%- endfor %}
+} {{ c_model }}Scratch_{{ region_name(region, c_symbols) }};
+{% endfor %}
+{%- endfor %}
+{%- for group in scratch_layout.groups %}
+/* Overlay group {{ group.ordinal }}. */
+typedef union {{ c_model }}ScratchGroup{{ group.ordinal }}Tag {
+{%- for region in group.regions %}
+    {{ c_model }}Scratch_{{ region_name(region, c_symbols) }} {{ region_name(region, c_symbols) }};
+{%- endfor %}
+} {{ c_model }}ScratchGroup{{ group.ordinal }};
+{% endfor %}
+typedef struct {{ c_model }}ScratchTag {
+{%- for group in scratch_layout.groups %}
+    {{ c_model }}ScratchGroup{{ group.ordinal }} rumoca_galec_g{{ group.ordinal }};
+{%- endfor %}
+} {{ c_model }}Scratch;
+{%- endmacro -%}

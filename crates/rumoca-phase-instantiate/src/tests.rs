@@ -925,7 +925,11 @@ fn test_zero_sized_array_component_records_parent_dimensions() {
     ctx.pop_path();
 
     assert_eq!(
-        overlay.array_parent_dims.get("tank1.topPorts"),
+        overlay
+            .array_parent_dims
+            .get(&rumoca_core::ComponentPath::from_flat_path(
+                "tank1.topPorts"
+            )),
         Some(&vec![0])
     );
 }
@@ -1208,8 +1212,10 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
         "the real late inner declaration should avoid synthetic retry"
     );
     assert_eq!(
-        overlay.outer_prefix_to_inner.get("child.shared"),
-        Some(&"shared".to_string())
+        overlay
+            .outer_prefix_to_inner
+            .get(&rumoca_core::ComponentPath::from_flat_path("child.shared")),
+        Some(&rumoca_core::ComponentPath::from_flat_path("shared"))
     );
 
     let shared_classes: Vec<_> = overlay

@@ -488,15 +488,6 @@ pub(crate) fn lookup_with_scope<V: Clone + PartialEq>(
     lookup_with_qualified_scope(&name_path, &scope_path, map)
 }
 
-pub(crate) fn lookup_component_ref_with_scope<V: Clone + PartialEq>(
-    reference: &rumoca_ir_ast::ComponentReference,
-    scope: &QualifiedName,
-    map: &rustc_hash::FxHashMap<String, V>,
-) -> Option<V> {
-    let name = QualifiedName::from_component_reference(reference);
-    lookup_with_qualified_scope(&name, scope, map)
-}
-
 pub(crate) fn lookup_with_qualified_scope<V: Clone + PartialEq>(
     name: &QualifiedName,
     scope: &QualifiedName,
@@ -529,43 +520,7 @@ pub(crate) fn try_eval_const_integer_with_scope(
     ctx: &Context,
     scope: &str,
 ) -> Option<i64> {
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-            token,
-            ..
-        } => token.text.as_ref().parse().ok(),
-        ast::Expression::ComponentReference(cr) => {
-            let scope_path = QualifiedName::from_dotted(scope);
-            lookup_component_ref_with_scope(cr, &scope_path, &ctx.parameter_values)
-        }
-        ast::Expression::Unary {
-            rhs,
-            op: OpUnary::Minus,
-            ..
-        } => try_eval_const_integer_with_scope(rhs, ctx, scope).map(|v| -v),
-        ast::Expression::Parenthesized { inner, .. } => {
-            try_eval_const_integer_with_scope(inner, ctx, scope)
-        }
-        ast::Expression::Binary { lhs, rhs, op, .. } => {
-            let l = try_eval_const_integer_with_scope(lhs, ctx, scope)?;
-            let r = try_eval_const_integer_with_scope(rhs, ctx, scope)?;
-            rumoca_core::eval_ast_integer_binary(op, l, r)
-        }
-        ast::Expression::FunctionCall { comp, args, .. } => {
-            eval_const_integer_function_with_scope(comp, args, ctx, scope)
-        }
-        // MLS §3.6: if-expressions for conditional constant evaluation
-        ast::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            let selected = select_const_if_branch(branches, else_branch, ctx, scope)?;
-            try_eval_const_integer_with_scope(selected, ctx, scope)
-        }
-        _ => None,
-    }
+    crate::boolean_eval::try_eval_integer_with_scope(expr, ctx, scope)
 }
 
 /// Scope-aware constant real evaluation.
@@ -574,59 +529,7 @@ pub(crate) fn try_eval_const_real_with_scope(
     ctx: &Context,
     scope: &str,
 ) -> Option<f64> {
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: rumoca_ir_ast::TerminalType::UnsignedReal,
-            token,
-            ..
-        } => token.text.as_ref().parse().ok(),
-        ast::Expression::Terminal {
-            terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-            token,
-            ..
-        } => token.text.as_ref().parse::<i64>().ok().map(|v| v as f64),
-        ast::Expression::ComponentReference(cr) => {
-            let scope_path = QualifiedName::from_dotted(scope);
-            lookup_component_ref_with_scope(cr, &scope_path, &ctx.real_parameter_values).or_else(
-                || {
-                    lookup_component_ref_with_scope(cr, &scope_path, &ctx.parameter_values)
-                        .map(|v| v as f64)
-                },
-            )
-        }
-        ast::Expression::Unary {
-            rhs,
-            op: OpUnary::Minus,
-            ..
-        } => try_eval_const_real_with_scope(rhs, ctx, scope).map(|v| -v),
-        ast::Expression::Parenthesized { inner, .. } => {
-            try_eval_const_real_with_scope(inner, ctx, scope)
-        }
-        ast::Expression::Binary { lhs, rhs, op, .. } => {
-            let l = try_eval_const_real_with_scope(lhs, ctx, scope)?;
-            let r = try_eval_const_real_with_scope(rhs, ctx, scope)?;
-            match op {
-                OpBinary::Add => Some(l + r),
-                OpBinary::Sub => Some(l - r),
-                OpBinary::Mul => Some(l * r),
-                OpBinary::Div => (r.abs() > f64::EPSILON).then_some(l / r),
-                OpBinary::Exp => Some(l.powf(r)),
-                _ => None,
-            }
-        }
-        ast::Expression::FunctionCall { comp, args, .. } => {
-            eval_const_real_function_with_scope(comp, args, ctx, scope)
-        }
-        ast::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            let selected = select_const_if_branch(branches, else_branch, ctx, scope)?;
-            try_eval_const_real_with_scope(selected, ctx, scope)
-        }
-        _ => None,
-    }
+    crate::boolean_eval::try_eval_real_with_scope(expr, ctx, scope)
 }
 
 pub(crate) fn eval_const_real_function_with_scope(
@@ -1427,122 +1330,7 @@ pub(crate) fn try_eval_const_boolean_with_scope(
     ctx: &Context,
     scope: &str,
 ) -> Option<bool> {
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: rumoca_ir_ast::TerminalType::Bool,
-            token,
-            ..
-        } => match token.text.as_ref() {
-            "true" => Some(true),
-            "false" => Some(false),
-            _ => None,
-        },
-        ast::Expression::ComponentReference(cr) => {
-            let name = QualifiedName::from_component_reference(cr).to_flat_string();
-            lookup_with_scope(&name, scope, &ctx.boolean_parameter_values)
-        }
-        ast::Expression::Unary {
-            op: OpUnary::Not,
-            rhs,
-            ..
-        } => try_eval_const_boolean_with_scope(rhs, ctx, scope).map(|v| !v),
-        ast::Expression::Parenthesized { inner, .. } => {
-            try_eval_const_boolean_with_scope(inner, ctx, scope)
-        }
-        ast::Expression::Binary { op, lhs, rhs, .. } => match op {
-            OpBinary::And => eval_const_boolean_and(lhs, rhs, ctx, scope),
-            OpBinary::Or => eval_const_boolean_or(lhs, rhs, ctx, scope),
-            // Integer/Real comparisons for conditional parameters (MLS §3.5)
-            OpBinary::Eq => eval_const_equality_with_scope(lhs, rhs, ctx, scope, true),
-            OpBinary::Neq => eval_const_equality_with_scope(lhs, rhs, ctx, scope, false),
-            OpBinary::Lt => eval_const_ordering_with_scope(lhs, rhs, ctx, scope, |l, r| l < r),
-            OpBinary::Le => eval_const_ordering_with_scope(lhs, rhs, ctx, scope, |l, r| l <= r),
-            OpBinary::Gt => eval_const_ordering_with_scope(lhs, rhs, ctx, scope, |l, r| l > r),
-            OpBinary::Ge => eval_const_ordering_with_scope(lhs, rhs, ctx, scope, |l, r| l >= r),
-            _ => None,
-        },
-        ast::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            let selected = select_const_if_branch(branches, else_branch, ctx, scope)?;
-            try_eval_const_boolean_with_scope(selected, ctx, scope)
-        }
-        _ => None,
-    }
-}
-
-fn eval_const_ordering_with_scope(
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    ctx: &Context,
-    scope: &str,
-    cmp: impl FnOnce(f64, f64) -> bool,
-) -> Option<bool> {
-    if let (Some(l), Some(r)) = (
-        try_eval_const_integer_with_scope(lhs, ctx, scope),
-        try_eval_const_integer_with_scope(rhs, ctx, scope),
-    ) {
-        return Some(cmp(l as f64, r as f64));
-    }
-    let l = try_eval_const_real_with_scope(lhs, ctx, scope)?;
-    let r = try_eval_const_real_with_scope(rhs, ctx, scope)?;
-    Some(cmp(l, r))
-}
-
-fn eval_const_boolean_and(
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    ctx: &Context,
-    scope: &str,
-) -> Option<bool> {
-    let lhs_value = try_eval_const_boolean_with_scope(lhs, ctx, scope);
-    if lhs_value == Some(false) {
-        return Some(false);
-    }
-    let rhs_value = try_eval_const_boolean_with_scope(rhs, ctx, scope);
-    if rhs_value == Some(false) {
-        return Some(false);
-    }
-    lhs_value.zip(rhs_value).map(|(lhs, rhs)| lhs && rhs)
-}
-
-fn eval_const_boolean_or(
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    ctx: &Context,
-    scope: &str,
-) -> Option<bool> {
-    let lhs_value = try_eval_const_boolean_with_scope(lhs, ctx, scope);
-    if lhs_value == Some(true) {
-        return Some(true);
-    }
-    let rhs_value = try_eval_const_boolean_with_scope(rhs, ctx, scope);
-    if rhs_value == Some(true) {
-        return Some(true);
-    }
-    lhs_value.zip(rhs_value).map(|(lhs, rhs)| lhs || rhs)
-}
-
-pub(crate) fn eval_const_equality_with_scope(
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    ctx: &Context,
-    scope: &str,
-    is_eq: bool,
-) -> Option<bool> {
-    if let (Some(l), Some(r)) = (
-        try_eval_const_integer_with_scope(lhs, ctx, scope),
-        try_eval_const_integer_with_scope(rhs, ctx, scope),
-    ) {
-        return Some(if is_eq { l == r } else { l != r });
-    }
-
-    let lhs_enum = try_eval_const_enum_with_scope(lhs, ctx, scope)?;
-    let rhs_enum = try_eval_const_enum_with_scope(rhs, ctx, scope)?;
-    let equal = rumoca_core::enum_values_equal(&lhs_enum, &rhs_enum);
-    Some(if is_eq { equal } else { !equal })
+    crate::boolean_eval::try_eval_boolean_with_scope(expr, ctx, scope)
 }
 
 /// Scope-aware constant enum evaluation.

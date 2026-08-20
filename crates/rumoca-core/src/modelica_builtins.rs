@@ -7,7 +7,6 @@
 use crate::BuiltinFunction;
 
 /// Synthetic source name used for compiler-owned MLS-shaped predefined declarations.
-pub const PREDEFINED_MODELICA_SOURCE_NAME: &str = "<rumoca-predefined-mls>";
 
 /// Modelica-shaped source for the predefined type/class declarations.
 ///
@@ -49,7 +48,6 @@ impl PredefinedComponentType {
 }
 
 /// Predefined enumeration type names supplied by the language.
-pub const PREDEFINED_ENUM_TYPES: &[&str] = &["StateSelect", "AssertionLevel"];
 
 /// Literals declared by the MLS predefined enumeration types.
 pub const PREDEFINED_ENUM_LITERALS: &[(&str, &[&str])] = &[

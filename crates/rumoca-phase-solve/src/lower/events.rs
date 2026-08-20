@@ -495,14 +495,14 @@ impl<'dae> DiscreteRows<'dae> {
                 target_index,
             });
         }
-        self.record_clocked_producer(
-            PendingClockedStep::EventTransaction { program_index },
-            transaction.clock_owner(),
-            transaction_targets,
-            transaction.same_tick_value_reads().to_vec(),
-            Vec::new(),
-            transaction_span,
-        );
+        self.clocked_producers.push(PendingClockedProducer {
+            step: PendingClockedStep::EventTransaction { program_index },
+            clock_owners: transaction.clock_owners().to_vec(),
+            targets: transaction_targets,
+            value_reads: transaction.same_tick_value_reads().to_vec(),
+            condition_reads: Vec::new(),
+            span: transaction_span,
+        });
         Ok(())
     }
 
@@ -685,7 +685,7 @@ impl<'dae> DiscreteRows<'dae> {
     ) {
         self.clocked_producers.push(PendingClockedProducer {
             step,
-            clock_owner,
+            clock_owners: vec![clock_owner],
             targets,
             value_reads,
             condition_reads,

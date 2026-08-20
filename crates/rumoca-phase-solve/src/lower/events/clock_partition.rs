@@ -43,24 +43,30 @@ pub(super) fn issue_clock_partition_order<'dae>(
     let producers = admitted
         .iter()
         .map(|producer| rumoca_phase_structural::SameTickProducer {
+            clock_domains: producer
+                .clock_owners
+                .iter()
+                .map(|clock| u32::try_from(clock.index()).expect("Solve clock identity fits u32"))
+                .collect(),
             targets: producer.targets.clone(),
             value_reads: producer.value_reads.clone(),
             condition_reads: producer.condition_reads.clone(),
             span: producer.span,
         })
         .collect::<Vec<_>>();
-    let schedule = rumoca_phase_structural::issue_same_tick_schedule(
+    let schedule_result = rumoca_phase_structural::issue_same_tick_schedule(
         view,
         &discrete.same_tick_definitions,
         &producers,
         &excluded,
-    )
-    .map_err(|error| match &error {
+    );
+    let schedule = schedule_result.map_err(|error| match &error {
         rumoca_phase_structural::SameTickOrderError::Cycle { .. }
         | rumoca_phase_structural::SameTickOrderError::UnrefreshableRead { .. } => {
             LowerError::non_computable(error.to_string(), error.span())
         }
-        rumoca_phase_structural::SameTickOrderError::DuplicateOwner { .. } => {
+        rumoca_phase_structural::SameTickOrderError::DuplicateOwner { .. }
+        | rumoca_phase_structural::SameTickOrderError::InvalidClockDomains { .. } => {
             LowerError::contract(error.to_string(), error.span())
         }
     })?;
@@ -131,12 +137,22 @@ fn issue_intermediate_definition<'dae>(
     let mut consumer_clocks = issue
         .consumers
         .iter()
-        .map(|&consumer| {
+        .flat_map(|&consumer| {
             admitted
                 .get(consumer)
-                .map(|producer| producer.clock_owner)
-                .ok_or_else(|| {
-                    LowerError::contract("issued intermediate consumer is out of bounds", span)
+                .map(|producer| {
+                    producer
+                        .clock_owners
+                        .iter()
+                        .copied()
+                        .map(Ok)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| {
+                    vec![Err(LowerError::contract(
+                        "issued intermediate consumer is out of bounds",
+                        span,
+                    ))]
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -190,7 +206,7 @@ fn intermediate_variable_span<'dae>(
 /// source) records none, which is exactly the SOLVE-C28 boundary.
 pub(super) struct PendingClockedProducer<'dae> {
     pub(super) step: PendingClockedStep,
-    pub(super) clock_owner: solve::PeriodicClockId,
+    pub(super) clock_owners: Vec<solve::PeriodicClockId>,
     pub(super) targets: Vec<dae::VariableId<'dae>>,
     pub(super) value_reads: Vec<dae::ExprId<'dae>>,
     pub(super) condition_reads: Vec<dae::ConditionId<'dae>>,

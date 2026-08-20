@@ -30,3 +30,7 @@ dtypes = ["f64"]
 [[files]]
 path = "{{ model_name }}.mlir"
 template = "mlir.mlir.jinja"
+
+[[assets]]
+source = "runtime"
+dest = "runtime/"

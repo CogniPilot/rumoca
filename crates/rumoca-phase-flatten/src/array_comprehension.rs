@@ -43,8 +43,9 @@ pub(crate) fn extract_component_array_dimensions(
     // the parent path "plug_p.pin" is registered with dimensions [3] for use
     // in array equation expansion (MLS §10.5).
     for (name, dims) in &overlay.array_parent_dims {
-        if !ctx.array_dimensions.contains_key(name) {
-            ctx.array_dimensions.insert(name.clone(), dims.clone());
+        if !ctx.array_dimensions.contains_key(name.as_str()) {
+            ctx.array_dimensions
+                .insert(name.to_flat_string(), dims.clone());
         }
     }
 }

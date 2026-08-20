@@ -186,8 +186,8 @@ pub(crate) fn handle_inner_outer(
             ctx.find_inner(&comp.name)
         };
         if let Some(inner_decl) = inner_result {
-            let outer_path = qualified_name.to_flat_string();
-            let inner_path = inner_decl.qualified_name.to_flat_string();
+            let outer_path = qualified_name.to_component_path();
+            let inner_path = inner_decl.qualified_name.to_component_path();
             // MLS §5.4: Record prefix mapping for flatten-phase redirection.
             // Pure outer → outer_prefix_to_inner (child refs redirected to inner).
             // Inner outer → inner_outer_to_parent_inner (same-level flow bridge).
@@ -511,8 +511,8 @@ fn record_late_inner_outer_mapping(
     missing: &MissingInnerInfo,
     inner_decl: &InnerDeclaration,
 ) {
-    let outer_path = missing.outer_path.to_flat_string();
-    let inner_path = inner_decl.qualified_name.to_flat_string();
+    let outer_path = missing.outer_path.to_component_path();
+    let inner_path = inner_decl.qualified_name.to_component_path();
     if outer_path == inner_path {
         return;
     }

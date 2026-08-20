@@ -198,21 +198,20 @@ fn assert_recursive_array_source(header: &str, source: &str) {
     // `scratch` is an array local, so it lives in the method's working-memory
     // region rather than in the frame: no automatic declaration, no
     // `(void)&…` use marker, and every reference goes through the alias. The
-    // region is in the translation unit's private overlay, not the header.
+    // region is in the caller's instance-owned overlay declared by the header.
     assert!(
         source.contains(
             "ArrayProjectionScratch_dostep *const ctx = \
-             &rumoca_galec_scratch.rumoca_galec_g0.dostep;"
+             &self->rumoca_galec_scratch.rumoca_galec_g0.dostep;"
         ),
         "{source}"
     );
     assert!(!source.contains("(void)&scratch;"), "{source}");
     assert!(source.contains("ctx->scratch["), "{source}");
     assert!(
-        source.contains("float scratch[2];") && source.contains("ArrayProjectionScratch_dostep;"),
-        "{source}"
+        header.contains("float scratch[2];") && header.contains("ArrayProjectionScratch_dostep;"),
+        "{header}"
     );
-    assert!(!header.contains("Scratch"), "{header}");
 
     // Four of the five array relationships compute something per element, so
     // each stays one bounded runtime loop. The fifth (`negated := scratch`) is
@@ -688,24 +687,24 @@ fn multi_output_user_calls_compile_and_copy_every_result() {
     assert!(
         source.contains(
             "rumoca_galec_copy_real(INT32_C(2), self->values, \
-             rumoca_galec_scratch.rumoca_galec_g1.make_pair.pair);"
+             self->rumoca_galec_scratch.rumoca_galec_g1.make_pair.pair);"
         ),
         "{source}"
     );
     assert_model_unit_defines_no_kernels(&source);
     assert!(
-        source.contains("self->accepted = rumoca_galec_scratch.rumoca_galec_g1.make_pair.ok;"),
+        source
+            .contains("self->accepted = self->rumoca_galec_scratch.rumoca_galec_g1.make_pair.ok;"),
         "{source}"
     );
-    // The output buffers are declared once, in the source's private working
-    // memory, as the callee's region — not as an automatic in every activation,
-    // and not in the interface header.
-    assert!(source.contains("float pair[2];"), "{source}");
+    // The output buffers are declared once, in the instance-owned working
+    // memory type, as the callee's region — not as an automatic in every
+    // activation.
+    assert!(header.contains("float pair[2];"), "{header}");
     assert!(
-        source.contains("ArrayProjectionScratch_make_pair make_pair;"),
-        "{source}"
+        header.contains("ArrayProjectionScratch_make_pair make_pair;"),
+        "{header}"
     );
-    assert!(!header.contains("pair"), "{header}");
 
     let directory = tempdir().expect("temporary generated-C directory");
     let header_path = directory.path().join(format!("{MODEL}.h"));

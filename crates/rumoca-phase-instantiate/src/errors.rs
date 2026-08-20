@@ -26,6 +26,7 @@
 //! | EI031 | InstantiationCycle | recursive class/type graph |
 //! | EI032 | InvalidTypeAttribute | §4.4.4 |
 //! | EI033 | MissingResolvedIdentity | compiler phase-order invariant |
+//! | EI034 | TypeNotFound | type lookup |
 //! | EI098 | MissingSourceContext | compiler provenance invariant |
 //!
 //! Uses miette for rich diagnostic output with error codes and help text.
@@ -60,7 +61,7 @@ pub enum InstantiateError {
 
     /// Type not found with span.
     #[error("type `{name}` not found")]
-    #[diagnostic(code(rumoca::instantiate::EI030))]
+    #[diagnostic(code(rumoca::instantiate::EI034))]
     TypeNotFound {
         name: String,
         #[label("referenced here")]

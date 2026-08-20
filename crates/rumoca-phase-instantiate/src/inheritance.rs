@@ -62,9 +62,10 @@ pub type InheritanceCache = IndexMap<DefId, Arc<InheritedContent>>;
 
 /// Cache for subtype check results to avoid recomputation.
 ///
-/// Maps (subtype_name, supertype_name) to the result of the subtype check.
-/// This is useful for deeply nested inheritance hierarchies.
-pub type SubtypeCache = IndexMap<(String, String), bool>;
+/// Maps exact resolved (subtype, supertype) declaration identities to the
+/// result of the subtype check. Unresolved compatibility paths are deliberately
+/// not cached: rendered class names are not semantic identity (SPEC_0001).
+pub type SubtypeCache = IndexMap<(DefId, DefId), bool>;
 
 /// Check if two type names refer to the same resolved type.
 ///
@@ -427,7 +428,8 @@ pub fn is_type_subtype(tree: &ast::ClassTree, subtype: &str, supertype: &str) ->
 /// Check if `subtype` is a subtype of `supertype` with caching.
 ///
 /// This cached version avoids recomputation for deeply nested inheritance
-/// hierarchies. The cache maps (subtype, supertype) pairs to their results.
+/// hierarchies. The cache maps resolved (subtype, supertype) declaration pairs
+/// to their results.
 ///
 /// For replaceable component redeclarations, this function also considers
 /// "sibling types" as compatible. Two types A and B are siblings if they
@@ -449,16 +451,25 @@ pub fn is_type_subtype_cached(
         return true;
     }
 
-    // Check cache first
-    let cache_key = (subtype.to_string(), supertype.to_string());
-    if let Some(&result) = cache.get(&cache_key) {
+    let subtype_def_id = tree
+        .get_def_id_by_name(subtype)
+        .or_else(|| find_class_in_tree(tree, subtype).and_then(|class| class.def_id));
+    let supertype_def_id = tree
+        .get_def_id_by_name(supertype)
+        .or_else(|| find_class_in_tree(tree, supertype).and_then(|class| class.def_id));
+    let cache_key = subtype_def_id.zip(supertype_def_id);
+    if let Some(key) = cache_key
+        && let Some(&result) = cache.get(&key)
+    {
         return result;
     }
 
     // A built-in subtype can't extend anything else - no subtyping between primitives
     // But a class type CAN extend a built-in type (e.g., SI.Voltage extends Real)
     if is_builtin_type(subtype) {
-        cache.insert(cache_key, false);
+        if let Some(key) = cache_key {
+            cache.insert(key, false);
+        }
         return false;
     }
 
@@ -493,7 +504,9 @@ pub fn is_type_subtype_cached(
         false
     };
 
-    cache.insert(cache_key, result);
+    if let Some(key) = cache_key {
+        cache.insert(key, result);
+    }
     result
 }
 
@@ -810,14 +823,14 @@ pub fn class_extends_cached(
     base_name: &str,
     cache: &mut SubtypeCache,
 ) -> bool {
-    let class_name = class.name.text.to_string();
     let target_base_def_id = tree
         .get_def_id_by_name(base_name)
         .or_else(|| find_class_in_tree(tree, base_name).and_then(|c| c.def_id));
+    let cache_key = class.def_id.zip(target_base_def_id);
 
-    // Check cache first
-    let cache_key = (class_name.clone(), base_name.to_string());
-    if let Some(&result) = cache.get(&cache_key) {
+    if let Some(key) = cache_key
+        && let Some(&result) = cache.get(&key)
+    {
         return result;
     }
 
@@ -829,12 +842,16 @@ pub fn class_extends_cached(
         if let Some(target_id) = target_base_def_id
             && extend.base_def_id == Some(target_id)
         {
-            cache.insert(cache_key, true);
+            if let Some(key) = cache_key {
+                cache.insert(key, true);
+            }
             return true;
         }
         // Direct extension - use type_names_match for short vs qualified name handling
         if type_names_match(tree, &extend_name, base_name) {
-            cache.insert(cache_key, true);
+            if let Some(key) = cache_key {
+                cache.insert(key, true);
+            }
             return true;
         }
         // Transitive extension - use def_id for O(1) lookup when available
@@ -847,17 +864,23 @@ pub fn class_extends_cached(
             if let Some(target_id) = target_base_def_id
                 && base_class.def_id == Some(target_id)
             {
-                cache.insert(cache_key.clone(), true);
+                if let Some(key) = cache_key {
+                    cache.insert(key, true);
+                }
                 return true;
             }
             if class_extends_cached(tree, base_class, base_name, cache) {
-                cache.insert(cache_key.clone(), true);
+                if let Some(key) = cache_key {
+                    cache.insert(key, true);
+                }
                 return true;
             }
         }
     }
 
-    cache.insert(cache_key, false);
+    if let Some(key) = cache_key {
+        cache.insert(key, false);
+    }
     false
 }
 

@@ -49,6 +49,32 @@ fn analyze_event_function_call_statements(
 ) -> Result<(), ToDaeError> {
     for statement in statements {
         match statement {
+            rumoca_core::Statement::Assignment { comp, value, span } => {
+                let Expression::FunctionCall {
+                    name,
+                    args,
+                    is_constructor: false,
+                    ..
+                } = value
+                else {
+                    continue;
+                };
+                let target = rumoca_core::component_ref_to_base_reference(comp)
+                    .var_name()
+                    .clone();
+                if !context.flat.record_instances.contains_key(&target) {
+                    continue;
+                }
+                let output = Some(comp.clone());
+                let plan = analyze_event_function_call(
+                    context,
+                    name,
+                    args,
+                    std::slice::from_ref(&output),
+                    *span,
+                )?;
+                insert_call_plan(plans, *span, plan)?;
+            }
             rumoca_core::Statement::FunctionCall {
                 comp,
                 args,
@@ -56,13 +82,7 @@ fn analyze_event_function_call_statements(
                 span,
             } => {
                 let plan = analyze_event_function_call(context, comp, args, outputs, *span)?;
-                if plans.insert(*span, plan).is_some() {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        "event function calls require distinct source owners",
-                        *span,
-                    ));
-                }
+                insert_call_plan(plans, *span, plan)?;
             }
             rumoca_core::Statement::If {
                 cond_blocks,
@@ -86,6 +106,21 @@ fn analyze_event_function_call_statements(
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn insert_call_plan(
+    plans: &mut HashMap<Span, ModelEventFunctionCallPlan>,
+    span: Span,
+    plan: ModelEventFunctionCallPlan,
+) -> Result<(), ToDaeError> {
+    if plans.insert(span, plan).is_some() {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "event function calls require distinct source owners",
+            span,
+        ));
     }
     Ok(())
 }
@@ -321,12 +356,7 @@ impl<'flat> ModelRecordIndex<'flat> {
                 span,
             ));
         }
-        let class = self.unique_child(
-            record.instance_id,
-            record.type_def_id,
-            flat::InstanceKind::Class,
-            span,
-        )?;
+        let class = self.unique_class_child(record.instance_id, span)?;
         let mut fields = Vec::new();
         self.collect_record_fields(
             record,
@@ -460,12 +490,7 @@ impl<'flat> ModelRecordIndex<'flat> {
                 span,
             ));
         }
-        let nested_class = self.unique_child(
-            nested.instance_id,
-            nested.type_def_id,
-            flat::InstanceKind::Class,
-            span,
-        )?;
+        let nested_class = self.unique_class_child(nested.instance_id, span)?;
         self.collect_record_fields(nested, nested_class, projection, span, active, fields)
     }
 
@@ -497,30 +522,21 @@ impl<'flat> ModelRecordIndex<'flat> {
         Ok(*child)
     }
 
-    fn unique_child(
-        &self,
-        owner: InstanceId,
-        declaration: rumoca_core::DefId,
-        kind: flat::InstanceKind,
-        span: Span,
-    ) -> Result<InstanceId, ToDaeError> {
+    fn unique_class_child(&self, owner: InstanceId, span: Span) -> Result<InstanceId, ToDaeError> {
         let matches = self
             .children
             .get(&owner)
             .into_iter()
             .flatten()
             .copied()
-            .filter(|child| {
-                let relation = &self.flat.instance_relations[child];
-                relation.declaration == Some(declaration) && relation.kind == kind
-            })
+            .filter(|child| self.flat.instance_relations[child].kind == flat::InstanceKind::Class)
             .collect::<Vec<_>>();
         let [child] = matches.as_slice() else {
             return Err(ToDaeError::unsupported_algorithm(
                 "model",
                 format!(
-                    "record type declaration {} has {} exact Flat class occurrences",
-                    declaration.index(),
+                    "record component occurrence {} has {} exact Flat class bodies",
+                    owner.index(),
                     matches.len()
                 ),
                 span,

@@ -226,6 +226,63 @@ end RecordTransition;
 }
 
 #[test]
+fn sampled_single_record_assignment_retains_one_checked_call_owner() {
+    let compiled = Compiler::new()
+        .model("RecordAssignment.Controller")
+        .compile_str(
+            r#"
+package RecordAssignment
+  record State
+    Real value;
+    Boolean valid;
+  end State;
+
+  connector StateOutput = output State;
+
+  function advance
+    input Real previous;
+    output State next;
+  algorithm
+    next.value := previous + 1.0;
+    next.valid := true;
+  end advance;
+
+  block Controller
+    discrete StateOutput estimate;
+  algorithm
+    when sample(0.0, 0.1) then
+      estimate := advance(pre(estimate.value));
+    end when;
+  end Controller;
+end RecordAssignment;
+"#,
+            "record_assignment.mo",
+        )
+        .expect("a direct record-valued call assignment should construct one call owner");
+
+    compiled.dae.inspect(|view| {
+        let owners = (0..view.expression_count())
+            .filter_map(|index| view.expression(view.expression_id(index)?))
+            .filter_map(|expression| match expression.operation() {
+                rumoca_ir_dae::ExpressionOperation::Field { base, .. } => {
+                    let base = view.expression(base)?;
+                    match base.operation() {
+                        rumoca_ir_dae::ExpressionOperation::Call { owner, .. } => Some(owner),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(owners.len(), 2, "each record leaf must project the call");
+        assert_eq!(
+            owners[0], owners[1],
+            "both leaves must share one call owner"
+        );
+    });
+}
+
+#[test]
 fn model_algorithm_read_before_definition_fails_in_dae_analysis() {
     let error = Compiler::new()
         .model("InvalidAlgorithmMemory")

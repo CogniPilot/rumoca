@@ -15,8 +15,8 @@ use crate::runtime::pre_params::{
     advance_event_iteration_pre_params, event_iteration_plan_settled, seed_event_entry_pre_params,
 };
 use crate::runtime::solve_events::{
-    apply_discrete_slot_values, current_dynamic_time_event_stop, event_action_params,
-    next_runtime_event_stop, visible_values_with_context,
+    current_dynamic_time_event_stop, event_action_params, next_runtime_event_stop,
+    visible_values_with_context,
 };
 use crate::runtime::solve_ops::write_clock_activation_params;
 use crate::{
@@ -265,7 +265,6 @@ pub struct SolveRuntime {
     root_refresh: solve::RefreshPlan,
     event_refresh: solve::RefreshPlan,
     root_refresh_after_derivative: Option<solve::RefreshRemainderRelation>,
-    algebraic_refresh_after_derivative: Option<solve::RefreshRemainderRelation>,
     clock_event_refresh_after_event: Vec<solve::RefreshRemainderRelation>,
     /// Certified coverage for the initialization homotopy continuation; the
     /// single source of truth shared by the sweep driver and the acceptance
@@ -355,24 +354,6 @@ pub(crate) struct SolveRuntimeSnapshot {
 impl SolveRuntime {
     pub fn new(model: &solve::SolveModel) -> Result<Self, EvalSolveError> {
         Self::new_with_execution_backend(model, None)
-    }
-
-    /// Construct a runtime honoring a host-provided opaque ME execution
-    /// backend handle.
-    ///
-    /// The [`crate::fmi_me::MeExecutionBackend`] handle is unwrapped here,
-    /// inside the crate that owns the [`SolveExecutionBackend`] contract, so
-    /// an integrator host can wire compiled execution through without ever
-    /// naming a Solve runtime object on its own surface (SPEC_0038 §Internal
-    /// Solver Boundary).
-    pub fn new_with_me_execution_backend(
-        model: &solve::SolveModel,
-        execution_backend: Option<crate::fmi_me::MeExecutionBackend>,
-    ) -> Result<Self, EvalSolveError> {
-        Self::new_with_execution_backend(
-            model,
-            execution_backend.map(crate::fmi_me::MeExecutionBackend::into_runtime_backend),
-        )
     }
 
     #[cfg(test)]
@@ -547,8 +528,6 @@ impl SolveRuntime {
             &refresh_program_rows,
         );
         let root_refresh_after_derivative = refresh_owners.root_after_derivative().cloned();
-        let algebraic_refresh_after_derivative =
-            refresh_owners.algebraic_after_derivative().cloned();
         let clock_event_refresh_after_event = refresh_owners.clock_events_after_event().to_vec();
         if clock_event_refresh_after_event.len() != clock_event_refresh.len() {
             return Err(EvalSolveError::InvalidRow {
@@ -651,7 +630,6 @@ impl SolveRuntime {
             root_refresh,
             event_refresh,
             root_refresh_after_derivative,
-            algebraic_refresh_after_derivative,
             clock_event_refresh_after_event,
             initial_continuation,
             root_condition_rows: PreparedScalarProgramBlock::new(
@@ -1097,50 +1075,6 @@ impl SolveRuntime {
         self.root_refresh_after_derivative.is_some()
     }
 
-    pub fn derivative_settled_coordinate_can_refresh_algebraics(&self) -> bool {
-        self.algebraic_refresh_after_derivative.is_some()
-    }
-
-    pub fn refresh_algebraics_after_derivative_settle(
-        &self,
-        t: f64,
-        params: &[f64],
-        solver_y: &mut [f64],
-        tol: f64,
-        max_iters: usize,
-    ) -> Result<(), RuntimeSolveError> {
-        let relation = self
-            .algebraic_refresh_after_derivative
-            .as_ref()
-            .ok_or_else(|| {
-                RuntimeSolveError::solve_ir(
-                    "algebraic refresh has no certified derivative-settled remainder".to_string(),
-                )
-            })?;
-        if solver_y.len() != self.solver_count {
-            return Err(RuntimeSolveError::solve_ir(format!(
-                "derivative-settled solver-y length mismatch: expected {}, got {}",
-                self.solver_count,
-                solver_y.len()
-            )));
-        }
-        let remainder = relation.remainder();
-        if remainder.value_stages.is_empty() {
-            return Ok(());
-        }
-        self.refresh_slots_with_plan(
-            remainder,
-            RefreshSlotArgs {
-                t,
-                solver_y,
-                params,
-                tol,
-                max_iters,
-                certify_coordinates: false,
-            },
-        )
-    }
-
     pub fn full_solver_y(
         &self,
         t: f64,
@@ -1179,26 +1113,6 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         self.update_solver_y_guess_from_state(guess, state)?;
         self.refresh_algebraic_and_output_slots(t, guess, params, tol, max_iters)
-    }
-
-    /// Update an established full-layout guess for state-derivative evaluation.
-    ///
-    /// State-only integrators use this after an accepted step to preserve a
-    /// warm start for the next RHS/Jacobian call. Only the compiler-proven
-    /// derivative dependency closure is refreshed; observation-only
-    /// algebraics are reconstructed at output or event boundaries instead of
-    /// entering the integration hot loop.
-    pub fn refresh_derivative_solver_y_with_guess(
-        &self,
-        t: f64,
-        state: &[f64],
-        params: &[f64],
-        guess: &mut [f64],
-        tol: f64,
-        max_iters: usize,
-    ) -> Result<(), RuntimeSolveError> {
-        self.update_solver_y_guess_from_state(guess, state)?;
-        self.refresh_derivative_dependencies(t, guess, params, tol, max_iters)
     }
 
     pub fn eval_state_derivatives(
@@ -1503,71 +1417,6 @@ impl SolveRuntime {
             )
             .map_err(RuntimeSolveError::from)?;
         validate_finite_runtime_output("root search output", out)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn eval_root_conditions_after_derivative_settle_into(
-        &self,
-        t: f64,
-        params: &[f64],
-        solver_y: &mut [f64],
-        tol: f64,
-        max_iters: usize,
-        out: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        if !self.derivative_settled_coordinate_can_refresh_roots() {
-            return Err(RuntimeSolveError::solve_ir(
-                "root refresh has no certified derivative-settled remainder".to_string(),
-            ));
-        }
-        if solver_y.len() != self.solver_count {
-            return Err(RuntimeSolveError::solve_ir(format!(
-                "derivative-settled solver-y length mismatch: expected {}, got {}",
-                self.solver_count,
-                solver_y.len()
-            )));
-        }
-        let relation = self.root_refresh_after_derivative.as_ref().ok_or_else(|| {
-            RuntimeSolveError::solve_ir(
-                "root refresh derivative-settled remainder disappeared".to_string(),
-            )
-        })?;
-        let remainder = relation.remainder();
-        if !remainder.value_stages.is_empty() {
-            self.refresh_slots_with_plan(
-                remainder,
-                RefreshSlotArgs {
-                    t,
-                    solver_y,
-                    params,
-                    tol,
-                    max_iters,
-                    certify_coordinates: false,
-                },
-            )?;
-        }
-        let root_count = self.root_condition_count();
-        if root_count == 0 {
-            return fill_inactive_root_output(out);
-        }
-        validate_runtime_output_len("root condition output", root_count, out.len())?;
-        let model_root_count = self.model.problem.events.root_conditions.len();
-        self.eval_root_conditions_from_refreshed_solver_y(
-            t,
-            solver_y,
-            params,
-            &mut out[..model_root_count],
-        )?;
-        self.delay_runtime
-            .evaluate_event_roots(
-                t,
-                solver_y,
-                params,
-                self.row_eval_context(),
-                &mut out[model_root_count..],
-            )
-            .map_err(RuntimeSolveError::from)?;
-        validate_finite_runtime_output("root condition output", out)
     }
 
     pub fn next_planned_time_root(

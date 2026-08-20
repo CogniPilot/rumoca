@@ -271,86 +271,6 @@ pub fn build_blt_from_incidence<'dae>(
     Ok(blt::build_blt_blocks(incidence, &match_eq, &adjacency))
 }
 
-#[derive(Debug)]
-pub struct RegularSubsystem<'dae> {
-    pub incidence: Incidence<'dae>,
-    pub blocks: Vec<BltBlock<'dae>>,
-    pub dropped_equations: Vec<EquationRef>,
-    pub dropped_unknowns: Vec<UnknownId<'dae>>,
-}
-
-pub fn maximum_regular_subsystem<'dae>(
-    incidence: &Incidence<'dae>,
-    preferred_unknowns: &[Option<usize>],
-) -> Result<RegularSubsystem<'dae>, StructuralError> {
-    let (match_eq, match_var) = maximum_matching(incidence, preferred_unknowns);
-    let matched_equations = matched_indices(&match_eq);
-    let matched_unknowns = matched_indices(&match_var);
-    if matched_equations.is_empty() || matched_equations.len() != matched_unknowns.len() {
-        return Err(unlabeled_singular(incidence, &match_eq, &match_var));
-    }
-    let mut old_to_new = vec![None; incidence.n_var];
-    for (new, old) in matched_unknowns.iter().copied().enumerate() {
-        old_to_new[old] = Some(new);
-    }
-    let rows = matched_equations
-        .iter()
-        .map(|equation| {
-            incidence
-                .eq_unknowns
-                .row(*equation)
-                .iter()
-                .filter_map(|unknown| old_to_new[*unknown])
-                .collect::<HashSet<_>>()
-        })
-        .collect();
-    let regular = Incidence {
-        n_eq: matched_equations.len(),
-        n_var: matched_unknowns.len(),
-        eq_unknowns: incidence::rows::IncidenceRows::from_sets(rows),
-        unknowns: matched_unknowns
-            .iter()
-            .map(|index| incidence.unknowns[*index])
-            .collect(),
-        unknown_spans: matched_unknowns
-            .iter()
-            .filter_map(|index| incidence.unknown_spans.get(*index).copied())
-            .collect(),
-        equation_refs: matched_equations
-            .iter()
-            .map(|index| incidence.equation_refs[*index])
-            .collect(),
-        equation_spans: matched_equations
-            .iter()
-            .filter_map(|index| incidence.equation_spans.get(*index).copied())
-            .collect(),
-        structured_matching: Vec::new(),
-    };
-    let blocks = build_blt_from_incidence(&regular)?;
-    let matched_equation_set = matched_equations.iter().copied().collect::<HashSet<_>>();
-    let matched_unknown_set = matched_unknowns.iter().copied().collect::<HashSet<_>>();
-    Ok(RegularSubsystem {
-        incidence: regular,
-        blocks,
-        dropped_equations: incidence
-            .equation_refs
-            .iter()
-            .enumerate()
-            .filter_map(|(index, equation)| {
-                (!matched_equation_set.contains(&index)).then_some(*equation)
-            })
-            .collect(),
-        dropped_unknowns: incidence
-            .unknowns
-            .iter()
-            .enumerate()
-            .filter_map(|(index, unknown)| {
-                (!matched_unknown_set.contains(&index)).then_some(*unknown)
-            })
-            .collect(),
-    })
-}
-
 fn maximum_matching(
     incidence: &Incidence<'_>,
     preferred_unknowns: &[Option<usize>],
@@ -545,14 +465,6 @@ fn unmatched_span(
                     .flatten()
             })
         })
-}
-
-fn matched_indices(matching: &[Option<usize>]) -> Vec<usize> {
-    matching
-        .iter()
-        .enumerate()
-        .filter_map(|(index, matched)| matched.is_some().then_some(index))
-        .collect()
 }
 
 pub(crate) fn equation_label(view: dae::DaeView<'_>, equation: &EquationRef) -> String {

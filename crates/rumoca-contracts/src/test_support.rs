@@ -363,19 +363,6 @@ pub fn simulate_model(source: &str, model: &str, t_end: f64) -> SimTrace {
     }
 }
 
-/// Compile a model and expect the simulation itself to fail (e.g. a failing
-/// assert stops the run).
-///
-/// # Panics
-/// Panics if compilation fails or the simulation unexpectedly succeeds.
-pub fn expect_simulation_failure(source: &str, model: &str, t_end: f64) {
-    let result = expect_success(source, model);
-    let opts = contract_sim_options(t_end);
-    if rumoca_sim::simulate_with_diagnostics(&result.dae, &opts).is_ok() {
-        panic!("Expected simulation failure for {model}, but it succeeded");
-    }
-}
-
 /// Simulation trace with by-name channel access.
 pub struct SimTrace {
     pub times: Vec<f64>,

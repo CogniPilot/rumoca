@@ -284,6 +284,10 @@ fn validate_algorithm_statements(
                     )
                 ) {
                     validate_expression(value, roles, states)?;
+                } else if matches!(target_role, Some(PlannedRole::Aggregate))
+                    && is_direct_record_call_assignment(comp, value)
+                {
+                    validate_expression(value, roles, states)?;
                 } else if structured_assignment_pairs(&target, value, roles).is_none() {
                     return Err(ToDaeError::unsupported_algorithm(
                         "model",
@@ -443,6 +447,20 @@ fn validate_algorithm_statements(
         }
     }
     Ok(())
+}
+
+fn is_direct_record_call_assignment(
+    target: &rumoca_core::ComponentReference,
+    value: &Expression,
+) -> bool {
+    target.parts().iter().all(|part| part.subs.is_empty())
+        && matches!(
+            value,
+            Expression::FunctionCall {
+                is_constructor: false,
+                ..
+            }
+        )
 }
 
 fn validate_function_call_output(

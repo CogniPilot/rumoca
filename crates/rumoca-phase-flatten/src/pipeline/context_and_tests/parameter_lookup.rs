@@ -48,9 +48,11 @@ impl Context {
             current_imports: crate::qualify::ImportMap::default(),
             class_def_ids: std::sync::Arc::new(rustc_hash::FxHashSet::default()),
             current_class_scope_path: None,
+            current_class_instance_id: None,
             simulated_root_name: None,
             materialize_structured_families: true,
-            param_variability_family_bases: rustc_hash::FxHashSet::default(),
+            param_variability_families:
+                crate::param_variability::ParameterVariabilityFamilies::default(),
         }
     }
 

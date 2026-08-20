@@ -89,14 +89,6 @@ impl PreparedSimulation {
             "parameter overrides are not yet supported after Solve IR lowering".to_string(),
         ))
     }
-
-    pub fn set_parameter_values(&mut self, _name: &str, _values: &[f64]) -> Result<(), SimError> {
-        Err(SimError::SolverError(
-            "parameter overrides are not yet supported after Solve IR lowering".to_string(),
-        ))
-    }
-
-    pub fn clear_parameter_overrides(&mut self) {}
 }
 
 pub fn build_simulation(

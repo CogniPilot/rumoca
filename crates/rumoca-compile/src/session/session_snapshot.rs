@@ -709,14 +709,6 @@ impl SessionSnapshot {
         });
     }
 
-    pub fn prewarm_document_read_queries(&self, uri: &str) {
-        if self.document_needs_source_root_read_prewarm(uri) {
-            self.prewarm_source_root_read_queries();
-            return;
-        }
-        self.prewarm_document_ide_queries(uri);
-    }
-
     pub fn prewarm_source_root_read_queries(&self) {
         if !self.needs_source_root_read_prewarm() {
             return;

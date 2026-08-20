@@ -113,7 +113,7 @@ external calls, random operations, and runtime event iteration fail closed.
 
 ```sh
 rumoca compile Controller.mo --model Controller --target embedded-c-galec --output generated
-cc -std=c99 -pedantic -Wall -Wextra -Wconversion -Wsign-conversion \
+cc -O2 -std=c99 -pedantic -Wall -Wextra -Wconversion -Wsign-conversion \
   -Wshadow -Wundef -Wcast-qual -Wstrict-prototypes -Wmissing-prototypes \
   -Werror -c generated/Controller.c
 ```

@@ -305,6 +305,17 @@ fn minted_codes(content: &str) -> BTreeSet<String> {
     codes
 }
 
+fn miette_attribute_code_occurrences(content: &str) -> Vec<String> {
+    content
+        .split("code(rumoca::")
+        .skip(1)
+        .filter_map(|tail| tail.split(')').next())
+        .filter_map(|attribute| attribute.rsplit("::").next().map(str::trim))
+        .filter(|code| split_code(code).is_some())
+        .map(str::to_string)
+        .collect()
+}
+
 fn minted_ranges(codes: &BTreeSet<String>) -> BTreeSet<String> {
     codes
         .iter()
@@ -458,6 +469,29 @@ fn test_diagnostic_mnemonics_have_one_global_owner() {
 }
 
 #[test]
+fn test_miette_error_variants_do_not_reuse_unrelated_codes() {
+    let root = workspace_root();
+    let path = root.join("crates/rumoca-phase-instantiate/src/errors.rs");
+    let content = fs::read_to_string(&path).expect("read instantiate error registry");
+    let mut counts = BTreeMap::<String, usize>::new();
+    for code in miette_attribute_code_occurrences(&content) {
+        *counts.entry(code).or_default() += 1;
+    }
+
+    // EI001 has two presentation variants for the same ModelNotFound semantic
+    // identity: one source-free and one span-bearing. No other InstantiateError
+    // mnemonic is shared by multiple variants.
+    let unexpected: Vec<_> = counts
+        .into_iter()
+        .filter(|(code, count)| *count > 1 && code != "EI001")
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "unrelated InstantiateError variants must not share a stable mnemonic: {unexpected:?}"
+    );
+}
+
+#[test]
 fn test_simulation_diagnostics_do_not_use_placeholder_codes() {
     let path = workspace_root().join("crates/rumoca-sim/src/solve_lowering/diagnostics.rs");
     let content = fs::read_to_string(&path).expect("read sim diagnostics");
@@ -502,6 +536,16 @@ fn structural_warning_codes(production: &str) -> BTreeSet<String> {
     codes
 }
 
+fn common_warning_codes(production: &str) -> BTreeSet<String> {
+    production
+        .split("CommonDiagnostic::warning(")
+        .skip(1)
+        .filter_map(|tail| tail.split('"').nth(1))
+        .filter(|code| is_mnemonic(code))
+        .map(str::to_string)
+        .collect()
+}
+
 /// SPEC_0008 "Severity prefix": `E<phase>` is error severity, `W<phase>` is
 /// warning severity, and any live violation must be written down under "Known
 /// drift" so a consumer bucketing by prefix is not silently misled. The
@@ -510,15 +554,25 @@ fn structural_warning_codes(production: &str) -> BTreeSet<String> {
 #[test]
 fn test_warning_severity_codes_are_spec_registered() {
     let root = workspace_root();
-    let content =
-        fs::read_to_string(root.join("crates/rumoca-phase-structural/src/diagnostics.rs"))
-            .expect("read structural diagnostics");
-    let production = content
-        .split("#[cfg(test)]")
-        .next()
-        .expect("structural diagnostics has a production section");
-
-    let warning_codes = structural_warning_codes(production);
+    let mut warning_codes = BTreeSet::new();
+    for registry in DIAGNOSTIC_REGISTRIES {
+        for rel in registry.paths {
+            let path = root.join(rel);
+            let mut files = Vec::new();
+            if path.is_dir() {
+                collect_rs_files(&path, &mut files);
+            } else {
+                files.push(path);
+            }
+            for file in files {
+                let content = fs::read_to_string(&file)
+                    .unwrap_or_else(|error| panic!("read {}: {error}", file.display()));
+                let production = content.split("#[cfg(test)]").next().unwrap_or(&content);
+                warning_codes.extend(common_warning_codes(production));
+                warning_codes.extend(structural_warning_codes(production));
+            }
+        }
+    }
     assert!(
         !warning_codes.is_empty(),
         "structural diagnostics must still emit warning-severity codes"

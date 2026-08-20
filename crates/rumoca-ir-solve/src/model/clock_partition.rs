@@ -248,7 +248,7 @@ impl DiscreteSolveSystem {
             .event_transactions
             .get(program_index)
             .ok_or_else(|| order_error(program_index, "transaction step out of bounds"))?;
-        if transaction.clock_owner().is_none() {
+        if !transaction.is_clock_owned() {
             return Err(order_error(
                 program_index,
                 "transaction step names an unclocked owner",
@@ -301,7 +301,7 @@ impl DiscreteSolveSystem {
             }
         }
         for (program_index, transaction) in self.event_transactions.iter().enumerate() {
-            if transaction.clock_owner().is_some() && !covered.transactions[program_index] {
+            if transaction.is_clock_owned() && !covered.transactions[program_index] {
                 return Err(order_error(
                     program_index,
                     "clock-owned transaction has no issued step",

@@ -581,6 +581,52 @@ fn lint_warnings_as_errors_fails_on_warning() {
     assert!(stdout.contains("[warning]"));
 }
 
+#[test]
+fn lint_loads_config_from_each_file_directory() {
+    let dir = tempdir().expect("tempdir");
+    let default_dir = dir.path().join("default");
+    let disabled_dir = dir.path().join("disabled");
+    fs::create_dir_all(&default_dir).expect("create default dir");
+    fs::create_dir_all(&disabled_dir).expect("create disabled dir");
+
+    let default_file = default_dir.join("default.mo");
+    let disabled_file = disabled_dir.join("disabled.mo");
+    write_model(&default_file, "model badDefault\nend badDefault;\n");
+    write_model(&disabled_file, "model badDisabled\nend badDisabled;\n");
+    fs::write(
+        disabled_dir.join(".rumoca_lint.toml"),
+        "disabled_rules = [\"naming-convention\"]\n",
+    )
+    .expect("write nested lint config");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .arg("lint")
+        .arg(dir.path())
+        .output()
+        .expect("run rumoca lint");
+
+    assert!(
+        output.status.success(),
+        "warnings should not fail lint: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.lines().any(|line| {
+            line.contains(&default_file.to_string_lossy().to_string())
+                && line.contains("naming-convention")
+        }),
+        "default directory should retain the naming warning: {stdout}"
+    );
+    assert!(
+        !stdout.lines().any(|line| {
+            line.contains(&disabled_file.to_string_lossy().to_string())
+                && line.contains("naming-convention")
+        }),
+        "nested lint config should suppress its own naming warning: {stdout}"
+    );
+}
+
 /// MLS 3.7 §12.3: "External functions not explicitly declared with pure or
 /// impure is deprecated." The compile path and the lint path must both say so;
 /// a diagnostic only the editor can see reaches nobody who runs the compiler.

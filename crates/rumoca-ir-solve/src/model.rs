@@ -469,6 +469,7 @@ impl EventTransactionInput {
 pub struct EventTransactionTarget {
     base: ScalarSlot,
     value_type: SolveValueType,
+    clock_owner: Option<PeriodicClockId>,
 }
 
 /// Exact executable producer represented by one aggregate transaction target.
@@ -501,6 +502,11 @@ impl EventTransactionTarget {
     pub const fn value_type(&self) -> &SolveValueType {
         &self.value_type
     }
+
+    #[must_use]
+    pub const fn clock_owner(&self) -> Option<PeriodicClockId> {
+        self.clock_owner
+    }
 }
 
 /// One checked tensor-native executable model-event transaction.
@@ -517,7 +523,7 @@ pub struct EventTransactionProgram {
     assertions: Box<[SolveEventAction]>,
     assertion_action_indices: Box<[Box<[usize]>]>,
     statement_count: usize,
-    clock_owner: Option<PeriodicClockId>,
+    clock_owners: Box<[PeriodicClockId]>,
     span: Span,
 }
 
@@ -529,12 +535,12 @@ pub struct EventTransactionProgram {
 pub struct EventTransactionConstruction {
     pub site: SolvePureCallSite,
     pub inputs: Vec<(ScalarSlot, SolveValueType)>,
-    pub targets: Vec<(ScalarSlot, SolveValueType)>,
+    pub targets: Vec<(ScalarSlot, SolveValueType, Option<PeriodicClockId>)>,
     pub producer_owners: Vec<EventTransactionProducerOwner>,
     pub assertions: Vec<SolveEventAction>,
     pub assertion_action_indices: Vec<Vec<usize>>,
     pub statement_count: usize,
-    pub clock_owner: Option<PeriodicClockId>,
+    pub clock_owners: Vec<PeriodicClockId>,
 }
 
 #[derive(Deserialize)]
@@ -547,7 +553,7 @@ struct EventTransactionProgramWire {
     assertions: Vec<SolveEventAction>,
     assertion_action_indices: Vec<Vec<usize>>,
     statement_count: usize,
-    clock_owner: Option<PeriodicClockId>,
+    clock_owners: Vec<PeriodicClockId>,
     span: Span,
 }
 
@@ -563,6 +569,7 @@ struct EventTransactionInputWire {
 struct EventTransactionTargetWire {
     base: ScalarSlot,
     value_type: SolveValueType,
+    clock_owner: Option<PeriodicClockId>,
 }
 
 impl<'de> Deserialize<'de> for EventTransactionProgram {
@@ -586,13 +593,13 @@ impl<'de> Deserialize<'de> for EventTransactionProgram {
                 targets: wire
                     .targets
                     .into_iter()
-                    .map(|target| (target.base, target.value_type))
+                    .map(|target| (target.base, target.value_type, target.clock_owner))
                     .collect(),
                 producer_owners: wire.producer_owners,
                 assertions: wire.assertions,
                 assertion_action_indices: wire.assertion_action_indices,
                 statement_count: wire.statement_count,
-                clock_owner: wire.clock_owner,
+                clock_owners: wire.clock_owners,
             },
             provenance,
         )
@@ -614,7 +621,11 @@ impl EventTransactionProgram {
         let targets = construction
             .targets
             .into_iter()
-            .map(|(base, value_type)| EventTransactionTarget { base, value_type })
+            .map(|(base, value_type, clock_owner)| EventTransactionTarget {
+                base,
+                value_type,
+                clock_owner,
+            })
             .collect::<Box<[_]>>();
         let producer_owners = construction.producer_owners.into_boxed_slice();
         let assertions = construction.assertions.into_boxed_slice();
@@ -631,7 +642,7 @@ impl EventTransactionProgram {
             assertions,
             assertion_action_indices,
             statement_count: construction.statement_count,
-            clock_owner: construction.clock_owner,
+            clock_owners: construction.clock_owners.into_boxed_slice(),
             span,
         };
         validate_event_transaction_interface(&program)?;
@@ -684,8 +695,13 @@ impl EventTransactionProgram {
     }
 
     #[must_use]
-    pub const fn clock_owner(&self) -> Option<PeriodicClockId> {
-        self.clock_owner
+    pub const fn clock_owners(&self) -> &[PeriodicClockId] {
+        &self.clock_owners
+    }
+
+    #[must_use]
+    pub const fn is_clock_owned(&self) -> bool {
+        !self.clock_owners.is_empty()
     }
 
     #[must_use]
@@ -705,7 +721,7 @@ fn validate_event_transaction_interface(
         assertions,
         assertion_action_indices,
         statement_count,
-        clock_owner,
+        clock_owners,
         span,
     } = program;
     let invalid = |detail| SolveProblemShapeContractError::EventTransactionProgram {
@@ -715,6 +731,28 @@ fn validate_event_transaction_interface(
     };
     if *statement_count == 0 || targets.is_empty() {
         return Err(invalid("statement or target catalog is empty"));
+    }
+    if clock_owners
+        .windows(2)
+        .any(|pair| pair[0].index() >= pair[1].index())
+    {
+        return Err(invalid("activation clocks are not sorted and unique"));
+    }
+    let target_clocks = targets
+        .iter()
+        .filter_map(EventTransactionTarget::clock_owner)
+        .collect::<std::collections::BTreeSet<_>>();
+    if targets
+        .iter()
+        .any(|target| target.clock_owner().is_some() != !clock_owners.is_empty())
+        || target_clocks
+            .iter()
+            .copied()
+            .ne(clock_owners.iter().copied())
+    {
+        return Err(invalid(
+            "target clocks do not exactly cover the canonical activation-clock set",
+        ));
     }
     if producer_owners.len() != targets.len() {
         return Err(invalid(
@@ -769,7 +807,10 @@ fn validate_event_transaction_interface(
     }
     if assertions.iter().any(|action| {
         !matches!(action.kind, SolveEventActionKind::Assert)
-            || action.clock_owner != *clock_owner
+            || action.clock_owner.is_some() != !clock_owners.is_empty()
+            || action
+                .clock_owner
+                .is_some_and(|clock| clock_owners.binary_search(&clock).is_err())
             || action.span.is_dummy()
     }) {
         return Err(invalid(
@@ -1335,7 +1376,7 @@ impl SolveClockPartition {
 }
 
 /// Typed identity of one periodic schedule in a [`SolveClockPartition`].
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct PeriodicClockId(u32);
 

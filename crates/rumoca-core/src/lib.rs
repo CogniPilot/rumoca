@@ -66,18 +66,12 @@ pub use structured_domain::{
 };
 pub use subscript::Subscript;
 
-/// Internal DAE-level sample tick callable emitted after source `sample(...)`
-/// has been lowered out of the DAE expression language.
-pub const INTERNAL_SAMPLE_FUNCTION_NAME: &str = "__rumoca_sample";
 /// Relative tolerance used by the scheduler and lowered clock-tick predicates.
 ///
 /// Both compare dimensionless tick coordinates using
 /// `tol * (1 + max(abs(a), abs(b)))`; keeping the constant here prevents
 /// clocked rows and runtime scheduling from recognizing different instants.
 pub const SCHEDULE_TIME_RELATIVE_TOLERANCE: f64 = 1.0e-12;
-
-/// Relative tolerance for accepting a compile-time clock ratio as an integer.
-pub const CLOCK_FACTOR_INTEGER_TOLERANCE: f64 = 1.0e-9;
 
 /// MLS §16.5.1: `sample(u)` is the clocked value-sampling operator with an
 /// inferred clock. It is not the event-generating `sample(start, interval)`

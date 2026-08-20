@@ -792,7 +792,7 @@ fn fold_subscript_expr(
         rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
             let lhs = fold_subscript_expr(lhs, known_flat_vars, depth + 1)?;
             let rhs = fold_subscript_expr(rhs, known_flat_vars, depth + 1)?;
-            rumoca_eval_flat::flat_int::eval_binary_op_i64(op, lhs, rhs)
+            rumoca_core::eval_ast_integer_binary(op, lhs, rhs)
         }
         _ => None,
     }
