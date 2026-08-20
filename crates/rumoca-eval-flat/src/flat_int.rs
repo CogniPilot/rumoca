@@ -47,29 +47,12 @@ pub fn try_eval_flat_expr_i64(
         rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
             let l = try_eval_flat_expr_i64(lhs, flat, depth + 1)?;
             let r = try_eval_flat_expr_i64(rhs, flat, depth + 1)?;
-            eval_binary_op_i64(op, l, r)
+            rumoca_core::eval_ast_integer_binary(op, l, r)
         }
         rumoca_core::Expression::BuiltinCall { function, args, .. }
             if matches!(function, rumoca_core::BuiltinFunction::Size) && args.len() == 2 =>
         {
             eval_size_call_i64(&args[0], &args[1], flat, depth)
-        }
-        _ => None,
-    }
-}
-
-/// Evaluate a binary arithmetic operation on two integer values.
-pub fn eval_binary_op_i64(op: &rumoca_core::OpBinary, l: i64, r: i64) -> Option<i64> {
-    match op {
-        rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => Some(l + r),
-        rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => Some(l - r),
-        rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => Some(l * r),
-        rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => {
-            if r != 0 {
-                Some(l / r)
-            } else {
-                None
-            }
         }
         _ => None,
     }

@@ -155,7 +155,7 @@ struct TemplateSnapshot {
     plan: AllocationPlan,
     disabled_components: Vec<ComponentPath>,
     each_modifier_bindings: Vec<ComponentPath>,
-    array_parent_dims: Vec<(String, Vec<i64>)>,
+    array_parent_dims: Vec<(ComponentPath, Vec<i64>)>,
     known_int_params: Vec<(String, i64)>,
     known_bool_params: Vec<(String, bool)>,
     known_real_params: Vec<(String, f64)>,
@@ -432,10 +432,16 @@ fn replicate_path_keyed_metadata(
 ) -> InstantiateResult<()> {
     let PathKeyedMetadataTarget { ctx, overlay } = target;
     for (path, dims) in &template.array_parent_dims {
-        let member_path = reindex
-            .flat_path(path)
-            .ok_or_else(|| domain_error(path, "array parent path is not a family member", span))?;
-        overlay.array_parent_dims.insert(member_path, dims.clone());
+        let member_path = reindex.flat_path(path.as_str()).ok_or_else(|| {
+            domain_error(
+                path.as_str(),
+                "array parent path is not a family member",
+                span,
+            )
+        })?;
+        overlay
+            .array_parent_dims
+            .insert(ComponentPath::from_flat_path(&member_path), dims.clone());
     }
     for (path, value) in &template.known_int_params {
         let member_path = reindex.flat_path_or_same(path);

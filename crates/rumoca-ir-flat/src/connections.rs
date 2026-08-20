@@ -138,11 +138,6 @@ impl ConnectionSets {
         Self::default()
     }
 
-    /// Add or merge a connection set.
-    pub fn add_set(&mut self, representative: VarName, set: ConnectionSet) {
-        self.sets.insert(representative, set);
-    }
-
     /// Get the number of connection sets.
     pub fn len(&self) -> usize {
         self.sets.len()
@@ -195,11 +190,6 @@ impl ConnectionGraph {
     /// Add a required edge (from Connections.branch()).
     pub fn add_required_edge(&mut self, edge: GraphEdge) {
         self.required_edges.push(edge);
-    }
-
-    /// Get the number of nodes.
-    pub fn num_nodes(&self) -> usize {
-        self.nodes.len()
     }
 
     /// Get the number of edges (optional + required).

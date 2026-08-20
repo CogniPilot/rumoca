@@ -72,8 +72,8 @@
     `self-><member>`; reserving there would rename fields (and the manifest
     components naming them) for no gain.
 
-    The private working-memory aggregate needs nothing in `reserved`. It is one
-    file-scope object spelled `rumoca_galec_scratch`, holding one union per
+    The instance-owned working-memory aggregate needs nothing in `reserved`.
+    Its State member is spelled `rumoca_galec_scratch`, holding one union per
     overlay group spelled `rumoca_galec_g<n>`; the prefix rule already makes
     every one of those unallocatable, and listing them would additionally rename
     every source symbol spelled `scratch` — the allocator rejects a candidate

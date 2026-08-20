@@ -15,7 +15,9 @@ pub(crate) fn process_class_instance(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
 ) -> Result<(), FlattenError> {
     let previous_class_scope = ctx.current_class_scope_path.clone();
+    let previous_class_instance = ctx.current_class_instance_id;
     ctx.current_class_scope_path = class_def_id.and_then(|id| tree.def_map.get(&id).cloned());
+    ctx.current_class_instance_id = Some(class_data.instance_id);
     let result = process_class_instance_body(
         ctx,
         flat,
@@ -25,6 +27,7 @@ pub(crate) fn process_class_instance(
         class_index,
     );
     ctx.current_class_scope_path = previous_class_scope;
+    ctx.current_class_instance_id = previous_class_instance;
     result
 }
 

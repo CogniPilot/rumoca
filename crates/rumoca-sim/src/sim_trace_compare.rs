@@ -397,16 +397,6 @@ pub fn load_trace_json(path: &Path) -> Result<SimTrace, TraceCompareError> {
     Ok(trace)
 }
 
-pub fn compare_trace_files(
-    model_name: &str,
-    rumoca_path: &Path,
-    omc_path: &Path,
-) -> Result<ModelDeviationMetric, TraceCompareError> {
-    let rumoca = load_trace_json(rumoca_path)?;
-    let omc = load_trace_json(omc_path)?;
-    compare_model_traces(model_name, &rumoca, &omc)
-}
-
 pub fn compare_model_traces(
     model_name: &str,
     rumoca: &SimTrace,

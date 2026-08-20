@@ -1171,7 +1171,7 @@ impl TypeChecker {
             let alias_progress = self.propagate_record_alias_values(record_aliases);
 
             // Pass 1: Try to evaluate explicit (non-colon) dimension expressions
-            let explicit_progress = self.evaluate_explicit_dimensions_pass(overlay);
+            let explicit_progress = self.evaluate_explicit_dimensions_pass(tree, overlay);
 
             // Pass 2: Infer colon dimensions from bindings
             let colon_progress = self.infer_colon_dimensions_single_pass(overlay);

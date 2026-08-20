@@ -11,10 +11,11 @@ impl TypeChecker {
     /// Returns true if any progress was made (dimensions were evaluated or updated).
     pub(crate) fn evaluate_explicit_dimensions_pass(
         &mut self,
+        tree: &ClassTree,
         overlay: &mut InstanceOverlay,
     ) -> bool {
         let mut progress = false;
-        let type_scope_hints = Self::build_type_scope_hints(overlay);
+        let type_scope_hints = Self::build_type_scope_hints(tree, overlay);
         for (_def_id, instance_data) in overlay.components.iter_mut() {
             // Skip components without explicit dims.
             if instance_data.dims_expr.is_empty() {
@@ -83,6 +84,7 @@ impl TypeChecker {
     /// `state1.X` can then resolve dimension symbols through the type scopes
     /// when instance-scope lookup is insufficient.
     pub(crate) fn build_type_scope_hints(
+        tree: &ClassTree,
         overlay: &InstanceOverlay,
     ) -> HashMap<ComponentPath, Vec<String>> {
         let mut hints = HashMap::new();
@@ -92,13 +94,17 @@ impl TypeChecker {
             .map(|data| (Self::instance_component_path(&data.qualified_name), data))
             .collect();
         for (_def_id, instance_data) in &overlay.components {
-            if instance_data.type_name.is_empty() {
+            let exact_type_name = instance_data
+                .type_def_id
+                .and_then(|def_id| tree.def_map.get(&def_id))
+                .map_or(instance_data.type_name.as_str(), String::as_str);
+            if exact_type_name.is_empty() {
                 continue;
             }
             let component_name = Self::instance_component_path(&instance_data.qualified_name);
             let mut scopes = Vec::with_capacity(2 + instance_data.class_overrides.len());
-            scopes.push(instance_data.type_name.clone());
-            if let Some(enclosing) = Self::parent_type_scope(&instance_data.type_name) {
+            scopes.push(exact_type_name.to_string());
+            if let Some(enclosing) = Self::parent_type_scope(exact_type_name) {
                 scopes.push(enclosing.to_string());
             }
             Self::push_enclosing_class_override_scopes(

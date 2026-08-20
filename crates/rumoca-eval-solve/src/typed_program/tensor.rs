@@ -145,8 +145,13 @@ impl EvalFrame<'_, '_> {
         let mut elements = Vec::with_capacity(value_type.scalar_count() as usize);
         for outer in 0..outer_count {
             for operand in &operands {
-                let operand_dimensions = promoted_concatenate_dimensions(&operand.value_type);
-                let block_width = (operand_dimensions[axis] as usize)
+                let axis_extent = operand
+                    .value_type
+                    .dimensions()
+                    .get(axis)
+                    .copied()
+                    .unwrap_or(1);
+                let block_width = (axis_extent as usize)
                     .checked_mul(inner_width)
                     .ok_or(invalid_error("concatenate tensors", provenance))?;
                 let start = outer
@@ -405,14 +410,6 @@ fn matrix_product_term(
         lhs.value_type.element_type(),
         provenance,
     )
-}
-
-fn promoted_concatenate_dimensions(value_type: &SolveValueType) -> Vec<u32> {
-    match value_type.dimensions() {
-        [] => vec![1, 1],
-        [extent] => vec![1, *extent],
-        dimensions => dimensions.to_vec(),
-    }
 }
 
 fn matrix_product_extents(

@@ -16,12 +16,13 @@ use crate::functions;
 use crate::qualify::{ImportMap, QualifyOptions, qualify_expression_with_imports};
 use crate::source_spans::required_location_span;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct VariableImportContext {
-    pub(crate) declaration: ImportMap,
-    pub(crate) binding: ImportMap,
-    pub(crate) attributes: FxHashMap<String, ImportMap>,
+    pub(crate) declaration: Arc<ImportMap>,
+    pub(crate) binding: Arc<ImportMap>,
+    pub(crate) attributes: FxHashMap<String, Arc<ImportMap>>,
     pub(crate) declaration_function_scope: Option<String>,
     pub(crate) binding_function_scope: Option<String>,
     pub(crate) attribute_function_scopes: FxHashMap<String, String>,
@@ -29,11 +30,13 @@ pub(crate) struct VariableImportContext {
 
 impl VariableImportContext {
     fn binding_imports(&self) -> &ImportMap {
-        &self.binding
+        self.binding.as_ref()
     }
 
     fn attribute_imports(&self, attr_name: &str) -> &ImportMap {
-        self.attributes.get(attr_name).unwrap_or(&self.declaration)
+        self.attributes
+            .get(attr_name)
+            .map_or(self.declaration.as_ref(), Arc::as_ref)
     }
 }
 

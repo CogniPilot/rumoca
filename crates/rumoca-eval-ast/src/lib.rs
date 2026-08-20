@@ -1,6 +1,6 @@
 //! AST-level evaluation facade.
 
-mod ast_scalar;
+pub mod ast_scalar;
 pub mod component_family;
 pub mod connection;
 pub mod eval;

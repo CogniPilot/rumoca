@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use rumoca_core::Span;
 use rumoca_ir_solve::{
-    ComputeBlock, LinearOp, ScalarProgramBlock, StructuralPattern, StructuralPatternError,
+    ComputeBlock, ComputeNode, LinearOp, PatternDerivation, PatternProvenance, ScalarProgramBlock,
+    StructuralPattern, StructuralPatternError,
 };
 
 use crate::{EvalSolveError, to_scalar_program_block};
@@ -34,6 +35,49 @@ pub fn derive_jacobian_pattern_from_jvp(
     columns: usize,
     owner_span: Span,
 ) -> Result<StructuralPattern, EvalSolveError> {
+    if let [node] = block.nodes.as_slice() {
+        if let ComputeNode::Map {
+            domain,
+            output_map,
+            base_ops,
+            load_strides,
+            ..
+        }
+        | ComputeNode::AffineStencil {
+            domain,
+            output_map,
+            base_ops,
+            load_strides,
+            ..
+        } = node
+        {
+            return StructuralPattern::derive_from_affine_jvp(
+                domain,
+                output_map,
+                base_ops,
+                load_strides,
+                rows,
+                columns,
+                owner_span,
+            )
+            .map_err(|error| from_pattern_error(error, Some(owner_span)));
+        }
+    }
+    if block.nodes.iter().any(|node| {
+        matches!(
+            node,
+            ComputeNode::Map { .. } | ComputeNode::AffineStencil { .. }
+        )
+    }) {
+        // A mixed compact block has no single affine owner representation yet.
+        // Preserve the no-materialization boundary and fail conservatively to
+        // Full: it may cost compressed AD opportunities but cannot omit an edge.
+        let provenance =
+            PatternProvenance::derived(PatternDerivation::ConservativeFull, owner_span)
+                .map_err(|error| from_pattern_error(error, Some(owner_span)))?;
+        return StructuralPattern::full(rows, columns, provenance)
+            .map_err(|error| from_pattern_error(error, Some(owner_span)));
+    }
     let scalar = to_scalar_program_block(block)?;
     derive_jacobian_pattern_from_scalar_jvp(&scalar, rows, columns, owner_span)
 }
@@ -345,7 +389,11 @@ fn sparsity_error(message: impl Into<String>, span: Option<Span>) -> EvalSolveEr
 
 #[cfg(test)]
 mod tests {
-    use rumoca_ir_solve::{BinaryOp, ComputeBlock, ScalarProgramBlock, StructuralPatternView};
+    use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
+    use rumoca_ir_solve::{
+        AffineStencilIndexStrideTerm, AffineStencilLoadStride, BinaryOp, ComputeBlock, ComputeNode,
+        ScalarProgramBlock, StructuralPatternView, TensorNodeMetadata, TensorOutputMap,
+    };
 
     use super::*;
 
@@ -462,5 +510,50 @@ mod tests {
         .expect("sparsity fixture is computable");
         let error = derive_jacobian_pattern_from_scalar_jvp(&block, 2, 1, span()).unwrap_err();
         assert!(error.to_string().contains("row extent 2"));
+    }
+
+    #[test]
+    fn affine_jvp_sparsity_stays_compact_and_exact() {
+        let domain = StructuredIndexDomain {
+            binders: vec![StructuredIndexBinder {
+                id: 0,
+                display_name: "i".into(),
+                lower: 1,
+                upper: 100_000,
+                step: 1,
+            }],
+        };
+        let block = ComputeBlock {
+            nodes: vec![ComputeNode::AffineStencil {
+                output_map: TensorOutputMap::dense_contiguous(0, &domain).unwrap(),
+                domain,
+                base_ops: vec![
+                    LinearOp::LoadSeed { dst: 0, index: 1 },
+                    LinearOp::StoreOutput { src: 0 },
+                ],
+                load_strides: vec![AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: 1,
+                    }],
+                }],
+                const_strides: Vec::new(),
+                metadata: TensorNodeMetadata::default(),
+                span: span(),
+            }],
+        };
+        let pattern = derive_jacobian_pattern_from_jvp(&block, 100_000, 100_001, span()).unwrap();
+        assert!(matches!(
+            pattern.view(),
+            StructuralPatternView::Affine {
+                domain_rank: 1,
+                access_count: 1
+            }
+        ));
+        assert!(pattern.contains(0, 1));
+        assert!(pattern.contains(99_999, 100_000));
+        assert!(!pattern.contains(99_999, 99_999));
+        assert_eq!(pattern.nonzero_upper_bound(), Some(100_000));
     }
 }

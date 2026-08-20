@@ -14,9 +14,6 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MSL_VERSION: &str = "4.1.0";
-// Keep OMC compile/reference isolated per model by default so a single hung
-// model cannot poison an entire batch.
-pub const BATCH_SIZE_OMC_REFERENCE_DEFAULT: usize = 1;
 // Keep OMC simulation isolated per model with a strict timeout budget.
 pub const BATCH_SIZE_OMC_SIMULATION_DEFAULT: usize = 1;
 // Per-model OMC simulate() wall budget. Shared with the rumoca sim worker
@@ -60,12 +57,6 @@ const MSL_PACKAGE_SPECS: &[MslPackageSpec] = &[
         package_name: "ModelicaTestOverdetermined",
         candidates: &["ModelicaTestOverdetermined.mo"],
     },
-];
-
-pub const EXCLUDE_PREFIXES: [&str; 3] = [
-    "ObsoleteModelica4",
-    "ModelicaTestConversion4",
-    "ModelicaReference",
 ];
 
 #[derive(Debug, Clone)]

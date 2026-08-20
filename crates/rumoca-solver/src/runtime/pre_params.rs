@@ -217,12 +217,16 @@ fn event_iteration_run_clock(
             .ok_or_else(|| {
                 RuntimeSolveError::solve_ir("event-iteration guarded owner clock is out of bounds")
             }),
-        solve::EventIterationOwner::EventTransaction { program_index, .. } => model
+        solve::EventIterationOwner::EventTransaction {
+            program_index,
+            target_index,
+        } => model
             .problem
             .discrete
             .event_transactions
             .get(program_index)
-            .map(solve::EventTransactionProgram::clock_owner)
+            .and_then(|transaction| transaction.targets().get(target_index))
+            .map(solve::EventTransactionTarget::clock_owner)
             .ok_or_else(|| {
                 RuntimeSolveError::solve_ir(
                     "event-iteration transaction owner clock is out of bounds",

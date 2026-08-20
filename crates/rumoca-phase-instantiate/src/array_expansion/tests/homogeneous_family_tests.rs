@@ -10,6 +10,10 @@ use rumoca_ir_ast as ast;
 use rumoca_phase_parse::parse_to_ast;
 use rumoca_phase_resolve::resolve;
 
+fn component_path(path: &str) -> rumoca_core::ComponentPath {
+    rumoca_core::ComponentPath::from_flat_path(path)
+}
+
 const CELL_ARRAY: &str = r"
     model Cell
         parameter Real R = 1.0;
@@ -98,7 +102,10 @@ fn homogeneous_component_array_expands_every_domain_point() {
     // `array_parent_dims` (written for every expanded array, compacted or not)
     // and the array's representation is its per-element entries.
     let overlay = instantiate(CELL_ARRAY, "Stack", true);
-    assert_eq!(overlay.array_parent_dims.get("c"), Some(&vec![3]));
+    assert_eq!(
+        overlay.array_parent_dims.get(&component_path("c")),
+        Some(&vec![3])
+    );
 
     let members: Vec<String> = component_paths(&overlay)
         .into_iter()
@@ -203,17 +210,22 @@ fn nested_component_array_replication_matches_scalar_expansion() {
     // Each replicated element re-roots the path-keyed extents of the arrays
     // nested inside it, so every `banks[n]` carries its own `b`/`pins` rows
     // rather than sharing the template's.
-    assert_eq!(compact.array_parent_dims.get("banks"), Some(&vec![3]));
+    assert_eq!(
+        compact.array_parent_dims.get(&component_path("banks")),
+        Some(&vec![3])
+    );
     for index in 1..=3 {
         assert_eq!(
-            compact.array_parent_dims.get(&format!("banks[{index}].b")),
+            compact
+                .array_parent_dims
+                .get(&component_path(&format!("banks[{index}].b"))),
             Some(&vec![2]),
             "missing nested extents for banks[{index}].b"
         );
         assert_eq!(
             compact
                 .array_parent_dims
-                .get(&format!("banks[{index}].pins")),
+                .get(&component_path(&format!("banks[{index}].pins"))),
             Some(&vec![2]),
             "missing nested extents for banks[{index}].pins"
         );
@@ -297,7 +309,10 @@ fn each_modifier_array_stays_compact() {
         end Stack;
     ";
     let compact = instantiate(SOURCE, "Stack", true);
-    assert_eq!(compact.array_parent_dims.get("c"), Some(&vec![3]));
+    assert_eq!(
+        compact.array_parent_dims.get(&component_path("c")),
+        Some(&vec![3])
+    );
     for index in 1..=3 {
         let path = format!("c[{index}].R");
         let data = compact
@@ -385,7 +400,10 @@ fn zero_sized_array_records_its_extents_and_no_members() {
         end Stack;
     ";
     let compact = instantiate(SOURCE, "Stack", true);
-    assert_eq!(compact.array_parent_dims.get("c"), Some(&vec![0]));
+    assert_eq!(
+        compact.array_parent_dims.get(&component_path("c")),
+        Some(&vec![0])
+    );
     assert!(
         component_paths(&compact)
             .iter()
@@ -423,8 +441,14 @@ fn zero_sized_primitive_arrays_retain_their_typed_instance_headers() {
         p.variability,
         rumoca_core::Variability::Parameter(_)
     ));
-    assert_eq!(overlay.array_parent_dims.get("u"), Some(&vec![0]));
-    assert_eq!(overlay.array_parent_dims.get("p"), Some(&vec![0]));
+    assert_eq!(
+        overlay.array_parent_dims.get(&component_path("u")),
+        Some(&vec![0])
+    );
+    assert_eq!(
+        overlay.array_parent_dims.get(&component_path("p")),
+        Some(&vec![0])
+    );
 }
 
 /// Assert that two overlays are equivalent, including `InstanceId` numbering.

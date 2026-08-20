@@ -15,8 +15,8 @@ tempfile = { workspace = true }
 toml = { workspace = true }
 
 # Compile + sim facades provide parsing/compile contract APIs
-rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
-rumoca-sim = { workspace = true, features = ["solver-diffsol", "solver-rk45", "strict-ir-validation"] }
+rumoca-compile = { workspace = true }
+rumoca-sim = { workspace = true, features = ["solver-diffsol", "solver-rk45"] }
 
 [lints]
 workspace = true

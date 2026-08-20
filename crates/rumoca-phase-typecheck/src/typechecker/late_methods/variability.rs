@@ -79,7 +79,10 @@ impl TypeChecker {
 
             self.diagnostics.emit(
                 CommonDiagnostic::warning(
-                    "ET004",
+                    // WT003 is the warning-severity form of the ET003 MLS §4.5
+                    // variability rule. ET004 remains exclusively the hard
+                    // unevaluable-dimension diagnostic.
+                    "WT003",
                     format!(
                     "variability violation: {} has {} variability but binding references {} variables (MLS §4.5)",
                     comp_name,

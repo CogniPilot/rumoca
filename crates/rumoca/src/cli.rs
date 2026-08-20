@@ -50,8 +50,8 @@ use rumoca_sim::{SimulationRequestSummary, SimulationRunMetrics};
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, PartialLintOptions};
 
 pub(crate) use model_resolution::{
-    collect_modelica_files, compiler_for_source, ensure_model_file_readable, first_path_config_dir,
-    infer_model_name, merged_source_root_paths, normalize_target_paths, parent_dir_or_current,
+    collect_modelica_files, compiler_for_source, ensure_model_file_readable, infer_model_name,
+    merged_source_root_paths, normalize_target_paths, parent_dir_or_current,
     validate_explicit_target_paths,
 };
 #[cfg(test)]
@@ -1427,15 +1427,12 @@ fn direct_sim_t_end(t_end: Option<f64>) -> f64 {
 fn run_lint(args: LintArgs) -> Result<()> {
     validate_explicit_target_paths(&args.paths)?;
     let paths = normalize_target_paths(&args.paths);
-    let config_dir = first_path_config_dir(&paths);
-    let base_options = lint_options_from_config(&config_dir)?;
     let cli_overrides = PartialLintOptions {
         min_level: args.min_level.map(Into::into),
         disabled_rules: (!args.disable_rules.is_empty()).then_some(args.disable_rules.clone()),
         warnings_as_errors: args.warnings_as_errors.then_some(true),
         max_messages: args.max_messages,
     };
-    let options = base_options.merge(cli_overrides);
 
     let files = collect_modelica_files(&paths);
     if files.is_empty() {
@@ -1443,7 +1440,8 @@ fn run_lint(args: LintArgs) -> Result<()> {
         return Ok(());
     }
 
-    let mut total_messages = Vec::<LintMessage>::new();
+    let mut shown_messages = Vec::<(LintMessage, bool)>::new();
+    let mut total_message_count = 0usize;
     let mut io_errors = 0usize;
     for file in &files {
         let source = match std::fs::read_to_string(file) {
@@ -1455,16 +1453,18 @@ fn run_lint(args: LintArgs) -> Result<()> {
             }
         };
         let file_label = file.to_string_lossy().to_string();
-        let messages = rumoca_tool_lint::lint(&source, &file_label, &options);
-        total_messages.extend(messages);
+        let options = lint_options_for_file(file, &cli_overrides)?;
+        let mut messages = rumoca_tool_lint::lint(&source, &file_label, &options);
+        total_message_count += messages.len();
+        messages.truncate(options.max_messages);
+        shown_messages.extend(
+            messages
+                .into_iter()
+                .map(|message| (message, options.warnings_as_errors)),
+        );
     }
 
-    let mut limited = total_messages;
-    let total_message_count = limited.len();
-    if limited.len() > options.max_messages {
-        limited.truncate(options.max_messages);
-    }
-    for message in &limited {
+    for (message, _) in &shown_messages {
         let suggestion = lint_suggestion_suffix(message.suggestion.as_deref());
         println!(
             "{}:{}:{} [{}] {} ({}){}",
@@ -1478,38 +1478,42 @@ fn run_lint(args: LintArgs) -> Result<()> {
         );
     }
 
-    let error_count = limited
+    let error_count = shown_messages
         .iter()
-        .filter(|m| m.level >= LintLevel::Error)
+        .filter(|(message, warnings_as_errors)| {
+            message.level >= LintLevel::Error
+                || (*warnings_as_errors && message.level == LintLevel::Warning)
+        })
         .count()
         + io_errors;
-    let warning_count = limited
+    let warning_count = shown_messages
         .iter()
-        .filter(|m| m.level == LintLevel::Warning)
+        .filter(|(message, _)| message.level == LintLevel::Warning)
         .count();
 
     eprintln!(
         "{} files linted | {} messages (shown: {}) | errors={} warnings={} io_errors={}",
         files.len(),
         total_message_count,
-        limited.len(),
+        shown_messages.len(),
         error_count,
         warning_count,
         io_errors
     );
 
-    if error_count > 0 || (options.warnings_as_errors && warning_count > 0) {
+    if error_count > 0 {
         std::process::exit(1);
     }
     Ok(())
 }
 
-fn lint_options_from_config(config_dir: &Path) -> Result<LintOptions> {
+fn lint_options_for_file(file: &Path, cli_overrides: &PartialLintOptions) -> Result<LintOptions> {
+    let config_dir = file.parent().unwrap_or(Path::new("."));
     match rumoca_tool_lint::load_config_from_dir(config_dir)
         .map_err(|e| anyhow::anyhow!("Failed to load lint config: {e}"))?
     {
-        Some(options) => Ok(options),
-        None => Ok(LintOptions::default()),
+        Some(options) => Ok(options.merge(cli_overrides.clone())),
+        None => Ok(LintOptions::default().merge(cli_overrides.clone())),
     }
 }
 

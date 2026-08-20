@@ -2794,19 +2794,20 @@ impl AdBuilder {
                         != usize::try_from(register).ok()
                 })
         {
-            if count == 1 {
-                for source in sources {
-                    self.ops.push(LinearOp::StoreOutputRange {
-                        start: source,
-                        count: 1,
-                        stride: 1,
-                    });
-                }
-                return Ok(());
+            let packed_start = self.next_reg;
+            for source in &sources {
+                let destination = self.alloc_reg()?;
+                self.ops.push(LinearOp::Move {
+                    dst: destination,
+                    src: *source,
+                });
             }
-            return Err(unsupported(
-                "function-conditional AD output projection is not one compact affine range",
-            ));
+            self.ops.push(LinearOp::StoreOutputRange {
+                start: packed_start,
+                count: sources.len(),
+                stride: 1,
+            });
+            return Ok(());
         }
         self.ops.push(LinearOp::StoreOutputRange {
             start: first,
@@ -3457,4 +3458,37 @@ fn checked_ad_reg_offset(
             span,
         )
     })
+}
+
+#[cfg(test)]
+mod output_projection_tests {
+    use super::*;
+
+    #[test]
+    fn non_affine_dual_outputs_are_packed_before_compact_projection() {
+        let mut builder = AdBuilder {
+            next_reg: 20,
+            store_output_mode: StoreOutputMode::Dual,
+            ..AdBuilder::default()
+        };
+        builder.bind(0, DualReg { re: 5, du: 9 }).unwrap();
+        builder.bind(1, DualReg { re: 7, du: 12 }).unwrap();
+
+        builder.lower_store_range(0, 2, 1).unwrap();
+
+        assert_eq!(
+            &builder.ops,
+            &[
+                LinearOp::Move { dst: 20, src: 5 },
+                LinearOp::Move { dst: 21, src: 9 },
+                LinearOp::Move { dst: 22, src: 7 },
+                LinearOp::Move { dst: 23, src: 12 },
+                LinearOp::StoreOutputRange {
+                    start: 20,
+                    count: 4,
+                    stride: 1,
+                },
+            ]
+        );
+    }
 }

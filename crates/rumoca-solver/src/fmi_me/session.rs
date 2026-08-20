@@ -254,11 +254,6 @@ impl MeComponentHost<'_> {
         self.host.terminated
     }
 
-    /// The settled coordinate a plugin's history starts from.
-    pub fn initial_point(&self) -> Result<MeContinuousPoint, MeSessionError> {
-        self.host.checked_point()
-    }
-
     #[must_use]
     pub fn termination(&self) -> Option<&SimTermination> {
         self.host.termination.as_ref()

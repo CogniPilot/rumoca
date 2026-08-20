@@ -1077,11 +1077,14 @@ fn expand_for_equation(
         && regular.is_some()
         && (is_state_derivative_body(equations)
             || (template.is_some()
-                && crate::param_variability::is_parameter_variability_assignment_body(
-                    indices,
-                    equations,
-                    &ctx.param_variability_family_bases,
-                ))) {
+                && ctx.current_class_instance_id.is_some_and(|owner| {
+                    crate::param_variability::is_proven_parameter_variability_assignment_body(
+                        owner,
+                        indices,
+                        equations,
+                        &ctx.param_variability_families,
+                    )
+                }))) {
         build_cheapen_plan(ctx, indices, prefix, span)?
     } else {
         None

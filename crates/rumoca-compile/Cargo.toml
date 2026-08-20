@@ -8,7 +8,6 @@ repository.workspace = true
 
 [features]
 default = []
-strict-ir-validation = ["rumoca-phase-dae/strict-ir-validation"]
 tracing = [
     "rumoca-phase-flatten/tracing",
     "rumoca-phase-instantiate/tracing",

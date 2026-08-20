@@ -28,6 +28,106 @@ fn checked_fold_ordinal(value: usize, detail: &str) -> Result<u32, GalecTargetEr
     })
 }
 
+/// Visit calls whose source expression is evaluated eagerly with `expression`.
+///
+/// Conditional branches, comprehensions, and function-fold/value references
+/// own separate dynamic executions, so traversal stops at those boundaries.
+/// All other operands are part of the same eager evaluation. Call identity is
+/// reported by its construction-issued owner rather than by a scalar result
+/// projection.
+pub(super) fn for_each_eager_call<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    seen: &mut HashSet<u32>,
+    visit: &mut impl FnMut(dae::ExprId<'dae>, u32),
+) {
+    if !seen.insert(expression.index()) {
+        return;
+    }
+    let operation = view
+        .expression(expression)
+        .expect("checked eager expression resolves")
+        .operation();
+    let mut children = Vec::new();
+    match operation {
+        dae::ExpressionOperation::Literal(_)
+        | dae::ExpressionOperation::Coordinate(_)
+        | dae::ExpressionOperation::Conditional(_)
+        | dae::ExpressionOperation::Comprehension { .. }
+        | dae::ExpressionOperation::FunctionValue { .. }
+        | dae::ExpressionOperation::FunctionFoldParameter { .. }
+        | dae::ExpressionOperation::FunctionFoldOutput { .. } => {}
+        dae::ExpressionOperation::Call {
+            owner, arguments, ..
+        } => {
+            visit(expression, owner.index());
+            children.extend(arguments.iter());
+        }
+        dae::ExpressionOperation::Unary { operand, .. } => children.push(operand),
+        dae::ExpressionOperation::Binary { lhs, rhs, .. } => children.extend([lhs, rhs]),
+        dae::ExpressionOperation::Array(operands)
+        | dae::ExpressionOperation::Record(operands)
+        | dae::ExpressionOperation::Builtin {
+            arguments: operands,
+            ..
+        } => children.extend(operands.iter()),
+        dae::ExpressionOperation::Field { base, .. } => children.push(base),
+        dae::ExpressionOperation::Range(range) => {
+            children.push(range.start().expression());
+            if let Some(step) = range.explicit_step() {
+                children.push(step.expression());
+            }
+            children.push(range.stop().expression());
+        }
+        dae::ExpressionOperation::Index { base, subscripts } => {
+            children.push(base);
+            append_subscript_expressions(subscripts, &mut children);
+        }
+        dae::ExpressionOperation::ArrayUpdate {
+            base,
+            value,
+            subscripts,
+        } => {
+            children.extend([base, value]);
+            append_subscript_expressions(subscripts, &mut children);
+        }
+        dae::ExpressionOperation::StringConversion { value, format, .. } => {
+            children.push(value);
+            match format {
+                dae::StringConversionFormatView::Options {
+                    minimum_length,
+                    left_justified,
+                    significant_digits,
+                } => {
+                    children.extend(
+                        [minimum_length, left_justified, significant_digits]
+                            .into_iter()
+                            .flatten(),
+                    );
+                }
+                dae::StringConversionFormatView::Format { value } => children.push(value),
+            }
+        }
+        dae::ExpressionOperation::ClockTransfer { source, .. } => children.push(source),
+    }
+    for child in children {
+        for_each_eager_call(view, child, seen, visit);
+    }
+}
+
+fn append_subscript_expressions<'dae>(
+    subscripts: dae::SubscriptsView<'dae>,
+    expressions: &mut Vec<dae::ExprId<'dae>>,
+) {
+    for subscript in subscripts.iter() {
+        match subscript {
+            dae::SubscriptView::Index { expression, .. }
+            | dae::SubscriptView::Slice { expression, .. } => expressions.push(expression),
+            dae::SubscriptView::Whole { .. } => {}
+        }
+    }
+}
+
 fn select_dynamic_typed_expression(
     indices: &[gast::Expression],
     mut selected: Vec<(Vec<u32>, TypedExpression)>,

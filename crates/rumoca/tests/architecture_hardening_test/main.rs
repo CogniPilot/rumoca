@@ -11,6 +11,7 @@ mod instantiate_value_fabrication;
 mod parser_contract;
 mod parser_ownership;
 mod phase_diagnostics;
+mod public_api_surface;
 mod size_and_validation;
 mod solver_backend_boundary;
 mod string_hashing;
@@ -356,7 +357,7 @@ Author reminder: bind-wasm should route through session/tool crates."
         );
     }
 
-    for feature in ["sim-diffsol", "sim-rk45", "session-diffsol", "full-web"] {
+    for feature in ["sim-diffsol", "sim-rk45", "full-web"] {
         assert!(
             section_contains_dependency(&content, "features", feature),
             "rumoca-bind-wasm must expose a `{feature}` feature so optional runtime surfaces are explicit"
@@ -388,7 +389,7 @@ fn test_bind_wasm_full_web_uses_browser_safe_solver_graph() {
         "full-web must include the browser-safe RK45 backend; found `{line}`"
     );
     assert!(
-        !line.contains("\"sim-diffsol\"") && !line.contains("\"session-diffsol\""),
+        !line.contains("\"sim-diffsol\""),
         "full-web must not pull the Diffsol/Pulp relaxed-SIMD graph into \
 browser smoke builds; found `{line}`"
     );

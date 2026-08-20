@@ -516,6 +516,119 @@ fn guarded_calls(statements: &[gast::Spanned<gast::Statement>]) -> usize {
     count_calls(statements, false, true)
 }
 
+#[test]
+fn aggregate_call_is_materialized_once_before_scalar_projection() {
+    let mut sources = SourceMap::new();
+    let source = sources.add(
+        "aggregate-call.mo",
+        "one vector call feeds three projections",
+    );
+    let provenance = dae::DaeProvenance::source(Span::from_offsets(source, 0, 38)).unwrap();
+    let model = dae::Dae::construct(sources, |dae| {
+        let (vector3, vector5) = dae.types(|types| {
+            Ok((
+                types.derived(
+                    dae::ValueType::array(dae::ScalarType::Real, [3]),
+                    provenance,
+                )?,
+                types.derived(
+                    dae::ValueType::array(dae::ScalarType::Real, [5]),
+                    provenance,
+                )?,
+            ))
+        })?;
+        let (producer, ()) = dae.function(
+            dae::FunctionSignature::new(VarName::new("producer"), [], [vector3], provenance),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("value"), 0, provenance)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                let values = dae.expressions(|expressions| {
+                    [1.0, 2.0, 3.0]
+                        .into_iter()
+                        .map(|value| {
+                            expressions
+                                .at(provenance)
+                                .literal(dae::DaeLiteral::Real(value))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })?;
+                let value =
+                    dae.expressions(|expressions| expressions.at(provenance).array(values))?;
+                assign_function_value(dae, &mut body, output, value, provenance)?;
+                dae.functions(|functions| functions.define(body, provenance))
+            },
+        )?;
+        dae.function(
+            dae::FunctionSignature::new(VarName::new("consumer"), [], [vector5], provenance),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("result"), 0, provenance)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                let call = dae
+                    .expressions(|expressions| expressions.at(provenance).call(producer, 0, []))?;
+                let projected = dae.expressions(|expressions| {
+                    (1..=3)
+                        .map(|index| {
+                            let index = expressions
+                                .at(provenance)
+                                .literal(dae::DaeLiteral::Integer(index))?;
+                            expressions.at(provenance).index(
+                                call,
+                                [dae::Subscript::Index {
+                                    expression: index,
+                                    provenance,
+                                }],
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })?;
+                let zero = dae.expressions(|expressions| {
+                    expressions
+                        .at(provenance)
+                        .literal(dae::DaeLiteral::Real(0.0))
+                })?;
+                let result = dae.expressions(|expressions| {
+                    expressions.at(provenance).array(
+                        [zero, zero]
+                            .into_iter()
+                            .chain(projected)
+                            .collect::<Vec<_>>(),
+                    )
+                })?;
+                assign_function_value(dae, &mut body, output, result, provenance)?;
+                dae.functions(|functions| functions.define(body, provenance))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let consumer = view.function(view.function_id(1).unwrap()).unwrap();
+        let lowered = user_functions::lower_reachable(view, HashSet::from([consumer.id().index()]))
+            .expect("aggregate projections should lower from one materialized call");
+        let statements = &lowered
+            .iter()
+            .find(|function| function.name.lexeme() == "consumer")
+            .unwrap()
+            .statements;
+        assert_eq!(
+            count_calls(statements, false, false),
+            1,
+            "one eager aggregate call must precede the scalar projection loop: {statements:#?}"
+        );
+        assert!(matches!(
+            statements.first().map(|statement| &statement.node),
+            Some(gast::Statement::MultiAssignment { .. })
+        ));
+    });
+}
+
 /// A call materialized under a runtime guard stays under it when the chain
 /// that reads it diverts to the aggregate path.
 ///

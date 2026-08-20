@@ -1039,6 +1039,45 @@ fn test_class_extends_cached_matches_base_def_id_for_relative_extends_name() {
 }
 
 #[test]
+fn subtype_cache_distinguishes_same_named_classes_by_def_id() {
+    let mut tree = ast::ClassTree::default();
+    let base_id = DefId::new(1);
+    tree.name_map.insert("Base".to_string(), base_id);
+    tree.def_map.insert(base_id, "Base".to_string());
+
+    let extending_foo = ast::ClassDef {
+        def_id: Some(DefId::new(2)),
+        name: make_token("Foo"),
+        extends: vec![ast::Extend {
+            base_name: make_resolved_name("Base", base_id),
+            base_def_id: Some(base_id),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let unrelated_foo = ast::ClassDef {
+        def_id: Some(DefId::new(3)),
+        name: make_token("Foo"),
+        ..Default::default()
+    };
+
+    let mut cache = SubtypeCache::default();
+    assert!(class_extends_cached(
+        &tree,
+        &extending_foo,
+        "Base",
+        &mut cache
+    ));
+    assert!(!class_extends_cached(
+        &tree,
+        &unrelated_foo,
+        "Base",
+        &mut cache
+    ));
+    assert_eq!(cache.len(), 2, "each resolved subtype owns one memo row");
+}
+
+#[test]
 fn test_type_names_match_requires_resolved_identity() {
     use rumoca_core::DefId;
 

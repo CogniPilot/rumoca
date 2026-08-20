@@ -80,10 +80,10 @@ pub(super) fn expand_array_component(
     ctx.push_path(name);
     let parent_path = ctx.current_path();
     ctx.pop_path();
+    let root = parent_path.to_component_path();
     overlay
         .array_parent_dims
-        .insert(parent_path.to_string(), dims.to_vec());
-    let root = parent_path.to_component_path();
+        .insert(root.clone(), dims.to_vec());
 
     let mut plan = build_element_plan(scope, name, comp, dims, ctx)?;
     let mut indices = super::array_index_tuples(dims);

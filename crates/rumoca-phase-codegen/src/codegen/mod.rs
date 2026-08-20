@@ -152,7 +152,10 @@ fn render_with_input_context(
         (CodegenInput::Solve { problem, artifacts }, name) => {
             render_solve_context(tmpl, problem, artifacts, name)?
         }
-        (CodegenInput::Flat(flat_model), name) => render_flat_context(tmpl, flat_model, name)?,
+        (CodegenInput::Flat(flat_model), name) => {
+            require_materialized_flat_equation_view(flat_model)?;
+            render_flat_context(tmpl, flat_model, name)?
+        }
         (CodegenInput::Ast(ast_tree), name) => render_ast_context(tmpl, ast_tree, name)?,
         (CodegenInput::AlgorithmCode(package), name) => {
             // This generic entry point carries no session, so it has no source
@@ -174,6 +177,31 @@ fn render_with_input_context(
         }
     };
     Ok(rendered)
+}
+
+fn require_materialized_flat_equation_view(flat_model: &flat::Model) -> Result<(), CodegenError> {
+    for (partition, families) in [
+        (
+            "regular equations",
+            flat_model.structured_equations.as_slice(),
+        ),
+        (
+            "initial equations",
+            flat_model.initial_structured_equations.as_slice(),
+        ),
+    ] {
+        if let Some(family) = families
+            .iter()
+            .find(|family| !family.interiors_materialized)
+        {
+            return Err(CodegenError::NonMaterializedStructuredFamily {
+                partition,
+                origin: family.origin.to_string(),
+                span: Some(family.span),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn render_dae_context(

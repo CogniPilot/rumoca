@@ -105,6 +105,9 @@ pub(crate) struct Context {
     /// Canonical class scope path for the class instance currently being flattened.
     /// Derived from `def_map` via the owning class DefId.
     pub current_class_scope_path: Option<String>,
+    /// Exact class occurrence currently being flattened. This semantic identity is
+    /// paired with declaration identity when consuming occurrence-local proofs.
+    pub current_class_instance_id: Option<rumoca_core::InstanceId>,
     /// Unqualified name of the simulated root model/block for MLS getInstanceName().
     pub simulated_root_name: Option<String>,
     /// Mirror of `FlattenOptions::materialize_structured_families`. When false, a
@@ -113,11 +116,8 @@ pub(crate) struct Context {
     /// body and the family is marked `interiors_materialized = false` so downstream
     /// phases reconstruct interior incidence/strides from the corners.
     pub materialize_structured_families: bool,
-    /// Array base-names assigned by parameter-variability for-equation families: a
-    /// family every reference of which resolves (transitively) to a parameter/constant
-    /// or another such family. Their per-cell values are time-invariant, so flatten may
-    /// cheapen their interior cells (the DAE promotes them array-natively from the
-    /// captured comprehension template). Computed once before equation expansion in
-    /// `prepare_context_for_equation_flattening`.
-    pub param_variability_family_bases: rustc_hash::FxHashSet<String>,
+    /// Checked occurrence-scoped evidence for parameter-variability families. Its
+    /// private representation prevents equation lowering from manufacturing a proof
+    /// from display names.
+    pub param_variability_families: crate::param_variability::ParameterVariabilityFamilies,
 }

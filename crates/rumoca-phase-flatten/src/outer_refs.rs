@@ -1,7 +1,7 @@
 //! Helpers for redirecting outer-prefixed references to resolved inner prefixes (MLS §5.4).
 
 use indexmap::IndexSet;
-use rumoca_core::ExpressionRewriter;
+use rumoca_core::{ComponentPath, ExpressionRewriter};
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rumoca_ir_flat as flat;
 
@@ -12,7 +12,7 @@ use rumoca_ir_flat as flat;
 /// These must be redirected to the inner instance's path (e.g., "stateGraphRoot.suspend").
 pub(crate) fn redirect_outer_refs(
     flat: &mut flat::Model,
-    outer_to_inner: &IndexMap<String, String>,
+    outer_to_inner: &IndexMap<ComponentPath, ComponentPath>,
 ) {
     if outer_to_inner.is_empty() {
         return;
@@ -56,7 +56,7 @@ pub(crate) fn redirect_outer_refs(
 
 fn redirect_variable_attributes(
     var: &mut flat::Variable,
-    outer_to_inner: &IndexMap<String, String>,
+    outer_to_inner: &IndexMap<ComponentPath, ComponentPath>,
 ) {
     for expr in [
         &mut var.start,
@@ -73,7 +73,10 @@ fn redirect_variable_attributes(
 }
 
 /// Redirect a rumoca_core::VarName if it starts with an outer prefix.
-fn redirect_var_name(name: &mut rumoca_core::VarName, outer_to_inner: &IndexMap<String, String>) {
+fn redirect_var_name(
+    name: &mut rumoca_core::VarName,
+    outer_to_inner: &IndexMap<ComponentPath, ComponentPath>,
+) {
     if let Some(new_name) = redirect_name_string(name.as_str(), outer_to_inner) {
         *name = rumoca_core::VarName::new(new_name);
     }
@@ -81,7 +84,7 @@ fn redirect_var_name(name: &mut rumoca_core::VarName, outer_to_inner: &IndexMap<
 
 fn redirect_reference(
     name: &rumoca_core::Reference,
-    outer_to_inner: &IndexMap<String, String>,
+    outer_to_inner: &IndexMap<ComponentPath, ComponentPath>,
 ) -> rumoca_core::Reference {
     redirect_name_string(name.as_str(), outer_to_inner)
         .map(rumoca_core::Reference::new)
@@ -89,14 +92,14 @@ fn redirect_reference(
 }
 
 /// Check if a name starts with an outer prefix and return the redirected version.
-fn redirect_name_string(name: &str, outer_to_inner: &IndexMap<String, String>) -> Option<String> {
+fn redirect_name_string(
+    name: &str,
+    outer_to_inner: &IndexMap<ComponentPath, ComponentPath>,
+) -> Option<String> {
+    let path = ComponentPath::from_flat_path(name);
     for (outer_prefix, inner_prefix) in outer_to_inner {
-        if name == outer_prefix.as_str() {
-            return Some(inner_prefix.clone());
-        }
-        let dotted = format!("{outer_prefix}.");
-        if name.starts_with(&dotted) {
-            return Some(format!("{inner_prefix}{}", &name[outer_prefix.len()..]));
+        if let Some(relative) = path.strip_prefix(outer_prefix) {
+            return Some(inner_prefix.join(&relative).to_flat_string());
         }
     }
     None
@@ -105,13 +108,13 @@ fn redirect_name_string(name: &str, outer_to_inner: &IndexMap<String, String>) -
 /// Recursively redirect outer-prefixed VarRef names in a rumoca_core::Expression.
 fn redirect_flat_expr(
     expr: &mut rumoca_core::Expression,
-    outer_to_inner: &IndexMap<String, String>,
+    outer_to_inner: &IndexMap<ComponentPath, ComponentPath>,
 ) {
     *expr = OuterRefRedirectRewriter { outer_to_inner }.rewrite_expression(expr);
 }
 
 struct OuterRefRedirectRewriter<'a> {
-    outer_to_inner: &'a IndexMap<String, String>,
+    outer_to_inner: &'a IndexMap<ComponentPath, ComponentPath>,
 }
 
 impl ExpressionRewriter for OuterRefRedirectRewriter<'_> {
@@ -135,7 +138,7 @@ impl ExpressionRewriter for OuterRefRedirectRewriter<'_> {
 /// Redirect outer-prefixed VarRef names in when equations.
 fn redirect_when_equations(
     equations: &mut [flat::WhenEquation],
-    outer_to_inner: &IndexMap<String, String>,
+    outer_to_inner: &IndexMap<ComponentPath, ComponentPath>,
 ) {
     for weq in equations.iter_mut() {
         match weq {
@@ -275,7 +278,10 @@ mod tests {
     #[test]
     fn test_redirect_name_string_handles_exact_and_prefixed_matches() {
         let mut outer_to_inner = IndexMap::default();
-        outer_to_inner.insert("outerBus".to_string(), "innerBus".to_string());
+        outer_to_inner.insert(
+            ComponentPath::from_flat_path("outerBus"),
+            ComponentPath::from_flat_path("innerBus"),
+        );
 
         assert_eq!(
             redirect_name_string("outerBus", &outer_to_inner),
@@ -292,7 +298,10 @@ mod tests {
     fn test_redirect_outer_refs_updates_equations_whens_algorithms_and_roots() {
         let (mut flat, x_name) = outer_reference_model();
         let mut outer_to_inner = IndexMap::default();
-        outer_to_inner.insert("outerBus".to_string(), "innerBus".to_string());
+        outer_to_inner.insert(
+            ComponentPath::from_flat_path("outerBus"),
+            ComponentPath::from_flat_path("innerBus"),
+        );
         redirect_outer_refs(&mut flat, &outer_to_inner);
 
         let rumoca_core::Expression::VarRef { name, .. } = &flat.equations[0].residual else {
@@ -353,7 +362,10 @@ mod tests {
         };
 
         let mut outer_to_inner = IndexMap::default();
-        outer_to_inner.insert("outerBus".to_string(), "innerBus".to_string());
+        outer_to_inner.insert(
+            ComponentPath::from_flat_path("outerBus"),
+            ComponentPath::from_flat_path("innerBus"),
+        );
         redirect_flat_expr(&mut expr, &outer_to_inner);
 
         let rumoca_core::Expression::ArrayComprehension {

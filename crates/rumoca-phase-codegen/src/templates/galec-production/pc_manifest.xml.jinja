@@ -10,14 +10,13 @@
 {%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
 {%- macro attr(name, value) -%}{{ " " }}{{ name }}="{{ value | xml_escape }}"{%- endmacro -%}
 {%- macro type_id(kind) -%}{% if kind == "real" %}TD_F32{% elif kind == "integer" %}TD_I32{% elif kind == "boolean" %}TD_BOOL{% else %}{{ fail_closed_scalar_type }}{% endif %}{%- endmacro -%}
-{#- The block's working memory is deliberately ABSENT from this manifest. It is
-    a translation-unit-private object, not a member of the block state and not
-    interface: `LogicalData` exists to map the block's inputs, outputs,
-    parameters and states onto code, and one generated function's intermediate
-    row buffer is none of those. There is no Algorithm Code variable behind a
-    scratch slot for a `DataReference` to name, and no consumer may bind to one,
-    so describing them here would have added hundreds of `Component` and
-    `Dimension` elements that document nothing a reader may act on. -#}
+{#- The block's instance-owned working memory is deliberately ABSENT from the
+    manifest's logical state projection. `LogicalData` maps Algorithm Code
+    inputs, outputs, parameters and states onto code; one generated function's
+    intermediate row buffer is none of those. There is no Algorithm Code
+    variable behind a scratch slot for a `DataReference` to name, and no
+    consumer may bind to one. The generated C header remains the authoritative
+    declaration and resource-accounting interface for this execution storage. -#}
 {%- macro function(id, name, return_id, self_id) %}
           <Function{{ attr("id", id) }}{{ attr("name", name) }}>
             <ReturnParameter{{ attr("id", return_id) }} typeDefRefId="TD_VOID"/>

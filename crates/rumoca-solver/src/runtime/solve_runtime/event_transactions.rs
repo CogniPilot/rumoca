@@ -96,9 +96,8 @@ impl SolveRuntime {
         }
         let mut evaluated = Vec::new();
         for transaction_index in 0..self.event_transaction_programs.len() {
-            let clock_owned = self.model.problem.discrete.event_transactions[transaction_index]
-                .clock_owner()
-                .is_some();
+            let clock_owned =
+                self.model.problem.discrete.event_transactions[transaction_index].is_clock_owned();
             // Clock-owned transactions are issued outer-producer steps in the
             // clock partition and must evaluate there against its evolving
             // private work state. This path retains only future unclocked
@@ -158,7 +157,7 @@ impl SolveRuntime {
             .iter()
             .enumerate()
         {
-            let clock_owned = transaction.clock_owner().is_some();
+            let clock_owned = transaction.is_clock_owned();
             if !row_filter.accepts(crate::EventPreMode::EventEntry, clock_owned) {
                 continue;
             }
@@ -205,18 +204,21 @@ impl SolveRuntime {
             .event_transactions
             .get(transaction_index)
             .ok_or_else(|| RuntimeSolveError::solve_ir("event transaction is out of bounds"))?;
-        let Some(clock) = owner.clock_owner() else {
+        if !owner.is_clock_owned() {
             return Ok(true);
-        };
-        let schedule = self
-            .model
-            .problem
-            .clocks
-            .periodic_schedule(clock)
-            .ok_or_else(|| RuntimeSolveError::solve_ir("transaction clock is out of bounds"))?;
-        Ok(crate::timeline::periodic_schedule_matches_time(
-            schedule, time,
-        ))
+        }
+        for &clock in owner.clock_owners() {
+            let schedule = self
+                .model
+                .problem
+                .clocks
+                .periodic_schedule(clock)
+                .ok_or_else(|| RuntimeSolveError::solve_ir("transaction clock is out of bounds"))?;
+            if crate::timeline::periodic_schedule_matches_time(schedule, time) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub(super) fn event_transaction_reads_solver_or_time(
@@ -478,7 +480,7 @@ mod tests {
                     (solve::scalar_slot_p(0), real.clone()),
                     (solve::scalar_slot_p(1), boolean),
                 ],
-                targets: vec![(solve::scalar_slot_p(2), real)],
+                targets: vec![(solve::scalar_slot_p(2), real, None)],
                 producer_owners: vec![solve::EventTransactionProducerOwner::ScalarRows {
                     start_row: 0,
                 }],
@@ -493,7 +495,7 @@ mod tests {
                 }],
                 assertion_action_indices: vec![vec![0]],
                 statement_count: 1,
-                clock_owner: None,
+                clock_owners: Vec::new(),
             },
             provenance,
         )

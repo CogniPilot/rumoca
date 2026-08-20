@@ -187,6 +187,7 @@ fn lower_function<'dae>(
     for statement in function.statements() {
         lower_function_statement(view, statement, &mut lowerer, &mut statements)?;
     }
+    let statements = coalesce_correlated_guards(statements);
     let mut locals = locals;
     locals.extend(lowerer.take_temporary_locals());
     let calls = lowerer.take_called_user_functions();
@@ -463,7 +464,23 @@ fn lower_function_conditional_group<'a, 'dae>(
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
     statements: &mut Vec<gast::Spanned<gast::Statement>>,
 ) -> Result<(), GalecTargetError> {
-    let definitions = definitions.iter().collect::<Vec<_>>();
+    // The group commits atomically, so projection order is not semantic. Put
+    // aggregate destinations first: they preserve the widest value identity
+    // and materialize any shared branch-local call before scalar consumers.
+    // The original ordinal is the deterministic tie-breaker.
+    let mut definitions = definitions.iter().enumerate().collect::<Vec<_>>();
+    definitions.sort_by_key(|(ordinal, definition)| {
+        let target = view
+            .function(definition.id().function())
+            .expect("checked function identity resolves")
+            .values()
+            .find(|candidate| candidate.id() == definition.target())
+            .expect("checked conditional target resolves");
+        let ty = view
+            .value_type(target.value_type())
+            .expect("checked conditional target type resolves");
+        (!ty.is_record(), ty.dimensions().is_empty(), *ordinal)
+    });
     let conditions = conditional.conditions().collect::<Vec<_>>();
     let activation_operands = conditions
         .iter()
@@ -494,8 +511,10 @@ fn lower_function_conditional_group<'a, 'dae>(
         let mut body = Vec::new();
         let values = conditional
             .branch(ordinal)
-            .expect("checked function conditional branch resolves");
-        for (definition, value) in definitions.iter().copied().zip(values) {
+            .expect("checked function conditional branch resolves")
+            .collect::<Vec<_>>();
+        for (definition_ordinal, definition) in definitions.iter().copied() {
+            let value = values[definition_ordinal];
             let target = view
                 .function(definition.id().function())
                 .expect("checked function identity resolves")
@@ -533,7 +552,9 @@ fn lower_function_conditional_group<'a, 'dae>(
             })?,
         });
     let mut fallback = Vec::new();
-    for (definition, value) in definitions.iter().copied().zip(conditional.fallback()) {
+    let fallback_values = conditional.fallback().collect::<Vec<_>>();
+    for (definition_ordinal, definition) in definitions.iter().copied() {
+        let value = fallback_values[definition_ordinal];
         let target = view
             .function(definition.id().function())
             .expect("checked function identity resolves")
@@ -626,11 +647,18 @@ fn lower_function_value_assignment<'a, 'dae>(
         .expect("checked function assignment expression resolves")
         .operation()
     {
-        return lower_conditional_function_value_assignment(
+        lower_conditional_function_value_assignment(
             view, target, operands, span, lowerer, statements,
-        );
+        )?;
+        if !target_type.is_record() {
+            lowerer.remember_primitive_assignment(expression.index(), value_name(target)?);
+        }
+        return Ok(());
     }
     if preserves_function_target(view, target, expression) {
+        if !target_type.is_record() {
+            lowerer.remember_primitive_assignment(expression.index(), value_name(target)?);
+        }
         return Ok(());
     }
     if let Some(updates) =
@@ -638,6 +666,7 @@ fn lower_function_value_assignment<'a, 'dae>(
     {
         statements.extend(lowerer.drain_prefix_statements());
         statements.extend(updates);
+        lowerer.remember_primitive_assignment(expression.index(), value_name(target)?);
         return Ok(());
     }
     if target_type.is_record() {
@@ -658,7 +687,9 @@ fn lower_function_value_assignment<'a, 'dae>(
             span,
             lowerer,
             statements,
-        )
+        )?;
+        lowerer.remember_primitive_assignment(expression.index(), value_name(target)?);
+        Ok(())
     }
 }
 
@@ -1167,6 +1198,7 @@ fn lower_tensor_element_value<'a, 'dae>(
     assignment: &TensorAssignment<'_, 'dae>,
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
 ) -> Result<TensorElementValue, GalecTargetError> {
+    materialize_eager_aggregate_calls(assignment.expression, lowerer)?;
     let scalar = scalar_type(
         assignment.target_type.scalar_type(),
         assignment.target.lexeme(),
@@ -1216,6 +1248,48 @@ fn lower_tensor_element_value<'a, 'dae>(
         value,
         scalar,
     })
+}
+
+/// Materialize aggregate calls before scalar projection introduces a tensor
+/// loop or index-selection branches.
+///
+/// The DAE call owner proves one source invocation. Eager traversal stops at
+/// lazy control-flow owners, so moving these calls to the assignment prefix
+/// preserves branch execution while ensuring every projection reads the same
+/// materialized result.
+fn materialize_eager_aggregate_calls<'a, 'dae>(
+    expression: dae::ExprId<'dae>,
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
+) -> Result<(), GalecTargetError> {
+    let mut seen_expressions = HashSet::new();
+    let mut seen_owners = HashSet::new();
+    let mut calls = Vec::new();
+    expression_functions::for_each_eager_call(
+        lowerer.view,
+        expression,
+        &mut seen_expressions,
+        &mut |call, owner| {
+            let node = lowerer
+                .view
+                .expression(call)
+                .expect("checked eager call resolves");
+            let dae::ExpressionOperation::Call { function, .. } = node.operation() else {
+                unreachable!("eager call traversal reports only calls")
+            };
+            let aggregate =
+                node.value_type().is_record() || !node.value_type().dimensions().is_empty();
+            if aggregate
+                && is_directly_lowerable(lowerer.view, function)
+                && seen_owners.insert(owner)
+            {
+                calls.push(call);
+            }
+        },
+    );
+    for call in calls {
+        lowerer.materialize_eager_call(call)?;
+    }
+    Ok(())
 }
 
 fn lower_tensor_function_assignment<'a, 'dae>(
@@ -1430,6 +1504,192 @@ pub(super) fn merge_guarded_tensor_loops(
         }
     }
     merged
+}
+
+/// Fuse repeated projections of one checked conditional activation.
+///
+/// Nested function conditionals are value DAGs inside their enclosing atomic
+/// assignment group. Different target projections can therefore arrive here
+/// as separate, structurally identical guards even though a branch-local call
+/// produced values consumed by all of them. A later guard may move beside the
+/// first only across statements that provably commute with it; calls, signals,
+/// limits, and expression calls are barriers. The resulting branch owns both
+/// the lazy producer and its consumers, so generated C has lexical
+/// definite-assignment evidence as well as the DAE activation proof.
+pub(super) fn coalesce_correlated_guards(
+    statements: Vec<gast::Spanned<gast::Statement>>,
+) -> Vec<gast::Spanned<gast::Statement>> {
+    let statements = statements
+        .into_iter()
+        .map(coalesce_nested_correlated_guards)
+        .collect::<Vec<_>>();
+    let mut merged: Vec<gast::Spanned<gast::Statement>> = Vec::new();
+    for statement in statements {
+        let mut consumed = false;
+        if reorderable_guard(&statement) {
+            for destination in (0..merged.len()).rev() {
+                if !equivalent_total_guards(&merged[destination], &statement)
+                    || !merged[destination + 1..]
+                        .iter()
+                        .all(|middle| statements_commute(&statement, middle))
+                {
+                    continue;
+                }
+                merge_total_guard(&mut merged[destination], &statement);
+                consumed = true;
+                break;
+            }
+        }
+        if !consumed {
+            merged.push(statement);
+        }
+    }
+    merged
+}
+
+fn coalesce_nested_correlated_guards(
+    mut statement: gast::Spanned<gast::Statement>,
+) -> gast::Spanned<gast::Statement> {
+    match &mut statement.node {
+        gast::Statement::If(value) => {
+            for branch in &mut value.branches {
+                branch.body = coalesce_correlated_guards(std::mem::take(&mut branch.body));
+            }
+            if let Some(body) = &mut value.else_body {
+                *body = coalesce_correlated_guards(std::mem::take(body));
+            }
+        }
+        gast::Statement::For(value) => {
+            value.body = coalesce_correlated_guards(std::mem::take(&mut value.body));
+        }
+        gast::Statement::Assignment { .. }
+        | gast::Statement::MultiAssignment { .. }
+        | gast::Statement::Call(_)
+        | gast::Statement::Limit(_)
+        | gast::Statement::Signal(_) => {}
+    }
+    statement
+}
+
+fn equivalent_total_guards(
+    lhs: &gast::Spanned<gast::Statement>,
+    rhs: &gast::Spanned<gast::Statement>,
+) -> bool {
+    let (Some(lhs), Some(rhs)) = (flatten_total_guard(lhs), flatten_total_guard(rhs)) else {
+        return false;
+    };
+    lhs.branches.len() == rhs.branches.len()
+        && lhs
+            .branches
+            .iter()
+            .zip(rhs.branches)
+            .all(|(lhs, rhs)| lhs.condition == rhs.condition)
+}
+
+fn merge_total_guard(
+    destination: &mut gast::Spanned<gast::Statement>,
+    source: &gast::Spanned<gast::Statement>,
+) {
+    let mut destination_guard =
+        flatten_total_guard(destination).expect("equivalent destination is a total guard");
+    let source_guard = flatten_total_guard(source).expect("equivalent source is a total guard");
+    for (destination, source) in destination_guard
+        .branches
+        .iter_mut()
+        .zip(source_guard.branches)
+    {
+        destination.body.extend(source.body);
+    }
+    destination_guard.fallback.extend(source_guard.fallback);
+    destination.node = gast::Statement::If(gast::IfStatement {
+        branches: destination_guard.branches,
+        else_body: Some(destination_guard.fallback),
+    });
+}
+
+fn statements_commute(
+    lhs: &gast::Spanned<gast::Statement>,
+    rhs: &gast::Spanned<gast::Statement>,
+) -> bool {
+    if !reorderable_statement(lhs) || !reorderable_statement(rhs) {
+        return false;
+    }
+    let mut lhs_definitions = Vec::new();
+    let mut rhs_definitions = Vec::new();
+    collect_defined_names(lhs, &mut lhs_definitions);
+    collect_defined_names(rhs, &mut rhs_definitions);
+    !statement_depends_on(lhs, &rhs_definitions) && !statement_depends_on(rhs, &lhs_definitions)
+}
+
+fn reorderable_guard(statement: &gast::Spanned<gast::Statement>) -> bool {
+    matches!(&statement.node, gast::Statement::If(_)) && reorderable_statement(statement)
+}
+
+fn reorderable_statement(statement: &gast::Spanned<gast::Statement>) -> bool {
+    match &statement.node {
+        gast::Statement::Assignment { target, value } => {
+            matches!(target, gast::Reference::Local(_)) && !expression_has_call(value)
+        }
+        gast::Statement::If(value) => {
+            value.branches.iter().all(|branch| {
+                matches!(branch.condition, gast::Condition::Expression(ref condition)
+                    if !expression_has_call(condition))
+                    && branch.body.iter().all(reorderable_statement)
+            }) && value
+                .else_body
+                .as_ref()
+                .is_some_and(|body| body.iter().all(reorderable_statement))
+        }
+        gast::Statement::For(value) => {
+            !expression_has_call(&value.start)
+                && value
+                    .step
+                    .as_ref()
+                    .is_none_or(|step| !expression_has_call(step))
+                && !expression_has_call(&value.stop)
+                && value.body.iter().all(reorderable_statement)
+        }
+        gast::Statement::MultiAssignment { .. }
+        | gast::Statement::Call(_)
+        | gast::Statement::Limit(_)
+        | gast::Statement::Signal(_) => false,
+    }
+}
+
+fn expression_has_call(expression: &gast::Expression) -> bool {
+    match expression {
+        gast::Expression::Call(_) => true,
+        gast::Expression::Bool(_) | gast::Expression::Integer(_) | gast::Expression::Real(_) => {
+            false
+        }
+        gast::Expression::Ref(reference) | gast::Expression::Neg(reference) => {
+            reference_has_call(reference)
+        }
+        gast::Expression::Size { array, dimension } => {
+            reference_has_call(array) || expression_has_call(dimension)
+        }
+        gast::Expression::Paren(value) | gast::Expression::Not(value) => expression_has_call(value),
+        gast::Expression::If(value) => {
+            value.branches.iter().any(|(condition, branch)| {
+                expression_has_call(condition) || expression_has_call(branch)
+            }) || expression_has_call(&value.else_value)
+        }
+        gast::Expression::Array(values) => values.iter().any(expression_has_call),
+        gast::Expression::Binary { lhs, rhs, .. } => {
+            expression_has_call(lhs) || expression_has_call(rhs)
+        }
+    }
+}
+
+fn reference_has_call(reference: &gast::Reference) -> bool {
+    let parts = match reference {
+        gast::Reference::Local(part) => std::slice::from_ref(part),
+        gast::Reference::State(parts) => parts,
+    };
+    parts
+        .iter()
+        .flat_map(|part| &part.subscripts)
+        .any(expression_has_call)
 }
 
 #[derive(Clone)]
@@ -1668,11 +1928,10 @@ fn repeatable_loop_invariant_condition(
     outer_indices: &[gast::Name],
 ) -> bool {
     match condition {
-        gast::Condition::Expression(gast::Expression::Bool(_)) => true,
-        gast::Condition::Expression(gast::Expression::Ref(reference)) => {
-            !reference_depends_on(reference, outer_indices)
+        gast::Condition::Expression(expression) => {
+            !expression_depends_on(expression, outer_indices) && !expression_has_call(expression)
         }
-        gast::Condition::Expression(_) | gast::Condition::SignalCheck(_) => false,
+        gast::Condition::SignalCheck(_) => false,
     }
 }
 

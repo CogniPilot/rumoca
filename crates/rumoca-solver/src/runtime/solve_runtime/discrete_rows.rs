@@ -114,10 +114,7 @@ impl SolveRuntime {
         let ordered_clocked = self.clock_partition_owns_clocked_rows();
         let mut evaluated_transactions = Vec::new();
         for transaction_index in 0..self.event_transaction_programs.len() {
-            if self.model.problem.discrete.event_transactions[transaction_index]
-                .clock_owner()
-                .is_some()
-            {
+            if self.model.problem.discrete.event_transactions[transaction_index].is_clock_owned() {
                 continue;
             }
             self.eval_event_transaction_outputs(transaction_index, &eval_y, &eval_p, t)?;
@@ -826,16 +823,22 @@ pub(super) fn clock_partition_clocks(
                 .structured_updates
                 .get(update_index)
                 .and_then(|update| update.clock_owner),
-            solve::ClockPartitionStep::EventTransaction { program_index } => discrete
-                .event_transactions
-                .get(program_index)
-                .and_then(solve::EventTransactionProgram::clock_owner),
+            solve::ClockPartitionStep::EventTransaction { .. } => None,
             solve::ClockPartitionStep::Intermediate { .. } => None,
         };
         if let Some(owner) = owner
             && !clocks.contains(&owner)
         {
             clocks.push(owner);
+        }
+        if let solve::ClockPartitionStep::EventTransaction { program_index } = *step
+            && let Some(transaction) = discrete.event_transactions.get(program_index)
+        {
+            for &clock in transaction.clock_owners() {
+                if !clocks.contains(&clock) {
+                    clocks.push(clock);
+                }
+            }
         }
     }
     clocks
@@ -1102,6 +1105,7 @@ impl SolveRuntime {
             .map(|changed| changed_any | changed)
     }
 
+    #[cfg(test)]
     pub(super) fn apply_constant_discrete_rows_for_pre_snapshot(
         &self,
         snapshot: &DiscretePreSnapshot<'_>,

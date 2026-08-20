@@ -261,6 +261,77 @@ fn guarded_model(guard: Guard) -> dae::Dae {
     .expect("checked TickOrder fixture constructs")
 }
 
+fn dependent_parameter_model() -> dae::Dae {
+    let text =
+        "parameter Real gain = 2.0; parameter Real derived = 3.0 * gain; Clock c = Clock(1);";
+    let mut sources = SourceMap::new();
+    let source = sources.add("DependentParameter.mo", text);
+    let gain_at = at(source, text, "parameter Real gain = 2.0");
+    let derived_at = at(source, text, "parameter Real derived = 3.0 * gain");
+    let clock_at = at(source, text, "Clock c = Clock(1)");
+    dae::Dae::construct(sources, |dae| {
+        let real = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                gain_at,
+            )
+        })?;
+        let ((gain, gain_reservation), (_derived, derived_reservation)) =
+            dae.variables(|variables| {
+                Ok((
+                    variables.reserve_parameter(VarName::new("gain"), real, gain_at)?,
+                    variables.reserve_parameter(VarName::new("derived"), real, derived_at)?,
+                ))
+            })?;
+        let (gain_default, derived_binding) = dae.expressions(|expressions| {
+            let gain_default = expressions
+                .at(gain_at)
+                .literal(dae::DaeLiteral::Real(2.0))?;
+            let gain_value = expressions
+                .at(derived_at)
+                .coordinate(dae::CoordinateInput::Parameter(gain))?;
+            let three = expressions
+                .at(derived_at)
+                .literal(dae::DaeLiteral::Real(3.0))?;
+            let derived_binding = expressions.at(derived_at).binary(
+                dae::BinaryOperator::Multiply,
+                three,
+                gain_value,
+            )?;
+            Ok((gain_default, derived_binding))
+        })?;
+        dae.variables(|variables| {
+            variables.define(
+                gain_reservation,
+                dae::VariableAttributes {
+                    binding: Some(gain_default),
+                    is_tunable: true,
+                    ..Default::default()
+                },
+                gain_at,
+            )?;
+            variables.define(
+                derived_reservation,
+                dae::VariableAttributes {
+                    binding: Some(derived_binding),
+                    is_tunable: true,
+                    ..Default::default()
+                },
+                derived_at,
+            )
+        })?;
+        dae.clocks(|clocks| {
+            clocks.periodic(
+                ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),
+                clock_at,
+            )?;
+            Ok(())
+        })
+    })
+    .expect("checked dependent-parameter fixture constructs")
+}
+
 fn project(model: &dae::Dae, name: &str) -> AlgorithmCodePackage {
     lower_to_algorithm_code(&GalecInput::new(model, name), &GalecOptions::default())
         .unwrap_or_else(|errors| panic!("fixture must project: {errors:?}"))
@@ -478,6 +549,28 @@ block TickOrder
     end if;",
         "the projected module changed; re-read the diff before updating this"
     );
+}
+
+#[test]
+fn dependent_parameter_binding_is_recomputed_during_recalibrate() {
+    let package = project(&dependent_parameter_model(), "DependentParameter");
+    let block = package.block();
+
+    assert!(block.interface.iter().any(|variable| {
+        variable.kind == gast::InterfaceKind::TunableParameter
+            && variable.decl.name.lexeme() == "gain"
+    }));
+    assert!(block.protected.iter().any(|variable| {
+        variable.kind == gast::ProtectedKind::DependentParameter
+            && variable.decl.name.lexeme() == "derived"
+    }));
+    assert_eq!(block.recalibrate.statements.len(), 1);
+    assert!(matches!(
+        &block.recalibrate.statements[0].node,
+        gast::Statement::Assignment { target, value }
+            if render_reference(target) == "self.derived"
+                && render_expression(value).contains("self.gain")
+    ));
 }
 
 #[test]

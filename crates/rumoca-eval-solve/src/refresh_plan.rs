@@ -541,16 +541,6 @@ pub fn build_derivative_refresh_plan(
     build_dependency_refresh_plan(problem, implicit_block, full_plan, initial_deps)
 }
 
-pub fn build_root_refresh_plan(
-    problem: &solve::SolveProblem,
-    implicit_block: &PreparedScalarProgramBlock,
-    full_plan: &RefreshPlan,
-) -> Result<RefreshPlan, EvalSolveError> {
-    let state_count = problem.solve_layout.state_scalar_count();
-    let initial_deps = root_condition_dependencies(&problem.events.root_conditions, state_count)?;
-    build_dependency_refresh_plan(problem, implicit_block, full_plan, initial_deps)
-}
-
 /// Construct the complete checked refresh inventory while Solve lowering owns
 /// the canonical continuous and event projections. Runtime adapters consume
 /// this aggregate and never rerun dependency or assignment discovery.
@@ -1294,30 +1284,36 @@ fn parameter_static_refresh_targets<A: RefreshProgramAccess + ?Sized>(
     // This greatest-fixed-point direction is load-bearing for parameter-only
     // algebraic loops: a closed simultaneous block can be static even though
     // none of its members is independently orderable from parameters first.
-    let mut static_targets = plan
+    let candidates = plan
         .causal_rows()
         .iter()
-        .map(AlgebraicRefreshRow::target_index)
+        .map(|refresh_row| {
+            let target = refresh_row.target_index();
+            let dependencies = block
+                .source_program(refresh_row.source())
+                .and_then(ParameterStaticDependencies::derive);
+            (target, dependencies)
+        })
+        .collect::<Vec<_>>();
+    let mut static_targets = candidates
+        .iter()
+        .map(|(target, _)| *target)
         .collect::<BTreeSet<_>>();
     loop {
-        let rejected = plan
-            .causal_rows()
+        let rejected = candidates
             .iter()
-            .filter(|refresh_row| static_targets.contains(&refresh_row.target_index()))
-            .filter(|refresh_row| {
-                block
-                    .source_program(refresh_row.source())
-                    .is_none_or(|row| {
-                        !parameter_static_refresh_row(
-                            row,
-                            refresh_row.target_index(),
-                            state_count,
-                            &static_targets,
-                            continuous_static_parameters,
-                        )
-                    })
+            .filter(|(target, _)| static_targets.contains(target))
+            .filter(|(target, dependencies)| {
+                dependencies.as_ref().is_none_or(|dependencies| {
+                    !dependencies.is_parameter_static(
+                        *target,
+                        state_count,
+                        &static_targets,
+                        continuous_static_parameters,
+                    )
+                })
             })
-            .map(AlgebraicRefreshRow::target_index)
+            .map(|(target, _)| *target)
             .collect::<Vec<_>>();
         if rejected.is_empty() {
             return static_targets;
@@ -1328,22 +1324,51 @@ fn parameter_static_refresh_targets<A: RefreshProgramAccess + ?Sized>(
     }
 }
 
-fn parameter_static_refresh_row(
-    row: &[solve::LinearOp],
-    target_index: usize,
-    state_count: usize,
-    static_targets: &BTreeSet<usize>,
-    continuous_static_parameters: ContinuousStaticParameters,
-) -> bool {
-    parameter_static_refresh_program(
-        row,
-        target_index,
-        state_count,
-        static_targets,
-        continuous_static_parameters,
-    )
+struct ParameterStaticDependencies {
+    y: Vec<BTreeSet<usize>>,
+    parameters: Vec<BTreeSet<usize>>,
+    time: Vec<bool>,
+    seed: Vec<bool>,
+    effect: Vec<bool>,
 }
 
+impl ParameterStaticDependencies {
+    fn derive(program: &[solve::LinearOp]) -> Option<Self> {
+        Some(Self {
+            y: solve::StructuralPattern::derive_output_y_dependencies(program, None).ok()?,
+            parameters: solve::StructuralPattern::derive_output_p_dependencies(program, None)
+                .ok()?,
+            time: solve::StructuralPattern::derive_output_time_dependencies(program, None).ok()?,
+            seed: solve::StructuralPattern::derive_output_seed_dependencies(program, None).ok()?,
+            effect: solve::StructuralPattern::derive_output_effect_dependencies(program, None)
+                .ok()?,
+        })
+    }
+
+    fn is_parameter_static(
+        &self,
+        target_index: usize,
+        state_count: usize,
+        static_targets: &BTreeSet<usize>,
+        continuous_static_parameters: ContinuousStaticParameters,
+    ) -> bool {
+        let parameters_are_static = self
+            .parameters
+            .iter()
+            .flatten()
+            .all(|index| continuous_static_parameters.contains(*index));
+        let solver_values_are_static = self.y.iter().flatten().all(|index| {
+            parameter_static_y_index(*index, target_index, state_count, static_targets)
+        });
+        parameters_are_static
+            && solver_values_are_static
+            && self.time.iter().all(|dependency| !dependency)
+            && self.seed.iter().all(|dependency| !dependency)
+            && self.effect.iter().all(|dependency| !dependency)
+    }
+}
+
+#[cfg(test)]
 fn parameter_static_refresh_program(
     program: &[solve::LinearOp],
     target_index: usize,
@@ -1351,35 +1376,14 @@ fn parameter_static_refresh_program(
     static_targets: &BTreeSet<usize>,
     continuous_static_parameters: ContinuousStaticParameters,
 ) -> bool {
-    let (
-        Ok(y_dependencies),
-        Ok(parameter_dependencies),
-        Ok(time_dependencies),
-        Ok(seed_dependencies),
-        Ok(effect_dependencies),
-    ) = (
-        solve::StructuralPattern::derive_output_y_dependencies(program, None),
-        solve::StructuralPattern::derive_output_p_dependencies(program, None),
-        solve::StructuralPattern::derive_output_time_dependencies(program, None),
-        solve::StructuralPattern::derive_output_seed_dependencies(program, None),
-        solve::StructuralPattern::derive_output_effect_dependencies(program, None),
-    )
-    else {
-        return false;
-    };
-    let parameters_are_static = parameter_dependencies
-        .iter()
-        .flatten()
-        .all(|index| continuous_static_parameters.contains(*index));
-    let solver_values_are_static = y_dependencies
-        .iter()
-        .flatten()
-        .all(|index| parameter_static_y_index(*index, target_index, state_count, static_targets));
-    parameters_are_static
-        && solver_values_are_static
-        && time_dependencies.iter().all(|dependency| !dependency)
-        && seed_dependencies.iter().all(|dependency| !dependency)
-        && effect_dependencies.iter().all(|dependency| !dependency)
+    ParameterStaticDependencies::derive(program).is_some_and(|dependencies| {
+        dependencies.is_parameter_static(
+            target_index,
+            state_count,
+            static_targets,
+            continuous_static_parameters,
+        )
+    })
 }
 
 fn parameter_static_y_index(
@@ -1762,13 +1766,6 @@ fn derivative_row_dependencies(
         }
     }
     Ok(deps)
-}
-
-fn root_condition_dependencies(
-    block: &solve::ScalarProgramBlock,
-    state_count: usize,
-) -> Result<IndexSet<usize>, EvalSolveError> {
-    scalar_program_block_dependencies(block, state_count)
 }
 
 fn scalar_program_block_dependencies(

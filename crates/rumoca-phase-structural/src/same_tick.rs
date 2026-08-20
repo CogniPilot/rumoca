@@ -51,6 +51,10 @@ use crate::CausalDefinitions;
 /// the producer evaluates at its tick. A producer whose reads all resolve
 /// through a history lane (for example a `sample(u)` source) passes no roots.
 pub struct SameTickProducer<'dae> {
+    /// Canonical periodic-clock domains on which this producer can execute.
+    /// Same-tick exchange exists only between producers with an intersecting
+    /// domain; a disjoint-clock read observes held entry storage.
+    pub clock_domains: Vec<u32>,
     /// Complete target tuple (DAE variable identities written by the producer).
     pub targets: Vec<dae::VariableId<'dae>>,
     /// Value expression roots evaluated at the tick.
@@ -89,6 +93,8 @@ pub struct SameTickSchedule<'dae> {
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum SameTickOrderError {
+    #[error("same-tick producer clock domains are not a nonempty canonical set")]
+    InvalidClockDomains { span: Span },
     #[error(
         "same-tick discrete producers form an algebraic loop with no pre()/previous() boundary: {detail}"
     )]
@@ -107,7 +113,8 @@ impl SameTickOrderError {
     #[must_use]
     pub const fn span(&self) -> Span {
         match self {
-            Self::Cycle { span, .. }
+            Self::InvalidClockDomains { span }
+            | Self::Cycle { span, .. }
             | Self::DuplicateOwner { span, .. }
             | Self::UnrefreshableRead { span, .. } => *span,
         }
@@ -446,6 +453,17 @@ pub fn issue_same_tick_schedule<'dae>(
             intermediate_consumers: BTreeMap::new(),
         });
     }
+    if let Some(producer) = producers.iter().find(|producer| {
+        producer.clock_domains.is_empty()
+            || producer
+                .clock_domains
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+    }) {
+        return Err(SameTickOrderError::InvalidClockDomains {
+            span: producer.span,
+        });
+    }
     let producer_of = map_producer_targets(view, producers)?;
     let direct_reads = collect_producer_reads(view, producers);
     let intermediates = discover_intermediates(
@@ -739,7 +757,7 @@ fn emit_schedule<'dae>(
                 !emitted[index]
                     && graph.node_reads(node).iter().all(|&read| {
                         graph
-                            .owner_of(read)
+                            .owner_of(node, read)
                             .is_none_or(|owner| owner == index || emitted[owner])
                     })
             });
@@ -788,11 +806,33 @@ impl ScheduleGraph<'_, '_> {
         }
     }
 
-    fn owner_of(&self, variable: u32) -> Option<usize> {
-        self.producer_of
-            .get(&variable)
-            .copied()
-            .or_else(|| self.node_of_intermediate.get(&variable).copied())
+    fn owner_of(&self, consumer: Node, variable: u32) -> Option<usize> {
+        if let Some(&producer) = self.producer_of.get(&variable) {
+            return self
+                .node_overlaps_producer(consumer, producer)
+                .then_some(producer);
+        }
+        self.node_of_intermediate.get(&variable).copied()
+    }
+
+    fn node_overlaps_producer(&self, node: Node, producer: usize) -> bool {
+        let owner_domains = &self.producers[producer].clock_domains;
+        match node {
+            Node::Producer(index) => {
+                clock_domains_overlap(&self.producers[index].clock_domains, owner_domains)
+            }
+            Node::Intermediate(variable) => {
+                self.intermediates[&variable]
+                    .consumers
+                    .iter()
+                    .any(|&consumer| {
+                        clock_domains_overlap(
+                            &self.producers[consumer].clock_domains,
+                            owner_domains,
+                        )
+                    })
+            }
+        }
     }
 
     /// Report the same-tick cycle that left the schedule unfinished, preferring
@@ -838,7 +878,7 @@ impl ScheduleGraph<'_, '_> {
             .node_reads(blocked_node)
             .iter()
             .filter_map(|&read| {
-                self.owner_of(read).and_then(|owner| {
+                self.owner_of(blocked_node, read).and_then(|owner| {
                     (!emitted[owner] && owner != blocked_index)
                         .then(|| format!("`{}`", variable_name(view, read)))
                 })
@@ -856,6 +896,19 @@ impl ScheduleGraph<'_, '_> {
             ),
         }
     }
+}
+
+fn clock_domains_overlap(lhs: &[u32], rhs: &[u32]) -> bool {
+    let mut left = 0usize;
+    let mut right = 0usize;
+    while left < lhs.len() && right < rhs.len() {
+        match lhs[left].cmp(&rhs[right]) {
+            std::cmp::Ordering::Less => left += 1,
+            std::cmp::Ordering::Greater => right += 1,
+            std::cmp::Ordering::Equal => return true,
+        }
+    }
+    false
 }
 
 fn variable_name(view: dae::DaeView<'_>, variable: u32) -> String {
@@ -1202,7 +1255,17 @@ mod tests {
         }
 
         fn producer(&self, target: &str, reads: &[dae::ExprId<'dae>]) -> SameTickProducer<'dae> {
+            self.producer_on(target, reads, &[0])
+        }
+
+        fn producer_on(
+            &self,
+            target: &str,
+            reads: &[dae::ExprId<'dae>],
+            clock_domains: &[u32],
+        ) -> SameTickProducer<'dae> {
             SameTickProducer {
+                clock_domains: clock_domains.to_vec(),
                 targets: vec![self.variable(target)],
                 value_reads: reads.to_vec(),
                 condition_reads: Vec::new(),
@@ -1304,6 +1367,35 @@ mod tests {
             let producers = [
                 probe.producer("b", &[a_read]),
                 probe.producer("a", &[b_read]),
+            ];
+            assert!(matches!(
+                probe.issue(&producers),
+                Err(SameTickOrderError::Cycle { .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn opposite_reads_on_disjoint_clocks_observe_held_entry_values() {
+        probe(Wiring::Aliases, |probe| {
+            let a_read = probe.read_of("a");
+            let b_read = probe.read_of("b");
+            let producers = [
+                probe.producer_on("b", &[a_read], &[1]),
+                probe.producer_on("a", &[b_read], &[2]),
+            ];
+            assert_eq!(probe.issue_names(&producers), ["b", "a"]);
+        });
+    }
+
+    #[test]
+    fn one_shared_domain_keeps_a_multi_clock_cycle_rejected() {
+        probe(Wiring::Aliases, |probe| {
+            let a_read = probe.read_of("a");
+            let b_read = probe.read_of("b");
+            let producers = [
+                probe.producer_on("b", &[a_read], &[1, 2]),
+                probe.producer_on("a", &[b_read], &[2, 3]),
             ];
             assert!(matches!(
                 probe.issue(&producers),

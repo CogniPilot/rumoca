@@ -738,28 +738,12 @@ where
 /// path, which is the member's qualified name with its terminal subscripts
 /// dropped (`plug_p[1].pin[2]` -> `plug_p[1].pin`). Enclosing parts keep theirs:
 /// a nested array under one element of an outer array is its own declaration.
-fn array_root_key(data: &rumoca_ir_ast::InstanceData) -> String {
-    use std::fmt::Write;
-    let parts = &data.qualified_name.parts;
-    let mut key = String::new();
-    for (index, (name, subscripts)) in parts.iter().enumerate() {
-        if index > 0 {
-            key.push('.');
-        }
-        key.push_str(name);
-        if subscripts.is_empty() || index + 1 == parts.len() {
-            continue;
-        }
-        key.push('[');
-        for (position, subscript) in subscripts.iter().enumerate() {
-            if position > 0 {
-                key.push(',');
-            }
-            let _ = write!(key, "{subscript}");
-        }
-        key.push(']');
+fn array_root_key(data: &rumoca_ir_ast::InstanceData) -> ComponentPath {
+    let mut root = data.qualified_name.clone();
+    if let Some((_, terminal_subscripts)) = root.parts.last_mut() {
+        terminal_subscripts.clear();
     }
-    key
+    root.to_component_path()
 }
 
 fn terminal_instance_subscripts(qualified_name: &rumoca_ir_ast::QualifiedName) -> Vec<i64> {

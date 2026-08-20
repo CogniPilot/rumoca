@@ -872,7 +872,7 @@ fn event_transaction_fixture_with_table() -> (EventTransactionProgram, SolvePure
         EventTransactionConstruction {
             site: table.call_site(owner).unwrap(),
             inputs: vec![(scalar_slot_p(2), tensor.clone())],
-            targets: vec![(scalar_slot_p(0), tensor)],
+            targets: vec![(scalar_slot_p(0), tensor, None)],
             producer_owners: vec![EventTransactionProducerOwner::ScalarRows { start_row: 0 }],
             assertions: vec![SolveEventAction {
                 kind: SolveEventActionKind::Assert,
@@ -885,7 +885,7 @@ fn event_transaction_fixture_with_table() -> (EventTransactionProgram, SolvePure
             }],
             assertion_action_indices: vec![vec![0]],
             statement_count: 2,
-            clock_owner: None,
+            clock_owners: Vec::new(),
         },
         fixture_provenance(),
     )

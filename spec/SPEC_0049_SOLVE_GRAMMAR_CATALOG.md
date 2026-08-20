@@ -113,7 +113,7 @@ declared end state that construction does not admit yet.
 | `Cross` | Current | Both operands exactly `[3]`, numeric element | none | `Reduction` | Three-element cross product |
 | `Identity` | Current | `identity(element_type, extent) -> [extent, extent]`. Real always admitted; Integer admitted only when its domain contains 0 AND 1; Boolean REJECTED; element type must belong to the root arithmetic | none | `NotApplicable` | Square identity of the declared extent |
 | `Diagonal` | Current | Rank-1 `[extent]` numeric operand to a square matrix — CONSTRUCTION only, never extraction | none | `NotApplicable` | Places the vector on the diagonal, zero elsewhere |
-| `Concatenate` | Current | Same-rank operands joined on `axis` | none | `NotApplicable` | Shape-checked join |
+| `Concatenate` | Current | Operands promoted to `max(2, ranks...)` by appending unit extents, then joined on `axis`; non-axis extents agree | none | `NotApplicable` | Shape-checked join |
 | `Fill` | Current | `T -> Tensor<T>` over the declared shape | none | `NotApplicable` | Broadcasts one value |
 | `ConstructAggregate` | Current | N authored `elements` | none | `NotApplicable` | N is source-authored, never extent-derived (TRP-021) |
 | `ProjectElement` | Current | Static checked index | none | `NotApplicable` | In-bounds by construction |

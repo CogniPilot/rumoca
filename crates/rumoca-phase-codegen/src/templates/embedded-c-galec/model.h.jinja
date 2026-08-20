@@ -5,6 +5,7 @@
     allocation of its own: a second declaration site is what renames the same
     variable differently across artifacts. -#}
 {%- import "galec-c-symbols.jinja" as c_symbol_policy -%}
+{%- import "galec-c-scratch.jinja" as scratch_policy -%}
 {%- set c_symbols = c_symbol_policy.symbols -%}
 {%- set c_state_symbols = c_symbol_policy.state_symbols -%}
 {%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
@@ -12,9 +13,9 @@
 {%- if kind == "real" -%}float{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
 {%- endmacro -%}
 {#- The block's working memory is a decision taken in the checked view, not
-    here: `scratch_layout` says which regions exist and which of them share
-    storage. The header only needs to know WHETHER there is any, so that the
-    single-instance note it costs is not printed for a block that has none. -#}
+    here: `scratch_layout` says which regions exist, which share storage, and
+    the checked slot-byte budget. The shared scratch partial is the one
+    declaration site for the concrete instance-owned C types. -#}
 {%- set scratch_layout = algorithm_code.package.block.scratch_layout -%}
 {% block conformance %}/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
  * GALEC-derived embedded C export (SPEC_0034 GAL-024).
@@ -27,40 +28,34 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+/* Compile-time deployment accounting (SPEC_0034 GAL-039).
+ * `CHECKED_SCRATCH_SLOT_BYTES` excludes target ABI padding; use
+ * `sizeof({{ c_model }}State)` for the exact compiler/target instance cost.
+ * Auxiliary mutable storage is zero: working memory is instance-owned. */
+#define RUMOCA_{{ c_model | upper }}_DISTINCT_INSTANCE_REENTRANT UINT32_C(1)
+{%- if scratch_layout.bytes is none %}
+{{ fail("unsupported-feature:embedded-c-scratch-size") }}
+{%- else %}
+#define RUMOCA_{{ c_model | upper }}_CHECKED_SCRATCH_SLOT_BYTES UINT32_C({{ scratch_layout.bytes }})
+{%- endif %}
+#define RUMOCA_{{ c_model | upper }}_AUXILIARY_SCRATCH_BYTES UINT32_C(0)
 {% if scratch_layout.groups|length > 0 %}
-/* SINGLE INSTANCE PER PROGRAM.
- *
- * The array intermediates the generated bodies work in, and every generated
- * function's outputs, are NOT part of this interface: they are one file-scope
- * object private to `{{ model_name }}.c`, shared by overlaying the regions of
- * functions that can never be active at the same time. Interface is what a
- * caller binds to — inputs, outputs, parameters and states — and one function's
- * intermediate row buffer is none of those; describing it here would put
- * hundreds of internal temporaries into the block's declared surface and into
- * the Production Code manifest, where nothing may bind to them anyway.
- *
- * The price is stated rather than assumed: because that object is file-scope
- * and not a member of the state below, TWO {{ c_model }}State objects in one
- * program would SHARE one set of working-memory slots. Declare one. The three
- * methods must also not run concurrently or reentrantly on one state — which is
- * already true of a block whose methods are its only entry points.
- *
- * SECOND CONSEQUENCE, for a reviewer of the Modelica source rather than of this
- * file: a local that is READ BEFORE IT IS WRITTEN now observes whatever another
- * owner sharing its storage left there, rather than what the same owner left on
- * its own previous activation. Startup, Recalibrate and DoStep share one group,
- * so a DoStep local read before assignment can carry a value Startup wrote.
- * GALEC does not require definite assignment of locals, so this is reachable —
- * but only through a source defect. Both the old behavior and this one are
- * arbitrary; neither is a value the source asked for. It is called out because
- * the arbitrary value CHANGED, and a test that passed by accident on the old
- * one may fail on this one. */
+/* Instance-owned working memory. Regions are overlaid only where the checked
+ * call-depth proof says their owners cannot be active together. These slots
+ * are execution storage, not GALEC LogicalData; no manifest consumer binds to
+ * them. Distinct State objects therefore have disjoint mutable storage and may
+ * execute concurrently. Calls on the same State still require ordinary
+ * exclusive mutable ownership. */
+{{ scratch_policy.declarations(c_model, scratch_layout, c_symbols) }}
 {% endif %}
 typedef struct {{ c_model }}StateTag {
 {%- for variable in algorithm_code.variables %}
     {{ c_type(variable.kind) }} {{ symbol(c_state_symbols, variable.name) }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* declaration {{ variable.ordinal }}: {{ variable.name | replace("*/", "* /") | replace("/*", "/ *") }} ({{ variable.causality }}) */
 {%- endfor %}
     uint32_t rumoca_galec_error_signal_status; /* eFMI ErrorSignalStatus */
+{%- if scratch_layout.groups|length > 0 %}
+    {{ c_model }}Scratch rumoca_galec_scratch; /* instance-owned working memory */
+{%- endif %}
 } {{ c_model }}State;
 
 void {{ c_model }}_startup({{ c_model }}State *self);

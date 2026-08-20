@@ -309,6 +309,26 @@ fn lower_algorithm_statement<'dae>(
     let context = algorithm_statement_context(environment, owner, values);
     match statement {
         rumoca_core::Statement::Assignment { comp, value, span } => {
+            if let Some(plan) = environment.function_calls.and_then(|plans| plans.get(span)) {
+                let Expression::FunctionCall { name, args, .. } = value else {
+                    unreachable!("event call proof is issued only for direct call assignments")
+                };
+                let updates = lower_algorithm_call_statement(
+                    construction,
+                    discrete_values,
+                    owner,
+                    context,
+                    AlgorithmFunctionCall {
+                        component: name,
+                        arguments: args,
+                        span: *span,
+                        plan,
+                    },
+                )?;
+                record_model_event_step(environment, owner, &updates, *span)?;
+                values.extend(updates);
+                return Ok(());
+            }
             let updates = lower_algorithm_assignment(
                 construction,
                 discrete_values,
@@ -350,7 +370,7 @@ fn lower_algorithm_statement<'dae>(
         rumoca_core::Statement::FunctionCall {
             comp,
             args,
-            outputs,
+            outputs: _,
             span,
         } => {
             let updates = lower_algorithm_call_statement(
@@ -361,7 +381,6 @@ fn lower_algorithm_statement<'dae>(
                 AlgorithmFunctionCall {
                     component: comp,
                     arguments: args,
-                    outputs,
                     span: *span,
                     plan: &environment
                         .function_calls

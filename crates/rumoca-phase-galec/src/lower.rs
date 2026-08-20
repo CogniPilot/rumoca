@@ -53,6 +53,28 @@ struct ClassifiedVariable<'dae> {
     name: gast::Name,
 }
 
+/// One checked classification product. Dependent-parameter ordering is derived
+/// from exact DAE variable identities and cannot be supplied by a codegen caller.
+struct ClassifiedVariables<'dae> {
+    variables: Vec<ClassifiedVariable<'dae>>,
+    dependent_parameter_order: Vec<u32>,
+}
+
+impl<'dae> ClassifiedVariables<'dae> {
+    fn iter(&self) -> impl Iterator<Item = &ClassifiedVariable<'dae>> {
+        self.variables.iter()
+    }
+
+    fn as_slice(&self) -> &[ClassifiedVariable<'dae>] {
+        &self.variables
+    }
+}
+
+struct ParameterDependencyProof {
+    dependent: HashSet<u32>,
+    order: Vec<u32>,
+}
+
 struct ProjectionParts {
     nominals: Vec<Option<f64>>,
     interface_inputs: Vec<gast::InterfaceVariable>,
@@ -99,7 +121,7 @@ fn lower_view<'dae>(
             .expect("admitted checked clock resolves")
             .provenance()
             .span(),
-        &classified,
+        classified.as_slice(),
         &pre_names,
         &mut parts.nominals,
         &mut parts.protected,
@@ -109,7 +131,7 @@ fn lower_view<'dae>(
     let clocked = lower_clock_schedule(
         view,
         &clock,
-        &classified,
+        classified.as_slice(),
         &by_id,
         &pre_names,
         &mut parts.nominals,
@@ -123,7 +145,7 @@ fn lower_view<'dae>(
     called_user_functions.extend(
         causal_outputs::append_causal_assignments(
             view,
-            &classified,
+            classified.as_slice(),
             &by_id,
             &pre_names,
             &mut parts.do_step_locals,
@@ -159,7 +181,7 @@ fn lower_view<'dae>(
 
 fn build_variable_parts<'dae>(
     view: dae::DaeView<'dae>,
-    classified: &[ClassifiedVariable<'dae>],
+    classified: &ClassifiedVariables<'dae>,
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     referenced_pre: &[dae::VariableId<'dae>],
     pre_names: &HashMap<u32, gast::Name>,
@@ -175,8 +197,18 @@ fn build_variable_parts<'dae>(
         recalibrate: Vec::new(),
         do_step_locals: Vec::new(),
     };
-    for variable in classified {
-        append_variable(view, variable, by_id, pre_names, &mut evaluator, &mut parts)?;
+    for variable in classified.as_slice() {
+        append_variable(view, variable, &mut evaluator, &mut parts)?;
+    }
+    for id in &classified.dependent_parameter_order {
+        let variable = by_id.get(id).ok_or_else(|| {
+            vec![GalecTargetError::LoweringInternal {
+                detail: format!("dependent parameter variable #{id} is absent from classification"),
+            }]
+        })?;
+        let assignment = dependent_assignment(view, variable, by_id, pre_names).map_err(single)?;
+        parts.startup.push(assignment.clone());
+        parts.recalibrate.push(assignment);
     }
     append_previous_states(
         view,
@@ -194,8 +226,6 @@ fn build_variable_parts<'dae>(
 fn append_variable<'dae>(
     view: dae::DaeView<'dae>,
     classified: &ClassifiedVariable<'dae>,
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
-    pre_names: &HashMap<u32, gast::Name>,
     evaluator: &mut NumericEvaluator<'dae>,
     parts: &mut ProjectionParts,
 ) -> Result<(), Vec<GalecTargetError>> {
@@ -236,10 +266,6 @@ fn append_variable<'dae>(
                 decl: declaration,
                 start: Some(start),
             });
-            let assignment =
-                dependent_assignment(view, classified, by_id, pre_names).map_err(single)?;
-            parts.startup.push(assignment.clone());
-            parts.recalibrate.push(assignment);
         }
         VariableClass::Local => unreachable!("causal locals return before state construction"),
         VariableClass::Constant | VariableClass::State => {
@@ -305,7 +331,9 @@ fn validate_clocks(clock: &AdmittedClock, view: dae::DaeView<'_>) -> Result<(), 
 
 fn classify_variables<'dae>(
     view: dae::DaeView<'dae>,
-) -> Result<Vec<ClassifiedVariable<'dae>>, Vec<GalecTargetError>> {
+) -> Result<ClassifiedVariables<'dae>, Vec<GalecTargetError>> {
+    let parameter_dependencies =
+        ParameterDependencyProof::derive(view).map_err(|error| vec![error])?;
     let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
     let mut variables = Vec::new();
     let mut errors = Vec::new();
@@ -316,7 +344,7 @@ fn classify_variables<'dae>(
             if causally_defined && variable.causality() != dae::VariableCausality::Output {
                 classify_causal_local(id, variable)
             } else {
-                classify_variable(id, variable)
+                classify_variable(id, variable, &parameter_dependencies)
             };
         match classified {
             Ok(classified) => variables.push(classified),
@@ -324,7 +352,10 @@ fn classify_variables<'dae>(
         }
     }
     if errors.is_empty() {
-        Ok(variables)
+        Ok(ClassifiedVariables {
+            variables,
+            dependent_parameter_order: parameter_dependencies.order,
+        })
     } else {
         Err(errors)
     }
@@ -367,13 +398,16 @@ fn classify_causal_local<'dae>(
 fn classify_variable<'dae>(
     id: dae::VariableId<'dae>,
     variable: dae::VariableView<'dae>,
+    parameter_dependencies: &ParameterDependencyProof,
 ) -> Result<ClassifiedVariable<'dae>, GalecTargetError> {
     let span = variable.declaration().span();
     let class = match (variable.causality(), variable.role()) {
         (dae::VariableCausality::Input, _) => VariableClass::Input,
         (dae::VariableCausality::Output, _) => VariableClass::Output,
         (_, dae::VariableRole::Constant) => VariableClass::Constant,
-        (dae::VariableCausality::CalculatedParameter, dae::VariableRole::Parameter) => {
+        (_, dae::VariableRole::Parameter)
+            if parameter_dependencies.dependent.contains(&id.index()) =>
+        {
             VariableClass::DependentParameter
         }
         (_, dae::VariableRole::Parameter) if variable.is_tunable() => {
@@ -410,6 +444,81 @@ fn classify_variable<'dae>(
         scalar_type,
         name,
     })
+}
+
+impl ParameterDependencyProof {
+    fn derive(view: dae::DaeView<'_>) -> Result<Self, GalecTargetError> {
+        let parameter_ids: HashSet<u32> = view
+            .variables()
+            .filter(|(_, variable)| variable.role() == dae::VariableRole::Parameter)
+            .map(|(id, _)| id.index())
+            .collect();
+        let mut dependencies: HashMap<u32, HashSet<u32>> = HashMap::new();
+        let mut dependent = HashSet::new();
+
+        for (id, variable) in view.variables() {
+            if variable.role() != dae::VariableRole::Parameter {
+                continue;
+            }
+            let definition = if variable.causality() == dae::VariableCausality::CalculatedParameter
+            {
+                variable.binding().or(variable.start())
+            } else {
+                variable.binding()
+            };
+            let mut direct = HashSet::new();
+            if let Some(definition) = definition {
+                dae::for_each_expression(view, definition, |_, expression| {
+                    if let Some(reference) = expression.variable_coordinate()
+                        && parameter_ids.contains(&reference.index())
+                    {
+                        direct.insert(reference.index());
+                    }
+                });
+            }
+            if variable.causality() == dae::VariableCausality::CalculatedParameter
+                || !direct.is_empty()
+            {
+                dependent.insert(id.index());
+                dependencies.insert(id.index(), direct);
+            }
+        }
+
+        let mut order = Vec::with_capacity(dependent.len());
+        let mut emitted = HashSet::new();
+        while order.len() < dependent.len() {
+            let before = order.len();
+            for (id, _) in view.variables() {
+                let raw = id.index();
+                if !dependent.contains(&raw) || emitted.contains(&raw) {
+                    continue;
+                }
+                let ready = dependencies.get(&raw).is_none_or(|direct| {
+                    direct.iter().all(|dependency| {
+                        !dependent.contains(dependency) || emitted.contains(dependency)
+                    })
+                });
+                if ready {
+                    emitted.insert(raw);
+                    order.push(raw);
+                }
+            }
+            if order.len() == before {
+                let through = view
+                    .variables()
+                    .find(|(id, _)| {
+                        dependent.contains(&id.index()) && !emitted.contains(&id.index())
+                    })
+                    .map_or_else(
+                        || "<unknown>".to_owned(),
+                        |(_, variable)| variable.name().to_string(),
+                    );
+                return Err(GalecTargetError::StartDependencyCycle { through });
+            }
+        }
+
+        Ok(Self { dependent, order })
+    }
 }
 
 fn scalar_type(
@@ -894,6 +1003,13 @@ struct ExpressionLowerer<'a, 'dae> {
     materialized_function_values: HashMap<MaterializedFunctionValueKey, gast::Name>,
     materialized_function_calls: HashMap<MaterializedFunctionCallKey, Vec<gast::Name>>,
     materialized_shared_record_fields: HashMap<(u32, usize), gast::Expression>,
+    /// Primitive expression values already committed to a function local.
+    ///
+    /// Function construction returns the current RHS expression for a later
+    /// sequential read. This map preserves the intervening assignment as a
+    /// value boundary instead of re-expanding that RHS and its lazy branch
+    /// producers at every consumer.
+    assigned_primitive_expressions: HashMap<u32, gast::Name>,
     called_user_functions: HashSet<u32>,
     function_scope: Option<dae::FunctionId<'dae>>,
     temporary_locals: Vec<gast::VariableDeclaration>,
@@ -1011,6 +1127,7 @@ struct ConditionalMaterializationSnapshot {
     function_values: HashMap<MaterializedFunctionValueKey, gast::Name>,
     fold_outputs: HashMap<FunctionFoldOutputKey, TypedExpression>,
     seen_assertions: HashSet<FunctionAssertionCallKey>,
+    assigned_primitive_expressions: HashMap<u32, gast::Name>,
 }
 
 struct MaterializedConditional<'a, 'dae> {
@@ -1105,6 +1222,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             materialized_function_values: HashMap::new(),
             materialized_function_calls: HashMap::new(),
             materialized_shared_record_fields: HashMap::new(),
+            assigned_primitive_expressions: HashMap::new(),
             called_user_functions: HashSet::new(),
             function_scope: None,
             temporary_locals: Vec::new(),
@@ -1171,6 +1289,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             function_values: self.materialized_function_values.clone(),
             fold_outputs: self.function_fold_output_cache.clone(),
             seen_assertions: self.seen_assertion_calls.clone(),
+            assigned_primitive_expressions: self.assigned_primitive_expressions.clone(),
         }
     }
 
@@ -1184,6 +1303,8 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .clone_from(&snapshot.fold_outputs);
         self.seen_assertion_calls
             .clone_from(&snapshot.seen_assertions);
+        self.assigned_primitive_expressions
+            .clone_from(&snapshot.assigned_primitive_expressions);
         self.scalar_projection_cache.clear();
     }
 
@@ -1202,6 +1323,14 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     fn take_temporary_locals(&mut self) -> Vec<gast::VariableDeclaration> {
         std::mem::take(&mut self.temporary_locals)
+    }
+
+    fn remember_primitive_assignment(&mut self, expression: u32, target: gast::Name) {
+        self.assigned_primitive_expressions
+            .retain(|_, assigned| assigned != &target);
+        self.assigned_primitive_expressions
+            .insert(expression, target);
+        self.scalar_projection_cache.clear();
     }
 
     /// Declared shape of the classified block variable `name` refers to, if
@@ -1287,6 +1416,17 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             "<expression>",
             node.provenance().span(),
         )?;
+        if let Some(name) = self.assigned_primitive_expressions.get(&id.index()) {
+            return Ok(TypedExpression {
+                expression: self.lower_local_reference(
+                    name.clone(),
+                    node.value_type().dimensions(),
+                    indices,
+                    node.provenance().span(),
+                )?,
+                scalar_type,
+            });
+        }
         let value = self.lower_operation(id, node, indices, scalar_type)?;
         if let Some(key) = cache_key {
             self.scalar_projection_cache.insert(key, value.clone());

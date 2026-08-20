@@ -129,7 +129,10 @@ fn extend_transaction_dependencies(
         .discrete
         .event_transactions
         .iter()
-        .filter(|transaction| transaction.clock_owner() == clock_owner)
+        .filter(|transaction| match clock_owner {
+            Some(clock) => transaction.clock_owners().binary_search(&clock).is_ok(),
+            None => !transaction.is_clock_owned(),
+        })
     {
         for input in transaction.inputs() {
             let solve::ScalarSlot::Y { index, .. } = input.source() else {

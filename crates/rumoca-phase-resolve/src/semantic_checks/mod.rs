@@ -10,7 +10,7 @@ use rumoca_ir_ast as ast;
 use rumoca_ir_ast::{
     Visitor, walk_equation_default, walk_expression_default, walk_statement_default,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod annotations;
 mod builtin_calls;
@@ -207,12 +207,6 @@ fn semantic_error(
     primary_label: PrimaryLabel,
 ) -> Diagnostic {
     Diagnostic::error(code, message, primary_label)
-}
-
-/// Run all semantic checks on a StoredDefinition and collect diagnostics.
-pub fn check_semantics(def: &StoredDefinition, _source_map: &SourceMap) -> Vec<Diagnostic> {
-    let _context = activate_semantic_context(def);
-    run_semantic_checks(def)
 }
 
 /// Run all semantic check batches with a single active source-map setup.
@@ -1194,7 +1188,7 @@ fn check_parameter_variability(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
         let Some(binding) = &comp.binding else {
             continue;
         };
-        let mut refs = HashSet::new();
+        let mut refs = BTreeSet::new();
         collect_component_refs(binding, &continuous_vars, &mut refs, false);
         let Some(dep) = refs.into_iter().next() else {
             continue;
@@ -1224,10 +1218,8 @@ fn check_parameter_variability(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
 
 /// INST-008: Detect cyclic parameter bindings.
 fn check_cyclic_parameter_bindings(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    use std::collections::HashMap;
-
     // Build dependency graph: parameter name -> set of parameter names referenced in binding
-    let param_names: HashSet<String> = class
+    let param_names: Vec<String> = class
         .components
         .iter()
         .filter(|(_, c)| {
@@ -1238,20 +1230,21 @@ fn check_cyclic_parameter_bindings(class: &ClassDef, diags: &mut Vec<Diagnostic>
         })
         .map(|(n, _)| n.clone())
         .collect();
+    let param_name_set: HashSet<String> = param_names.iter().cloned().collect();
 
     if param_names.is_empty() {
         return;
     }
 
-    let mut deps: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut deps: HashMap<String, BTreeSet<String>> = HashMap::new();
     for (name, comp) in &class.components {
-        if !param_names.contains(name) {
+        if !param_name_set.contains(name) {
             continue;
         }
-        let mut refs = HashSet::new();
+        let mut refs = BTreeSet::new();
         if let Some(binding) = &comp.binding {
             // Skip if-branches to avoid false cycles from conditional mutual deps
-            collect_component_refs(binding, &param_names, &mut refs, true);
+            collect_component_refs(binding, &param_name_set, &mut refs, true);
         }
         deps.insert(name.clone(), refs);
     }
@@ -1294,7 +1287,7 @@ fn check_cyclic_parameter_bindings(class: &ClassDef, diags: &mut Vec<Diagnostic>
 
 fn has_cycle(
     node: &str,
-    deps: &std::collections::HashMap<String, HashSet<String>>,
+    deps: &std::collections::HashMap<String, BTreeSet<String>>,
     visited: &mut HashSet<String>,
     on_stack: &mut HashSet<String>,
 ) -> bool {
@@ -1311,9 +1304,7 @@ fn has_cycle(
         })
     });
 
-    if !found_cycle {
-        on_stack.remove(node);
-    }
+    on_stack.remove(node);
     found_cycle
 }
 
@@ -1325,12 +1316,12 @@ fn has_cycle(
 fn collect_component_refs(
     expr: &Expression,
     known_params: &HashSet<String>,
-    refs: &mut HashSet<String>,
+    refs: &mut BTreeSet<String>,
     skip_if_branches: bool,
 ) {
     struct ComponentRefCollector<'a> {
         known_params: &'a HashSet<String>,
-        refs: &'a mut HashSet<String>,
+        refs: &'a mut BTreeSet<String>,
         skip_if_branches: bool,
     }
 
@@ -1796,21 +1787,6 @@ fn check_for_variable_assignment_eq(
 // ============================================================================
 // Batch 3: Expression checks
 // ============================================================================
-
-/// EXPR-014: Check for chained relational operators (e.g., 1 < 2 < 3).
-pub fn check_chained_relationals(
-    def: &StoredDefinition,
-    _source_map: &SourceMap,
-) -> Vec<Diagnostic> {
-    let _context = activate_semantic_context(def);
-    run_chained_relational_checks(def)
-}
-
-/// EXPR-004: Check for der() in function algorithm sections.
-pub fn check_der_in_functions(def: &StoredDefinition, _source_map: &SourceMap) -> Vec<Diagnostic> {
-    let _context = activate_semantic_context(def);
-    run_der_in_function_checks(def)
-}
 
 #[cfg(test)]
 mod tests {

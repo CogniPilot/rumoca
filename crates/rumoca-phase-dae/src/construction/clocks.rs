@@ -66,7 +66,7 @@ pub(super) fn lower_clocks<'dae>(
         };
         coordinate_ids.insert(name.clone(), clock);
     }
-    for value in clocked_values.values() {
+    for (_, value) in clocked_values_in_instance_order(clocked_values) {
         if plan_ids.contains_key(&value.clock) {
             continue;
         }
@@ -89,6 +89,17 @@ pub(super) fn lower_clocks<'dae>(
         by_sample_schedule: sample_ids,
         by_coordinate: coordinate_ids,
     })
+}
+
+fn clocked_values_in_instance_order(
+    values: &HashMap<InstanceId, ClockedValuePlan>,
+) -> Vec<(InstanceId, &ClockedValuePlan)> {
+    let mut ordered: Vec<_> = values.iter().collect();
+    ordered.sort_unstable_by_key(|(instance, _)| instance.index());
+    ordered
+        .into_iter()
+        .map(|(instance, plan)| (*instance, plan))
+        .collect()
 }
 
 pub(super) fn lower_clocked_value_owners<'dae>(
@@ -134,4 +145,36 @@ pub(super) fn lower_clocked_value_owners<'dae>(
         })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{ClockLattice, ClockRational};
+
+    fn plan() -> ClockedValuePlan {
+        ClockedValuePlan {
+            clock: ClockPlan {
+                lattice: ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),
+                constructor_span: Span::DUMMY,
+            },
+            ownership_span: Span::DUMMY,
+            sampled: false,
+        }
+    }
+
+    #[test]
+    fn clocked_value_allocation_order_uses_instance_identity() {
+        let mut values = HashMap::new();
+        values.insert(InstanceId::new(9), plan());
+        values.insert(InstanceId::new(2), plan());
+        values.insert(InstanceId::new(5), plan());
+
+        let ids: Vec<_> = clocked_values_in_instance_order(&values)
+            .into_iter()
+            .map(|(instance, _)| instance.index())
+            .collect();
+
+        assert_eq!(ids, [2, 5, 9]);
+    }
 }

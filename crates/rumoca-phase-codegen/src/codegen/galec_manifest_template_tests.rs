@@ -1212,7 +1212,10 @@ fn support_partials_are_shared_and_are_not_artifacts() {
     partials.sort();
     assert_eq!(
         partials,
-        vec!["embedded-c-galec/symbols.jinja".to_string()],
+        vec![
+            "embedded-c-galec/scratch.jinja".to_string(),
+            "embedded-c-galec/symbols.jinja".to_string(),
+        ],
         "the built-in support partials changed; keep the declaration and its \
          render-coverage exemption in step"
     );
@@ -1288,9 +1291,10 @@ fn every_c_artifact_template_is_covered() {
     let mut printing = Vec::new();
     for target in templates::builtin_targets() {
         for template in target.templates {
-            // The policy itself defines the tables rather than printing from
-            // them.
-            if template.shared_name == Some(SHARED_SYMBOL_POLICY) {
+            // Support partials render no product artifact on their own. Their
+            // consumers remain covered below; the symbol policy itself also
+            // defines rather than prints the tables.
+            if template.role == templates::BuiltinTemplateRole::SupportPartial {
                 continue;
             }
             if prints_c_symbols(template.source) {

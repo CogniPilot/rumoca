@@ -1116,56 +1116,46 @@ fn find_unconnected_interface_flows(
 /// `initialStep.stateGraphRoot.resume` must be redirected to `stateGraphRoot.resume`.
 fn redirect_qualified_name(
     qn: &mut ast::QualifiedName,
-    outer_to_inner: &ast::AstIndexMap<String, String>,
+    outer_to_inner: &ast::AstIndexMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
 ) {
     if outer_to_inner.is_empty() {
         return;
     }
-    let flat = qn.to_flat_string();
+    let path = qn.to_component_path();
     for (outer_prefix, inner_prefix) in outer_to_inner {
-        if flat == *outer_prefix || flat.starts_with(&format!("{outer_prefix}.")) {
-            let new_flat = if flat == *outer_prefix {
-                inner_prefix.clone()
-            } else {
-                format!("{}{}", inner_prefix, &flat[outer_prefix.len()..])
-            };
-            *qn = ast::QualifiedName::from_dotted(&new_flat);
+        if let Some(relative) = path.strip_prefix(outer_prefix) {
+            *qn = ast::QualifiedName::from_dotted(inner_prefix.join(&relative).as_str());
             return;
         }
     }
 }
 
-fn bridge_scope_matches_connection_scope(inner_outer_prefix: &str, connection_scope: &str) -> bool {
-    let bridge_scope = ast::QualifiedName::from_dotted(inner_outer_prefix)
-        .parent()
-        .unwrap_or_default();
-    bridge_scope == ast::QualifiedName::from_dotted(connection_scope)
+fn bridge_scope_matches_connection_scope(
+    inner_outer_prefix: &rumoca_core::ComponentPath,
+    connection_scope: &str,
+) -> bool {
+    let bridge_scope = inner_outer_prefix.parent().unwrap_or_default();
+    bridge_scope == rumoca_core::ComponentPath::from_flat_path(connection_scope)
 }
 
 fn redirect_inner_outer_bridge_for_scope(
     qn: &mut ast::QualifiedName,
-    inner_outer_to_parent_inner: &ast::AstIndexMap<String, String>,
+    inner_outer_to_parent_inner: &ast::AstIndexMap<
+        rumoca_core::ComponentPath,
+        rumoca_core::ComponentPath,
+    >,
     connection_scope: &str,
 ) {
     if inner_outer_to_parent_inner.is_empty() {
         return;
     }
-    let flat = qn.to_flat_string();
+    let path = qn.to_component_path();
     for (inner_outer_prefix, parent_inner_prefix) in inner_outer_to_parent_inner {
         if !bridge_scope_matches_connection_scope(inner_outer_prefix, connection_scope) {
             continue;
         }
-        if flat == *inner_outer_prefix || flat.starts_with(&format!("{inner_outer_prefix}.")) {
-            let new_flat = if flat == *inner_outer_prefix {
-                parent_inner_prefix.clone()
-            } else {
-                format!(
-                    "{}{}",
-                    parent_inner_prefix,
-                    &flat[inner_outer_prefix.len()..]
-                )
-            };
-            *qn = ast::QualifiedName::from_dotted(&new_flat);
+        if let Some(relative) = path.strip_prefix(inner_outer_prefix) {
+            *qn = ast::QualifiedName::from_dotted(parent_inner_prefix.join(&relative).as_str());
             return;
         }
     }
@@ -1240,8 +1230,8 @@ mod equation_generation_tests {
     fn overlay_with_inner_outer_bridge() -> ast::InstanceOverlay {
         let mut overlay = ast::InstanceOverlay::default();
         overlay.inner_outer_to_parent_inner.insert(
-            "tankController.makeProduct.stateGraphRoot".to_string(),
-            "stateGraphRoot".to_string(),
+            rumoca_core::ComponentPath::from_flat_path("tankController.makeProduct.stateGraphRoot"),
+            rumoca_core::ComponentPath::from_flat_path("stateGraphRoot"),
         );
         overlay
     }

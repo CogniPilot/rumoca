@@ -5,6 +5,81 @@
 use super::*;
 
 #[test]
+fn instanced_component_dimensions_use_exact_type_enclosing_constants() {
+    let source = r#"
+        package Root
+            package ESKF
+                constant Integer TangentLength = 2;
+                block Estimator
+                    Real covariance[TangentLength, TangentLength];
+                end Estimator;
+            end ESKF;
+            package UKF
+                constant Integer TangentLength = 3;
+                block Estimator
+                    Real covariance[TangentLength, TangentLength];
+                end Estimator;
+            end UKF;
+            model Test
+                ESKF.Estimator eskf;
+                UKF.Estimator ukf;
+            end Test;
+        end Root;
+    "#;
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let tree = resolved.into_inner();
+    let test = tree
+        .get_class_by_qualified_name("Root.Test")
+        .expect("test class");
+    let eskf = tree
+        .get_class_by_qualified_name("Root.ESKF.Estimator")
+        .expect("ESKF class");
+    let ukf = tree
+        .get_class_by_qualified_name("Root.UKF.Estimator")
+        .expect("UKF class");
+    let mut overlay = InstanceOverlay::new();
+    add_instanced_component(
+        &mut overlay,
+        "eskf",
+        test.components.get("eskf").expect("ESKF component"),
+        false,
+    );
+    add_instanced_component(
+        &mut overlay,
+        "eskf.covariance",
+        eskf.components.get("covariance").expect("ESKF covariance"),
+        true,
+    );
+    add_instanced_component(
+        &mut overlay,
+        "ukf",
+        test.components.get("ukf").expect("UKF component"),
+        false,
+    );
+    add_instanced_component(
+        &mut overlay,
+        "ukf.covariance",
+        ukf.components.get("covariance").expect("UKF covariance"),
+        true,
+    );
+
+    typecheck_instanced(&tree, &mut overlay, "Root.Test")
+        .expect("each component type must resolve its own enclosing constant");
+    let dimensions = overlay
+        .components
+        .values()
+        .filter_map(|data| {
+            let name = data.qualified_name.to_flat_string();
+            name.ends_with("covariance")
+                .then_some((name, data.dims.clone()))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(dimensions["eskf.covariance"], [2, 2]);
+    assert_eq!(dimensions["ukf.covariance"], [3, 3]);
+}
+
+#[test]
 fn test_typecheck_instanced_evaluates_enum_alias_dependent_dimensions() {
     let source = r#"
         type ModelStructure = enumeration(av_vb, a_v_b);

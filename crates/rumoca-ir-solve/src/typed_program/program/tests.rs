@@ -432,6 +432,31 @@ fn single_operand_concatenation_preserves_its_promoted_matrix_shape() {
 }
 
 #[test]
+fn vector_concatenation_appends_unit_extents_during_promotion() {
+    let arithmetic = profile();
+    let program = TypedProgram::construct(arithmetic, |builder| {
+        let one = builder.constant(SolveValue::real(arithmetic, 1.0), span(0))?;
+        let lhs = builder.fill(one, vec![2], span(1))?;
+        let rhs = builder.fill(one, vec![2], span(2))?;
+        let columns = builder.concatenate(1, &[lhs, rhs], span(3))?;
+        assert_eq!(
+            builder.register_type(columns, span(4))?.dimensions(),
+            &[2, 2]
+        );
+
+        let longer = builder.fill(one, vec![3], span(5))?;
+        let rows = builder.concatenate(0, &[lhs, longer], span(6))?;
+        assert_eq!(builder.register_type(rows, span(7))?.dimensions(), &[5, 1]);
+        Ok(())
+    })
+    .expect("vector operands promote by appending unit extents");
+
+    let replayed: TypedProgram = serde_json::from_str(&serde_json::to_string(&program).unwrap())
+        .expect("wire replay reconstructs promoted vector concatenation");
+    assert_eq!(replayed, program);
+}
+
+#[test]
 fn invalid_aggregate_projection_fails_before_register_or_operation_commit() {
     let arithmetic = profile();
     let program = TypedProgram::construct(arithmetic, |builder| {

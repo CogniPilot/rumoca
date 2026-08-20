@@ -12,7 +12,6 @@ pub(super) struct AlgorithmStatementContext<'scope, 'shape, 'dae> {
 pub(super) struct AlgorithmFunctionCall<'source> {
     pub(super) component: &'source rumoca_core::Reference,
     pub(super) arguments: &'source [Expression],
-    pub(super) outputs: &'source [Option<rumoca_core::ComponentReference>],
     pub(super) span: Span,
     pub(super) plan: &'source ModelEventFunctionCallPlan,
 }
@@ -181,16 +180,11 @@ pub(super) fn lower_algorithm_function_call<'dae>(
     let provenance = dae::DaeProvenance::source(call.span)?;
     let mut updates = Vec::new();
     let selected = call
+        .plan
         .outputs
         .iter()
-        .zip(&call.plan.outputs)
         .enumerate()
-        .filter_map(|(ordinal, (output, plan))| {
-            output
-                .as_ref()
-                .zip(plan.as_ref())
-                .map(|pair| (ordinal, pair.1))
-        })
+        .filter_map(|(ordinal, plan)| plan.as_ref().map(|plan| (ordinal, plan)))
         .collect::<Vec<_>>();
     let values = construction.expressions(|expressions| {
         expressions.at(provenance).call_results(
@@ -365,6 +359,18 @@ pub(super) fn own_clocked_algorithm_targets<'dae>(
     for statement in statements {
         match statement {
             rumoca_core::Statement::Assignment { comp, value, span } => {
+                if let Some(plan) = function_calls.get(span) {
+                    for output in plan.outputs.iter().flatten() {
+                        own_clocked_function_output(
+                            construction,
+                            coordinates,
+                            clock,
+                            output,
+                            *span,
+                        )?;
+                    }
+                    continue;
+                }
                 let target = rumoca_core::component_ref_to_base_reference(comp)
                     .var_name()
                     .clone();

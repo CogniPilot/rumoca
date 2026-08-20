@@ -25,12 +25,6 @@ pub fn location_to_range_in_source(source: &str, loc: &parsing::Location) -> Ran
     location_range_from_char_columns(source, loc)
 }
 
-/// Convert a Modelica token to an LSP [`Range`] against its own source text.
-#[must_use]
-pub fn token_to_range_in_source(source: &str, token: &parsing::Token) -> Range {
-    location_to_range_in_source(source, &token.location)
-}
-
 /// [`location_to_range_in_source`] for callers that may not be able to resolve
 /// the location's file text (a cross-file workspace hit whose document is not
 /// loaded). Without text, the lexer's character columns are the only signal

@@ -8,9 +8,6 @@ repository.workspace = true
 
 [features]
 default = []
-strict-ir-validation = [
-    "rumoca-ir-solve/strict-ir-validation",
-]
 
 [dependencies]
 rumoca-core = { workspace = true }

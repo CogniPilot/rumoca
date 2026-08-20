@@ -405,7 +405,7 @@ fn test_type_scope_hint_fallback_keeps_subscript_dot_single_segment() {
         },
     );
 
-    let hints = TypeChecker::build_type_scope_hints(&overlay);
+    let hints = TypeChecker::build_type_scope_hints(&ClassTree::new(), &overlay);
     let state_path = rumoca_core::ComponentPath::from_parts(["sys", "arr[data.medium]", "state"]);
     assert_eq!(
         hints.get(&state_path),

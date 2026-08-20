@@ -44,6 +44,48 @@ equation
 end StructuredEquationFixture;
 ";
 
+const NON_MATERIALIZED_STRUCTURED_FIXTURE: &str = "\
+model NonMaterializedStructuredFixture
+  parameter Integer N = 6;
+  parameter Real k = 1;
+  Real x[N](each start = 1);
+equation
+  for i in 1:N loop
+    der(x[i]) = -k * x[i] + 0.5;
+  end for;
+end NonMaterializedStructuredFixture;
+";
+
+const OCCURRENCE_SCOPED_VARIABILITY_FIXTURE: &str = "\
+model ParameterFamily
+  parameter Integer N = 6;
+  parameter Real p = 2;
+  Real h[N];
+equation
+  for i in 1:N loop
+    h[i] = p * i;
+  end for;
+end ParameterFamily;
+
+model StateFamily
+  parameter Integer N = 6;
+  Real h[N];
+  Real x[N](each start = 1);
+equation
+  for i in 1:N loop
+    h[i] = x[i];
+  end for;
+  for i in 1:N loop
+    der(x[i]) = -h[i];
+  end for;
+end StateFamily;
+
+model OccurrenceScopedVariabilityFixture
+  ParameterFamily parameterFamily;
+  StateFamily stateFamily;
+end OccurrenceScopedVariabilityFixture;
+";
+
 fn fixture_file() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempdir().expect("tempdir");
     let file = dir.path().join("EmitFixture.mo");
@@ -180,6 +222,43 @@ fn emit_flat_json_exposes_structured_equation_families() {
         families[0].get("iterations").is_none(),
         "structured family should not serialize one entry per scalar iteration"
     );
+}
+
+#[test]
+fn flat_modelica_fails_closed_for_non_materialized_structured_families() {
+    let (_dir, file) = named_fixture_file(
+        "NonMaterializedStructuredFixture",
+        NON_MATERIALIZED_STRUCTURED_FIXTURE,
+    );
+    let output = compile_emit(&file, "flat-mo");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "non-materialized Flat families must not render placeholder equations:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("scalar equation view is unavailable")
+            && stderr.contains("structured family"),
+        "the rejection must identify the unsupported scalar view:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("= 0.0"),
+        "failed Flat export must not publish cheapened equation bodies:\n{stdout}"
+    );
+}
+
+#[test]
+fn same_named_families_do_not_share_variability_proofs_across_occurrences() {
+    let (_dir, file) = named_fixture_file(
+        "OccurrenceScopedVariabilityFixture",
+        OCCURRENCE_SCOPED_VARIABILITY_FIXTURE,
+    );
+
+    let out = assert_emit_ok(&file, "dae-json");
+    serde_json::from_str::<serde_json::Value>(&out)
+        .expect("occurrence-scoped family model should produce valid DAE JSON");
 }
 
 #[test]

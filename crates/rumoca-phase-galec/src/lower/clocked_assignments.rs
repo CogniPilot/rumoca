@@ -280,102 +280,13 @@ fn collect_eager_calls<'dae>(
     seen: &mut HashSet<u32>,
     occurrences: &mut HashMap<u32, (dae::ExprId<'dae>, usize)>,
 ) {
-    if !seen.insert(expression.index()) {
-        return;
-    }
-    let operation = view
-        .expression(expression)
-        .expect("checked eager expression resolves")
-        .operation();
-    let mut children = Vec::new();
-    match operation {
-        dae::ExpressionOperation::Literal(_)
-        | dae::ExpressionOperation::Coordinate(_)
-        | dae::ExpressionOperation::Conditional(_)
-        | dae::ExpressionOperation::Comprehension { .. }
-        | dae::ExpressionOperation::FunctionValue { .. }
-        | dae::ExpressionOperation::FunctionFoldParameter { .. }
-        | dae::ExpressionOperation::FunctionFoldOutput { .. } => {}
-        dae::ExpressionOperation::Call {
-            owner, arguments, ..
-        } => {
-            // Count occurrences of the construction-issued call owner, not of
-            // one result projection: `(a, b) := f(x)` is two projections of one
-            // owner, and keying on the projection made each of them count once
-            // and be dropped by the repeat filter below.
-            occurrences
-                .entry(owner.index())
-                .and_modify(|(_, count)| *count += 1)
-                .or_insert((expression, 1));
-            children.extend(arguments.iter());
-        }
-        dae::ExpressionOperation::Unary { operand, .. } => children.push(operand),
-        dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
-            children.extend([lhs, rhs]);
-        }
-        dae::ExpressionOperation::Array(operands)
-        | dae::ExpressionOperation::Record(operands)
-        | dae::ExpressionOperation::Builtin {
-            arguments: operands,
-            ..
-        } => {
-            children.extend(operands.iter());
-        }
-        dae::ExpressionOperation::Field { base, .. } => children.push(base),
-        dae::ExpressionOperation::Range(range) => {
-            children.push(range.start().expression());
-            if let Some(step) = range.explicit_step() {
-                children.push(step.expression());
-            }
-            children.push(range.stop().expression());
-        }
-        dae::ExpressionOperation::Index { base, subscripts } => {
-            children.push(base);
-            for subscript in subscripts.iter() {
-                match subscript {
-                    dae::SubscriptView::Index { expression, .. }
-                    | dae::SubscriptView::Slice { expression, .. } => children.push(expression),
-                    dae::SubscriptView::Whole { .. } => {}
-                }
-            }
-        }
-        dae::ExpressionOperation::ArrayUpdate {
-            base,
-            value,
-            subscripts,
-        } => {
-            children.extend([base, value]);
-            for subscript in subscripts.iter() {
-                match subscript {
-                    dae::SubscriptView::Index { expression, .. }
-                    | dae::SubscriptView::Slice { expression, .. } => children.push(expression),
-                    dae::SubscriptView::Whole { .. } => {}
-                }
-            }
-        }
-        dae::ExpressionOperation::StringConversion { value, format, .. } => {
-            children.push(value);
-            match format {
-                dae::StringConversionFormatView::Options {
-                    minimum_length,
-                    left_justified,
-                    significant_digits,
-                } => {
-                    for option in [minimum_length, left_justified, significant_digits]
-                        .into_iter()
-                        .flatten()
-                    {
-                        children.push(option);
-                    }
-                }
-                dae::StringConversionFormatView::Format { value } => children.push(value),
-            }
-        }
-        dae::ExpressionOperation::ClockTransfer { source, .. } => children.push(source),
-    }
-    for child in children {
-        collect_eager_calls(view, child, seen, occurrences);
-    }
+    expression_functions::for_each_eager_call(view, expression, seen, &mut |call, owner| {
+        // Count construction-issued invocations, not scalar projections.
+        occurrences
+            .entry(owner)
+            .and_modify(|(_, count)| *count += 1)
+            .or_insert((call, 1));
+    });
 }
 
 /// One shared causal-definition proof plus the variable index it is queried by.

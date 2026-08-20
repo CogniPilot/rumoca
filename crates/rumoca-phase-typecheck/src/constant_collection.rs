@@ -689,6 +689,54 @@ impl TypeChecker {
         }
     }
 
+    /// Collect lexically enclosing constants for every instantiated component type.
+    ///
+    /// A declaration inside `Navigation.UKF.Estimator` may use the unqualified
+    /// package constant `TangentLength`.  The top-level model's enclosing scope
+    /// is unrelated, so these values are retained under their exact qualified
+    /// package names and resolved only through the component type's scope chain.
+    pub(crate) fn collect_component_type_enclosing_constants(
+        tree: &ClassTree,
+        overlay: &InstanceOverlay,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        let mut type_names = overlay
+            .components
+            .values()
+            .filter_map(|data| {
+                data.type_def_id
+                    .and_then(|def_id| tree.def_map.get(&def_id))
+                    .cloned()
+                    .or_else(|| {
+                        tree.get_class_by_qualified_name(&data.type_name)
+                            .is_some()
+                            .then_some(data.type_name.clone())
+                    })
+            })
+            .collect::<Vec<_>>();
+        type_names.sort();
+        type_names.dedup();
+
+        const MAX_PASSES: usize = 5;
+        for _ in 0..MAX_PASSES {
+            let previous_count =
+                ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len() + ctx.booleans.len();
+            for type_name in &type_names {
+                for enclosing_name in tree.enclosing_class_names_of(type_name) {
+                    let Some(enclosing) = tree.get_class_by_qualified_name(enclosing_name) else {
+                        continue;
+                    };
+                    Self::extract_class_constants(enclosing_name, enclosing, ctx);
+                }
+            }
+            let current_count =
+                ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len() + ctx.booleans.len();
+            if current_count == previous_count {
+                break;
+            }
+        }
+    }
+
     fn collect_component_instance_type_nested_constants(
         tree: &ClassTree,
         instance_data: &rumoca_ir_ast::InstanceData,

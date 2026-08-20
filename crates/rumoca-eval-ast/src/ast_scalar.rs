@@ -6,7 +6,7 @@
 use rumoca_core::{OpBinary, OpUnary, Span};
 use rumoca_ir_ast::{ComponentReference, Expression, TerminalType};
 
-pub(crate) trait AstScalarContext {
+pub trait AstScalarContext {
     /// Maximum combined expression/function recursion depth for phases that
     /// evaluate model-controlled bindings. Typechecking historically accepts
     /// arbitrary parsed expression depth, so its adapter keeps the default.
@@ -78,7 +78,7 @@ pub(crate) trait AstScalarContext {
     }
 }
 
-pub(crate) fn eval_real<C: AstScalarContext>(
+pub fn eval_real<C: AstScalarContext>(
     expr: &Expression,
     ctx: &C,
     scope: &str,
@@ -206,7 +206,7 @@ fn same_real(lhs: f64, rhs: f64) -> bool {
     lhs == rhs || lhs.to_bits() == rhs.to_bits()
 }
 
-pub(crate) fn eval_integer<C: AstScalarContext>(
+pub fn eval_integer<C: AstScalarContext>(
     expr: &Expression,
     ctx: &C,
     scope: &str,
@@ -312,7 +312,7 @@ fn remaining_integer_outcomes_match<C: AstScalarContext>(
         .all(|(_, value)| eval_integer(value, ctx, scope, depth) == Some(common))
 }
 
-pub(crate) fn eval_boolean<C: AstScalarContext>(
+pub fn eval_boolean<C: AstScalarContext>(
     expr: &Expression,
     ctx: &C,
     scope: &str,

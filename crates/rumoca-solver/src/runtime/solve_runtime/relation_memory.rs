@@ -126,33 +126,6 @@ impl SolveRuntime {
         .map_err(Into::into)
     }
 
-    pub fn apply_runtime_assignments_once(
-        &self,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-    ) -> Result<(), RuntimeSolveError> {
-        let rows = &self.model.problem.discrete.runtime_assignment_rhs;
-        if rows.is_empty() {
-            return Ok(());
-        }
-        if rows.len() != self.model.problem.discrete.runtime_assignment_targets.len() {
-            return Err(RuntimeSolveError::solve_ir(format!(
-                "runtime assignment row count {} does not match target count {}",
-                rows.len(),
-                self.model.problem.discrete.runtime_assignment_targets.len()
-            )));
-        }
-        let values = self.eval_scalar_program_block(rows, y, p, t)?;
-        apply_discrete_slot_values(
-            &self.model.problem.discrete.runtime_assignment_targets,
-            &values,
-            y,
-            p,
-            0.0,
-        )
-    }
-
     pub fn apply_runtime_assignments_until_stable(
         &self,
         y: &mut [f64],
@@ -221,84 +194,6 @@ impl SolveRuntime {
         }
         Err(RuntimeSolveError::solve_ir(format!(
             "prepared update rows did not converge at t={t} after {max_iters} iterations"
-        )))
-    }
-
-    pub fn settle_runtime_assignments_and_relation_memory(
-        &self,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-        tol: f64,
-        max_iters: usize,
-    ) -> Result<(), RuntimeSolveError> {
-        for _ in 0..max_iters {
-            let mut changed =
-                self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
-            changed |= self.update_relation_memory_from_solver_y(t, y, p, tol)?;
-            changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
-            if !changed {
-                return Ok(());
-            }
-        }
-        Err(RuntimeSolveError::solve_ir(format!(
-            "runtime assignments and relation memory did not converge at t={t}"
-        )))
-    }
-
-    pub fn settle_projected_runtime_and_relation_memory<P>(
-        &self,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-        tol: f64,
-        max_iters: usize,
-        mut project_algebraics: P,
-    ) -> Result<(), RuntimeSolveError>
-    where
-        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
-    {
-        for _ in 0..max_iters {
-            let mut changed =
-                self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
-            changed |= project_algebraics(y, p)?;
-            changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
-            changed |= self.update_relation_memory_from_solver_y(t, y, p, tol)?;
-            if !changed {
-                return Ok(());
-            }
-        }
-        Err(RuntimeSolveError::solve_ir(format!(
-            "projected runtime assignments and relation memory did not converge at t={t}"
-        )))
-    }
-
-    pub fn seed_initial_discrete_values(
-        &self,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-        tol: f64,
-        max_iters: usize,
-    ) -> Result<(), RuntimeSolveError> {
-        self.validate_discrete_event_rows()?;
-        if self.discrete_rhs.is_empty() && self.structured_discrete_rows.is_empty() {
-            return Ok(());
-        }
-        for event_iteration in 0..max_iters {
-            let snapshot = DiscretePreSnapshot {
-                row_filter: EventUpdateRowFilter::All,
-                root_relation_overrides: &[],
-                event_iteration,
-            };
-            let changed =
-                self.apply_constant_discrete_rows_for_pre_snapshot(&snapshot, y, p, t, tol)?;
-            if !changed {
-                return Ok(());
-            }
-        }
-        Err(RuntimeSolveError::solve_ir(format!(
-            "initial discrete equations did not converge at t={t}"
         )))
     }
 

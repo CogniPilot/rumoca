@@ -31,13 +31,10 @@
 {%- macro region_name(region) -%}
 {%- if region.function is not none -%}{{ symbol(c_symbols, region.function) }}{%- else -%}{{ region.method }}{%- endif -%}
 {%- endmacro -%}
-{%- macro region_dimensions(value) -%}
-{%- for dimension in value %}{% if dimension.kind == "expr" and dimension.value.kind == "integer" %}[{{ dimension.value.value }}]{% else %}{{ fail("unsupported-feature:embedded-c-scratch-dimension") }}{% endif %}{% endfor -%}
-{%- endmacro -%}
-{#- Where one region lives: the private aggregate, its owner's overlay group,
-    the region. Spelled in exactly one macro so an alias and a call-site
+{#- Where one region lives: the caller-provided instance, its overlay group,
+    and the region. Spelled in exactly one macro so an alias and a call-site
     read-back can never name two different objects. -#}
-{%- macro region_path(group, name) -%}rumoca_galec_scratch.rumoca_galec_g{{ group }}.{{ name }}{%- endmacro -%}
+{%- macro region_path(group, name) -%}self->rumoca_galec_scratch.rumoca_galec_g{{ group }}.{{ name }}{%- endmacro -%}
 {%- macro trace_path(path) -%}
 {%- if trace_root is not none -%}{{ path | replace(trace_root ~ "/", "") }}{%- else -%}{{ path }}{%- endif -%}
 {%- endmacro -%}
@@ -706,7 +703,7 @@ static void {{ symbol(c_symbols, name_text(value.name)) }}(
     {{ function_parameter(parameter) }}{% endfor %})
 {%- endmacro -%}
 {#- The alias the body works through. `ctx` is THIS owner's region inside the
-    unit's private working memory, and nothing else: an owner never holds a
+    current State instance's working memory, and nothing else: an owner never holds a
     pointer into another owner's region across a call, which is what makes the
     overlay observable only through this one declaration. Declaring it once
     means the body reads `ctx->x` rather than repeating the whole path at every
@@ -1075,19 +1072,16 @@ static void rumoca_galec_limit_startup({{ c_model }}State *self) {
 {{- limiter_body("startup") }}
 }
 {%- endif %}
-{#- The private working memory. Emitted before the bodies that alias it, and
-    only when a printed body actually names it — the same "derive the set from
-    the very text that will be printed" test the copy kernels above use, so a
-    block whose regions are all dead gets no object rather than an object the
-    strict profile then rejects as unused. -#}
+{#- Working-memory layout is declared once in the generated header and owned
+    by each State instance. This source only documents the checked overlay
+    decision before the bodies that address it. -#}
 {%- if scratch_layout.groups|length > 0 and "rumoca_galec_scratch." in body_text %}
-{{- banner("Private working memory — one instance per program (GAL-024)") }}
+{{- banner("Instance-owned working memory (GAL-039)") }}
 
 /* The array intermediates the generated bodies work in, plus every generated
- * function's outputs. This is NOT interface: no caller binds to a function's
- * intermediate row buffer, so it is file-scope here rather than a member of
- * {{ c_model }}State, out of the header, and out of any manifest describing the
- * block's data.
+ * function's outputs. These slots are part of each caller-allocated
+ * {{ c_model }}State but are NOT GALEC LogicalData: no manifest consumer binds
+ * to a function's intermediate row buffer.
  *
  * Regions are OVERLAID. Each union below is one group, and two regions share a
  * group only where the checked projection has established that their owners can
@@ -1097,32 +1091,6 @@ static void rumoca_galec_limit_startup({{ c_model }}State *self) {
  * Nothing keeps a pointer into another owner's region across a call: `ctx` is
  * declared once per body and names that body's own region.
  *
- * {{ scratch_layout.summary }}
- *
- * ONE INSTANCE PER PROGRAM: every {{ c_model }}State shares this one object. */
-{%- for group in scratch_layout.groups %}
-{%- for region in group.regions %}
-typedef struct {{ c_model }}Scratch_{{ region_name(region) }}Tag {
-{%- for slot in region.slots %}
-    {{ c_type(slot.ty.value.kind) }} {{ symbol(c_symbols, slot.name.value[0]) }}{{ region_dimensions(slot.dimensions) }};
-{%- endfor %}
-} {{ c_model }}Scratch_{{ region_name(region) }};
-{% endfor %}
-{%- endfor %}
-{%- for group in scratch_layout.groups %}
-/* Overlay group {{ group.ordinal }}. */
-typedef union {{ c_model }}ScratchGroup{{ group.ordinal }}Tag {
-{%- for region in group.regions %}
-    {{ c_model }}Scratch_{{ region_name(region) }} {{ region_name(region) }};
-{%- endfor %}
-} {{ c_model }}ScratchGroup{{ group.ordinal }};
-{% endfor %}
-typedef struct {{ c_model }}ScratchTag {
-{%- for group in scratch_layout.groups %}
-    {{ c_model }}ScratchGroup{{ group.ordinal }} rumoca_galec_g{{ group.ordinal }};
-{%- endfor %}
-} {{ c_model }}Scratch;
-
-static {{ c_model }}Scratch rumoca_galec_scratch;
+ * {{ scratch_layout.summary }} */
 {%- endif %}
 {{- body_text }}

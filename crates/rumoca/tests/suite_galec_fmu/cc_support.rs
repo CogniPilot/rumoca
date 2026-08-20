@@ -36,6 +36,7 @@ pub(super) fn cc() -> Command {
 pub(super) fn assurance_c99_cc() -> Command {
     let mut command = cc();
     command.args([
+        "-O2",
         "-std=c99",
         "-pedantic",
         "-Wall",

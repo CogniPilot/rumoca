@@ -17,6 +17,85 @@ fn identity_element_is_integer_and_diagonal_by_index_equality() {
 }
 
 #[test]
+fn binding_dependencies_issue_dependent_parameters_in_topological_order() {
+    let mut sources = SourceMap::new();
+    let text = "parameter Real gain = 2; parameter Real downstream = derived + 1; parameter Real derived = 3 * gain;";
+    let source = sources.add("dependent-parameters.mo", text);
+    let span = Span::from_offsets(source, 0, text.len());
+    let at = dae::DaeProvenance::source(span).unwrap();
+    let model = dae::Dae::construct(sources, |model| {
+        let real = model
+            .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Real), at))?;
+        let (
+            (gain, gain_reservation),
+            (_downstream, downstream_reservation),
+            (derived, derived_reservation),
+        ) = model.variables(|variables| {
+            Ok((
+                variables.reserve_parameter(VarName::new("gain"), real, at)?,
+                variables.reserve_parameter(VarName::new("downstream"), real, at)?,
+                variables.reserve_parameter(VarName::new("derived"), real, at)?,
+            ))
+        })?;
+        let (gain_default, downstream_binding, derived_binding) =
+            model.expressions(|expressions| {
+                let gain_default = expressions.at(at).literal(dae::DaeLiteral::Real(2.0))?;
+                let gain_value = expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::Parameter(gain))?;
+                let three = expressions.at(at).literal(dae::DaeLiteral::Real(3.0))?;
+                let derived_binding =
+                    expressions
+                        .at(at)
+                        .binary(dae::BinaryOperator::Multiply, three, gain_value)?;
+                let derived_value = expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::Parameter(derived))?;
+                let one = expressions.at(at).literal(dae::DaeLiteral::Real(1.0))?;
+                let downstream_binding =
+                    expressions
+                        .at(at)
+                        .binary(dae::BinaryOperator::Add, derived_value, one)?;
+                Ok((gain_default, downstream_binding, derived_binding))
+            })?;
+        model.variables(|variables| {
+            let attributes = |binding| dae::VariableAttributes {
+                binding: Some(binding),
+                is_tunable: true,
+                ..Default::default()
+            };
+            variables.define(gain_reservation, attributes(gain_default), at)?;
+            variables.define(downstream_reservation, attributes(downstream_binding), at)?;
+            variables.define(derived_reservation, attributes(derived_binding), at)
+        })
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let classified = classify_variables(view).unwrap();
+        let classes: HashMap<_, _> = classified
+            .iter()
+            .map(|variable| (variable.variable.name().as_str(), variable.class))
+            .collect();
+        assert_eq!(classes["gain"], VariableClass::TunableParameter);
+        assert_eq!(classes["derived"], VariableClass::DependentParameter);
+        assert_eq!(classes["downstream"], VariableClass::DependentParameter);
+
+        let ordered_names: Vec<_> = classified
+            .dependent_parameter_order
+            .iter()
+            .map(|id| {
+                view.variable(view.variable_id(*id as usize).unwrap())
+                    .unwrap()
+                    .name()
+                    .as_str()
+            })
+            .collect();
+        assert_eq!(ordered_names, ["derived", "downstream"]);
+    });
+}
+
+#[test]
 fn vector_projection_preserves_the_unique_non_unit_dimension() {
     let index = gast::Expression::Integer(2);
     assert_eq!(
@@ -379,7 +458,7 @@ fn causally_defined_output_remains_an_interface_and_gets_an_assignment() {
         let mut locals = Vec::new();
         causal_outputs::append_causal_assignments(
             view,
-            &classified,
+            classified.as_slice(),
             &by_id,
             &HashMap::new(),
             &mut locals,
@@ -604,6 +683,7 @@ fn tensor_prefix_dependency_finds_outer_indices_inside_nested_loops() {
 fn tensor_prefix_partition_hoists_work_from_an_invariant_guard() {
     let outer = gast::Name::ident("outer");
     let accepted = gast::Name::ident("accepted");
+    let ready = gast::Name::ident("ready");
     let shared = gast::Name::ident("posterior");
     let independent = gast::Spanned::dummy(gast::Statement::Assignment {
         target: gast::Reference::local(shared.clone()),
@@ -619,9 +699,11 @@ fn tensor_prefix_partition_hoists_work_from_an_invariant_guard() {
     });
     let guarded = gast::Spanned::dummy(gast::Statement::If(gast::IfStatement {
         branches: vec![gast::IfBranch {
-            condition: gast::Condition::Expression(gast::Expression::Ref(gast::Reference::local(
-                accepted,
-            ))),
+            condition: gast::Condition::Expression(gast::Expression::binary(
+                gast::BinaryOp::And,
+                gast::Expression::Ref(gast::Reference::local(accepted)),
+                gast::Expression::Ref(gast::Reference::local(ready)),
+            )),
             body: vec![independent, dependent],
             span: Span::DUMMY,
         }],
@@ -800,6 +882,96 @@ fn count_named_multi_calls(statements: &[gast::Spanned<gast::Statement>], functi
             _ => 0,
         })
         .sum()
+}
+
+fn guarded_statements(
+    condition: &gast::Name,
+    body: Vec<gast::Spanned<gast::Statement>>,
+    fallback: Vec<gast::Spanned<gast::Statement>>,
+) -> gast::Spanned<gast::Statement> {
+    gast::Spanned::dummy(gast::Statement::If(gast::IfStatement {
+        branches: vec![gast::IfBranch {
+            condition: gast::Condition::Expression(gast::Expression::Ref(gast::Reference::local(
+                condition.clone(),
+            ))),
+            body,
+            span: Span::DUMMY,
+        }],
+        else_body: Some(fallback),
+    }))
+}
+
+#[test]
+fn correlated_call_consumers_join_their_lazy_producer_branch() {
+    let condition = gast::Name::ident("enabled");
+    let result = gast::Name::ident("result");
+    let output = gast::Name::ident("output");
+    let unrelated = gast::Name::ident("unrelated");
+    let producer = guarded_statements(
+        &condition,
+        vec![gast::Spanned::dummy(gast::Statement::MultiAssignment {
+            targets: vec![gast::Reference::local(result.clone())],
+            call: gast::FunctionCall {
+                function: gast::Name::ident("produce"),
+                arguments: Vec::new(),
+            },
+        })],
+        Vec::new(),
+    );
+    let middle = gast::Spanned::dummy(gast::Statement::Assignment {
+        target: gast::Reference::local(unrelated),
+        value: gast::Expression::Integer(1),
+    });
+    let consumer = guarded_statements(
+        &condition,
+        vec![gast::Spanned::dummy(gast::Statement::Assignment {
+            target: gast::Reference::local(output.clone()),
+            value: gast::Expression::Ref(gast::Reference::local(result.clone())),
+        })],
+        vec![gast::Spanned::dummy(gast::Statement::Assignment {
+            target: gast::Reference::local(output),
+            value: gast::Expression::Real(0.0),
+        })],
+    );
+
+    let coalesced = user_functions::coalesce_correlated_guards(vec![
+        producer,
+        middle.clone(),
+        consumer.clone(),
+    ]);
+    assert_eq!(coalesced.len(), 2);
+    let gast::Statement::If(guard) = &coalesced[0].node else {
+        panic!("the producer remains the shared guard")
+    };
+    assert!(matches!(
+        guard.branches[0].body.as_slice(),
+        [
+            gast::Spanned {
+                node: gast::Statement::MultiAssignment { .. },
+                ..
+            },
+            gast::Spanned {
+                node: gast::Statement::Assignment { .. },
+                ..
+            }
+        ]
+    ));
+    assert_eq!(coalesced[1], middle);
+
+    let dependency = gast::Spanned::dummy(gast::Statement::Assignment {
+        target: gast::Reference::local(result),
+        value: gast::Expression::Real(2.0),
+    });
+    let blocked = user_functions::coalesce_correlated_guards(vec![
+        coalesced[0].clone(),
+        dependency,
+        consumer,
+    ]);
+    assert_eq!(
+        blocked.len(),
+        3,
+        "a dependency between producer and consumer must block reordering"
+    );
 }
 
 fn assert_atomic_multi_output_group(model: &dae::Dae) {

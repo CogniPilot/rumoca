@@ -14,7 +14,7 @@ path = "src/bin/rumoca-worker.rs"
 clap = { workspace = true }
 core_affinity = { workspace = true }
 mimalloc = { workspace = true }
-rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
+rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-phase-solve = { workspace = true }
 # Canonical `ES0xx` registry used by `diagnostic_codes` instead of re-declaring
@@ -24,7 +24,7 @@ rumoca-phase-structural = { workspace = true }
 # assets, and the release parity build intentionally links this worker in that
 # same Cargo invocation. Keeping the feature set identical lets a subsequent
 # focused worker build reuse the release artifact instead of re-LTO-linking it.
-rumoca-sim = { workspace = true, features = ["solver-diffsol", "strict-ir-validation", "report"] }
+rumoca-sim = { workspace = true, features = ["solver-diffsol", "report"] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
 

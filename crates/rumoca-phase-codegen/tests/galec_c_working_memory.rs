@@ -1,5 +1,5 @@
-//! Executable evidence for the overlaid, translation-unit-private working
-//! memory the GALEC C targets emit.
+//! Executable evidence for the overlaid, instance-owned working memory the
+//! GALEC C targets emit.
 //!
 //! The layout decision itself — which regions may share storage — is a property
 //! of the call graph and is tested as such in
@@ -186,20 +186,57 @@ fn render(block: &CheckedAlgorithmBlock, path: &str) -> String {
 }
 
 const DRIVER: &str = "\
+#include <pthread.h>
 #include <stdio.h>
 #include \"WorkingMemory.h\"
 
-int main(void) {
-    WorkingMemoryState state = {0};
-    for (int32_t i = 0; i < 4; ++i) {
-        state.a[i] = (float)(i + 1);
+typedef struct ThreadArgumentsTag {
+    WorkingMemoryState *state;
+} ThreadArguments;
+
+static void *run_model(void *opaque) {
+    ThreadArguments *const arguments = (ThreadArguments *)opaque;
+    for (int32_t iteration = 0; iteration < 1000; ++iteration) {
+        WorkingMemory_dostep(arguments->state);
     }
-    WorkingMemory_dostep(&state);
+    return NULL;
+}
+
+int main(void) {
+    WorkingMemoryState first = {0};
+    WorkingMemoryState second = {0};
     for (int32_t i = 0; i < 4; ++i) {
-        const float expected = 9.0f * (float)(i + 1);
-        if (state.result[i] != expected) {
-            printf(\"result[%d] = %f, expected %f\\n\",
-                   (int)i, (double)state.result[i], (double)expected);
+        first.a[i] = (float)(i + 1);
+        second.a[i] = 10.0f * (float)(i + 1);
+    }
+    if ((void *)&first.rumoca_galec_scratch ==
+        (void *)&second.rumoca_galec_scratch) {
+        return 20;
+    }
+    ThreadArguments first_arguments = {&first};
+    ThreadArguments second_arguments = {&second};
+    pthread_t first_thread;
+    pthread_t second_thread;
+    if (pthread_create(&first_thread, NULL, run_model, &first_arguments) != 0) {
+        return 21;
+    }
+    if (pthread_create(&second_thread, NULL, run_model, &second_arguments) != 0) {
+        return 22;
+    }
+    if (pthread_join(first_thread, NULL) != 0) {
+        return 23;
+    }
+    if (pthread_join(second_thread, NULL) != 0) {
+        return 24;
+    }
+    for (int32_t i = 0; i < 4; ++i) {
+        const float first_expected = 9.0f * (float)(i + 1);
+        const float second_expected = 90.0f * (float)(i + 1);
+        if ((first.result[i] != first_expected) ||
+            (second.result[i] != second_expected)) {
+            printf(\"result[%d] = (%f, %f), expected (%f, %f)\\n\",
+                   (int)i, (double)first.result[i], (double)second.result[i],
+                   (double)first_expected, (double)second_expected);
             return i + 1;
         }
     }
@@ -209,7 +246,8 @@ int main(void) {
 
 /// The strict preflight the target documents (SPEC_0034 GAL-029/030), plus the
 /// three flags the profile adds beyond the smoke test in `galec_c_arrays`.
-const STRICT: [&str; 13] = [
+const STRICT: [&str; 15] = [
+    "-O2",
     "-std=c99",
     "-pedantic",
     "-Wall",
@@ -222,13 +260,14 @@ const STRICT: [&str; 13] = [
     "-Wstrict-prototypes",
     "-Wmissing-prototypes",
     "-Werror",
+    "-pthread",
     "-lm",
 ];
 
 /// Values survive across every call that today's emitter leaves them alive
-/// across, with the regions overlaid. This is the test that fails — with a
-/// wrong number, not a compile error — if a caller and a callee are put on one
-/// piece of storage.
+/// across, with the regions overlaid. Two state objects execute concurrently,
+/// so the test also fails if the generated model shares mutable working memory
+/// between instances.
 #[test]
 fn overlaid_working_memory_preserves_values_across_calls() {
     let block = fixture();
@@ -269,41 +308,38 @@ fn overlaid_working_memory_preserves_values_across_calls() {
     );
 }
 
-/// The working memory is private to the translation unit: not in the header,
-/// not in the block state, and its single-instance consequence is *stated*
-/// rather than left for a reader to discover.
+/// Working memory belongs to the caller-provided state, and the generated
+/// resource contract states both the checked slot budget and the absence of
+/// auxiliary mutable storage.
 #[test]
-fn working_memory_is_private_to_the_translation_unit() {
+fn working_memory_is_owned_by_each_state_instance() {
     let block = fixture();
     let header = render(&block, "model.h.jinja");
     let source = render(&block, "model.c.jinja");
 
     assert!(
-        !header.contains("rumoca_galec_scratch"),
-        "working memory must not appear in the interface header:\n{header}"
+        header.contains("WorkingMemoryScratch rumoca_galec_scratch;"),
+        "each state must own its working memory:\n{header}"
     );
     assert!(
-        !header.contains("Scratch"),
-        "no working-memory type may appear in the interface header:\n{header}"
+        header.contains("RUMOCA_WORKINGMEMORY_DISTINCT_INSTANCE_REENTRANT UINT32_C(1)"),
+        "the distinct-instance concurrency contract must be machine-readable:\n{header}"
     );
     assert!(
-        header.contains("SINGLE INSTANCE PER PROGRAM"),
-        "the single-instance assumption must be stated, not assumed:\n{header}"
+        header.contains("RUMOCA_WORKINGMEMORY_CHECKED_SCRATCH_SLOT_BYTES UINT32_C(80)"),
+        "the checked scratch-slot budget must be machine-readable:\n{header}"
     );
     assert!(
-        source.contains("static WorkingMemoryScratch rumoca_galec_scratch;"),
-        "working memory must be one file-scope object in the source:\n{source}"
-    );
-    // A caller reads a callee's outputs out of the callee's own region, and a
-    // body aliases only its own. Both spellings must name the private object,
-    // never a member of the caller-provided state.
-    assert!(
-        !source.contains("self->rumoca_galec_scratch"),
-        "no path into working memory may go through the block state:\n{source}"
+        header.contains("RUMOCA_WORKINGMEMORY_AUXILIARY_SCRATCH_BYTES UINT32_C(0)"),
+        "the absence of hidden auxiliary scratch must be machine-readable:\n{header}"
     );
     assert!(
-        source.contains("*const ctx = &rumoca_galec_scratch.rumoca_galec_g"),
-        "a body must alias its own region inside the private object:\n{source}"
+        !source.contains("static WorkingMemoryScratch rumoca_galec_scratch;"),
+        "the translation unit must contain no shared mutable scratch:\n{source}"
+    );
+    assert!(
+        source.contains("*const ctx = &self->rumoca_galec_scratch.rumoca_galec_g"),
+        "a body must alias its own region inside the caller's state:\n{source}"
     );
 }
 
@@ -311,14 +347,15 @@ fn working_memory_is_private_to_the_translation_unit() {
 /// achieves are reported rather than left for a reader to derive.
 #[test]
 fn the_overlay_and_its_cost_are_stated_in_the_generated_source() {
+    let header = render(&fixture(), "model.h.jinja");
     let source = render(&fixture(), "model.c.jinja");
     assert!(
-        source.contains("typedef union WorkingMemoryScratchGroup0Tag"),
-        "each overlay group is one union:\n{source}"
+        header.contains("typedef union WorkingMemoryScratchGroup0Tag"),
+        "each overlay group is one union:\n{header}"
     );
     assert!(
-        source.contains("typedef union WorkingMemoryScratchGroup2Tag"),
-        "the three-deep chain must produce three groups:\n{source}"
+        header.contains("typedef union WorkingMemoryScratchGroup2Tag"),
+        "the three-deep chain must produce three groups:\n{header}"
     );
     assert!(
         source.contains("heaviest call chain dostep -> outer -> inner"),
@@ -360,17 +397,20 @@ fn unused_entity_suppression_is_emitted_only_where_the_entity_is_unused() {
     // An array local lives in working memory, so it is declared there and
     // NOWHERE else — a second, dead automatic declaration is what the
     // unconditional marker used to hide.
+    assert_eq!(source.matches("float keep[4];").count(), 0, "{source}");
     assert_eq!(
-        source.matches("float keep[4];").count(),
+        render(&fixture(), "model.h.jinja")
+            .matches("float keep[4];")
+            .count(),
         1,
-        "an array local is declared once, in its region:\n{source}"
+        "an array local is declared once, in its instance-owned region"
     );
 }
 
 /// The Production Code manifest describes the block's data, and working memory
 /// is not the block's data. A target-side intermediate has no Algorithm Code
 /// variable behind it for a `DataReference` to name and no consumer may bind to
-/// one, so it belongs in neither the typedefs nor the state.
+/// one, so it belongs in neither the manifest typedefs nor manifest objects.
 #[test]
 fn the_production_code_manifest_describes_no_working_memory() {
     let template = templates::builtin_template_source("galec-production", "pc_manifest.xml.jinja")

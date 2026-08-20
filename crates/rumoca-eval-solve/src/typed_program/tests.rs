@@ -1062,6 +1062,37 @@ fn compact_cross_product_evaluates_without_coordinate_operations() {
 }
 
 #[test]
+fn promoted_vector_columns_preserve_modelica_row_major_order() {
+    let arithmetic = profile(SolveRealFormat::Binary64);
+    let vector = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![2]).unwrap();
+    let matrix = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![2, 2]).unwrap();
+    let table = SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            identity(10),
+            vec![vector.clone(), vector.clone()],
+            vec![SolvePureCallOutput::result(matrix.clone())],
+            span(89),
+            |builder, inputs, outputs| {
+                let lhs = builder.load(inputs[0], span(90))?;
+                let rhs = builder.load(inputs[1], span(91))?;
+                let columns = builder.concatenate(1, &[lhs, rhs], span(92))?;
+                builder.store(outputs[0], columns, span(93))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let real_value = |value| real_kind(SolveRealFormat::Binary64, value);
+    let lhs = TypedValue::construct(vector.clone(), [1.0, 2.0].map(real_value).to_vec()).unwrap();
+    let rhs = TypedValue::construct(vector, [3.0, 4.0].map(real_value).to_vec()).unwrap();
+
+    let outputs = eval_pure_call(&table, table.owners()[0].id(), &[lhs, rhs]).unwrap();
+
+    assert_eq!(outputs[0].value_type(), &matrix);
+    assert_eq!(outputs[0].elements(), [1.0, 3.0, 2.0, 4.0].map(real_value));
+}
+
+#[test]
 fn compact_map_evaluates_one_checked_body_over_its_domain() {
     let arithmetic = profile(SolveRealFormat::Binary64);
     let scalar = SolveValueType::scalar(SolveScalarType::real(arithmetic));

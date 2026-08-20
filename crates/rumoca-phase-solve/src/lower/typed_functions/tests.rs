@@ -123,16 +123,163 @@ fn mixed_event_transaction_retains_aggregate_inputs_and_atomic_targets() {
             .input_types()
             .map(|value_type| value_type.scalar_count())
             .collect::<Vec<_>>();
-        assert_eq!(input_widths, [2, 1]);
+        // Event-entry values, aligned held fallbacks, then one Boolean clock
+        // activation lane.
+        assert_eq!(input_widths, [2, 1, 2, 1, 1]);
         let target_widths = program
             .target_types()
             .map(|value_type| value_type.scalar_count())
             .collect::<Vec<_>>();
         assert_eq!(target_widths, [2, 1]);
         assert_eq!(program.statement_count(), 1);
-        let _clock_owner = program.clock_owner();
+        assert_eq!(program.clock_owners().len(), 1);
         let table = layout.pure_calls.borrow_mut().finish();
         assert_eq!(table.owners().len(), 1);
+        assert!(table.matches_site(program.site()));
+    });
+}
+
+#[test]
+fn disjoint_periodic_regions_form_one_lazy_atomic_transaction() {
+    let mut sources = SourceMap::new();
+    let source = sources.add(
+        "mixed_clock_transaction.mo",
+        "discrete Real fast; discrete Real slow; when Clock() then end when;",
+    );
+    let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 66)).unwrap();
+    let fast_lattice = rumoca_core::ClockLattice::from_interval_counter(1, 100).unwrap();
+    let slow_lattice = rumoca_core::ClockLattice::from_interval_counter(1, 20).unwrap();
+    let model = dae::Dae::construct(sources, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                rumoca_core::TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                at,
+            )
+        })?;
+        let (fast, slow) = model.variables(|variables| {
+            Ok((
+                variables.discrete_real(
+                    VarName::new("fast"),
+                    real,
+                    at,
+                    dae::VariableAttributes::default(),
+                )?,
+                variables.discrete_real(
+                    VarName::new("slow"),
+                    real,
+                    at,
+                    dae::VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let (fast_clock, slow_clock) = model.clocks(|clocks| {
+            let fast_clock = clocks.periodic(fast_lattice, at)?;
+            let slow_clock = clocks.periodic(slow_lattice, at)?;
+            clocks.own_discrete_real(fast_clock.into(), fast, at)?;
+            clocks.own_discrete_real(slow_clock.into(), slow, at)?;
+            Ok((fast_clock, slow_clock))
+        })?;
+        let (fast_guard, slow_guard) = model
+            .conditions(|conditions| Ok((conditions.reserve(at)?, conditions.reserve(at)?)))?;
+        model.conditions(|conditions| {
+            conditions.define(
+                fast_guard,
+                dae::ConditionInput::Clock(fast_clock.into()),
+                at,
+            )?;
+            conditions.define(
+                slow_guard,
+                dae::ConditionInput::Clock(slow_clock.into()),
+                at,
+            )
+        })?;
+        let (fast_value, slow_value) = model.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::PreDiscreteReal(fast))?,
+                expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::PreDiscreteReal(slow))?,
+            ))
+        })?;
+        model.model_events(|events| {
+            events.transaction(
+                [
+                    dae::ModelEventTarget::DiscreteReal(fast),
+                    dae::ModelEventTarget::DiscreteReal(slow),
+                ],
+                [
+                    dae::ModelEventStep::new(
+                        fast_guard,
+                        fast_guard,
+                        Some(fast_clock.into()),
+                        [dae::ModelEventDefinition::new(
+                            dae::ModelEventTarget::DiscreteReal(fast),
+                            fast_value,
+                            at,
+                        )],
+                        at,
+                    ),
+                    dae::ModelEventStep::new(
+                        slow_guard,
+                        slow_guard,
+                        Some(slow_clock.into()),
+                        [dae::ModelEventDefinition::new(
+                            dae::ModelEventTarget::DiscreteReal(slow),
+                            slow_value,
+                            at,
+                        )],
+                        at,
+                    ),
+                ],
+                at,
+            )
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let layout = crate::layout::lower_layout(view).unwrap();
+        let clocks = crate::lower::clocks::lower_clocks(view, &layout).unwrap();
+        let programs = lower_model_event_transactions(view, &layout, &clocks).unwrap();
+        let [program] = programs.as_slice() else {
+            panic!("one source algorithm must remain one atomic event transaction")
+        };
+        assert_eq!(program.statement_count(), 2);
+        assert_eq!(program.clock_owners().len(), 2);
+        assert_eq!(
+            program.target_clock_owners().collect::<Vec<_>>(),
+            program
+                .clock_owners()
+                .iter()
+                .copied()
+                .map(Some)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            program
+                .input_types()
+                .map(|value_type| value_type.scalar_count())
+                .collect::<Vec<_>>(),
+            [1, 1, 1, 1, 1, 1]
+        );
+        let table = layout.pure_calls.borrow_mut().finish();
+        let owner = table.owner(program.site().owner()).unwrap();
+        let lazy_regions = owner
+            .body()
+            .operations()
+            .iter()
+            .filter(|operation| {
+                matches!(
+                    operation.operation(),
+                    solve::SolveOperation::Conditional { .. }
+                )
+            })
+            .count();
+        assert_eq!(lazy_regions, 2);
         assert!(table.matches_site(program.site()));
     });
 }

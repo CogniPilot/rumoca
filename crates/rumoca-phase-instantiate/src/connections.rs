@@ -727,7 +727,7 @@ fn expr_to_i64_with_params(
         ast::Expression::Binary { op, lhs, rhs, .. } => {
             let l = expr_to_i64_with_params(lhs, int_params, scope)?;
             let r = expr_to_i64_with_params(rhs, int_params, scope)?;
-            eval_binary_i64(op, l, r)
+            rumoca_core::eval_ast_integer_binary(op, l, r)
         }
 
         // Unary
@@ -1118,17 +1118,6 @@ fn subscript_to_i64(
     match sub {
         ast::Subscript::Expression(expr) => expr_to_i64_with_params(expr, int_params, scope),
         ast::Subscript::Range { .. } | ast::Subscript::Empty => None,
-    }
-}
-
-/// Evaluate a binary integer operation.
-fn eval_binary_i64(op: &rumoca_core::OpBinary, l: i64, r: i64) -> Option<i64> {
-    match op {
-        rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => l.checked_add(r),
-        rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => l.checked_sub(r),
-        rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => l.checked_mul(r),
-        rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => l.checked_div(r),
-        _ => None,
     }
 }
 
@@ -1794,11 +1783,11 @@ mod tests {
     #[test]
     fn connection_integer_folding_declines_overflow_without_panicking() {
         assert_eq!(
-            eval_binary_i64(&rumoca_core::OpBinary::Div, i64::MIN, -1),
+            rumoca_core::eval_ast_integer_binary(&rumoca_core::OpBinary::Div, i64::MIN, -1),
             None
         );
         assert_eq!(
-            eval_binary_i64(&rumoca_core::OpBinary::Add, i64::MAX, 1),
+            rumoca_core::eval_ast_integer_binary(&rumoca_core::OpBinary::Add, i64::MAX, 1),
             None
         );
         assert_eq!(eval_unary_i64(&rumoca_core::OpUnary::Minus, i64::MIN), None);
