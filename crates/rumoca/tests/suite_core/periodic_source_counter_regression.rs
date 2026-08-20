@@ -1,0 +1,861 @@
+//! Regression tests for discrete `when`-equation event firing of `pre()`
+//! accumulators.
+//!
+//! These cover the periodic-source counter idiom used by
+//! `Modelica.*.Sources.{Trapezoid,Pulse,SawTooth}Voltage` and friends:
+//!
+//! ```modelica
+//! when time >= (pre(count) + 1) * period + startTime then
+//!   count = pre(count) + 1;
+//! end when;
+//! ```
+//!
+//! Three distinct bugs are guarded here:
+//!   1. A constant-threshold `when time >= c` accumulator must fire exactly
+//!      once per crossing (no right-limit double-application of the update).
+//!   2. A `time >= f(pre(count))` guard must not degenerate to the
+//!      always-false `c and not c` edge (MLS §3.7.3 time-event firing).
+//!   3. `pre(count)` must advance after each event so the self-rescheduling
+//!      threshold moves forward and the `when` fires on every period.
+//!   4. Vectorized when-conditions apply the same scalar activation semantics
+//!      to each element before OR-combining the guards.
+//!   5. Non-target `pre(...)` values in arithmetic factors must keep ordinary
+//!      edge semantics rather than becoming level-sensitive guards.
+//!   6. Stateful root-event handling must commit `pre(...)` slots after each
+//!      event so the next dynamic threshold observes the updated discrete
+//!      state.
+//!   7. Assignment deltas that depend on another `pre(...)` value must not
+//!      refire on unrelated later events.
+//!   8. A self-rescheduling guard that is *already true* at `t_start` has no
+//!      rising edge there, so it never fires and never re-arms — the counter
+//!      stays at its start value for the whole run, which is what OpenModelica
+//!      does (see `TSTART_THRESHOLD_STALLS`).
+//!   9. Indexed array thresholds keep structured subscript information through
+//!      DAE/Solve lowering instead of being treated as opaque names.
+
+use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae};
+
+const CONST_THRESHOLD_COUNTER: &str = r#"
+model ConstThresholdCounter
+  discrete Integer count(start = 0, fixed = true);
+equation
+  when time >= 0.3 then
+    count = pre(count) + 1;
+  end when;
+end ConstThresholdCounter;
+"#;
+
+const CONST_THRESHOLD_WITH_LATER_EVENT: &str = r#"
+model ConstThresholdWithLaterEvent
+  discrete Integer count(start = 0, fixed = true);
+  discrete Integer unrelated(start = 0, fixed = true);
+equation
+  when time >= 0.3 then
+    count = pre(count) + 1;
+  end when;
+
+  when time >= 0.6 then
+    unrelated = pre(unrelated) + 1;
+  end when;
+end ConstThresholdWithLaterEvent;
+"#;
+
+const SELF_RESCHEDULING_COUNTER: &str = r#"
+model SelfReschedulingCounter
+  parameter Real period = 0.1;
+  parameter Real startTime = -0.035;
+  discrete Integer count(start = 0, fixed = true);
+equation
+  when time >= (pre(count) + 1) * period + startTime then
+    count = pre(count) + 1;
+  end when;
+end SelfReschedulingCounter;
+"#;
+
+const INITIAL_SELF_RESCHEDULING_COUNTER: &str = r#"
+model InitialSelfReschedulingCounter
+  parameter Real period = 0.1;
+  parameter Real startTime = -0.1;
+  discrete Integer count(start = 0, fixed = true);
+equation
+  when time >= (pre(count) + 1) * period + startTime then
+    count = pre(count) + 1;
+  end when;
+end InitialSelfReschedulingCounter;
+"#;
+
+const SAMPLE_COUNTER: &str = r#"
+model SampleCounter
+  discrete Integer count(start = 0, fixed = true);
+equation
+  when sample(0.1, 0.1) then
+    count = pre(count) + 1;
+  end when;
+end SampleCounter;
+"#;
+
+const ZERO_PHASE_SAMPLE_COUNTER: &str = r#"
+model ZeroPhaseSampleCounter
+  discrete Integer count(start = 0, fixed = true);
+equation
+  when sample(0.0, 0.1) then
+    count = pre(count) + 1;
+  end when;
+end ZeroPhaseSampleCounter;
+"#;
+
+const SAMPLE_ALIAS_COUNTER_WITH_UNRELATED_EVENT: &str = r#"
+model SampleAliasCounterWithUnrelatedEvent
+  Boolean sampleTrigger;
+  discrete Integer count(start = 0, fixed = true);
+  discrete Integer unrelated(start = 0, fixed = true);
+equation
+  sampleTrigger = sample(0.1, 0.1);
+  when sampleTrigger then
+    count = pre(count) + 1;
+  end when;
+  when time >= 0.25 then
+    unrelated = pre(unrelated) + 1;
+  end when;
+end SampleAliasCounterWithUnrelatedEvent;
+"#;
+
+const VECTOR_SELF_RESCHEDULING_COUNTER: &str = r#"
+model VectorSelfReschedulingCounter
+  parameter Real period = 0.1;
+  parameter Real startTime = -0.035;
+  discrete Integer count(start = 0, fixed = true);
+equation
+  when {time >= (pre(count) + 1) * period + startTime, false} then
+    count = pre(count) + 1;
+  end when;
+end VectorSelfReschedulingCounter;
+"#;
+
+const INDEXED_PARAMETER_THRESHOLD_WITH_LATER_EVENT: &str = r#"
+model IndexedParameterThresholdWithLaterEvent
+  parameter Real deadline[2] = {0.3, 0.9};
+  discrete Integer count(start = 0, fixed = true);
+  discrete Integer unrelated(start = 0, fixed = true);
+equation
+  when time >= deadline[1] then
+    count = pre(count) + 1;
+  end when;
+
+  when time >= 0.6 then
+    unrelated = pre(unrelated) + 1;
+  end when;
+end IndexedParameterThresholdWithLaterEvent;
+"#;
+
+const DISCRETE_VECTOR_CAPTURE: &str = r#"
+model DiscreteVectorCapture
+  Real source[3];
+  discrete Real captured[3](each start = 0.0, each fixed = true);
+equation
+  source = {time, 2.0 * time, 3.0 * time};
+  when time >= 0.1 then
+    captured = source;
+  end when;
+end DiscreteVectorCapture;
+"#;
+
+const MULTI_DISCRETE_VECTOR_CAPTURE: &str = r#"
+model MultiDiscreteVectorCapture
+  Real position[3];
+  Real velocity[3];
+  Real acceleration[3];
+  discrete Real event_time(start = -1.0, fixed = true);
+  discrete Real captured_position[3](start = {0.0, 0.0, 20.0}, each fixed = true);
+  discrete Real captured_velocity[3](each start = 0.0, each fixed = true);
+  discrete Real captured_acceleration[3](each start = 0.0, each fixed = true);
+  output Real forwarded_position[3];
+equation
+  position = {time, 2.0 * time, 20.0 + 3.0 * time};
+  velocity = {1.0, 2.0, 3.0};
+  acceleration = {4.0, 5.0, 6.0};
+  forwarded_position = captured_position;
+  when time >= 0.1 and pre(event_time) < 0.0 then
+    event_time = time;
+    captured_position = position;
+    captured_velocity = velocity;
+    captured_acceleration = acceleration;
+  end when;
+end MultiDiscreteVectorCapture;
+"#;
+
+const NONLINEAR_PRE_FACTOR_WITH_LATER_EVENT: &str = r#"
+model NonlinearPreFactorWithLaterEvent
+  discrete Integer count(start = 0, fixed = true);
+  discrete Real scale(start = -1.0, fixed = true);
+  discrete Integer unrelated(start = 0, fixed = true);
+equation
+  when time >= 0.1 + (pre(count) + 1) * (pre(scale) + 1) then
+    count = pre(count) + 1;
+    scale = pre(scale);
+  end when;
+
+  when time >= 0.2 then
+    unrelated = pre(unrelated) + 1;
+  end when;
+end NonlinearPreFactorWithLaterEvent;
+"#;
+
+const NON_TARGET_PRE_DELTA_WITH_LATER_EVENT: &str = r#"
+model NonTargetPreDeltaWithLaterEvent
+  discrete Integer count(start = 0, fixed = true);
+  discrete Integer shift(start = -2, fixed = true);
+  discrete Integer unrelated(start = 0, fixed = true);
+equation
+  when time >= (pre(count) + 1) * 0.1 then
+    count = pre(count) + 1 + pre(shift);
+    shift = pre(shift);
+  end when;
+
+  when time >= 0.2 then
+    unrelated = pre(unrelated) + 1;
+  end when;
+end NonTargetPreDeltaWithLaterEvent;
+"#;
+
+const STATEFUL_SELF_RESCHEDULING_COUNTER: &str = r#"
+model StatefulSelfReschedulingCounter
+  parameter Real period = 0.1;
+  Real x(start = 0.0, fixed = true);
+  discrete Integer count(start = 0, fixed = true);
+equation
+  der(x) = 1.0;
+
+  when time >= (pre(count) + 1) * period then
+    count = pre(count) + 1;
+  end when;
+end StatefulSelfReschedulingCounter;
+"#;
+
+const STATEFUL_INITIAL_SELF_RESCHEDULING_COUNTER: &str = r#"
+model StatefulInitialSelfReschedulingCounter
+  parameter Real period = 0.1;
+  parameter Real startTime = -0.1;
+  Real x(start = 0.0, fixed = true);
+  discrete Integer count(start = 0, fixed = true);
+equation
+  der(x) = 1.0;
+
+  when time >= (pre(count) + 1) * period + startTime then
+    count = pre(count) + 1;
+  end when;
+end StatefulInitialSelfReschedulingCounter;
+"#;
+
+const PRE_THRESHOLD_WITH_LATER_EVENT: &str = r#"
+model PreThresholdWithLaterEvent
+  discrete Real deadline(start = 0.3, fixed = true);
+  discrete Integer count(start = 0, fixed = true);
+  discrete Integer unrelated(start = 0, fixed = true);
+equation
+  when time >= pre(deadline) then
+    deadline = pre(deadline);
+    count = pre(count) + 1;
+  end when;
+
+  when time >= 0.6 then
+    unrelated = pre(unrelated) + 1;
+  end when;
+end PreThresholdWithLaterEvent;
+"#;
+
+fn trace_values<'a>(sim: &'a rumoca_sim::SimResult, name: &str) -> &'a [f64] {
+    let idx = sim
+        .names
+        .iter()
+        .position(|candidate| candidate == name)
+        .unwrap_or_else(|| panic!("trace should contain `{name}`; names={:?}", sim.names));
+    &sim.data[idx]
+}
+
+fn value_at(sim: &rumoca_sim::SimResult, name: &str, t: f64) -> f64 {
+    let values = trace_values(sim, name);
+    // Last recorded sample at or before `t` (right-continuous hold).
+    let mut result = values[0];
+    for (idx, &time) in sim.times.iter().enumerate() {
+        if time <= t + 1.0e-9 {
+            result = values[idx];
+        } else {
+            break;
+        }
+    }
+    result
+}
+
+#[test]
+fn const_threshold_when_accumulator_fires_exactly_once() {
+    let compiled = rumoca::Compiler::new()
+        .model("ConstThresholdCounter")
+        .compile_str(CONST_THRESHOLD_COUNTER, "const_threshold_counter.mo")
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            dt: Some(0.05),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    let count = trace_values(&sim, "count");
+    let last = *count.last().expect("count trace should be non-empty");
+    // MLS §8.3.5.1: a single false->true crossing fires the `when` once. A
+    // right-limit re-application would double-count to 2.
+    assert!(
+        (last - 1.0).abs() <= 1.0e-9,
+        "count must reach exactly 1 (fired once), got {last}"
+    );
+    assert!(
+        value_at(&sim, "count", 0.2) <= 0.5,
+        "count must stay 0 before the 0.3 threshold"
+    );
+}
+
+#[test]
+fn exact_sample_alias_fires_every_tick_and_does_not_allocate_condition_memory() {
+    let compiled = rumoca::Compiler::new()
+        .model("SampleAliasCounterWithUnrelatedEvent")
+        .compile_str(
+            SAMPLE_ALIAS_COUNTER_WITH_UNRELATED_EVENT,
+            "sample_alias_counter_with_unrelated_event.mo",
+        )
+        .expect("exact sample alias should compile");
+    let solve = rumoca_phase_solve::lower_solve_problem(&compiled.dae)
+        .expect("sample alias has a checked Solve owner");
+    let condition_memory_rows = solve
+        .discrete
+        .row_roles
+        .iter()
+        .filter(|role| **role == rumoca_ir_solve::DiscreteRowRole::ConditionMemory)
+        .count();
+    assert_eq!(
+        condition_memory_rows, 1,
+        "only the unrelated time relation needs a buffer; the sample alias is a typed clock leaf"
+    );
+
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.5,
+            dt: Some(0.025),
+            ..SimOptions::default()
+        },
+    )
+    .expect("sample alias model should simulate");
+    for (time, expected) in [
+        (0.05, 0.0),
+        (0.15, 1.0),
+        (0.25, 2.0),
+        (0.35, 3.0),
+        (0.45, 4.0),
+        (0.50, 5.0),
+    ] {
+        let actual = value_at(&sim, "count", time);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "sample alias count at t={time} should be {expected}, got {actual}"
+        );
+    }
+    assert_eq!(value_at(&sim, "unrelated", 0.5), 1.0);
+}
+
+#[test]
+fn const_threshold_guard_does_not_refire_on_later_unrelated_event() {
+    let compiled = rumoca::Compiler::new()
+        .model("ConstThresholdWithLaterEvent")
+        .compile_str(
+            CONST_THRESHOLD_WITH_LATER_EVENT,
+            "const_threshold_with_later_event.mo",
+        )
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.8,
+            dt: Some(0.05),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    assert!(
+        (value_at(&sim, "count", 0.8) - 1.0).abs() <= 1.0e-9,
+        "constant time-threshold guard must not refire at the unrelated 0.6 event"
+    );
+    assert!(
+        (value_at(&sim, "unrelated", 0.8) - 1.0).abs() <= 1.0e-9,
+        "unrelated later event should still fire"
+    );
+}
+
+#[test]
+fn self_rescheduling_counter_advances_every_period() {
+    let compiled = rumoca::Compiler::new()
+        .model("SelfReschedulingCounter")
+        .compile_str(SELF_RESCHEDULING_COUNTER, "self_rescheduling_counter.mo")
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.5,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    // First event at (0+1)*0.1 - 0.035 = 0.065, then every 0.1 thereafter as
+    // pre(count) advances and the threshold re-arms.
+    let checks = [
+        (0.05, 0.0),
+        (0.10, 1.0),
+        (0.20, 2.0),
+        (0.30, 3.0),
+        (0.40, 4.0),
+    ];
+    for (t, expected) in checks {
+        let actual = value_at(&sim, "count", t);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "count at t={t} should be {expected}, got {actual} \
+             (self-rescheduling `pre(count)` threshold must advance each event)"
+        );
+    }
+}
+
+/// The sample grid on which both `t_start`-threshold counters are read, with
+/// the OpenModelica value at each point.
+///
+/// `startTime = -period` puts the first threshold `(pre(count) + 1) * period +
+/// startTime` exactly on `t = 0`, so `time >= 0` is already true at the
+/// initialization instant. MLS §8.3.5.1 gives the activation buffer the start
+/// value `time.start >= …`, i.e. `true`, and §8.6 requires `v = pre(v)` before
+/// the start of the integration, so `edge` is false there: the `when` never
+/// runs, `pre(count)` never advances, and the threshold never re-arms.
+///
+/// `omc` (dassl, `stopTime = 0.36`, `numberOfIntervals = 18`) agrees exactly —
+/// `count = 0` in every row of both models, including the `t = 0` row. rumoca
+/// used to report `1, 2, 3, 4` here, from an activation buffer left at `false`
+/// that manufactured a rising edge at the initial event.
+///
+/// `self_rescheduling_counter_advances_every_period` is the same idiom with
+/// `startTime = -0.035`, whose first threshold `0.065` is *not* met at
+/// `t_start`; it rises normally and counts, and is the test that keeps this one
+/// from being read as "self-rescheduling thresholds do not work".
+const TSTART_THRESHOLD_STALLS: [(f64, f64); 5] = [
+    (0.00, 0.0),
+    (0.05, 0.0),
+    (0.15, 0.0),
+    (0.25, 0.0),
+    (0.35, 0.0),
+];
+
+#[test]
+fn initial_self_rescheduling_counter_never_starts_when_its_threshold_is_already_met() {
+    let compiled = rumoca::Compiler::new()
+        .model("InitialSelfReschedulingCounter")
+        .compile_str(
+            INITIAL_SELF_RESCHEDULING_COUNTER,
+            "initial_self_rescheduling_counter.mo",
+        )
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.36,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    for (t, expected) in TSTART_THRESHOLD_STALLS {
+        let actual = value_at(&sim, "count", t);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "initial self-rescheduling count at t={t} should be {expected}, got {actual} \
+             (a threshold already met at t_start has no rising edge, so the counter \
+              never arms)"
+        );
+    }
+}
+
+#[test]
+fn vector_self_rescheduling_counter_advances_every_period() {
+    let compiled = rumoca::Compiler::new()
+        .model("VectorSelfReschedulingCounter")
+        .compile_str(
+            VECTOR_SELF_RESCHEDULING_COUNTER,
+            "vector_self_rescheduling_counter.mo",
+        )
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.5,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    let checks = [
+        (0.05, 0.0),
+        (0.10, 1.0),
+        (0.20, 2.0),
+        (0.30, 3.0),
+        (0.40, 4.0),
+    ];
+    for (t, expected) in checks {
+        let actual = value_at(&sim, "count", t);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "vector when count at t={t} should be {expected}, got {actual} \
+             (each scalar vector guard must keep its own edge activation)"
+        );
+    }
+}
+
+#[test]
+fn indexed_parameter_threshold_does_not_refire_on_later_unrelated_event() {
+    let compiled = rumoca::Compiler::new()
+        .model("IndexedParameterThresholdWithLaterEvent")
+        .compile_str(
+            INDEXED_PARAMETER_THRESHOLD_WITH_LATER_EVENT,
+            "indexed_parameter_threshold_with_later_event.mo",
+        )
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.8,
+            dt: Some(0.05),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    assert!(
+        (value_at(&sim, "count", 0.8) - 1.0).abs() <= 1.0e-9,
+        "indexed array threshold must preserve subscript structure and fire once"
+    );
+    assert!(
+        (value_at(&sim, "unrelated", 0.8) - 1.0).abs() <= 1.0e-9,
+        "unrelated later event should still fire"
+    );
+}
+
+#[test]
+fn discrete_vector_assignment_captures_every_component_at_event() {
+    let compiled = rumoca::Compiler::new()
+        .model("DiscreteVectorCapture")
+        .compile_str(DISCRETE_VECTOR_CAPTURE, "discrete_vector_capture.mo")
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.2,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    for (index, expected) in [0.1, 0.2, 0.3].into_iter().enumerate() {
+        let name = format!("captured[{}]", index + 1);
+        let actual = value_at(&sim, &name, 0.2);
+        assert!(
+            (actual - expected).abs() <= 1.0e-6,
+            "{name} should capture {expected} at the vector event, got {actual}"
+        );
+    }
+}
+
+#[test]
+fn one_event_captures_multiple_discrete_vectors() {
+    let compiled = rumoca::Compiler::new()
+        .model("MultiDiscreteVectorCapture")
+        .compile_str(
+            MULTI_DISCRETE_VECTOR_CAPTURE,
+            "multi_discrete_vector_capture.mo",
+        )
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.2,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    let event_time = value_at(&sim, "event_time", 0.2);
+    assert!(
+        (event_time - 0.1).abs() <= 2.0e-5,
+        "the capture event should occur near t=0.1, got {event_time}"
+    );
+    for (base, expected) in [
+        (
+            "captured_position",
+            [event_time, 2.0 * event_time, 20.0 + 3.0 * event_time],
+        ),
+        ("captured_velocity", [1.0, 2.0, 3.0]),
+        ("captured_acceleration", [4.0, 5.0, 6.0]),
+        (
+            "forwarded_position",
+            [event_time, 2.0 * event_time, 20.0 + 3.0 * event_time],
+        ),
+    ] {
+        for (index, expected_component) in expected.into_iter().enumerate() {
+            let name = format!("{base}[{}]", index + 1);
+            let actual = value_at(&sim, &name, 0.2);
+            assert!(
+                (actual - expected_component).abs() <= 1.0e-6,
+                "{name} should capture {expected_component}, got {actual}"
+            );
+        }
+    }
+}
+
+#[test]
+fn nonlinear_pre_factor_guard_does_not_refire_on_later_unrelated_event() {
+    let compiled = rumoca::Compiler::new()
+        .model("NonlinearPreFactorWithLaterEvent")
+        .compile_str(
+            NONLINEAR_PRE_FACTOR_WITH_LATER_EVENT,
+            "nonlinear_pre_factor_with_later_event.mo",
+        )
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.3,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    assert!(
+        (value_at(&sim, "count", 0.3) - 1.0).abs() <= 1.0e-9,
+        "non-target pre factors must keep edge semantics and avoid refiring"
+    );
+    assert!(
+        (value_at(&sim, "unrelated", 0.3) - 1.0).abs() <= 1.0e-9,
+        "unrelated later event should still fire"
+    );
+}
+
+#[test]
+fn non_target_pre_delta_guard_does_not_refire_on_later_unrelated_event() {
+    let compiled = rumoca::Compiler::new()
+        .model("NonTargetPreDeltaWithLaterEvent")
+        .compile_str(
+            NON_TARGET_PRE_DELTA_WITH_LATER_EVENT,
+            "non_target_pre_delta_with_later_event.mo",
+        )
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.3,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    assert!(
+        (value_at(&sim, "count", 0.3) + 1.0).abs() <= 1.0e-9,
+        "assignment deltas depending on another pre value must not refire"
+    );
+    assert!(
+        (value_at(&sim, "unrelated", 0.3) - 1.0).abs() <= 1.0e-9,
+        "unrelated later event should still fire"
+    );
+}
+
+#[test]
+fn stateful_self_rescheduling_counter_advances_every_period() {
+    let compiled = rumoca::Compiler::new()
+        .model("StatefulSelfReschedulingCounter")
+        .compile_str(
+            STATEFUL_SELF_RESCHEDULING_COUNTER,
+            "stateful_self_rescheduling_counter.mo",
+        )
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.36,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    let checks = [(0.05, 0.0), (0.15, 1.0), (0.25, 2.0), (0.35, 3.0)];
+    for (t, expected) in checks {
+        let actual = value_at(&sim, "count", t);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "stateful count at t={t} should be {expected}, got {actual} \
+             (root-handled events must commit pre slots for the next threshold)"
+        );
+    }
+}
+
+#[test]
+fn stateful_initial_self_rescheduling_counter_also_stalls_on_a_met_threshold() {
+    let compiled = rumoca::Compiler::new()
+        .model("StatefulInitialSelfReschedulingCounter")
+        .compile_str(
+            STATEFUL_INITIAL_SELF_RESCHEDULING_COUNTER,
+            "stateful_initial_self_rescheduling_counter.mo",
+        )
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.36,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    for (t, expected) in TSTART_THRESHOLD_STALLS {
+        let actual = value_at(&sim, "count", t);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "stateful initial self-rescheduling count at t={t} should be {expected}, got {actual} \
+             (adding a continuous state must not give the met threshold an edge the \
+              state-free model does not have)"
+        );
+    }
+}
+
+#[test]
+fn sample_when_accumulator_advances_once_per_tick() {
+    let compiled = rumoca::Compiler::new()
+        .model("SampleCounter")
+        .compile_str(SAMPLE_COUNTER, "sample_counter.mo")
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.36,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    let checks = [(0.05, 0.0), (0.15, 1.0), (0.25, 2.0), (0.35, 3.0)];
+    for (t, expected) in checks {
+        let actual = value_at(&sim, "count", t);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "count at t={t} should be {expected}, got {actual} \
+             (sample(start, interval) must fire once per tick)"
+        );
+    }
+}
+
+#[test]
+fn rk_like_sample_when_accumulator_advances_once_per_tick() {
+    let compiled = rumoca::Compiler::new()
+        .model("SampleCounter")
+        .compile_str(SAMPLE_COUNTER, "sample_counter.mo")
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.36,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate with RK-like solver");
+
+    let checks = [(0.05, 0.0), (0.15, 1.0), (0.25, 2.0), (0.35, 3.0)];
+    for (t, expected) in checks {
+        let actual = value_at(&sim, "count", t);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "RK-like count at t={t} should be {expected}, got {actual} \
+             (scheduled sample condition memory must clear between ticks)"
+        );
+    }
+}
+
+#[test]
+fn rk_like_zero_phase_sample_when_accumulator_advances_after_initial_tick() {
+    let compiled = rumoca::Compiler::new()
+        .model("ZeroPhaseSampleCounter")
+        .compile_str(ZERO_PHASE_SAMPLE_COUNTER, "zero_phase_sample_counter.mo")
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.36,
+            dt: Some(0.02),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate with RK-like solver");
+
+    let checks = [
+        (0.00, 1.0),
+        (0.05, 1.0),
+        (0.15, 2.0),
+        (0.25, 3.0),
+        (0.35, 4.0),
+    ];
+    for (t, expected) in checks {
+        let actual = value_at(&sim, "count", t);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "RK-like zero-phase count at t={t} should be {expected}, got {actual} \
+             (sample(0, interval) must re-arm after the initialization tick)"
+        );
+    }
+}
+
+#[test]
+fn pre_threshold_guard_does_not_refire_on_later_unrelated_event() {
+    let compiled = rumoca::Compiler::new()
+        .model("PreThresholdWithLaterEvent")
+        .compile_str(
+            PRE_THRESHOLD_WITH_LATER_EVENT,
+            "pre_threshold_with_later_event.mo",
+        )
+        .expect("model should compile");
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.8,
+            dt: Some(0.05),
+            ..SimOptions::default()
+        },
+    )
+    .expect("model should simulate");
+
+    assert!(
+        (value_at(&sim, "count", 0.8) - 1.0).abs() <= 1.0e-9,
+        "pre-based time-threshold guard must not refire at the unrelated 0.6 event"
+    );
+    assert!(
+        (value_at(&sim, "unrelated", 0.8) - 1.0).abs() <= 1.0e-9,
+        "unrelated later event should still fire"
+    );
+}
