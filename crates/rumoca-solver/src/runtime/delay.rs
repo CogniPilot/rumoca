@@ -354,7 +354,8 @@ impl DelayRuntime {
         Ok(())
     }
 
-    pub(crate) fn step_limit(&self) -> Option<f64> {
+    #[cfg(test)]
+    fn accepted_step_limit(&self) -> Option<f64> {
         self.state
             .borrow()
             .channels
@@ -1181,14 +1182,14 @@ mod tests {
         runtime
             .commit(0.0, &[], &params, RowEvalContext::default())
             .expect("initial history should commit");
-        assert_eq!(runtime.step_limit(), Some(0.2));
+        assert_eq!(runtime.accepted_step_limit(), Some(0.2));
 
         params[2] = 0.8;
         runtime
             .refresh(0.1, &[], &mut params, RowEvalContext::default())
             .expect("speculative delay should evaluate");
         assert_eq!(
-            runtime.step_limit(),
+            runtime.accepted_step_limit(),
             Some(0.2),
             "only an accepted point may change the method-of-steps limit"
         );

@@ -6,8 +6,8 @@ mod event_boundary;
 use super::lifecycle::{MeLifecycle, MeLifecycleCommand, MeLifecycleViolation, MeState};
 use super::{
     MeCompletedIntegratorStep, MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeEventStop,
-    MeFmuState, MeInstanceConfig, MeModelDescription, MeModelSource, MeObservation, MeStage,
-    MeTime, MeValueRef, advance_states_to_event_probe,
+    MeFloat64Backing, MeFmuState, MeInstanceConfig, MeModelDescription, MeModelSource,
+    MeObservation, MeStage, MeTime, MeValueRef, advance_states_to_event_probe,
 };
 #[cfg(test)]
 use super::{MeIndicatorCrossing, MeOutputSeries};
@@ -139,7 +139,8 @@ pub struct SolveMeKernel {
     continuous_linearization_cache: RefCell<Option<CachedContinuousLinearization>>,
 
     initial_observations: Vec<MeObservation>,
-    delay_step_limit: Option<f64>,
+    max_step_duration: Option<f64>,
+    max_step_duration_value_reference: Option<u32>,
     last_projection_changed: bool,
     termination: Option<SimTermination>,
     output_meta: Vec<SimVariableMeta>,
@@ -183,7 +184,7 @@ pub(crate) struct MeKernelSnapshot {
     root_cache: Option<CachedRootConditions>,
     continuous_linearization_cache: Option<CachedContinuousLinearization>,
     initial_observations: Vec<MeObservation>,
-    delay_step_limit: Option<f64>,
+    max_step_duration: Option<f64>,
     last_projection_changed: bool,
     termination: Option<SimTermination>,
     settled_initialization_y: Option<Vec<f64>>,
@@ -249,7 +250,15 @@ impl SolveMeKernel {
             .solve_layout
             .input_parameter_index(name)
             .map(|index| MeValueRef {
-                index,
+                backing: MeFloat64Backing::InputParameter(index),
+                instance_brand: Rc::clone(&self.instance_brand),
+            })
+    }
+
+    pub(crate) fn max_step_duration_value_reference(&self) -> Option<MeValueRef> {
+        self.max_step_duration_value_reference
+            .map(|value_reference| MeValueRef {
+                backing: MeFloat64Backing::MaxStepDuration(value_reference),
                 instance_brand: Rc::clone(&self.instance_brand),
             })
     }
@@ -463,10 +472,6 @@ impl SolveMeKernel {
         })
     }
 
-    pub(crate) fn max_step_size(&self) -> Option<f64> {
-        self.delay_step_limit
-    }
-
     #[cfg(test)]
     pub(crate) fn next_event_stop(&mut self, horizon: f64) -> Result<MeEventStop, MeError> {
         self.require_active_lifecycle("next_event_stop")?;
@@ -647,25 +652,75 @@ impl SolveMeKernel {
                 .zip(values.iter().copied())
                 .find(|(reference, value)| {
                     !Rc::ptr_eq(&reference.instance_brand, &self.instance_brand)
-                        || reference.index >= self.params.len()
+                        || !matches!(
+                            reference.backing,
+                            MeFloat64Backing::InputParameter(index) if index < self.params.len()
+                        )
                         || !value.is_finite()
                 })
         {
             return Err(contract(format!(
-                "Float64 value reference {} with value {value} is invalid for {} parameters",
-                reference.index,
+                "Float64 value reference {:?} with value {value} is not a writable input for {} parameters",
+                reference.backing,
                 self.params.len(),
             )));
         }
         let checkpoint = self.fmu_state();
         for (reference, value) in refs.iter().zip(values.iter().copied()) {
-            self.params[reference.index] = value;
+            let MeFloat64Backing::InputParameter(index) = reference.backing else {
+                unreachable!("the complete batch was proved writable above");
+            };
+            self.params[index] = value;
         }
         self.clear_runtime_caches();
         if let Err(error) = self.commit_delay_point() {
             self.reset_to_fmu_state(&checkpoint)
                 .expect("a same-instance internal checkpoint is always restorable");
             return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn get_float64(
+        &self,
+        refs: &[MeValueRef],
+        values: &mut [f64],
+    ) -> Result<(), MeError> {
+        self.require_active_lifecycle("get_float64")?;
+        if refs.len() != values.len() {
+            return Err(contract(format!(
+                "{} Float64 value references do not match {} result slots",
+                refs.len(),
+                values.len()
+            )));
+        }
+        for (reference, value) in refs.iter().zip(values) {
+            if !Rc::ptr_eq(&reference.instance_brand, &self.instance_brand) {
+                return Err(contract(
+                    "Float64 value reference belongs to a different ME instance",
+                ));
+            }
+            *value = match reference.backing {
+                MeFloat64Backing::InputParameter(index) => {
+                    self.params.get(index).copied().ok_or_else(|| {
+                        contract(format!(
+                            "Float64 input value reference {index} is outside {} parameters",
+                            self.params.len()
+                        ))
+                    })?
+                }
+                MeFloat64Backing::MaxStepDuration(value_reference)
+                    if self.max_step_duration_value_reference == Some(value_reference) =>
+                {
+                    self.max_step_duration
+                        .unwrap_or(rumoca_ir_solve::fmi::MAX_STEP_DURATION_UNCONSTRAINED)
+                }
+                MeFloat64Backing::MaxStepDuration(_) => {
+                    return Err(contract(
+                        "maximum-step-duration value reference is undeclared",
+                    ));
+                }
+            };
         }
         Ok(())
     }
@@ -704,7 +759,7 @@ impl SolveMeKernel {
                     .borrow()
                     .clone(),
                 initial_observations: self.initial_observations.clone(),
-                delay_step_limit: self.delay_step_limit,
+                max_step_duration: self.max_step_duration,
                 last_projection_changed: self.last_projection_changed,
                 termination: self.termination.clone(),
                 settled_initialization_y: self.settled_initialization_y.clone(),
@@ -765,7 +820,7 @@ impl SolveMeKernel {
             .clone_from(&state.continuous_linearization_cache);
         self.initial_observations
             .clone_from(&state.initial_observations);
-        self.delay_step_limit = state.delay_step_limit;
+        self.max_step_duration = state.max_step_duration;
         self.last_projection_changed = state.last_projection_changed;
         self.termination.clone_from(&state.termination);
         self.settled_initialization_y

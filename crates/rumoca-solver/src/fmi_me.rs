@@ -55,9 +55,6 @@
 //!   It is *not* `fmi3GetFMUState`: it snapshots no discrete state and cannot
 //!   be restored. Only `SolveMeKernel::fmu_state` and
 //!   `SolveMeKernel::reset_to_fmu_state` map to the FMU-state calls.
-//! - `SolveMeKernel::max_step_size`: rumoca's delay channels bound the
-//!   next step. FMI 3.0 ME has no counterpart at all — a host that ignores it
-//!   would step over delay history.
 //! - [`MeStage`]: FMI 3.0 reports one undifferentiated `fmi3Error`. rumoca's
 //!   MSL harness buckets every failure by the sub-stage that raised it, so the
 //!   component mints that stage where the failure happens rather than letting a
@@ -107,7 +104,10 @@ pub struct MeModelSource<'a>(MeModelSourceInner<'a>);
 enum MeModelSourceInner<'a> {
     Correlated(rumoca_ir_solve::fmi::FmiRuntimeView<'a>),
     #[cfg(test)]
-    Fixture(&'a rumoca_ir_solve::SolveModel),
+    Fixture {
+        model: &'a rumoca_ir_solve::SolveModel,
+        max_step_duration_value_reference: Option<u32>,
+    },
 }
 
 impl<'a> MeModelSource<'a> {
@@ -118,7 +118,26 @@ impl<'a> MeModelSource<'a> {
 
     #[cfg(test)]
     pub(crate) fn fixture(model: &'a rumoca_ir_solve::SolveModel) -> Self {
-        Self(MeModelSourceInner::Fixture(model))
+        let max_step_duration_value_reference =
+            (!model.problem.events.delays.delay_time_rhs.is_empty()).then_some(1);
+        Self(MeModelSourceInner::Fixture {
+            model,
+            max_step_duration_value_reference,
+        })
+    }
+
+    /// Test-only constructor ablation for the checked FMI annotation/kernel
+    /// correlation. Production has no constructor capable of making this
+    /// mismatch.
+    #[cfg(test)]
+    pub(crate) fn ablated_max_step_duration_fixture(
+        model: &'a rumoca_ir_solve::SolveModel,
+        max_step_duration_declared: bool,
+    ) -> Self {
+        Self(MeModelSourceInner::Fixture {
+            model,
+            max_step_duration_value_reference: max_step_duration_declared.then_some(1),
+        })
     }
 
     pub(crate) fn into_parts(
@@ -127,20 +146,31 @@ impl<'a> MeModelSource<'a> {
         (
             &'a rumoca_ir_solve::SolveModel,
             Vec<rumoca_ir_solve::fmi::FmiEventIndicatorSource>,
+            Option<u32>,
         ),
         rumoca_ir_solve::fmi::FmiComponentError,
     > {
         match self.0 {
             MeModelSourceInner::Correlated(view) => {
-                let (model, inventory) = view.into_parts();
-                Ok((model, inventory.sources().to_vec()))
+                let (model, metadata, inventory) = view.into_parts();
+                Ok((
+                    model,
+                    inventory.sources().to_vec(),
+                    metadata
+                        .max_step_duration()
+                        .map(rumoca_ir_solve::fmi::FmiVariable::value_reference_fmi3),
+                ))
             }
             #[cfg(test)]
-            MeModelSourceInner::Fixture(model) => Ok((
+            MeModelSourceInner::Fixture {
+                model,
+                max_step_duration_value_reference,
+            } => Ok((
                 model,
                 rumoca_ir_solve::fmi::FmiEventIndicatorInventory::derive(model)?
                     .sources()
                     .to_vec(),
+                max_step_duration_value_reference,
             )),
         }
     }
@@ -510,8 +540,14 @@ pub struct MeModelDescription<'a> {
 /// A resolved FMI value reference. Opaque: only the component interprets it.
 #[derive(Debug, Clone)]
 pub struct MeValueRef {
-    pub(crate) index: usize,
+    pub(crate) backing: MeFloat64Backing,
     pub(crate) instance_brand: Rc<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MeFloat64Backing {
+    InputParameter(usize),
+    MaxStepDuration(u32),
 }
 
 /// Transitional `fmi3SetTime` representation carrying the event instant the

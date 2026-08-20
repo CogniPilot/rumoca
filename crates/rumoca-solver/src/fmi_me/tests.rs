@@ -1299,6 +1299,74 @@ fn a_rejected_model_is_staged_at_instantiation() {
     assert!(matches!(error.kind(), MeError::Evaluation { .. }));
 }
 
+fn constant_delay_model() -> solve::SolveModel {
+    let constant_row = |value, source| {
+        block(
+            vec![vec![
+                solve::LinearOp::Const { dst: 0, value },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            source,
+        )
+    };
+    let mut model = solve::SolveModel::default();
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.parameters = vec![0.0];
+    model.problem.events.delays = solve::SolveDelayPartition {
+        source_rhs: constant_row(3.0, "fmi_me_delay_source.mo"),
+        delay_time_rhs: constant_row(0.2, "fmi_me_delay_time.mo"),
+        delay_max_rhs: constant_row(1.0, "fmi_me_delay_max.mo"),
+        value_parameter_indices: vec![0],
+        source_is_discrete: vec![false],
+    };
+    refresh_owned(model)
+}
+
+#[test]
+fn maximum_step_duration_is_a_checked_standard_float64_read() {
+    let model = constant_delay_model();
+    let missing = SolveMeKernel::instantiate(
+        MeModelSource::ablated_max_step_duration_fixture(&model, false),
+        &fixture_instance_config(),
+    )
+    .err()
+    .expect("a delay-bearing component without the annotation is rejected");
+    assert_eq!(missing.stage(), Some(MeStage::Instantiate));
+    assert!(matches!(missing.kind(), MeError::Contract { .. }));
+
+    let mut kernel =
+        SolveMeKernel::instantiate(MeModelSource::fixture(&model), &fixture_instance_config())
+            .expect("the checked delay annotation and kernel are correlated");
+    kernel
+        .enter_initialization_mode()
+        .expect("enter initialization");
+    kernel
+        .exit_initialization_mode()
+        .expect("exit initialization");
+    kernel
+        .update_discrete_states()
+        .expect("settle the initial event");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("enter continuous-time mode");
+
+    let reference = kernel
+        .max_step_duration_value_reference()
+        .expect("the checked inventory declares the Float64 local");
+    let mut values = [0.0];
+    kernel
+        .get_float64(std::slice::from_ref(&reference), &mut values)
+        .expect("the local is readable through the standard batched getter");
+    assert_eq!(values, [0.2]);
+
+    let mut undeclared = reference;
+    undeclared.backing = super::MeFloat64Backing::MaxStepDuration(u32::MAX);
+    let error = kernel
+        .get_float64(std::slice::from_ref(&undeclared), &mut values)
+        .expect_err("an unreadable value reference is rejected");
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+}
+
 // -- the sole master algorithm, end to end ---------------------------------
 
 /// The first execution of [`super::session::MeSimulationSession`] over a real

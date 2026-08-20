@@ -146,7 +146,7 @@ fn build_host_state(
     pristine: super::MeFmuState,
     options: MeSessionOptions,
 ) -> Result<MeHostState, MeSessionError> {
-    let (state_count, indicator_count, names, meta, input_names) = {
+    let (state_count, indicator_count, names, meta, input_names, max_step_duration_reference) = {
         let borrowed = kernel.borrow();
         let description = borrowed.model_description();
         (
@@ -155,6 +155,7 @@ fn build_host_state(
             description.output_names.to_vec(),
             description.output_meta.to_vec(),
             description.input_names.to_vec(),
+            borrowed.max_step_duration_value_reference(),
         )
     };
     let capacity = trace_capacity(&options);
@@ -175,6 +176,7 @@ fn build_host_state(
     let derivatives = MeDerivativeController::over_kernel(Rc::clone(&kernel));
     Ok(MeHostState {
         kernel,
+        max_step_duration_reference,
         derivatives,
         policy,
         trace,

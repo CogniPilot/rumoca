@@ -12,6 +12,7 @@ use super::model_fixture::{
 use super::model_fixture::{
     single_state_indicator_model, single_state_input_model, single_state_time_event_model,
 };
+use crate::fmi_me::MeFloat64Backing;
 use crate::fmi_me::lifecycle::{MeLifecycle, MeLifecycleCommand, MeState};
 use crate::fmi_me::{
     MeError, MeEventCause, MeEventEntry, MeInstanceConfig, MeModelSource, MeStage, MeTime,
@@ -205,7 +206,7 @@ fn property_rejected_value_reference_batch_is_transactional(case: u8) {
         .value_reference("u")
         .expect("the second fixture exposes its own input");
     let mut out_of_range = valid.clone();
-    out_of_range.index = usize::MAX;
+    out_of_range.backing = MeFloat64Backing::InputParameter(usize::MAX);
     let before = observable_state(&kernel);
     let checkpoint = kernel.fmu_state();
 

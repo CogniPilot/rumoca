@@ -408,6 +408,7 @@ impl FmiComponent {
     pub fn runtime_view(&self) -> FmiRuntimeView<'_> {
         FmiRuntimeView {
             model: &self.model,
+            metadata: &self.metadata,
             event_indicators: &self.event_indicators,
         }
     }
@@ -434,6 +435,7 @@ impl FmiComponent {
 #[derive(Debug)]
 pub struct FmiRuntimeView<'component> {
     model: &'component SolveModel,
+    metadata: &'component FmiMetadata,
     event_indicators: &'component FmiEventIndicatorInventory,
 }
 
@@ -450,14 +452,25 @@ impl<'component> FmiRuntimeView<'component> {
         self.event_indicators
     }
 
+    /// The checked maximum-step-duration entry, when the component is
+    /// delay-bearing.
+    ///
+    /// Runtime linking borrows this typed inventory entry once; it never
+    /// rediscovers the annotation by name or inspects Solve operations.
+    #[must_use]
+    pub fn max_step_duration(&self) -> Option<&'component FmiVariable> {
+        self.metadata.max_step_duration()
+    }
+
     #[must_use]
     pub fn into_parts(
         self,
     ) -> (
         &'component SolveModel,
+        &'component FmiMetadata,
         &'component FmiEventIndicatorInventory,
     ) {
-        (self.model, self.event_indicators)
+        (self.model, self.metadata, self.event_indicators)
     }
 }
 

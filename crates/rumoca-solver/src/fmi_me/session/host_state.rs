@@ -143,6 +143,9 @@ fn read_outputs(kernel: &SolveMeKernel) -> Result<Vec<f64>, MeError> {
 /// Everything the master algorithm owns except the numerical plugin.
 pub(super) struct MeHostState {
     pub(super) kernel: Rc<RefCell<SolveMeKernel>>,
+    /// The checked FMI Float64 annotation resolved once while the host is
+    /// prepared. `None` is valid only for a delay-free component.
+    pub(super) max_step_duration_reference: Option<crate::fmi_me::MeValueRef>,
     pub(super) derivatives: MeDerivativeController,
     /// `None` exactly when the session terminated during initialization and
     /// therefore can never scan an accepted interval.
@@ -656,9 +659,14 @@ impl MeHostState {
     /// Mode, an input mutation, or a reset: it is read immediately before every
     /// one-step backend request.
     pub(super) fn read_max_step_duration(&self) -> Result<Option<f64>, MeError> {
-        let Some(limit) = self.kernel.borrow().max_step_size() else {
+        let Some(reference) = &self.max_step_duration_reference else {
             return Ok(None);
         };
+        let mut values = [0.0];
+        self.kernel
+            .borrow()
+            .get_float64(std::slice::from_ref(reference), &mut values)?;
+        let limit = values[0];
         if limit == f64::MAX {
             // The documented maximum-finite sentinel means no bound currently
             // constrains the step.

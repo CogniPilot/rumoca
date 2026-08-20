@@ -1039,10 +1039,6 @@ impl SolveRuntime {
             .map_err(Into::into)
     }
 
-    pub fn delay_step_limit(&self) -> Option<f64> {
-        self.delay_runtime.step_limit()
-    }
-
     pub fn root_condition_count(&self) -> usize {
         self.root_condition_count
     }

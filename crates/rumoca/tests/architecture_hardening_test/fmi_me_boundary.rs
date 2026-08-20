@@ -44,6 +44,37 @@ rumoca_solver::fmi_me; these production paths step around it instead:\n  {}",
     );
 }
 
+/// SPEC_0044 §8: delay step policy crosses the component boundary only as the
+/// declared Float64 annotation read through the standard getter.
+#[test]
+fn test_maximum_step_duration_has_no_private_component_operation() {
+    let solver_src = workspace_root().join("crates/rumoca-solver/src");
+    let mut sources = Vec::new();
+    collect_rust_sources(&solver_src, &mut sources);
+    let mut forbidden = Vec::new();
+    for path in sources {
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        for operation in ["fn max_step_size", "fn delay_step_limit"] {
+            if source.contains(operation) {
+                forbidden.push(format!("{}: `{operation}`", path.display()));
+            }
+        }
+    }
+    assert!(
+        forbidden.is_empty(),
+        "SPEC_0044 §8 forbids private maximum-step operations:\n  {}",
+        forbidden.join("\n  ")
+    );
+
+    let host = fs::read_to_string(solver_src.join("fmi_me/session/host_state.rs"))
+        .expect("read the sole ME host state");
+    assert!(
+        host.contains(".get_float64("),
+        "the ME host must read maximum step duration through the standard Float64 getter"
+    );
+}
+
 /// Every way `crate_root` steps around the ME contract, as reportable lines.
 ///
 /// Factored out of the assertion so the detector itself can be run against a

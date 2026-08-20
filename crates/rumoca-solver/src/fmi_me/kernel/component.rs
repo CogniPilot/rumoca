@@ -469,7 +469,7 @@ impl SolveMeKernel {
                 state.continuous_linearization_cache.as_ref(),
             )
             && observations_bit_eq(&self.initial_observations, &state.initial_observations)
-            && option_float_bit_eq(self.delay_step_limit, state.delay_step_limit)
+            && option_float_bit_eq(self.max_step_duration, state.max_step_duration)
             && self.last_projection_changed == state.last_projection_changed
             && termination_bit_eq(self.termination.as_ref(), state.termination.as_ref())
             && option_float_vec_bit_eq(
@@ -549,9 +549,17 @@ impl SolveMeKernel {
         config: &MeInstanceConfig,
         execution_backend: Option<Rc<dyn crate::SolveExecutionBackend>>,
     ) -> Result<Self, MeError> {
-        let (model, event_indicator_sources) = source
+        let (model, event_indicator_sources, max_step_duration_value_reference) = source
             .into_parts()
             .map_err(|error| contract(error.to_string()))?;
+        let delay_bearing = !model.problem.events.delays.delay_time_rhs.is_empty();
+        if max_step_duration_value_reference.is_some() != delay_bearing {
+            return Err(contract(if delay_bearing {
+                "a delay-bearing component has no maximum-step-duration Float64 variable"
+            } else {
+                "a delay-free component declares a maximum-step-duration Float64 variable"
+            }));
+        }
         rumoca_eval_solve::reset_solve_row_eval_trace();
         validate_explicit_solve_model(model)?;
         let model = model
@@ -606,7 +614,8 @@ impl SolveMeKernel {
             root_cache: RefCell::new(None),
             continuous_linearization_cache: RefCell::new(None),
             initial_observations: Vec::new(),
-            delay_step_limit: None,
+            max_step_duration: None,
+            max_step_duration_value_reference,
             last_projection_changed: false,
             termination: None,
             output_meta,
@@ -947,7 +956,7 @@ impl SolveMeKernel {
             )));
         }
         solver_y[..self.states.len()].copy_from_slice(&self.states);
-        self.delay_step_limit =
+        self.max_step_duration =
             self.runtime
                 .refresh_delay_values(self.time, &solver_y, &mut self.params)?;
         if !self.continuous_linearization_cache_matches(self.time, &self.states, &self.params) {
