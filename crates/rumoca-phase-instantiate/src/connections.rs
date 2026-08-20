@@ -97,12 +97,12 @@ fn extract_connections_from_equation(
             let span =
                 required_location_to_span(eq.get_location(), source_map, "connect equation")?;
 
-            // Check if either side has range subscripts (e.g., u[1:2])
-            // If so, expand into individual scalar connections
-            if let Some(expanded) =
-                try_expand_range_subscript_connection(lhs, rhs, prefix, &params.integers, span)
+            // Preserve range/slice connects as one authoritative structured
+            // family. Flattening derives the scalar union-find view once.
+            if let Some(connection) =
+                try_compact_range_subscript_connection(lhs, rhs, prefix, &params.integers, span)?
             {
-                connections.extend(expanded);
+                connections.push(connection);
             } else {
                 let a = component_ref_to_qualified_name(lhs, prefix, &params.integers);
                 let b = component_ref_to_qualified_name(rhs, prefix, &params.integers);
@@ -113,6 +113,7 @@ fn extract_connections_from_equation(
                     connector_type: None, // Resolved later during flattening
                     span,
                     scope: prefix.to_flat_string(),
+                    family: None,
                 });
             }
             Ok(())
@@ -237,6 +238,13 @@ fn extract_connections_from_for_equation(
         return Ok(());
     }
 
+    if let Some(families) =
+        try_extract_regular_connection_families(indices, equations, prefix, params, source_map)?
+    {
+        connections.extend(families);
+        return Ok(());
+    }
+
     // Get the first index and expand it
     let first_index = &indices[0];
     let remaining_indices = &indices[1..];
@@ -278,6 +286,329 @@ fn extract_connections_from_for_equation(
             "connection for-equation range",
         )?,
     )))
+}
+
+fn try_extract_regular_connection_families(
+    indices: &[rumoca_ir_ast::ForIndex],
+    equations: &[ast::Equation],
+    prefix: &ast::QualifiedName,
+    params: &ConnectionParams,
+    source_map: &SourceMap,
+) -> InstantiateResult<Option<Vec<ast::InstanceConnection>>> {
+    let (indices, equations) = rectangular_connection_body(indices, equations);
+    let Some(domain) = regular_connection_domain(&indices, prefix, &params.integers) else {
+        return Ok(None);
+    };
+    if domain.scalar_count().ok() == Some(0) {
+        return Ok(Some(Vec::new()));
+    }
+    let binder_names = indices
+        .iter()
+        .map(|index| index.ident.text.as_ref())
+        .collect::<Vec<_>>();
+    if equations.iter().any(|equation| {
+        matches!(
+            equation,
+            ast::Equation::For { .. } | ast::Equation::If { .. }
+        )
+    }) {
+        return Ok(None);
+    }
+    let mut result = Vec::new();
+    for equation in equations {
+        let ast::Equation::Connect { lhs, rhs } = equation else {
+            continue;
+        };
+        let Some(a_template) =
+            connection_endpoint_template(lhs, prefix, &binder_names, &params.integers)
+        else {
+            return Ok(None);
+        };
+        let Some(b_template) =
+            connection_endpoint_template(rhs, prefix, &binder_names, &params.integers)
+        else {
+            return Ok(None);
+        };
+        let span = required_location_to_span(
+            equation.get_location(),
+            source_map,
+            "vectorized connect equation",
+        )?;
+        let family = ast::InstanceConnectionFamily {
+            domain: domain.clone(),
+            a: a_template,
+            b: b_template,
+        };
+        let tuple = family
+            .domain
+            .index_tuple_at(0)
+            .map_err(|error| {
+                Box::new(InstantiateError::structural_param_error(
+                    "connection family".to_string(),
+                    format!("invalid structured connection domain: {error}"),
+                    span,
+                ))
+            })?
+            .ok_or_else(|| {
+                Box::new(InstantiateError::structural_param_error(
+                    "connection family".to_string(),
+                    "structured connection domain is empty".to_string(),
+                    span,
+                ))
+            })?;
+        let a = rumoca_eval_ast::connection::evaluate_connection_endpoint(&family.a, &tuple)
+            .map_err(|reason| {
+                Box::new(InstantiateError::structural_param_error(
+                    "connection family".to_string(),
+                    reason,
+                    span,
+                ))
+            })?;
+        let b = rumoca_eval_ast::connection::evaluate_connection_endpoint(&family.b, &tuple)
+            .map_err(|reason| {
+                Box::new(InstantiateError::structural_param_error(
+                    "connection family".to_string(),
+                    reason,
+                    span,
+                ))
+            })?;
+        result.push(ast::InstanceConnection {
+            a,
+            b,
+            connector_type: None,
+            span,
+            scope: prefix.to_flat_string(),
+            family: Some(family),
+        });
+    }
+    Ok((!result.is_empty()).then_some(result))
+}
+
+fn rectangular_connection_body<'a>(
+    indices: &'a [rumoca_ir_ast::ForIndex],
+    equations: &'a [ast::Equation],
+) -> (Vec<&'a rumoca_ir_ast::ForIndex>, &'a [ast::Equation]) {
+    let mut all_indices = indices.iter().collect::<Vec<_>>();
+    let mut body = equations;
+    while let [
+        ast::Equation::For {
+            indices: nested,
+            equations: nested_body,
+        },
+    ] = body
+    {
+        all_indices.extend(nested);
+        body = nested_body;
+    }
+    (all_indices, body)
+}
+
+fn regular_connection_domain(
+    indices: &[&rumoca_ir_ast::ForIndex],
+    prefix: &ast::QualifiedName,
+    int_params: &rustc_hash::FxHashMap<String, i64>,
+) -> Option<rumoca_core::StructuredIndexDomain> {
+    let mut names = std::collections::HashSet::new();
+    let mut binders = Vec::new();
+    for (id, index) in indices.iter().enumerate() {
+        let name = index.ident.text.as_ref();
+        if !names.insert(name) {
+            return None;
+        }
+        let (lower, step, upper) = connection_range_bounds(&index.range, int_params, prefix)?;
+        let binder = rumoca_core::StructuredIndexBinder {
+            id,
+            display_name: name.to_string(),
+            lower,
+            upper,
+            step,
+        };
+        binders.push(binder);
+    }
+    let domain = rumoca_core::StructuredIndexDomain { binders };
+    domain.scalar_count().ok()?;
+    Some(domain)
+}
+
+fn connection_range_bounds(
+    expression: &ast::Expression,
+    int_params: &rustc_hash::FxHashMap<String, i64>,
+    prefix: &ast::QualifiedName,
+) -> Option<(i64, i64, i64)> {
+    let ast::Expression::Range {
+        start, step, end, ..
+    } = expression
+    else {
+        return None;
+    };
+    let lower = expr_to_i64_with_params(start, int_params, prefix)?;
+    let upper = expr_to_i64_with_params(end, int_params, prefix)?;
+    let step = match step {
+        Some(value) => expr_to_i64_with_params(value, int_params, prefix)?,
+        None => 1,
+    };
+    (step != 0).then_some((lower, step, upper))
+}
+
+fn connection_endpoint_template(
+    reference: &ast::ComponentReference,
+    prefix: &ast::QualifiedName,
+    binder_names: &[&str],
+    int_params: &rustc_hash::FxHashMap<String, i64>,
+) -> Option<ast::InstanceConnectionEndpoint> {
+    let rank = binder_names.len();
+    let mut parts = prefix
+        .parts
+        .iter()
+        .map(|(name, subscripts)| {
+            (
+                name.clone(),
+                subscripts
+                    .iter()
+                    .map(|value| rumoca_core::AffineForm::constant(*value, rank))
+                    .collect(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for part in &reference.parts {
+        let mut subscripts = Vec::new();
+        for subscript in part.subs.as_deref().unwrap_or(&[]) {
+            let ast::Subscript::Expression(expression) = subscript else {
+                return None;
+            };
+            subscripts.push(connection_affine_form(
+                expression,
+                binder_names,
+                int_params,
+                prefix,
+            )?);
+        }
+        parts.push((part.ident.text.to_string(), subscripts));
+    }
+    Some(ast::InstanceConnectionEndpoint { parts })
+}
+
+fn connection_affine_form(
+    expression: &ast::Expression,
+    binder_names: &[&str],
+    int_params: &rustc_hash::FxHashMap<String, i64>,
+    prefix: &ast::QualifiedName,
+) -> Option<rumoca_core::AffineForm> {
+    let rank = binder_names.len();
+    if let ast::Expression::ComponentReference(reference) = expression
+        && reference.parts.len() == 1
+        && reference.parts[0].subs.is_none()
+        && let Some(index) = binder_names
+            .iter()
+            .position(|name| *name == reference.parts[0].ident.text.as_ref())
+    {
+        return Some(rumoca_core::AffineForm::unit_binder(index, rank));
+    }
+    if let Some(value) = expr_to_i64_with_params(expression, int_params, prefix) {
+        return Some(rumoca_core::AffineForm::constant(value, rank));
+    }
+    match expression {
+        ast::Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = connection_affine_form(lhs, binder_names, int_params, prefix)?;
+            let rhs = connection_affine_form(rhs, binder_names, int_params, prefix)?;
+            connection_affine_binary(op, &lhs, &rhs)
+        }
+        ast::Expression::Unary { op, rhs, .. } => {
+            let rhs = connection_affine_form(rhs, binder_names, int_params, prefix)?;
+            match op {
+                rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => Some(rhs),
+                rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => {
+                    checked_scale_affine(&rhs, -1)
+                }
+                _ => None,
+            }
+        }
+        ast::Expression::Parenthesized { inner, .. } => {
+            connection_affine_form(inner, binder_names, int_params, prefix)
+        }
+        _ => None,
+    }
+}
+
+fn connection_affine_binary(
+    op: &rumoca_core::OpBinary,
+    lhs: &rumoca_core::AffineForm,
+    rhs: &rumoca_core::AffineForm,
+) -> Option<rumoca_core::AffineForm> {
+    use rumoca_core::OpBinary;
+    match op {
+        OpBinary::Add | OpBinary::AddElem => checked_add_affine(lhs, rhs, 1),
+        OpBinary::Sub | OpBinary::SubElem => checked_add_affine(lhs, rhs, -1),
+        OpBinary::Mul | OpBinary::MulElem if lhs.is_binder_free() => {
+            checked_scale_affine(rhs, lhs.constant)
+        }
+        OpBinary::Mul | OpBinary::MulElem if rhs.is_binder_free() => {
+            checked_scale_affine(lhs, rhs.constant)
+        }
+        OpBinary::Div | OpBinary::DivElem if rhs.is_binder_free() && rhs.constant != 0 => {
+            checked_divide_affine(lhs, rhs.constant)
+        }
+        _ => None,
+    }
+}
+
+fn checked_add_affine(
+    lhs: &rumoca_core::AffineForm,
+    rhs: &rumoca_core::AffineForm,
+    rhs_scale: i64,
+) -> Option<rumoca_core::AffineForm> {
+    if lhs.coeffs.len() != rhs.coeffs.len() {
+        return None;
+    }
+    Some(rumoca_core::AffineForm {
+        constant: checked_affine_sum(lhs.constant, rhs.constant, rhs_scale)?,
+        coeffs: lhs
+            .coeffs
+            .iter()
+            .zip(&rhs.coeffs)
+            .map(|(lhs, rhs)| checked_affine_sum(*lhs, *rhs, rhs_scale))
+            .collect::<Option<Vec<_>>>()?,
+    })
+}
+
+fn checked_affine_sum(lhs: i64, rhs: i64, rhs_scale: i64) -> Option<i64> {
+    i64::try_from(i128::from(lhs) + i128::from(rhs) * i128::from(rhs_scale)).ok()
+}
+
+fn checked_scale_affine(
+    form: &rumoca_core::AffineForm,
+    scale: i64,
+) -> Option<rumoca_core::AffineForm> {
+    Some(rumoca_core::AffineForm {
+        constant: i64::try_from(i128::from(form.constant) * i128::from(scale)).ok()?,
+        coeffs: form
+            .coeffs
+            .iter()
+            .map(|coefficient| i64::try_from(i128::from(*coefficient) * i128::from(scale)).ok())
+            .collect::<Option<Vec<_>>>()?,
+    })
+}
+
+fn checked_divide_affine(
+    form: &rumoca_core::AffineForm,
+    divisor: i64,
+) -> Option<rumoca_core::AffineForm> {
+    if form.constant.checked_rem(divisor)? != 0
+        || form
+            .coeffs
+            .iter()
+            .any(|coefficient| coefficient.checked_rem(divisor) != Some(0))
+    {
+        return None;
+    }
+    Some(rumoca_core::AffineForm {
+        constant: form.constant.checked_div(divisor)?,
+        coeffs: form
+            .coeffs
+            .iter()
+            .map(|coefficient| coefficient.checked_div(divisor))
+            .collect::<Option<Vec<_>>>()?,
+    })
 }
 
 fn substitute_index_in_for_indices(
@@ -334,52 +665,40 @@ fn expand_for_range(
     int_params: &rustc_hash::FxHashMap<String, i64>,
     scope: &ast::QualifiedName,
 ) -> Option<Vec<i64>> {
-    match range_expr {
+    let (lower, step, upper) = match range_expr {
         ast::Expression::Range {
             start, step, end, ..
         } => {
-            let start_val = expr_to_i64_with_params(start, int_params, scope)?;
-            let end_val = expr_to_i64_with_params(end, int_params, scope)?;
-            let step_val = step
-                .as_ref()
-                .and_then(|s| expr_to_i64_with_params(s, int_params, scope))
-                .unwrap_or(1);
-
-            if step_val == 0 {
-                return None;
-            }
-
-            // Pre-calculate capacity to avoid reallocations
-            let count = if step_val > 0 {
-                ((end_val - start_val) / step_val + 1).max(0) as usize
-            } else {
-                ((start_val - end_val) / (-step_val) + 1).max(0) as usize
+            let lower = expr_to_i64_with_params(start, int_params, scope)?;
+            let upper = expr_to_i64_with_params(end, int_params, scope)?;
+            let step = match step {
+                Some(step) => expr_to_i64_with_params(step, int_params, scope)?,
+                None => 1,
             };
-            let mut values = Vec::with_capacity(count);
-            let mut current = start_val;
-            if step_val > 0 {
-                while current <= end_val {
-                    values.push(current);
-                    current += step_val;
-                }
-            } else {
-                while current >= end_val {
-                    values.push(current);
-                    current += step_val;
-                }
-            }
-            Some(values)
+            (lower, step, upper)
         }
         // Single expression (like just `m` meaning 1:m)
         _ => {
             let n = expr_to_i64_with_params(range_expr, int_params, scope)?;
-            if n >= 1 {
-                Some((1..=n).collect())
-            } else {
-                None
-            }
+            (1, 1, n)
         }
+    };
+    let domain = rumoca_core::StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            id: 0,
+            display_name: "__expanded_connection_index".to_string(),
+            lower,
+            upper,
+            step,
+        }],
+    };
+    let count = domain.scalar_count().ok()?;
+    let mut values = Vec::new();
+    values.try_reserve_exact(count).ok()?;
+    for ordinal in 0..count {
+        values.push(*domain.index_tuple_at(ordinal).ok()??.first()?);
     }
+    Some(values)
 }
 
 /// Try to evaluate an expression to i64, using parameter lookup if needed.
@@ -431,7 +750,7 @@ fn expr_to_i64_with_params(
         {
             let a = expr_to_i64_with_params(&args[0], int_params, scope)?;
             let b = expr_to_i64_with_params(&args[1], int_params, scope)?;
-            if b == 0 { None } else { Some(a / b) }
+            a.checked_div(b)
         }
 
         _ => None,
@@ -536,10 +855,11 @@ fn substitute_index_in_comp_ref(
                         .map(|sub| substitute_index_in_subscript(sub, var_name, value))
                         .collect()
                 }),
+                def_id: part.def_id,
             })
             .collect(),
-        def_id: comp_ref.def_id,
         span: comp_ref.span,
+        qualified_display_name: comp_ref.qualified_display_name.clone(),
     }
 }
 
@@ -611,12 +931,18 @@ fn substitute_index_in_expr(expr: &ast::Expression, var_name: &str, value: i64) 
             is_matrix: *is_matrix,
             span: *span,
         },
-        ast::Expression::FunctionCall { comp, args, span } => ast::Expression::FunctionCall {
+        ast::Expression::FunctionCall {
+            comp,
+            args,
+            is_partial_application,
+            span,
+        } => ast::Expression::FunctionCall {
             comp: substitute_index_in_comp_ref(comp, var_name, value),
             args: args
                 .iter()
                 .map(|a| substitute_index_in_expr(a, var_name, value))
                 .collect(),
+            is_partial_application: *is_partial_application,
             span: *span,
         },
         ast::Expression::Range {
@@ -798,16 +1124,10 @@ fn subscript_to_i64(
 /// Evaluate a binary integer operation.
 fn eval_binary_i64(op: &rumoca_core::OpBinary, l: i64, r: i64) -> Option<i64> {
     match op {
-        rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => Some(l + r),
-        rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => Some(l - r),
-        rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => Some(l * r),
-        rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => {
-            if r == 0 {
-                None
-            } else {
-                Some(l / r)
-            }
-        }
+        rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => l.checked_add(r),
+        rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => l.checked_sub(r),
+        rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => l.checked_mul(r),
+        rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => l.checked_div(r),
         _ => None,
     }
 }
@@ -815,205 +1135,276 @@ fn eval_binary_i64(op: &rumoca_core::OpBinary, l: i64, r: i64) -> Option<i64> {
 /// Evaluate a unary integer operation.
 fn eval_unary_i64(op: &rumoca_core::OpUnary, val: i64) -> Option<i64> {
     match op {
-        rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => Some(-val),
+        rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => val.checked_neg(),
         rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => Some(val),
         _ => None,
     }
 }
 
-/// Try to expand a connect statement with range subscripts into individual scalar connections.
-///
-/// For `connect(a.y, b.u[1:2])`, this expands to:
-///   `connect(a.y[1], b.u[1])`, `connect(a.y[2], b.u[2])`
-///
-/// Returns None if neither side has range subscripts (normal connection).
-fn try_expand_range_subscript_connection(
+#[derive(Clone, Copy)]
+struct CompactConnectionRange {
+    part_index: usize,
+    subscript_index: usize,
+    dimension: usize,
+    start: i64,
+    step: i64,
+    count: usize,
+}
+
+fn try_compact_range_subscript_connection(
     lhs: &ast::ComponentReference,
     rhs: &ast::ComponentReference,
     prefix: &ast::QualifiedName,
     int_params: &rustc_hash::FxHashMap<String, i64>,
     span: Span,
-) -> Option<Vec<ast::InstanceConnection>> {
-    let lhs_range = extract_range_subscript(lhs, int_params, prefix);
-    let rhs_range = extract_range_subscript(rhs, int_params, prefix);
-
-    // If neither side has range subscripts, return None (use normal path)
-    if lhs_range.is_none() && rhs_range.is_none() {
-        return None;
+) -> InstantiateResult<Option<ast::InstanceConnection>> {
+    let lhs_ranges = compact_connection_ranges(lhs, int_params, prefix).ok_or_else(|| {
+        Box::new(InstantiateError::structural_param_error(
+            "connection range".to_string(),
+            "cannot evaluate connection range subscript".to_string(),
+            span,
+        ))
+    })?;
+    let rhs_ranges = compact_connection_ranges(rhs, int_params, prefix).ok_or_else(|| {
+        Box::new(InstantiateError::structural_param_error(
+            "connection range".to_string(),
+            "cannot evaluate connection range subscript".to_string(),
+            span,
+        ))
+    })?;
+    if lhs_ranges.is_empty() && rhs_ranges.is_empty() {
+        return Ok(None);
     }
-
-    // Expand the range(s) into individual scalar connections
-    let mut expanded = Vec::new();
-
-    match (lhs_range, rhs_range) {
-        (Some((lhs_part_idx, lhs_values)), Some((rhs_part_idx, rhs_values))) => {
-            // Both sides have ranges - they must be the same length
-            if lhs_values.len() != rhs_values.len() {
-                return None; // Mismatch, fall through to normal path
-            }
-            for (lv, rv) in lhs_values.iter().zip(rhs_values.iter()) {
-                let new_lhs = replace_range_with_index(lhs, lhs_part_idx, *lv);
-                let new_rhs = replace_range_with_index(rhs, rhs_part_idx, *rv);
-                let a = component_ref_to_qualified_name(&new_lhs, prefix, int_params);
-                let b = component_ref_to_qualified_name(&new_rhs, prefix, int_params);
-                expanded.push(ast::InstanceConnection {
-                    a,
-                    b,
-                    connector_type: None,
-                    span,
-                    scope: prefix.to_flat_string(),
-                });
-            }
-        }
-        (Some((lhs_part_idx, lhs_values)), None) => {
-            // Only LHS has range - expand LHS, keep RHS as-is or add matching indices
-            let b_base = component_ref_to_qualified_name(rhs, prefix, int_params);
-            for (i, lv) in lhs_values.iter().enumerate() {
-                let new_lhs = replace_range_with_index(lhs, lhs_part_idx, *lv);
-                let a = component_ref_to_qualified_name(&new_lhs, prefix, int_params);
-                // If RHS has no subscripts, add matching index
-                let b = add_index_to_qualified_name(&b_base, (i + 1) as i64);
-                expanded.push(ast::InstanceConnection {
-                    a,
-                    b,
-                    connector_type: None,
-                    span,
-                    scope: prefix.to_flat_string(),
-                });
-            }
-        }
-        (None, Some((rhs_part_idx, rhs_values))) => {
-            // Only RHS has range - expand RHS, add matching indices to LHS
-            let a_base = component_ref_to_qualified_name(lhs, prefix, int_params);
-            for (i, rv) in rhs_values.iter().enumerate() {
-                let new_rhs = replace_range_with_index(rhs, rhs_part_idx, *rv);
-                let b = component_ref_to_qualified_name(&new_rhs, prefix, int_params);
-                let a = add_index_to_qualified_name(&a_base, (i + 1) as i64);
-                expanded.push(ast::InstanceConnection {
-                    a,
-                    b,
-                    connector_type: None,
-                    span,
-                    scope: prefix.to_flat_string(),
-                });
-            }
-        }
-        (None, None) => return None,
+    if !lhs_ranges.is_empty()
+        && !rhs_ranges.is_empty()
+        && !connection_range_shapes_match(&lhs_ranges, &rhs_ranges)
+    {
+        return Err(Box::new(InstantiateError::array_dim_mismatch(
+            "connect".to_string(),
+            connection_range_shape(&lhs_ranges),
+            connection_range_shape(&rhs_ranges),
+            span,
+        )));
     }
-
-    if expanded.is_empty() {
-        None
+    let shape = if lhs_ranges.is_empty() {
+        connection_range_counts(&rhs_ranges)
     } else {
-        Some(expanded)
-    }
-}
-
-/// Extract range subscript information from a component reference.
-///
-/// Returns Some((part_index, values)) if a range subscript like [1:3] is found.
-/// `part_index` is the index into the component reference parts where the range is.
-fn extract_range_subscript(
-    comp_ref: &ast::ComponentReference,
-    int_params: &rustc_hash::FxHashMap<String, i64>,
-    scope: &ast::QualifiedName,
-) -> Option<(usize, Vec<i64>)> {
-    for (part_idx, part) in comp_ref.parts.iter().enumerate() {
-        let Some(subs) = part.subs.as_ref() else {
-            continue;
-        };
-        for sub in subs {
-            let values = try_expand_subscript_range(sub, int_params, scope);
-            if let Some(values) = values {
-                return Some((part_idx, values));
-            }
-        }
-    }
-    None
-}
-
-/// Try to expand a single subscript range into concrete index values.
-fn try_expand_subscript_range(
-    sub: &ast::Subscript,
-    int_params: &rustc_hash::FxHashMap<String, i64>,
-    scope: &ast::QualifiedName,
-) -> Option<Vec<i64>> {
-    let (start, step, end) = match sub {
-        ast::Subscript::Expression(ast::Expression::Range {
-            start, step, end, ..
-        }) => (start, step, end),
-        _ => return None,
+        connection_range_counts(&lhs_ranges)
     };
-    let start_val = expr_to_i64_with_params(start, int_params, scope)?;
-    let end_val = expr_to_i64_with_params(end, int_params, scope)?;
-    let step_val = step
-        .as_ref()
-        .and_then(|s| expr_to_i64_with_params(s, int_params, scope))
-        .unwrap_or(1);
-    if step_val == 0 {
-        return None;
-    }
-    let mut values = Vec::new();
-    let mut current = start_val;
-    if step_val > 0 {
-        while current <= end_val {
-            values.push(current);
-            current += step_val;
-        }
-    } else {
-        while current >= end_val {
-            values.push(current);
-            current += step_val;
-        }
-    }
-    Some(values)
+    let domain = rumoca_core::StructuredIndexDomain {
+        binders: connection_range_binders(&shape, span)?,
+    };
+    let a_template =
+        range_connection_endpoint_template(lhs, prefix, int_params, &lhs_ranges, shape.len())?;
+    let b_template =
+        range_connection_endpoint_template(rhs, prefix, int_params, &rhs_ranges, shape.len())?;
+    let family = ast::InstanceConnectionFamily {
+        domain,
+        a: a_template,
+        b: b_template,
+    };
+    let first = vec![1; shape.len()];
+    let a = rumoca_eval_ast::connection::evaluate_connection_endpoint(&family.a, &first).map_err(
+        |reason| {
+            Box::new(InstantiateError::structural_param_error(
+                "connection range".to_string(),
+                reason,
+                span,
+            ))
+        },
+    )?;
+    let b = rumoca_eval_ast::connection::evaluate_connection_endpoint(&family.b, &first).map_err(
+        |reason| {
+            Box::new(InstantiateError::structural_param_error(
+                "connection range".to_string(),
+                reason,
+                span,
+            ))
+        },
+    )?;
+    Ok(Some(ast::InstanceConnection {
+        a,
+        b,
+        connector_type: None,
+        span,
+        scope: prefix.to_flat_string(),
+        family: Some(family),
+    }))
 }
 
-/// Replace a range subscript at the given part index with a concrete integer index.
-fn replace_range_with_index(
-    comp_ref: &ast::ComponentReference,
-    part_idx: usize,
-    value: i64,
-) -> ast::ComponentReference {
-    ast::ComponentReference {
-        local: comp_ref.local,
-        parts: comp_ref
-            .parts
-            .iter()
-            .enumerate()
-            .map(|(i, part)| {
-                if i == part_idx {
-                    rumoca_ir_ast::ComponentRefPart {
-                        ident: part.ident.clone(),
-                        subs: Some(vec![ast::Subscript::Expression(
-                            ast::Expression::Terminal {
-                                terminal_type: ast::TerminalType::UnsignedInteger,
-                                token: rumoca_core::Token {
-                                    text: std::sync::Arc::from(value.to_string()),
-                                    location: part.ident.location.clone(),
-                                    token_number: 0,
-                                    token_type: 0,
-                                },
-                                span: comp_ref.span,
-                            },
-                        )]),
-                    }
-                } else {
-                    part.clone()
-                }
+fn connection_range_counts(ranges: &[CompactConnectionRange]) -> Vec<usize> {
+    ranges.iter().map(|range| range.count).collect()
+}
+
+fn connection_range_shape(ranges: &[CompactConnectionRange]) -> String {
+    format!("{:?}", connection_range_counts(ranges))
+}
+
+fn connection_range_shapes_match(
+    lhs: &[CompactConnectionRange],
+    rhs: &[CompactConnectionRange],
+) -> bool {
+    lhs.len() == rhs.len() && lhs.iter().zip(rhs).all(|(lhs, rhs)| lhs.count == rhs.count)
+}
+
+fn connection_range_binders(
+    shape: &[usize],
+    span: Span,
+) -> InstantiateResult<Vec<rumoca_core::StructuredIndexBinder>> {
+    shape
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(dimension, count)| {
+            Ok(rumoca_core::StructuredIndexBinder {
+                id: dimension,
+                display_name: format!("__connection_index_{}", dimension + 1),
+                lower: 1,
+                upper: i64::try_from(count).map_err(|_| {
+                    Box::new(InstantiateError::array_dim_mismatch(
+                        "connect".to_string(),
+                        "range extent within i64".to_string(),
+                        count.to_string(),
+                        span,
+                    ))
+                })?,
+                step: 1,
             })
-            .collect(),
-        def_id: comp_ref.def_id,
-        span: comp_ref.span,
-    }
+        })
+        .collect()
 }
 
-/// Add an index subscript to the last part of a qualified name.
-fn add_index_to_qualified_name(qn: &ast::QualifiedName, index: i64) -> ast::QualifiedName {
-    let mut result = qn.clone();
-    if let Some(last) = result.parts.last_mut() {
-        last.1.push(index);
+fn compact_connection_ranges(
+    reference: &ast::ComponentReference,
+    int_params: &rustc_hash::FxHashMap<String, i64>,
+    prefix: &ast::QualifiedName,
+) -> Option<Vec<CompactConnectionRange>> {
+    let mut found = Vec::new();
+    for (part_index, part) in reference.parts.iter().enumerate() {
+        for (subscript_index, subscript) in part.subs.as_deref().unwrap_or(&[]).iter().enumerate() {
+            let ast::Subscript::Expression(ast::Expression::Range {
+                start, step, end, ..
+            }) = subscript
+            else {
+                continue;
+            };
+            let start = expr_to_i64_with_params(start, int_params, prefix)?;
+            let end = expr_to_i64_with_params(end, int_params, prefix)?;
+            let step = match step {
+                Some(step) => expr_to_i64_with_params(step, int_params, prefix)?,
+                None => 1,
+            };
+            let domain = rumoca_core::StructuredIndexDomain {
+                binders: vec![rumoca_core::StructuredIndexBinder {
+                    id: 0,
+                    display_name: "__connection_range".to_string(),
+                    lower: start,
+                    upper: end,
+                    step,
+                }],
+            };
+            let count = domain.scalar_count().ok()?;
+            found.push(CompactConnectionRange {
+                part_index,
+                subscript_index,
+                dimension: found.len(),
+                start,
+                step,
+                count,
+            });
+        }
     }
-    result
+    Some(found)
+}
+
+fn range_connection_endpoint_template(
+    reference: &ast::ComponentReference,
+    prefix: &ast::QualifiedName,
+    int_params: &rustc_hash::FxHashMap<String, i64>,
+    ranges: &[CompactConnectionRange],
+    rank: usize,
+) -> InstantiateResult<ast::InstanceConnectionEndpoint> {
+    let mut parts = prefix
+        .parts
+        .iter()
+        .map(|(name, subscripts)| {
+            (
+                name.clone(),
+                subscripts
+                    .iter()
+                    .map(|value| rumoca_core::AffineForm::constant(*value, rank))
+                    .collect(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (part_index, part) in reference.parts.iter().enumerate() {
+        let mut subscripts = Vec::new();
+        for (subscript_index, subscript) in part.subs.as_deref().unwrap_or(&[]).iter().enumerate() {
+            if let Some(range) = ranges.iter().copied().find(|range| {
+                range.part_index == part_index && range.subscript_index == subscript_index
+            }) {
+                subscripts.push(connection_range_affine_form(range, rank, reference.span)?);
+                continue;
+            }
+            let ast::Subscript::Expression(expression) = subscript else {
+                return Err(Box::new(InstantiateError::structural_param_error(
+                    "connection subscript".to_string(),
+                    "non-expression subscript in range connection".to_string(),
+                    reference.span,
+                )));
+            };
+            let value =
+                expr_to_i64_with_params(expression, int_params, prefix).ok_or_else(|| {
+                    Box::new(InstantiateError::structural_param_error(
+                        "connection subscript".to_string(),
+                        format!("cannot evaluate connection subscript `{expression}`"),
+                        reference.span,
+                    ))
+                })?;
+            subscripts.push(rumoca_core::AffineForm::constant(value, rank));
+        }
+        parts.push((part.ident.text.to_string(), subscripts));
+    }
+    if ranges.is_empty() {
+        let Some((_, subscripts)) = parts.last_mut() else {
+            return Err(Box::new(InstantiateError::array_dim_mismatch(
+                "connect".to_string(),
+                "non-empty endpoint".to_string(),
+                "empty endpoint".to_string(),
+                reference.span,
+            )));
+        };
+        for dimension in 0..rank {
+            subscripts.push(rumoca_core::AffineForm::unit_binder(dimension, rank));
+        }
+    }
+    Ok(ast::InstanceConnectionEndpoint { parts })
+}
+
+fn connection_range_affine_form(
+    range: CompactConnectionRange,
+    rank: usize,
+    span: Span,
+) -> InstantiateResult<rumoca_core::AffineForm> {
+    let constant = range.start.checked_sub(range.step).ok_or_else(|| {
+        Box::new(InstantiateError::array_dim_mismatch(
+            "connect".to_string(),
+            "affine range within i64".to_string(),
+            format!("{}:{}", range.start, range.step),
+            span,
+        ))
+    })?;
+    let mut coeffs = vec![0; rank];
+    let Some(coefficient) = coeffs.get_mut(range.dimension) else {
+        return Err(Box::new(InstantiateError::array_dim_mismatch(
+            "connect".to_string(),
+            "range dimension within endpoint rank".to_string(),
+            range.dimension.to_string(),
+            span,
+        )));
+    };
+    *coefficient = range.step;
+    Ok(rumoca_core::AffineForm { constant, coeffs })
 }
 
 /// Check if an equation is a connect statement.
@@ -1052,7 +1443,7 @@ mod tests {
                 end_column: 2,
                 start: 0,
                 end: 1,
-                file_name: TEST_FILE.to_string(),
+                source: rumoca_core::SourceId::from_source_name(TEST_FILE),
             },
             token_number: 0,
             token_type: 0,
@@ -1067,10 +1458,11 @@ mod tests {
                 .map(|name| ast::ComponentRefPart {
                     ident: make_token(name),
                     subs: None,
+                    def_id: None,
                 })
                 .collect(),
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         }
     }
 
@@ -1113,13 +1505,14 @@ mod tests {
                 } else {
                     None
                 },
+                def_id: None,
             });
         }
         ast::ComponentReference {
             local: false,
             parts,
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         }
     }
 
@@ -1168,10 +1561,14 @@ mod tests {
         let connections =
             extract_connections(&[eq], &prefix, &ConnectionParams::new(), &source_map).unwrap();
 
-        let mut got: Vec<(String, String)> = connections
-            .iter()
-            .map(|c| (c.a.to_flat_string(), c.b.to_flat_string()))
-            .collect();
+        assert_eq!(connections.len(), 1);
+        assert!(connections[0].family.is_some());
+        let mut got: Vec<(String, String)> =
+            rumoca_eval_ast::connection::scalar_connection_members(&connections[0])
+                .expect("valid range connection family")
+                .into_iter()
+                .map(|connection| (connection.a.to_flat_string(), connection.b.to_flat_string()))
+                .collect();
         got.sort();
 
         assert_eq!(
@@ -1180,6 +1577,102 @@ mod tests {
                 ("mux2.y[1]".to_string(), "mux5.u[1]".to_string()),
                 ("mux2.y[2]".to_string(), "mux5.u[2]".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn test_extract_connection_preserves_multidimensional_ranges() {
+        let mut lhs = make_comp_ref(&["a"]);
+        lhs.parts[0].subs = Some(vec![
+            ast::Subscript::Expression(make_range_expr(
+                make_integer_terminal("1"),
+                make_integer_terminal("2"),
+            )),
+            ast::Subscript::Expression(make_range_expr(
+                make_integer_terminal("4"),
+                make_integer_terminal("5"),
+            )),
+        ]);
+        let mut rhs = make_comp_ref(&["b"]);
+        rhs.parts[0].subs = Some(vec![
+            ast::Subscript::Expression(make_range_expr(
+                make_integer_terminal("7"),
+                make_integer_terminal("8"),
+            )),
+            ast::Subscript::Expression(make_range_expr(
+                make_integer_terminal("9"),
+                make_integer_terminal("10"),
+            )),
+        ]);
+
+        let connections = extract_connections(
+            &[ast::Equation::Connect { lhs, rhs }],
+            &ast::QualifiedName::new(),
+            &ConnectionParams::new(),
+            &test_source_map(),
+        )
+        .expect("multidimensional range connection should instantiate");
+
+        assert_eq!(connections.len(), 1);
+        let family = connections[0]
+            .family
+            .as_ref()
+            .expect("multidimensional range connection should remain compact");
+        assert_eq!(family.domain.extents(), Ok(vec![2, 2]));
+        let members = rumoca_eval_ast::connection::scalar_connection_members(&connections[0])
+            .expect("multidimensional connection family should evaluate")
+            .into_iter()
+            .map(|member| (member.a.to_flat_string(), member.b.to_flat_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            members,
+            vec![
+                ("a[1,4]".to_string(), "b[7,9]".to_string()),
+                ("a[1,5]".to_string(), "b[7,10]".to_string()),
+                ("a[2,4]".to_string(), "b[8,9]".to_string()),
+                ("a[2,5]".to_string(), "b[8,10]".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_connection_ranges_produce_empty_scalar_views() {
+        let empty_range = make_range_expr(make_integer_terminal("1"), make_integer_terminal("0"));
+        assert_eq!(
+            expand_for_range(
+                &empty_range,
+                &rustc_hash::FxHashMap::default(),
+                &ast::QualifiedName::new(),
+            ),
+            Some(Vec::new())
+        );
+
+        let mut lhs = make_comp_ref(&["a"]);
+        lhs.parts[0].subs = Some(vec![ast::Subscript::Expression(empty_range.clone())]);
+        let mut rhs = make_comp_ref(&["b"]);
+        rhs.parts[0].subs = Some(vec![ast::Subscript::Expression(empty_range)]);
+        let connections = extract_connections(
+            &[ast::Equation::Connect { lhs, rhs }],
+            &ast::QualifiedName::new(),
+            &ConnectionParams::new(),
+            &test_source_map(),
+        )
+        .expect("an empty range connection is valid");
+
+        assert_eq!(connections.len(), 1);
+        assert_eq!(
+            connections[0]
+                .family
+                .as_ref()
+                .expect("empty connection stays structured")
+                .domain
+                .scalar_count(),
+            Ok(0)
+        );
+        assert!(
+            rumoca_eval_ast::connection::scalar_connection_members(&connections[0])
+                .expect("empty family has a valid derived view")
+                .is_empty()
         );
     }
 
@@ -1193,7 +1686,11 @@ mod tests {
 
         let mut got: Vec<(String, String)> = conns
             .iter()
-            .map(|c| (c.a.to_flat_string(), c.b.to_flat_string()))
+            .flat_map(|connection| {
+                rumoca_eval_ast::connection::scalar_connection_members(connection)
+                    .expect("valid structured connection")
+            })
+            .map(|connection| (connection.a.to_flat_string(), connection.b.to_flat_string()))
             .collect();
         got.sort();
 
@@ -1215,7 +1712,11 @@ mod tests {
 
         let mut got: Vec<(String, String)> = conns
             .iter()
-            .map(|c| (c.a.to_flat_string(), c.b.to_flat_string()))
+            .flat_map(|connection| {
+                rumoca_eval_ast::connection::scalar_connection_members(connection)
+                    .expect("valid structured connection")
+            })
+            .map(|connection| (connection.a.to_flat_string(), connection.b.to_flat_string()))
             .collect();
         got.sort();
 
@@ -1246,6 +1747,71 @@ mod tests {
             extract_connections(&[eq], &prefix, &ConnectionParams::new(), &source_map).unwrap();
 
         assert!(connections.is_empty());
+    }
+
+    #[test]
+    fn test_extract_regular_for_connection_preserves_one_symbolic_family() {
+        let eq = ast::Equation::For {
+            indices: vec![rumoca_ir_ast::ForIndex {
+                ident: make_token("i"),
+                range: make_range_expr(make_integer_terminal("1"), make_integer_terminal("3")),
+            }],
+            equations: vec![ast::Equation::Connect {
+                lhs: make_comp_ref_with_sub(make_comp_ref_expr(&["i"]), &["a"]),
+                rhs: make_comp_ref_with_sub(make_comp_ref_expr(&["i"]), &["b"]),
+            }],
+        };
+
+        let connections = extract_connections(
+            &[eq],
+            &ast::QualifiedName::new(),
+            &ConnectionParams::new(),
+            &test_source_map(),
+        )
+        .expect("regular vectorized connection should instantiate");
+
+        assert_eq!(connections.len(), 1);
+        let family = connections[0]
+            .family
+            .as_ref()
+            .expect("regular vectorized connection must stay symbolic");
+        assert_eq!(family.domain.scalar_count(), Ok(3));
+        let members = rumoca_eval_ast::connection::scalar_connection_members(&connections[0])
+            .expect("symbolic connection must expose a valid derived scalar view")
+            .into_iter()
+            .map(|member| (member.a.to_flat_string(), member.b.to_flat_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            members,
+            vec![
+                ("a[1]".to_string(), "b[1]".to_string()),
+                ("a[2]".to_string(), "b[2]".to_string()),
+                ("a[3]".to_string(), "b[3]".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn connection_integer_folding_declines_overflow_without_panicking() {
+        assert_eq!(
+            eval_binary_i64(&rumoca_core::OpBinary::Div, i64::MIN, -1),
+            None
+        );
+        assert_eq!(
+            eval_binary_i64(&rumoca_core::OpBinary::Add, i64::MAX, 1),
+            None
+        );
+        assert_eq!(eval_unary_i64(&rumoca_core::OpUnary::Minus, i64::MIN), None);
+        assert_eq!(
+            checked_divide_affine(
+                &rumoca_core::AffineForm {
+                    constant: i64::MIN,
+                    coeffs: vec![0],
+                },
+                -1,
+            ),
+            None
+        );
     }
 
     fn nested_dependent_for_connection_eq() -> ast::Equation {
@@ -1315,14 +1881,16 @@ mod tests {
                 ast::ComponentRefPart {
                     ident: make_token("cellData"),
                     subs: None,
+                    def_id: None,
                 },
                 ast::ComponentRefPart {
                     ident: make_token("nRC"),
                     subs: None,
+                    def_id: None,
                 },
             ],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         });
         let cr = make_comp_ref_with_sub(sub_expr, &["resistor", "n"]);
         let prefix = ast::QualifiedName::new();
@@ -1343,14 +1911,16 @@ mod tests {
                 ast::ComponentRefPart {
                     ident: make_token("cellData"),
                     subs: None,
+                    def_id: None,
                 },
                 ast::ComponentRefPart {
                     ident: make_token("nRC"),
                     subs: None,
+                    def_id: None,
                 },
             ],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         });
         let cr = make_comp_ref_with_sub(sub_expr, &["resistor", "n"]);
         let prefix = ast::QualifiedName::from_dotted("cell");
@@ -1368,9 +1938,10 @@ mod tests {
             parts: vec![ast::ComponentRefPart {
                 ident: make_token("nRC"),
                 subs: None,
+                def_id: None,
             }],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         };
         let mut int_params = rustc_hash::FxHashMap::default();
         int_params.insert("cellData.fake_nRC".to_string(), 4);
