@@ -9,7 +9,6 @@ repository.workspace = true
 [features]
 default = []
 strict-ir-validation = [
-    "rumoca-ir-dae/strict-ir-validation",
     "rumoca-ir-solve/strict-ir-validation",
 ]
 
@@ -17,11 +16,13 @@ strict-ir-validation = [
 rumoca-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-solve = { workspace = true }
-rumoca-phase-structural = { workspace = true }
 rumoca-eval-dae = { workspace = true }
+rumoca-phase-structural = { workspace = true }
 rumoca-eval-solve = { workspace = true }
+serde = { workspace = true }
 indexmap = { workspace = true }
-tracing = { workspace = true }
+rustc-hash = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true
