@@ -932,6 +932,28 @@ impl<'program> TypedProgramBuilder<'program> {
         Ok(destination)
     }
 
+    /// Preserve an already matching value or emit the one implicit numeric
+    /// widening admitted by checked DAE construction.
+    pub fn coerce_to(
+        &mut self,
+        value: ProgramRegister<'program>,
+        target: &SolveValueType,
+        provenance: Span,
+    ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+        require_provenance(provenance)?;
+        let source = self.register_type(value, provenance)?;
+        if source == target {
+            return Ok(value);
+        }
+        let integer_to_real = source.dimensions() == target.dimensions()
+            && matches!(source.element_type(), SolveScalarType::Integer(_))
+            && matches!(target.element_type(), SolveScalarType::Real { .. });
+        if !integer_to_real {
+            return Err(SolveProgramConstructionError::TypeMismatch { provenance });
+        }
+        self.convert(SolveConversionOperator::IntegerToReal, value, provenance)
+    }
+
     pub fn select(
         &mut self,
         condition: ProgramRegister<'program>,

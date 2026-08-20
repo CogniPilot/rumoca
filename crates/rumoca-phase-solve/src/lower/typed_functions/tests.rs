@@ -1349,6 +1349,51 @@ fn record_constructor_coerces_integer_tensor_field_to_declared_real_type() {
 }
 
 #[test]
+fn real_array_constructor_explicitly_widens_integer_elements() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("typed_array_coercion.mo", "y := {0, 1.0, 2.0}");
+    let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 18)).unwrap();
+    let model = dae::Dae::construct(sources, |model| {
+        let vector = model
+            .types(|types| types.derived(dae::ValueType::array(dae::ScalarType::Real, [3]), at))?;
+        let (function, ()) = model.function(
+            dae::FunctionSignature::new(VarName::new("mixedRealVector"), [], [vector], at),
+            |model, reservation| {
+                let output = model.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, at)
+                })?;
+                let value = model.expressions(|expressions| {
+                    let integer = expressions.at(at).literal(dae::DaeLiteral::Integer(0))?;
+                    let one = expressions.at(at).literal(dae::DaeLiteral::Real(1.0))?;
+                    let two = expressions.at(at).literal(dae::DaeLiteral::Real(2.0))?;
+                    expressions.at(at).array([integer, one, two])
+                })?;
+                let mut body = model.functions(|functions| functions.begin(reservation, at))?;
+                model.functions(|functions| functions.assign(&mut body, output, value, at))?;
+                model.functions(|functions| functions.define(body, at))
+            },
+        )?;
+        model.expressions(|expressions| expressions.at(at).call(function, 0, []))?;
+        Ok(())
+    })
+    .unwrap();
+
+    let table = lower_root_call(&model);
+    let [owner] = table.owners() else {
+        panic!("one exact call owner expected")
+    };
+    let output = rumoca_eval_solve::eval_pure_call(&table, owner.id(), &[]).unwrap();
+    assert_eq!(
+        output[0].elements(),
+        [
+            solve::SolveValueKind::Real64(0.0_f64.to_bits()),
+            solve::SolveValueKind::Real64(1.0_f64.to_bits()),
+            solve::SolveValueKind::Real64(2.0_f64.to_bits()),
+        ]
+    );
+}
+
+#[test]
 fn smooth_in_function_body_preserves_compact_tensor_value() {
     let mut sources = SourceMap::new();
     let source = sources.add("typed_smooth_vector.mo", "y := smooth(0, u)");

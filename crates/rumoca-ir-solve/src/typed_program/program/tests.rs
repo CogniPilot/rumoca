@@ -509,6 +509,32 @@ fn conversions_preserve_shape_and_reject_same_kind_coercion() {
 }
 
 #[test]
+fn aggregate_elements_are_explicitly_widened_to_the_checked_result_type() {
+    let arithmetic = profile();
+    let program = TypedProgram::construct(arithmetic, |builder| {
+        let integer = builder.constant(
+            SolveValue::integer(arithmetic, 0).expect("zero fits the checked domain"),
+            span(0),
+        )?;
+        let real = builder.constant(SolveValue::real(arithmetic, 1.0), span(1))?;
+        let real_type = SolveValueType::scalar(SolveScalarType::real(arithmetic));
+        let widened = builder.coerce_to(integer, &real_type, span(2))?;
+        let vector = builder.construct_aggregate(&[widened, real], vec![2], span(3))?;
+        assert_eq!(builder.register_type(vector, span(4))?.dimensions(), [2]);
+        Ok(())
+    })
+    .expect("checked integer-to-real array promotion emits an explicit conversion");
+
+    assert!(matches!(
+        program.operations()[2].operation(),
+        SolveOperation::Convert {
+            operator: SolveConversionOperator::IntegerToReal,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn conditional_requires_every_region_to_define_the_complete_result_tuple() {
     let arithmetic = profile();
     let error = TypedProgram::construct(arithmetic, |builder| {

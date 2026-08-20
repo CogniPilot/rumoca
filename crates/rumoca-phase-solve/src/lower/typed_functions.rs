@@ -1446,10 +1446,25 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         }
         let mut leaves = Vec::with_capacity(expected.len());
         for (ordinal, leaf_type) in expected.iter().enumerate() {
+            let element_dimensions = leaf_type
+                .dimensions()
+                .get(1..)
+                .ok_or(solve::SolveProgramConstructionError::InvalidAggregate { provenance: at })?;
+            let element_type = if element_dimensions.is_empty() {
+                solve::SolveValueType::scalar(leaf_type.element_type())
+            } else {
+                solve::SolveValueType::tensor(leaf_type.element_type(), element_dimensions.to_vec())
+                    .map_err(|_| solve::SolveProgramConstructionError::InvalidAggregate {
+                        provenance: at,
+                    })?
+            };
             let field_elements = elements
                 .iter()
-                .map(|element| element.leaves[ordinal])
-                .collect::<Vec<_>>();
+                .map(|element| {
+                    self.builder
+                        .coerce_to(element.leaves[ordinal], &element_type, at)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             leaves.push(self.builder.construct_aggregate(
                 &field_elements,
                 leaf_type.dimensions().to_vec(),
