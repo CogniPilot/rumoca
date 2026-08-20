@@ -8,11 +8,18 @@ repository.workspace = true
 
 [features]
 strict-ir-validation = []
+# SPEC_0039 / SOLVE-C17: exposes `StructuralPattern::from_row_dependencies`,
+# the fixture constructor that accepts caller-supplied dependency rows. It has
+# no semantic owner to derive from, so it must never be reachable from a
+# production build: dependent crates enable it from `[dev-dependencies]` only,
+# which `pattern_fixture_feature_is_dev_only` in tests.rs enforces.
+pattern-fixtures = []
 
 [dependencies]
 rumoca-core = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 bincode = { workspace = true }
