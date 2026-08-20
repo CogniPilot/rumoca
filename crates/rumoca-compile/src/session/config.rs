@@ -8,10 +8,6 @@ static RAYON_INIT: Once = Once::new();
 pub struct SessionConfig {
     /// Enable parallel compilation.
     pub parallel: bool,
-    /// Strictness toggle for ER070 Evaluate-scope diagnostics.
-    pub evaluate_scope_is_error: bool,
-    /// Strictness toggle for ER053 when single-assignment diagnostics.
-    pub when_single_assign_is_error: bool,
     /// Maximum concrete class/component nesting allowed during instantiation.
     pub instantiation_depth_limit: usize,
 }
@@ -20,8 +16,6 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             parallel: false,
-            evaluate_scope_is_error: true,
-            when_single_assign_is_error: true,
             instantiation_depth_limit: DEFAULT_INSTANTIATION_DEPTH_LIMIT,
         }
     }

@@ -384,7 +384,7 @@ end Modelica;
             .expect("semantic navigation tree");
         let import_line = source.lines().nth(1).expect("import line");
         let char_pos = import_line.find("PID").expect("PID token") as u32 + 1;
-        let hover = handle_hover(source, Some(&ast), Some(&resolved.0), 1, char_pos)
+        let hover = handle_hover(source, Some(&ast), Some(&resolved), 1, char_pos)
             .expect("hover should resolve imported class");
 
         let HoverContents::Markup(contents) = hover.contents else {

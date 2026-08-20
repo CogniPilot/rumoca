@@ -245,7 +245,7 @@ fn run_batch_simulation(
     )
     .map_err(|e| ApiError::Compile(e.0))?;
     let compile_seconds = compile_started.elapsed().as_secs_f64();
-    let (opts, solver_label) = sim_options_from_config(&config);
+    let (opts, solver_label) = sim_options_from_config(&config)?;
     let simulate_started = Instant::now();
     let sim = simulate_with_diagnostics_auto_nan_trace(&result.dae, &opts)
         .map_err(|e| ApiError::Sim(format!("{e}")))?;
@@ -374,13 +374,17 @@ fn apply_simulation_overrides(
     Ok(())
 }
 
-fn sim_options_from_config(config: &ScenarioSimulationConfig) -> (SimOptions, String) {
+fn sim_options_from_config(config: &ScenarioSimulationConfig) -> ApiResult<(SimOptions, String)> {
     let (solver_mode, solver_label) = SimSolverMode::parse_request(config.sim.solver.as_deref());
+    // A scenario naming a solver this tree cannot run is reported rather than
+    // dropped: dropping it would run the scenario on a solver it did not ask for.
+    rumoca_core::canonical_solver_name(&solver_label)
+        .map_err(|error| ApiError::Sim(error.to_string()))?;
     let mut opts = SimOptions {
         t_end: config.sim.t_end,
         dt: Some(config.sim.dt),
         solver_mode,
-        diffsol_method: DiffsolMethod::from_external_name(&solver_label).unwrap_or_default(),
+        diffsol_method: DiffsolMethod::Bdf,
         pacing_mode: config.effective_pacing_mode(),
         ..SimOptions::default()
     };
@@ -390,7 +394,7 @@ fn sim_options_from_config(config: &ScenarioSimulationConfig) -> (SimOptions, St
     if let Some(rtol) = config.sim.rtol {
         opts.rtol = rtol;
     }
-    (opts, solver_label)
+    Ok((opts, solver_label))
 }
 
 fn sim_request(opts: &SimOptions, solver_label: String) -> SimulationRequestSummary {

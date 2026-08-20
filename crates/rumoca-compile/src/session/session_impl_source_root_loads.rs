@@ -13,10 +13,49 @@ impl Session {
         definitions: Vec<(String, ast::StoredDefinition)>,
         exclude_uri: Option<&str>,
     ) -> usize {
-        let mut desired_docs: IndexMap<String, ast::StoredDefinition> = IndexMap::new();
-        for (uri, parsed) in definitions {
+        let documents = definitions
+            .into_iter()
+            .map(|(uri, parsed)| {
+                Document::new(
+                    uri,
+                    String::new(),
+                    crate::parse::SyntaxFile::from_parsed(parsed),
+                )
+            })
+            .collect();
+        self.replace_source_set_documents(source_set_id, kind, documents, exclude_uri)
+    }
+
+    /// Replace an in-memory parsed source-set without separating source text
+    /// from the parser-produced definition.
+    pub fn replace_in_memory_source_set(
+        &mut self,
+        source_set_id: &str,
+        kind: SourceRootKind,
+        documents: Vec<ParsedSourceDocument>,
+        exclude_uri: Option<&str>,
+    ) -> usize {
+        let documents = documents
+            .into_iter()
+            .map(Document::from_parsed_source)
+            .collect();
+        self.replace_source_set_documents(source_set_id, kind, documents, exclude_uri)
+    }
+
+    fn replace_source_set_documents(
+        &mut self,
+        source_set_id: &str,
+        kind: SourceRootKind,
+        documents: Vec<Document>,
+        exclude_uri: Option<&str>,
+    ) -> usize {
+        let mut desired_docs: IndexMap<String, Document> = IndexMap::new();
+        for document in documents {
+            let uri = document.uri.clone();
             if exclude_uri.is_some_and(|excluded| same_path(&uri, excluded)) {
-                self.cache_detached_source_root_parsed_document(source_set_id, &uri, parsed);
+                let mut source_root_keys = IndexSet::new();
+                source_root_keys.insert(source_set_id.to_string());
+                self.cache_detached_source_root_document(&uri, document, source_root_keys);
                 continue;
             }
             if self
@@ -24,22 +63,23 @@ impl Session {
                 .get(&uri)
                 .is_some_and(|existing| !existing.content.is_empty())
             {
-                self.cache_detached_source_root_parsed_document(source_set_id, &uri, parsed);
+                let mut source_root_keys = IndexSet::new();
+                source_root_keys.insert(source_set_id.to_string());
+                self.cache_detached_source_root_document(&uri, document, source_root_keys);
                 continue;
             }
 
-            desired_docs.insert(uri, parsed);
+            desired_docs.insert(uri, document);
         }
         let inserted_uris: IndexSet<String> = desired_docs.keys().cloned().collect();
 
         if let Some(previous_uris) = self.source_set_uris(source_set_id)
             && previous_uris == &inserted_uris
         {
-            let unchanged = desired_docs.iter().all(|(uri, parsed)| {
+            let unchanged = desired_docs.iter().all(|(uri, desired)| {
                 self.documents
                     .get(uri)
-                    .and_then(|doc| doc.parsed())
-                    .is_some_and(|existing| existing == parsed)
+                    .is_some_and(|existing| source_root_document_matches(existing, desired))
             });
             if unchanged {
                 self.clear_source_root_refresh(source_set_id);
@@ -69,16 +109,10 @@ impl Session {
         }
 
         let mut inserted_count = 0usize;
-        for (uri, parsed) in desired_docs {
+        for (uri, document) in desired_docs {
             // Source-set replacement updates file revisions and detached membership
             // in one bulk pass via update_source_set_record below.
-            let document = Document::new(
-                uri,
-                String::new(),
-                crate::parse::SyntaxFile::from_parsed(parsed),
-            );
-            self.documents
-                .insert(document.uri.clone(), Arc::new(document));
+            self.documents.insert(uri, Arc::new(document));
             inserted_count += 1;
         }
         for removed_uri in removed_uris {
@@ -185,4 +219,9 @@ impl Session {
             cache_dir,
         )
     }
+}
+
+fn source_root_document_matches(existing: &Document, desired: &Document) -> bool {
+    existing.parsed() == desired.parsed()
+        && existing.source_root_content == desired.source_root_content
 }

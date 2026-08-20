@@ -89,38 +89,35 @@ impl Session {
         &mut self,
         model_name: &str,
         fingerprint: Fingerprint,
-    ) -> Option<Arc<ast::ResolvedTree>> {
+    ) -> Option<Arc<ast::ClassTree>> {
         let artifact = self
             .query_state
             .resolved
             .semantic_navigation
             .shift_remove(model_name)?;
         let is_hit = artifact.fingerprint == fingerprint;
-        let resolved = artifact.resolved.clone();
+        let tree = artifact.tree.clone();
         self.query_state
             .resolved
             .semantic_navigation
             .insert(model_name.to_string(), artifact);
-        is_hit.then_some(resolved)
+        is_hit.then_some(tree)
     }
 
     pub(super) fn insert_semantic_navigation(
         &mut self,
         model_name: String,
         fingerprint: Fingerprint,
-        resolved: Arc<ast::ResolvedTree>,
+        tree: Arc<ast::ClassTree>,
     ) {
         self.query_state
             .resolved
             .semantic_navigation
             .shift_remove(&model_name);
-        self.query_state.resolved.semantic_navigation.insert(
-            model_name,
-            SemanticNavigationArtifact {
-                fingerprint,
-                resolved,
-            },
-        );
+        self.query_state
+            .resolved
+            .semantic_navigation
+            .insert(model_name, SemanticNavigationArtifact { fingerprint, tree });
         Self::trim_lru_cache(
             &mut self.query_state.resolved.semantic_navigation,
             MAX_SESSION_SEMANTIC_NAVIGATION_CACHE_ENTRIES,

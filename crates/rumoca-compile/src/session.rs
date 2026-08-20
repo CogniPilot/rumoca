@@ -9,18 +9,18 @@ use rayon::prelude::*;
 use rumoca_core::{DefId, Span};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, OptionalTimer,
-    PrimaryLabel, SourceMap, maybe_elapsed_duration, maybe_start_timer,
+    PhaseError, PrimaryLabel, SourceMap, maybe_elapsed_duration, maybe_start_timer,
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
-use rumoca_phase_dae::{ToDaeError, ToDaeOptions, to_dae_with_options};
+use rumoca_phase_dae::{ToDaeError, to_dae};
 use rumoca_phase_flatten::{FlattenError, FlattenOptions, flatten_ref_with_options};
 use rumoca_phase_instantiate::{
     InstantiateError, InstantiateOptions, InstantiationOutcome,
     instantiate_model_with_outcome_options,
 };
-use rumoca_phase_resolve::{ResolveOptions, resolve_with_options_collect};
+use rumoca_phase_resolve::{ResolvedTree, resolve_with_diagnostics};
 use rumoca_phase_typecheck::typecheck_instanced;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -30,9 +30,11 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 mod lru_cache;
+mod parsed_source_document;
 mod session_impl;
 mod session_impl_query_indexes;
 use lru_cache::{LruMap, SessionLruCache};
+pub use parsed_source_document::{ParsedSourceDocument, ParsedSourceRootLoad};
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -97,6 +99,7 @@ pub use config::SessionConfig;
 use config::init_rayon_pool;
 mod structural_overrides;
 pub use structural_overrides::StructuralOverride;
+use structural_overrides::StructuralOverrideSource;
 mod namespace_completion;
 use namespace_completion::NamespaceCompletionCache;
 mod compile_phase_timing;
@@ -109,11 +112,10 @@ use compile_phase_timing::{maybe_record_compile_phase_timing, notify_compile_pha
 mod compile_support;
 use compile_support::{
     collect_class_component_members, compile_model_dae_internal,
-    compile_model_dae_internal_allow_unbalanced_for_diagnostics,
     compile_model_dae_internal_with_options, compile_model_internal,
-    compile_model_internal_allow_unbalanced_for_diagnostics, compile_model_internal_with_options,
-    compile_phase_result_from_dae, dae_model_outcome_from_flat, dae_phase_result_from_dae,
-    diagnostics_from_vec, diagnostics_to_anyhow, finalize_strict_compile_report,
+    compile_model_internal_with_options, compile_phase_result_from_dae,
+    dae_model_outcome_from_flat, dae_phase_result_from_dae, diagnostics_from_vec,
+    diagnostics_to_anyhow, finalize_strict_compile_report,
     finalize_strict_compile_report_from_uncached_targets, flat_model_outcome_from_typed,
     is_simulatable_class_type, missing_inner_label, resolve_class_for_completion,
     split_cached_target_results, typed_model_outcome_from_instantiated,
@@ -121,7 +123,7 @@ use compile_support::{
 mod compiled_source_root;
 pub use compiled_source_root::CompiledSourceRoot;
 mod diagnostic_adapters;
-use diagnostic_adapters::{merge_error_to_common, miette_error_to_common};
+use diagnostic_adapters::{diagnostic_message_with_primary_location, merge_error_to_common};
 mod model_diagnostics;
 use model_diagnostics::{
     global_resolution_failure_diagnostics, merge_model_diagnostics, model_diagnostics_for_tree,
@@ -129,12 +131,17 @@ use model_diagnostics::{
 };
 mod reachability;
 use reachability::{ReachabilityPlanner, ReachableModelClosure};
+mod model_failure_diagnostic;
+pub use model_failure_diagnostic::ModelFailureDiagnostic;
 mod strict_compile_diagnostics;
+pub use strict_compile_diagnostics::StrictCompileFailure;
 use strict_compile_diagnostics::{
     class_primary_span, collect_parse_error_diagnostics, collect_parse_failures_for_files,
-    collect_resolve_failures_for_files, collect_target_source_files, dae_phase_result_to_failures,
-    default_tree_span, document_parse_diagnostics, phase_result_to_failures, same_path,
+    collect_target_source_files, dae_phase_result_to_failures, default_tree_span,
+    document_parse_diagnostics, phase_result_to_failures, same_path,
 };
+mod strict_compile_report;
+pub use strict_compile_report::{StrictCompilation, StrictCompileReport};
 mod session_impl_caches;
 mod session_impl_diagnostics;
 mod session_impl_inputs;
@@ -162,7 +169,7 @@ fn path_lookup_key(path: &str) -> String {
 #[derive(Debug, Clone)]
 struct SemanticNavigationArtifact {
     fingerprint: Fingerprint,
-    resolved: Arc<ast::ResolvedTree>,
+    tree: Arc<ast::ClassTree>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,16 +197,21 @@ pub enum SemanticDiagnosticsMode {
     Save,
 }
 
+/// Cache key for one model's semantic diagnostics run.
+///
+/// The model name is a Modelica class path supplied per request; interning it
+/// makes the cache probe hash an id and keeps one copy of the path however many
+/// times it is looked up.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SemanticDiagnosticsCacheKey {
-    model_name: String,
+    model_name: rumoca_core::VarName,
     mode: SemanticDiagnosticsMode,
 }
 
 impl SemanticDiagnosticsCacheKey {
     fn new(model_name: &str, mode: SemanticDiagnosticsMode) -> Self {
         Self {
-            model_name: model_name.to_string(),
+            model_name: rumoca_core::VarName::intern(model_name),
             mode,
         }
     }
@@ -363,6 +375,7 @@ struct FlatModelQueryState {
 struct DaeModelArtifactData {
     flat: Arc<flat::Model>,
     dae: Arc<dae::Dae>,
+    balance_detail: rumoca_phase_dae::balance::BalanceDetail,
 }
 
 #[derive(Debug, Clone)]
@@ -402,9 +415,10 @@ struct DaeModelArtifact {
 
 #[derive(Debug, Clone, Default)]
 struct SemanticDiagnosticsQueryState {
-    resolved_by_mode: IndexMap<SemanticDiagnosticsMode, Arc<ast::ResolvedTree>>,
+    resolved_by_mode: IndexMap<SemanticDiagnosticsMode, Arc<ResolvedTree>>,
     resolved_diagnostics_by_mode: IndexMap<SemanticDiagnosticsMode, Vec<CommonDiagnostic>>,
     dependency_fingerprints_by_mode: IndexMap<SemanticDiagnosticsMode, DependencyFingerprintCache>,
+    save_resolution_proofs: LruMap<SemanticDiagnosticsCacheKey, StrictTargetResolution>,
     interface_artifacts: LruMap<SemanticDiagnosticsCacheKey, InterfaceSemanticDiagnosticsArtifact>,
     body_artifacts: LruMap<SemanticDiagnosticsCacheKey, BodySemanticDiagnosticsArtifact>,
     model_stage_artifacts: LruMap<SemanticDiagnosticsCacheKey, SemanticDiagnosticsArtifact>,
@@ -415,12 +429,16 @@ impl SemanticDiagnosticsQueryState {
         self.resolved_by_mode.clear();
         self.resolved_diagnostics_by_mode.clear();
         self.dependency_fingerprints_by_mode.clear();
+        self.save_resolution_proofs = LruMap::default();
     }
 
     fn invalidate_inputs_for_mode(&mut self, mode: SemanticDiagnosticsMode) {
         self.resolved_by_mode.shift_remove(&mode);
         self.resolved_diagnostics_by_mode.shift_remove(&mode);
         self.dependency_fingerprints_by_mode.shift_remove(&mode);
+        if mode == SemanticDiagnosticsMode::Save {
+            self.save_resolution_proofs = LruMap::default();
+        }
     }
 }
 
@@ -625,21 +643,45 @@ pub struct SourceRootRefreshPlan {
     pub full_root_fallback: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct ParsedSourceRootLoad<'a> {
-    pub source_root_kind: SourceRootKind,
-    pub source_root_path: &'a Path,
-    pub cache_status: SourceRootCacheStatus,
-    pub path_key: &'a str,
-    pub current_document_path: Option<&'a str>,
-    pub documents: Vec<(String, ast::StoredDefinition)>,
-    pub expected_epoch: u64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ResolveBuildMode {
     Standard,
     StrictCompileRecovery,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::session) enum ResolutionPlanningTree {
+    Complete(Arc<ResolvedTree>),
+    Incomplete(Arc<ast::ClassTree>),
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::session) struct StrictTargetResolution {
+    resolved: Arc<ResolvedTree>,
+    closure: ReachableModelClosure,
+    diagnostics: Vec<CommonDiagnostic>,
+}
+
+pub(in crate::session) struct StrictTargetResolutionFailure {
+    failures: Vec<ModelFailureDiagnostic>,
+    diagnostics: Vec<CommonDiagnostic>,
+    source_map: Box<SourceMap>,
+}
+
+impl ResolutionPlanningTree {
+    fn tree(&self) -> &ast::ClassTree {
+        match self {
+            Self::Complete(resolved) => resolved.inner(),
+            Self::Incomplete(tree) => tree,
+        }
+    }
+
+    fn completed(&self) -> Option<&Arc<ResolvedTree>> {
+        match self {
+            Self::Complete(resolved) => Some(resolved),
+            Self::Incomplete(_) => None,
+        }
+    }
 }
 
 impl ResolveBuildMode {
@@ -661,32 +703,28 @@ impl SemanticDiagnosticsMode {
 
 #[derive(Debug, Clone, Default)]
 struct ResolvedBuildCache {
-    standard: Option<Arc<ast::ResolvedTree>>,
-    strict_compile_recovery: Option<Arc<ast::ResolvedTree>>,
-    strict_compile_recovery_diagnostics: Option<Vec<CommonDiagnostic>>,
+    standard: Option<Arc<ResolvedTree>>,
+    strict_compile_recovery: Option<ResolutionPlanningArtifact>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolutionPlanningArtifact {
+    tree: ResolutionPlanningTree,
+    diagnostics: Vec<CommonDiagnostic>,
 }
 
 impl ResolvedBuildCache {
-    fn get(&self, mode: ResolveBuildMode) -> Option<&Arc<ast::ResolvedTree>> {
-        match mode {
-            ResolveBuildMode::Standard => self.standard.as_ref(),
-            ResolveBuildMode::StrictCompileRecovery => self.strict_compile_recovery.as_ref(),
-        }
+    fn standard(&self) -> Option<&Arc<ResolvedTree>> {
+        self.standard.as_ref()
     }
 
-    fn set(&mut self, mode: ResolveBuildMode, resolved: Arc<ast::ResolvedTree>) {
-        match mode {
-            ResolveBuildMode::Standard => self.standard = Some(resolved),
-            ResolveBuildMode::StrictCompileRecovery => {
-                self.strict_compile_recovery = Some(resolved)
-            }
-        }
+    fn set_standard(&mut self, resolved: Arc<ResolvedTree>) {
+        self.standard = Some(resolved);
     }
 
     fn clear(&mut self) {
         self.standard = None;
         self.strict_compile_recovery = None;
-        self.strict_compile_recovery_diagnostics = None;
     }
 
     fn clear_mode(&mut self, mode: ResolveBuildMode) {
@@ -694,15 +732,27 @@ impl ResolvedBuildCache {
             ResolveBuildMode::Standard => self.standard = None,
             ResolveBuildMode::StrictCompileRecovery => {
                 self.strict_compile_recovery = None;
-                self.strict_compile_recovery_diagnostics = None;
             }
         }
     }
 
-    fn any(&self) -> Option<&Arc<ast::ResolvedTree>> {
+    fn any_tree(&self) -> Option<&ast::ClassTree> {
         self.standard
             .as_ref()
-            .or(self.strict_compile_recovery.as_ref())
+            .map(|resolved| resolved.inner())
+            .or_else(|| {
+                self.strict_compile_recovery
+                    .as_ref()
+                    .map(|artifact| artifact.tree.tree())
+            })
+    }
+
+    fn has_completed_tree(&self) -> bool {
+        self.standard.is_some()
+            || self
+                .strict_compile_recovery
+                .as_ref()
+                .is_some_and(|artifact| artifact.tree.completed().is_some())
     }
 }
 
@@ -1508,6 +1558,9 @@ pub struct Document {
     pub uri: String,
     /// Source content.
     pub content: Arc<str>,
+    /// Source-root text retained for exact provenance while `content` remains
+    /// reserved for a live document overlay.
+    source_root_content: Option<Arc<str>>,
     syntax: Arc<crate::parse::SyntaxFile>,
     query_fingerprints: DocumentQueryFingerprints,
 }
@@ -1518,9 +1571,21 @@ impl Document {
         Self {
             uri,
             content: Arc::<str>::from(content),
+            source_root_content: None,
             syntax: Arc::new(syntax),
             query_fingerprints,
         }
+    }
+
+    fn from_parsed_source(document: ParsedSourceDocument) -> Self {
+        let (uri, source, definition) = document.into_parts();
+        let mut parsed = Self::new(
+            uri,
+            String::new(),
+            crate::parse::SyntaxFile::from_parsed(definition),
+        );
+        parsed.source_root_content = Some(source);
+        parsed
     }
 
     pub fn from_parsed(uri: String, content: String, parsed: ast::StoredDefinition) -> Self {
@@ -1574,7 +1639,7 @@ pub struct CompilationResult {
     /// The flattened representation.
     pub flat: flat::Model,
     /// The final DAE representation.
-    pub dae: dae::Dae,
+    pub dae: Arc<dae::Dae>,
     /// Detailed continuous balance inputs validated during DAE construction.
     pub balance_detail: rumoca_phase_dae::balance::BalanceDetail,
     /// Optional simulation start time from `annotation(experiment(StartTime=...))`
@@ -1634,71 +1699,12 @@ pub struct ModelDiagnostics {
     pub global_resolution_failure: bool,
 }
 
-/// Failure diagnostic for a single model in a strict-reachable-with-recovery pass.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelFailureDiagnostic {
-    pub model_name: String,
-    pub phase: Option<FailedPhase>,
-    pub error_code: Option<String>,
-    pub error: String,
-    pub primary_label: Option<Label>,
-}
-
-/// Report type from strict-reachable-with-recovery compilation.
-///
-/// The requested model remains strict: it must compile successfully for callers
-/// to treat the compile as successful. Other related models are still compiled
-/// so additional diagnostics can be surfaced to the user.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct StrictCompileReport {
-    pub requested_model: String,
-    pub requested_result: Option<PhaseResult>,
-    pub summary: CompilationSummary,
-    pub failures: Vec<ModelFailureDiagnostic>,
-    pub source_map: Option<SourceMap>,
-}
-
 /// Coarse timing breakdown for strict requested-only model checks.
 #[derive(Debug, Clone, Default)]
 pub struct StrictCheckTiming {
-    pub build_resolved_ms: u64,
-    pub reachable_closure_ms: u64,
-    pub collect_parse_failures_ms: u64,
-    pub collect_resolve_failures_ms: u64,
+    pub target_resolution_ms: u64,
     pub dae_phase_query_ms: u64,
     pub total_ms: u64,
-}
-
-impl StrictCompileReport {
-    /// Returns true when strict compile succeeded for the requested closure.
-    pub fn requested_succeeded(&self) -> bool {
-        matches!(self.requested_result, Some(PhaseResult::Success(_))) && self.failures.is_empty()
-    }
-
-    /// Build a concise failure summary for user-facing diagnostics.
-    pub fn failure_summary(&self, max_related: usize) -> String {
-        let requested = match &self.requested_result {
-            Some(PhaseResult::Success(_)) => {
-                format!("{} compiled successfully", self.requested_model)
-            }
-            Some(PhaseResult::NeedsInner { missing_inners, .. }) => format!(
-                "{} requires inner declarations: {}",
-                self.requested_model,
-                missing_inners.join(", ")
-            ),
-            Some(PhaseResult::Failed { phase, error, .. }) => {
-                format!("{} failed in {}: {}", self.requested_model, phase, error)
-            }
-            None => requested_missing_result_message(&self.requested_model, &self.failures),
-        };
-
-        format_strict_failure_summary(
-            &self.requested_model,
-            requested,
-            &self.failures,
-            max_related,
-        )
-    }
 }
 
 fn requested_missing_result_message(
@@ -1776,10 +1782,10 @@ pub(crate) enum DaePhaseResult {
         phase: FailedPhase,
         error: String,
         error_code: Option<String>,
-        /// Structured spanned diagnostics from the failing phase, when the
-        /// phase produces them (typecheck today). Empty means only the
-        /// stringified `error` is available.
+        /// Structured diagnostics from the failing semantic phase.
         diagnostics: Vec<CommonDiagnostic>,
+        /// Breakdown carried by an unbalanced (ED001) ToDae failure; else None.
+        balance_detail: Option<Box<rumoca_phase_dae::balance::BalanceDetail>>,
     },
 }
 
@@ -1822,9 +1828,7 @@ pub enum PhaseResult {
         phase: FailedPhase,
         error: String,
         error_code: Option<String>,
-        /// Structured spanned diagnostics from the failing phase, when the
-        /// phase produces them (typecheck today). Empty means only the
-        /// stringified `error` is available.
+        /// Structured diagnostics from the failing semantic phase.
         #[serde(default)]
         diagnostics: Vec<CommonDiagnostic>,
     },
@@ -1926,6 +1930,7 @@ impl CompilationSummary {
 #[derive(Debug, Clone)]
 pub struct Session {
     instantiation_options: InstantiateOptions,
+    structural_override_sources: Vec<StructuralOverrideSource>,
     documents: IndexMap<String, Arc<Document>>,
     detached_document_uris: IndexSet<String>,
     detached_source_root_documents: IndexMap<FileId, DetachedSourceRootDocument>,
@@ -1965,10 +1970,6 @@ pub struct Session {
     lightweight_snapshot_cache: SharedSessionSnapshotCache,
     /// Shared medium-weight snapshot for global workspace symbol reads.
     workspace_symbol_snapshot_cache: SharedSessionSnapshotCache,
-    /// Session-wide semantic strictness for ER070.
-    evaluate_scope_is_error: bool,
-    /// Session-wide semantic strictness for ER053.
-    when_single_assign_is_error: bool,
 }
 
 /// Detached query snapshot cloned from one host session revision.

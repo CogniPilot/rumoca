@@ -1,8 +1,101 @@
+use super::session_impl_diagnostics::resolve_diagnostic_in_target_files;
 use super::session_impl_symbols::*;
 mod navigation;
 pub(crate) use navigation::*;
 
 use super::*;
+
+/// Maximum number of related-model failures rendered into a strict summary.
+const STRICT_MAX_RELATED: usize = 8;
+
+/// Build the structured failure for a compile that never reached a model
+/// phase, i.e. parse or resolve failed first.
+fn strict_pre_phase_failure(
+    model_name: &str,
+    failures: Vec<ModelFailureDiagnostic>,
+) -> StrictCompileFailure {
+    let requested = requested_missing_result_message(model_name, &failures);
+    let summary =
+        format_strict_failure_summary(model_name, requested, &failures, STRICT_MAX_RELATED);
+    StrictCompileFailure::pre_phase(summary, failures)
+}
+
+fn resolve_error_diagnostic_failure(diagnostic: &CommonDiagnostic) -> ModelFailureDiagnostic {
+    debug_assert!(
+        diagnostic.is_error(),
+        "only error-severity diagnostics may construct a compile failure"
+    );
+    let (primary_label, secondary_labels) =
+        ModelFailureDiagnostic::split_labels(diagnostic).unzip();
+    ModelFailureDiagnostic {
+        model_name: "<resolve>".to_string(),
+        phase: None,
+        error_code: diagnostic.code.clone(),
+        error: diagnostic.message.clone(),
+        primary_label,
+        secondary_labels: secondary_labels.unwrap_or_default(),
+        notes: diagnostic.notes.clone(),
+    }
+}
+
+fn resolve_error_failures(diagnostics: &CommonDiagnostics) -> Vec<ModelFailureDiagnostic> {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.is_error())
+        .map(resolve_error_diagnostic_failure)
+        .collect()
+}
+
+fn reachable_definition_names(
+    tree: &ast::ClassTree,
+    reachable_classes: &[String],
+) -> IndexSet<String> {
+    let index = ast::ClassDefIndex::from_tree(tree);
+    let mut names = IndexSet::new();
+    for qualified_name in reachable_classes {
+        let Some(def_id) = index.def_id_by_qualified_name(qualified_name) else {
+            continue;
+        };
+        for ancestor in index.def_ancestry(def_id) {
+            if let Some(name) = index.qualified_name(ancestor) {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    names
+}
+
+fn retain_definition_closure(
+    definition: &mut ast::StoredDefinition,
+    retained_names: &IndexSet<String>,
+) {
+    let parent = definition
+        .within
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    retain_nested_definition_closure(&mut definition.classes, &parent, retained_names);
+}
+
+fn retain_nested_definition_closure(
+    classes: &mut ast::AstIndexMap<String, ast::ClassDef>,
+    parent: &str,
+    retained_names: &IndexSet<String>,
+) {
+    classes.retain(|local_name, class| {
+        let qualified_name = if parent.is_empty() {
+            local_name.clone()
+        } else {
+            format!("{parent}.{local_name}")
+        };
+        if !retained_names.contains(&qualified_name) {
+            return false;
+        }
+        retain_nested_definition_closure(&mut class.classes, &qualified_name, retained_names);
+        true
+    });
+}
+
 impl Session {
     /// Return the current session revision token for snapshot/read coordination.
     pub fn revision(&self) -> u64 {
@@ -209,6 +302,19 @@ impl Session {
         self.invalidate_source_root_completion_state(CacheInvalidationCause::SourceSetMutation);
     }
 
+    /// Add parser-produced in-memory sources while retaining their canonical
+    /// source text for downstream provenance.
+    pub fn add_in_memory_parsed_batch(&mut self, documents: Vec<ParsedSourceDocument>) {
+        let revision = self.bump_revision();
+        for document in documents {
+            let document = Document::from_parsed_source(document);
+            self.detach_uri_from_source_sets(&document.uri, revision, false);
+            self.insert_document(document, revision);
+        }
+        self.invalidate_resolved_state(CacheInvalidationCause::SourceSetMutation);
+        self.invalidate_source_root_completion_state(CacheInvalidationCause::SourceSetMutation);
+    }
+
     /// Remove all parsed documents previously loaded for a source-set id.
     pub fn remove_source_set(&mut self, source_set_id: &str) {
         let revision = self.bump_revision();
@@ -224,6 +330,12 @@ impl Session {
     /// Get a document by URI.
     pub fn get_document(&self, uri: &str) -> Option<&Document> {
         self.documents.get(uri).map(Arc::as_ref)
+    }
+
+    /// Return the canonical source text used to interpret this document's
+    /// parser spans.
+    pub fn document_source_text(&self, uri: &str) -> Option<Arc<str>> {
+        self.get_document(uri).map(source_map_content_for_doc)
     }
 
     /// Qualify a bare model name against a document's `within` prefix: a name
@@ -290,20 +402,45 @@ impl Session {
     /// Build the resolved tree, returning diagnostics on failure.
     fn build_resolved_with_diagnostics(
         &mut self,
-    ) -> Result<(Arc<ast::ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
-        self.build_resolved_with_diagnostics_inner(ResolveBuildMode::Standard)
+    ) -> Result<(Arc<ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
+        self.build_resolved_with_diagnostics_inner()
     }
 
     /// Build the resolved tree for strict target compilation.
     ///
     /// Unlike generic build flows, this ignores parse-error diagnostics from
-    /// unrelated documents and resolves from available parsed ASTs. Unresolved
-    /// name errors stay tolerant here so closure planning is not blocked by
-    /// unrelated symbols.
-    pub(crate) fn build_resolved_for_strict_compile_with_diagnostics(
+    /// unrelated documents and resolves from available parsed ASTs. Resolve
+    /// errors remain fatal: no recovery path receives a completed Resolve
+    /// artifact containing unresolved names.
+    pub(in crate::session) fn build_resolution_plan_for_strict_compile(
         &mut self,
-    ) -> Result<(Arc<ast::ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
-        self.build_resolved_with_diagnostics_inner(ResolveBuildMode::StrictCompileRecovery)
+    ) -> Result<(ResolutionPlanningTree, CommonDiagnostics), CommonDiagnostics> {
+        if let Some(artifact) = self
+            .query_state
+            .resolved
+            .builds
+            .strict_compile_recovery
+            .as_ref()
+        {
+            return Ok((
+                artifact.tree.clone(),
+                diagnostics_from_vec(artifact.diagnostics.clone()),
+            ));
+        }
+
+        let build_started = maybe_start_timer();
+        let (tree, diagnostics, model_names) =
+            self.resolve_documents_for_mode(ResolveBuildMode::StrictCompileRecovery)?;
+        self.query_state.resolved.model_names = model_names;
+        self.query_state.resolved.builds.strict_compile_recovery =
+            Some(ResolutionPlanningArtifact {
+                tree: tree.clone(),
+                diagnostics: diagnostics.iter().cloned().collect(),
+            });
+        if let Some(elapsed) = maybe_elapsed_duration(build_started) {
+            record_strict_resolved_build(elapsed);
+        }
+        Ok((tree, diagnostics))
     }
 
     fn ensure_parse_state_for_mode(&self, mode: ResolveBuildMode) -> Result<(), CommonDiagnostics> {
@@ -323,7 +460,7 @@ impl Session {
     pub(in crate::session) fn resolve_documents_for_mode(
         &self,
         mode: ResolveBuildMode,
-    ) -> Result<(Arc<ast::ResolvedTree>, CommonDiagnostics, Vec<String>), CommonDiagnostics> {
+    ) -> Result<(ResolutionPlanningTree, CommonDiagnostics, Vec<String>), CommonDiagnostics> {
         self.ensure_parse_state_for_mode(mode)?;
 
         let session_source_map = self.session_source_map();
@@ -351,119 +488,181 @@ impl Session {
         tree.source_map = session_source_map;
 
         let parsed = ast::ParsedTree::new(tree);
-        let resolve_options = ResolveOptions {
-            unresolved_component_refs_are_errors: true,
-            unresolved_function_calls_are_errors: true,
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
-        };
-        let (resolved, diagnostics) = {
-            let (resolved, diagnostics) = resolve_with_options_collect(parsed, resolve_options);
-            // Standard mode fails on errors; warning-severity diagnostics
-            // (advisory contract rules) are preserved on success.
-            if mode != ResolveBuildMode::StrictCompileRecovery && diagnostics.has_errors() {
-                return Err(diagnostics);
+        let (tree, diagnostics) = match resolve_with_diagnostics(parsed) {
+            Ok(success) => {
+                let (resolved, diagnostics) = success.into_parts();
+                (
+                    ResolutionPlanningTree::Complete(Arc::new(resolved)),
+                    diagnostics,
+                )
             }
-            (resolved, diagnostics)
+            Err(failure) => {
+                let (tree, diagnostics) = failure.into_parts();
+                if mode == ResolveBuildMode::Standard {
+                    return Err(diagnostics);
+                }
+                (
+                    ResolutionPlanningTree::Incomplete(Arc::new(tree)),
+                    diagnostics,
+                )
+            }
         };
-        let model_names = collect_model_names(&resolved.0.definitions);
-        Ok((Arc::new(resolved), diagnostics, model_names))
+        let model_names = collect_model_names(&tree.tree().definitions);
+        Ok((tree, diagnostics, model_names))
+    }
+
+    fn resolve_source_definition_closure(
+        &self,
+        source_files: &IndexSet<String>,
+        retained_names: &IndexSet<String>,
+        source_map: SourceMap,
+    ) -> Result<(Arc<ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
+        let definitions = self
+            .documents
+            .values()
+            .filter(|document| source_files.contains(&document.uri))
+            .filter_map(|document| {
+                let mut parsed = document.parsed()?.clone();
+                retain_definition_closure(&mut parsed, retained_names);
+                Some((document.uri.clone(), parsed))
+            })
+            .collect::<Vec<_>>();
+        let merged = merge_stored_definitions(definitions).map_err(|error| {
+            let mut diagnostics = CommonDiagnostics::new();
+            diagnostics.emit(merge_error_to_common(&error, &source_map));
+            diagnostics
+        })?;
+        let mut tree = ast::ClassTree::from_parsed(merged);
+        tree.source_map = source_map;
+        match resolve_with_diagnostics(ast::ParsedTree::new(tree)) {
+            Ok(success) => {
+                let (resolved, diagnostics) = success.into_parts();
+                Ok((Arc::new(resolved), diagnostics))
+            }
+            Err(failure) => Err(failure.into_diagnostics()),
+        }
+    }
+
+    pub(in crate::session) fn resolve_strict_target(
+        &mut self,
+        model_name: &str,
+    ) -> Result<StrictTargetResolution, StrictTargetResolutionFailure> {
+        if let Some(proof) = self.cached_save_resolution_proof(model_name) {
+            return Ok(proof);
+        }
+        let (plan, _) = self
+            .build_resolution_plan_for_strict_compile()
+            .map_err(|diagnostics| StrictTargetResolutionFailure {
+                failures: resolve_error_failures(&diagnostics),
+                diagnostics: diagnostics.iter().cloned().collect(),
+                source_map: Box::new(self.session_source_map()),
+            })?;
+        self.resolve_strict_target_from_plan(model_name, plan)
+    }
+
+    /// Resolve one strict target without installing its planning tree in the
+    /// session-wide resolved-build cache.
+    pub(in crate::session) fn resolve_strict_target_from_fresh_plan(
+        &mut self,
+        model_name: &str,
+    ) -> Result<StrictTargetResolution, StrictTargetResolutionFailure> {
+        let (plan, _, _) = self
+            .resolve_documents_for_mode(ResolveBuildMode::StrictCompileRecovery)
+            .map_err(|diagnostics| StrictTargetResolutionFailure {
+                failures: resolve_error_failures(&diagnostics),
+                diagnostics: diagnostics.iter().cloned().collect(),
+                source_map: Box::new(self.session_source_map()),
+            })?;
+        self.resolve_strict_target_from_plan(model_name, plan)
+    }
+
+    fn resolve_strict_target_from_plan(
+        &mut self,
+        model_name: &str,
+        plan: ResolutionPlanningTree,
+    ) -> Result<StrictTargetResolution, StrictTargetResolutionFailure> {
+        let planning_tree = plan.tree();
+        let closure = self.reachable_model_closure_query(
+            planning_tree,
+            ResolveBuildMode::StrictCompileRecovery,
+            model_name,
+        );
+        let target_source_files =
+            collect_target_source_files(planning_tree, &closure.reachable_classes);
+        let retained_names = reachable_definition_names(planning_tree, &closure.reachable_classes);
+        let source_map = planning_tree.source_map.clone();
+        let failures =
+            collect_parse_failures_for_files(&self.documents, &source_map, &target_source_files);
+        if !failures.is_empty() {
+            let diagnostics = collect_parse_error_diagnostics(&self.documents, &source_map)
+                .into_iter()
+                .filter(|diagnostic| {
+                    resolve_diagnostic_in_target_files(
+                        planning_tree,
+                        &target_source_files,
+                        diagnostic,
+                    )
+                })
+                .collect();
+            return Err(StrictTargetResolutionFailure {
+                failures,
+                diagnostics,
+                source_map: Box::new(source_map),
+            });
+        }
+
+        let closure_source_map = source_map.clone();
+        let (resolved, closure_diagnostics) = self
+            .resolve_source_definition_closure(
+                &target_source_files,
+                &retained_names,
+                closure_source_map,
+            )
+            .map_err(|diagnostics| StrictTargetResolutionFailure {
+                failures: resolve_error_failures(&diagnostics),
+                diagnostics: diagnostics.iter().cloned().collect(),
+                source_map: Box::new(source_map),
+            })?;
+        Ok(StrictTargetResolution {
+            resolved,
+            closure,
+            diagnostics: closure_diagnostics.iter().cloned().collect(),
+        })
     }
 
     fn build_resolved_with_diagnostics_inner(
         &mut self,
-        mode: ResolveBuildMode,
-    ) -> Result<(Arc<ast::ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
-        self.ensure_parse_state_for_mode(mode)?;
+    ) -> Result<(Arc<ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
+        self.ensure_parse_state_for_mode(ResolveBuildMode::Standard)?;
 
-        if mode == ResolveBuildMode::Standard
-            && let Some(resolved) = self.query_state.resolved.builds.get(mode)
-        {
+        if let Some(resolved) = self.query_state.resolved.builds.standard() {
             record_standard_resolved_cache_hit();
             return Ok((resolved.clone(), CommonDiagnostics::new()));
         }
 
-        if mode == ResolveBuildMode::StrictCompileRecovery
-            && let (Some(resolved), Some(diagnostics)) = (
-                self.query_state
-                    .resolved
-                    .builds
-                    .strict_compile_recovery
-                    .as_ref(),
-                self.query_state
-                    .resolved
-                    .builds
-                    .strict_compile_recovery_diagnostics
-                    .as_deref(),
-            )
-        {
-            return Ok((resolved.clone(), diagnostics_from_vec(diagnostics.to_vec())));
-        }
-
-        if mode == ResolveBuildMode::StrictCompileRecovery
-            && let Some(cached) = self.strict_compile_recovery_from_save_diagnostics_cache()
-        {
-            return Ok(cached);
-        }
-
         let build_started = maybe_start_timer();
-        let (resolved, diagnostics, model_names) = self.resolve_documents_for_mode(mode)?;
+        let (tree, diagnostics, model_names) =
+            self.resolve_documents_for_mode(ResolveBuildMode::Standard)?;
+        let ResolutionPlanningTree::Complete(resolved) = tree else {
+            return Err(diagnostics);
+        };
         self.query_state.resolved.model_names = model_names;
-        if mode == ResolveBuildMode::StrictCompileRecovery {
-            let cached_diags: Vec<_> = diagnostics.iter().cloned().collect();
-            self.query_state.resolved.builds.strict_compile_recovery = Some(resolved.clone());
-            self.query_state
-                .resolved
-                .builds
-                .strict_compile_recovery_diagnostics = Some(cached_diags);
-        } else {
-            self.query_state.resolved.builds.set(mode, resolved.clone());
-        }
+        self.query_state
+            .resolved
+            .builds
+            .set_standard(resolved.clone());
         if let Some(elapsed) = maybe_elapsed_duration(build_started) {
-            match mode {
-                ResolveBuildMode::Standard => record_standard_resolved_build(elapsed),
-                ResolveBuildMode::StrictCompileRecovery => record_strict_resolved_build(elapsed),
-            }
+            record_standard_resolved_build(elapsed);
         }
 
         Ok((resolved, diagnostics))
     }
 
-    fn strict_compile_recovery_from_save_diagnostics_cache(
-        &mut self,
-    ) -> Option<(Arc<ast::ResolvedTree>, CommonDiagnostics)> {
-        let resolved = self
-            .query_state
-            .flat
-            .semantic_diagnostics
-            .resolved_by_mode
-            .get(&SemanticDiagnosticsMode::Save)?
-            .clone();
-        let diagnostics = self
-            .query_state
-            .flat
-            .semantic_diagnostics
-            .resolved_diagnostics_by_mode
-            .get(&SemanticDiagnosticsMode::Save)
-            .cloned()
-            .unwrap_or_default();
-        self.query_state.resolved.builds.strict_compile_recovery = Some(resolved.clone());
-        self.query_state
-            .resolved
-            .builds
-            .strict_compile_recovery_diagnostics = Some(diagnostics.clone());
-        Some((resolved, diagnostics_from_vec(diagnostics)))
-    }
-
     /// Get the resolved tree, returning an error if resolution hasn't been performed.
-    pub(crate) fn ensure_resolved(&self) -> Result<&Arc<ast::ResolvedTree>> {
-        self.query_state
-            .resolved
-            .builds
-            .get(ResolveBuildMode::Standard)
-            .ok_or_else(|| {
-                anyhow::anyhow!("Session has no resolved tree — call build_resolved() first")
-            })
+    pub(crate) fn ensure_resolved(&self) -> Result<&Arc<ResolvedTree>> {
+        self.query_state.resolved.builds.standard().ok_or_else(|| {
+            anyhow::anyhow!("Session has no resolved tree — call build_resolved() first")
+        })
     }
 
     /// Get all model names in the session.
@@ -476,7 +675,7 @@ impl Session {
     pub fn class_type_counts(&mut self) -> Result<std::collections::HashMap<String, usize>> {
         self.build_resolved()?;
         let resolved = self.ensure_resolved()?;
-        Ok(collect_class_type_counts(&resolved.0.definitions))
+        Ok(collect_class_type_counts(&resolved.inner().definitions))
     }
 
     /// Get all qualified class names from the resolved class tree.
@@ -487,20 +686,19 @@ impl Session {
     pub fn all_class_names(&mut self) -> Result<Vec<String>> {
         self.build_resolved()?;
         let resolved = self.ensure_resolved()?;
-        Ok(collect_qualified_class_names(&resolved.0.definitions))
+        Ok(collect_qualified_class_names(&resolved.inner().definitions))
     }
 
-    /// Get all qualified class names from a completion-tolerant resolved tree.
+    /// Get all qualified class names from the resolution planning tree.
     ///
-    /// Unlike [`Session::all_class_names`], this uses the strict-compile recovery
-    /// resolve mode so unrelated source-root diagnostics do not block editor
-    /// namespace completion. Only declared classes are returned; components,
-    /// loop indices, and other non-class definitions are excluded.
+    /// Only declared classes are returned; components, loop indices, and other
+    /// non-class definitions are excluded. Unrelated resolution errors do not
+    /// block completion, and this query does not expose a completed phase proof.
     pub fn all_class_names_for_completion(&mut self) -> Result<Vec<String>> {
-        let (resolved, _) = self
-            .build_resolved_for_strict_compile_with_diagnostics()
+        let (plan, _) = self
+            .build_resolution_plan_for_strict_compile()
             .map_err(|diags| diagnostics_to_anyhow(&diags))?;
-        Ok(collect_qualified_class_names(&resolved.0.definitions))
+        Ok(collect_qualified_class_names(&plan.tree().definitions))
     }
 
     /// Get all qualified class names from indexed source-sets.
@@ -733,17 +931,17 @@ impl Session {
             .unwrap_or_default()
     }
 
-    /// Get cached class names without triggering resolution.
+    /// Get cached class names without triggering a planning rebuild.
     ///
-    /// Returns the declared class names from the already-resolved tree, or an
-    /// empty vector if resolution hasn't been performed yet. This is safe to
-    /// call from read-only contexts (e.g., LSP completion with `&self`).
+    /// Returns declared class names from either a completed Resolve artifact or
+    /// an incomplete planning tree. This is safe for syntax-facing completion;
+    /// it does not claim that semantic resolution completed.
     pub fn all_class_names_cached(&self) -> Vec<String> {
         self.query_state
             .resolved
             .builds
-            .any()
-            .map(|r| collect_qualified_class_names(&r.0.definitions))
+            .any_tree()
+            .map(|tree| collect_qualified_class_names(&tree.definitions))
             .unwrap_or_default()
     }
 
@@ -752,16 +950,12 @@ impl Session {
     /// This is useful for latency-sensitive paths (like editor completion)
     /// to avoid rebuilding resolution unless it is actually needed.
     pub fn has_resolved_cached(&self) -> bool {
-        self.query_state.resolved.builds.any().is_some()
+        self.query_state.resolved.builds.has_completed_tree()
     }
 
     /// Returns true when the standard resolved session is already cached.
     pub fn has_standard_resolved_cached(&self) -> bool {
-        self.query_state
-            .resolved
-            .builds
-            .get(ResolveBuildMode::Standard)
-            .is_some()
+        self.query_state.resolved.builds.standard().is_some()
     }
 
     /// Returns true when semantic navigation artifacts already exist for a model.
@@ -793,7 +987,7 @@ impl Session {
                     .model_stage_artifacts
                     .keys(),
             )
-            .any(|key| key.model_name == model_name)
+            .any(|key| key.model_name.as_str() == model_name)
     }
 
     /// Get component members for a class name from cached resolved state.
@@ -807,8 +1001,8 @@ impl Session {
         self.query_state
             .resolved
             .builds
-            .any()
-            .map(|resolved| class_component_members_from_tree(&resolved.0, class_name))
+            .any_tree()
+            .map(|tree| class_component_members_from_tree(tree, class_name))
             .unwrap_or_default()
     }
 
@@ -825,7 +1019,7 @@ impl Session {
             .resolved
             .semantic_navigation
             .get(model_name)
-            .map(|artifact| class_component_members_from_tree(&artifact.resolved.0, class_name))
+            .map(|artifact| class_component_members_from_tree(&artifact.tree, class_name))
             .filter(|members| !members.is_empty())
             .unwrap_or_else(|| self.class_component_members_cached(class_name))
     }
@@ -833,37 +1027,37 @@ impl Session {
     /// Get the class tree.
     pub fn tree(&mut self) -> Result<&ast::ClassTree> {
         self.build_resolved()?;
-        Ok(&self.ensure_resolved()?.0)
+        Ok(self.ensure_resolved()?.inner())
     }
 
     /// Get the resolved tree.
-    pub fn resolved(&mut self) -> Result<ast::ResolvedTree> {
+    pub fn resolved(&mut self) -> Result<ResolvedTree> {
         self.build_resolved()?;
-        Ok(ast::ResolvedTree(self.ensure_resolved()?.0.clone()))
+        Ok(self.ensure_resolved()?.as_ref().clone())
     }
 
     /// Get any cached resolved tree without triggering a full rebuild.
-    pub fn resolved_cached(&self) -> Option<ast::ResolvedTree> {
+    pub fn resolved_cached(&self) -> Option<ResolvedTree> {
         self.query_state
             .resolved
             .builds
-            .any()
-            .map(|resolved| ast::ResolvedTree(resolved.0.clone()))
+            .standard()
+            .map(|resolved| resolved.as_ref().clone())
     }
 
-    /// Get a strict-recovery resolved tree for an active editor target.
+    /// Get a strict-recovery planning tree for an active editor target.
     ///
-    /// This reuses the strict-recovery resolved snapshot so unrelated parse or
-    /// resolve issues do not block hover/goto on the active model.
+    /// This supports syntax-aware hover/goto planning when unrelated parse or
+    /// resolve issues exist, without exposing a completed Resolve phase proof.
     pub fn resolved_for_semantic_navigation(
         &mut self,
         model_name: &str,
-    ) -> Result<Arc<ast::ResolvedTree>> {
-        let (resolved, _) = self
-            .build_resolved_for_strict_compile_with_diagnostics()
+    ) -> Result<Arc<ast::ClassTree>> {
+        let (plan, _) = self
+            .build_resolution_plan_for_strict_compile()
             .map_err(|diags| diagnostics_to_anyhow(&diags))?;
         let fingerprint = self.model_dependency_fingerprint(
-            &resolved.0,
+            plan.tree(),
             ResolveBuildMode::StrictCompileRecovery,
             model_name,
         );
@@ -874,8 +1068,9 @@ impl Session {
 
         record_semantic_navigation_cache_miss();
         record_semantic_navigation_build();
-        self.insert_semantic_navigation(model_name.to_string(), fingerprint, resolved.clone());
-        Ok(resolved)
+        let tree = Arc::new(plan.tree().clone());
+        self.insert_semantic_navigation(model_name.to_string(), fingerprint, tree.clone());
+        Ok(tree)
     }
 
     /// Compile a specific model.
@@ -903,95 +1098,6 @@ impl Session {
         }
     }
 
-    /// Compile a model for diagnostics while allowing unbalanced DAE output.
-    ///
-    /// Normal production callers must use `compile_model`; this path exists so
-    /// profiling/debug tools can inspect the DAE that strict balance validation
-    /// rejected.
-    pub fn compile_model_allow_unbalanced_for_diagnostics(
-        &mut self,
-        model_name: &str,
-    ) -> Result<CompilationResult> {
-        self.build_resolved()?;
-        let resolved = self.ensure_resolved()?.clone();
-        match compile_model_internal_allow_unbalanced_for_diagnostics(&resolved.0, model_name) {
-            PhaseResult::Success(result) => Ok(*result),
-            PhaseResult::NeedsInner { missing_inners, .. } => Err(anyhow::anyhow!(
-                "Instantiate error: missing inner declarations: {}",
-                missing_inners.join(", ")
-            )),
-            PhaseResult::Failed {
-                phase,
-                error,
-                error_code,
-                ..
-            } => {
-                if let Some(code) = error_code {
-                    Err(anyhow::anyhow!("{} error [{}]: {}", phase, code, error))
-                } else {
-                    Err(anyhow::anyhow!("{} error: {}", phase, error))
-                }
-            }
-        }
-    }
-
-    pub fn compile_model_dae_allow_unbalanced_for_diagnostics(
-        &mut self,
-        model_name: &str,
-    ) -> std::result::Result<Box<DaeCompilationResult>, String> {
-        let (resolved, resolve_diags) =
-            match self.build_resolved_for_strict_compile_with_diagnostics() {
-                Ok(build) => build,
-                Err(diags) => {
-                    let failures: Vec<ModelFailureDiagnostic> = diags
-                        .iter()
-                        .map(|diag| ModelFailureDiagnostic {
-                            model_name: "<resolve>".to_string(),
-                            phase: None,
-                            error_code: diag.code.clone(),
-                            error: diag.message.clone(),
-                            primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
-                        })
-                        .collect();
-                    let requested = requested_missing_result_message(model_name, &failures);
-                    return Err(format_strict_failure_summary(
-                        model_name, requested, &failures, 8,
-                    ));
-                }
-            };
-        let tree = &resolved.0;
-        let closure = self.reachable_model_closure_query(
-            tree,
-            ResolveBuildMode::StrictCompileRecovery,
-            model_name,
-        );
-        let target_source_files = collect_target_source_files(tree, &closure.reachable_classes);
-        let resolve_failures = collect_resolve_failures_for_files(
-            &resolve_diags,
-            &tree.source_map,
-            &target_source_files,
-        );
-        if !resolve_failures.is_empty() {
-            let requested = requested_missing_result_message(model_name, &resolve_failures);
-            return Err(format_strict_failure_summary(
-                model_name,
-                requested,
-                &resolve_failures,
-                8,
-            ));
-        }
-        match compile_model_dae_internal_allow_unbalanced_for_diagnostics(tree, model_name) {
-            DaePhaseResult::Success(result) => Ok(result),
-            DaePhaseResult::NeedsInner { missing_inners, .. } => Err(format!(
-                "{model_name} requires inner declarations: {}",
-                missing_inners.join(", ")
-            )),
-            DaePhaseResult::Failed { phase, error, .. } => {
-                Err(format!("{model_name} failed in {phase}: {error}"))
-            }
-        }
-    }
-
     /// Compile a model through flattening for diagnostics.
     ///
     /// This is for focused debug tooling that needs the last successful IR
@@ -1003,8 +1109,12 @@ impl Session {
     ) -> Result<rumoca_ir_flat::Model> {
         self.build_resolved()?;
         let resolved = self.ensure_resolved()?.clone();
-        match self.flat_model_query_impl(&resolved.0, ResolveBuildMode::Standard, model_name, false)
-        {
+        match self.flat_model_query_impl(
+            resolved.inner(),
+            ResolveBuildMode::Standard,
+            model_name,
+            false,
+        ) {
             FlatModelOutcome::Success(result) => Ok(result.flat),
             FlatModelOutcome::NeedsInner { missing_inners, .. } => Err(anyhow::anyhow!(
                 "Instantiate error: missing inner declarations: {}",
@@ -1028,54 +1138,11 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> std::result::Result<rumoca_ir_flat::Model, String> {
-        let (resolved, resolve_diags) =
-            match self.build_resolved_for_strict_compile_with_diagnostics() {
-                Ok(build) => build,
-                Err(diags) => {
-                    let failures: Vec<ModelFailureDiagnostic> = diags
-                        .iter()
-                        .map(|diag| ModelFailureDiagnostic {
-                            model_name: "<resolve>".to_string(),
-                            phase: None,
-                            error_code: diag.code.clone(),
-                            error: diag.message.clone(),
-                            primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
-                        })
-                        .collect();
-                    let requested = requested_missing_result_message(model_name, &failures);
-                    return Err(format_strict_failure_summary(
-                        model_name, requested, &failures, 8,
-                    ));
-                }
-            };
-
-        let tree = &resolved.0;
-        let closure = self.reachable_model_closure_query(
-            tree,
-            ResolveBuildMode::StrictCompileRecovery,
-            model_name,
-        );
-        let target_source_files = collect_target_source_files(tree, &closure.reachable_classes);
-        let mut failures = collect_parse_failures_for_files(
-            &self.documents,
-            &tree.source_map,
-            &target_source_files,
-        );
-        let resolve_failures = collect_resolve_failures_for_files(
-            &resolve_diags,
-            &tree.source_map,
-            &target_source_files,
-        );
-        let target_has_resolve_failures = !resolve_failures.is_empty();
-        failures.extend(resolve_failures);
-
-        if target_has_resolve_failures {
-            let requested = requested_missing_result_message(model_name, &failures);
-            return Err(format_strict_failure_summary(
-                model_name, requested, &failures, 8,
-            ));
-        }
-
+        let target = self.resolve_strict_target(model_name).map_err(|failure| {
+            let requested = requested_missing_result_message(model_name, &failure.failures);
+            format_strict_failure_summary(model_name, requested, &failure.failures, 8)
+        })?;
+        let tree = target.resolved.inner();
         match self.flat_model_query_impl(
             tree,
             ResolveBuildMode::StrictCompileRecovery,
@@ -1094,7 +1161,9 @@ impl Session {
                 "{model_name} failed in Typecheck: {}",
                 diags
                     .iter()
-                    .map(|diag| diag.message.clone())
+                    .map(|diag| {
+                        diagnostic_message_with_primary_location(diag, &tree.source_map)
+                    })
                     .collect::<Vec<_>>()
                     .join("; ")
             )),
@@ -1110,11 +1179,14 @@ impl Session {
     pub fn compile_model_phases(&mut self, model_name: &str) -> Result<PhaseResult> {
         self.build_resolved()?;
         let resolved = self.ensure_resolved()?.clone();
-        let fingerprint =
-            self.model_dependency_fingerprint(&resolved.0, ResolveBuildMode::Standard, model_name);
+        let fingerprint = self.model_dependency_fingerprint(
+            resolved.inner(),
+            ResolveBuildMode::Standard,
+            model_name,
+        );
         if let Some(cached) = self.cached_compile_result(model_name, fingerprint) {
             let result = self.compile_result_from_cache_hit(
-                &resolved.0,
+                resolved.inner(),
                 ResolveBuildMode::Standard,
                 model_name,
                 cached,
@@ -1122,8 +1194,11 @@ impl Session {
             return Ok(result);
         }
 
-        let result =
-            self.compile_phase_result_query(&resolved.0, ResolveBuildMode::Standard, model_name);
+        let result = self.compile_phase_result_query(
+            resolved.inner(),
+            ResolveBuildMode::Standard,
+            model_name,
+        );
         self.insert_compile_result(model_name.to_string(), fingerprint, result.clone());
         Ok(result)
     }
@@ -1136,7 +1211,7 @@ impl Session {
         self.build_resolved()?;
         let resolved = self.ensure_resolved()?.clone();
         let names: Vec<String> = model_names.iter().map(|name| (*name).to_string()).collect();
-        Ok(self.compile_models_with_cache(&resolved.0, ResolveBuildMode::Standard, &names))
+        Ok(self.compile_models_with_cache(resolved.inner(), ResolveBuildMode::Standard, &names))
     }
 
     /// Compile all models in parallel.
@@ -1144,7 +1219,7 @@ impl Session {
         self.build_resolved()?;
         let resolved = self.ensure_resolved()?.clone();
         let names = self.query_state.resolved.model_names.clone();
-        Ok(self.compile_models_with_cache(&resolved.0, ResolveBuildMode::Standard, &names))
+        Ok(self.compile_models_with_cache(resolved.inner(), ResolveBuildMode::Standard, &names))
     }
 
     /// Compile all models and return summary.
@@ -1165,7 +1240,19 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> StrictCompileReport {
-        self.compile_model_strict_reachable_report(model_name, true)
+        match self.compile_model_strict_reachable_attempt(model_name, true) {
+            Ok((report, _)) => report,
+            Err(report) => *report,
+        }
+    }
+
+    /// Compile one strict reachable target and return its Resolve proof.
+    pub fn compile_model_strict(
+        &mut self,
+        model_name: &str,
+    ) -> std::result::Result<StrictCompilation, Box<StrictCompileReport>> {
+        let (report, resolved) = self.compile_model_strict_reachable_attempt(model_name, true)?;
+        report.into_compilation(resolved)
     }
 
     /// Check strict-recovery compilation for the requested model without
@@ -1187,63 +1274,16 @@ impl Session {
         let total_started = maybe_start_timer();
 
         let build_resolved_started = maybe_start_timer();
-        let (resolved, resolve_diags) = self
-            .build_resolved_for_strict_compile_with_diagnostics()
-            .map_err(|diags| {
-            let failures: Vec<ModelFailureDiagnostic> = diags
-                .iter()
-                .map(|diag| ModelFailureDiagnostic {
-                    model_name: "<resolve>".to_string(),
-                    phase: None,
-                    error_code: diag.code.clone(),
-                    error: diag.message.clone(),
-                    primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
-                })
-                .collect();
-            let requested = requested_missing_result_message(model_name, &failures);
-            format_strict_failure_summary(model_name, requested, &failures, 8)
+        let target = self.resolve_strict_target(model_name).map_err(|failure| {
+            let requested = requested_missing_result_message(model_name, &failure.failures);
+            format_strict_failure_summary(model_name, requested, &failure.failures, 8)
         })?;
-        let build_resolved_ms = maybe_elapsed_duration(build_resolved_started)
+        let target_resolution_ms = maybe_elapsed_duration(build_resolved_started)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        let tree = &resolved.0;
-        let closure_started = maybe_start_timer();
-        let closure = self.reachable_model_closure_query(
-            tree,
-            ResolveBuildMode::StrictCompileRecovery,
-            model_name,
-        );
-        let reachable_closure_ms = maybe_elapsed_duration(closure_started)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let target_source_files = collect_target_source_files(tree, &closure.reachable_classes);
-        let parse_failures_started = maybe_start_timer();
-        let mut failures = collect_parse_failures_for_files(
-            &self.documents,
-            &tree.source_map,
-            &target_source_files,
-        );
-        let collect_parse_failures_ms = maybe_elapsed_duration(parse_failures_started)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let resolve_failures_started = maybe_start_timer();
-        let resolve_failures = collect_resolve_failures_for_files(
-            &resolve_diags,
-            &tree.source_map,
-            &target_source_files,
-        );
-        let collect_resolve_failures_ms = maybe_elapsed_duration(resolve_failures_started)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let target_has_resolve_failures = !resolve_failures.is_empty();
-        failures.extend(resolve_failures);
-        if target_has_resolve_failures {
-            let requested = requested_missing_result_message(model_name, &failures);
-            return Err(format_strict_failure_summary(
-                model_name, requested, &failures, 8,
-            ));
-        }
+        let tree = target.resolved.inner();
+        let mut failures = Vec::new();
 
         let dae_query_started = maybe_start_timer();
         let requested_result =
@@ -1267,10 +1307,7 @@ impl Session {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         Ok(StrictCheckTiming {
-            build_resolved_ms,
-            reachable_closure_ms,
-            collect_parse_failures_ms,
-            collect_resolve_failures_ms,
+            target_resolution_ms,
             dae_phase_query_ms,
             total_ms,
         })
@@ -1286,7 +1323,10 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> StrictCompileReport {
-        self.compile_model_strict_reachable_report(model_name, false)
+        match self.compile_model_strict_reachable_attempt(model_name, false) {
+            Ok((report, _)) => report,
+            Err(report) => *report,
+        }
     }
 
     /// Compile the requested model through DAE using strict-reachable
@@ -1300,53 +1340,26 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> std::result::Result<Box<DaeCompilationResult>, String> {
-        let (resolved, resolve_diags) =
-            match self.build_resolved_for_strict_compile_with_diagnostics() {
-                Ok(build) => build,
-                Err(diags) => {
-                    let failures: Vec<ModelFailureDiagnostic> = diags
-                        .iter()
-                        .map(|diag| ModelFailureDiagnostic {
-                            model_name: "<resolve>".to_string(),
-                            phase: None,
-                            error_code: diag.code.clone(),
-                            error: diag.message.clone(),
-                            primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
-                        })
-                        .collect();
-                    let requested = requested_missing_result_message(model_name, &failures);
-                    return Err(format_strict_failure_summary(
-                        model_name, requested, &failures, 8,
-                    ));
-                }
-            };
+        self.compile_model_dae_strict_reachable_uncached_with_recovery_detailed(model_name)
+            .map_err(|failure| failure.summary)
+    }
 
-        let tree = &resolved.0;
-        let closure = self.reachable_model_closure_query(
-            tree,
-            ResolveBuildMode::StrictCompileRecovery,
-            model_name,
-        );
-        let target_source_files = collect_target_source_files(tree, &closure.reachable_classes);
-        let mut failures = collect_parse_failures_for_files(
-            &self.documents,
-            &tree.source_map,
-            &target_source_files,
-        );
-        let resolve_failures = collect_resolve_failures_for_files(
-            &resolve_diags,
-            &tree.source_map,
-            &target_source_files,
-        );
-        let target_has_resolve_failures = !resolve_failures.is_empty();
-        failures.extend(resolve_failures);
-
-        if target_has_resolve_failures {
-            let requested = requested_missing_result_message(model_name, &failures);
-            return Err(format_strict_failure_summary(
-                model_name, requested, &failures, 8,
-            ));
-        }
+    /// Same as [`Self::compile_model_dae_strict_reachable_uncached_with_recovery`]
+    /// but the failure carries structured facts (failing phase, SPEC_0008 error
+    /// code, balance breakdown) instead of only the rendered summary string.
+    ///
+    /// Failure-classifying consumers (the MSL worker, triage tooling) must use
+    /// this: re-deriving the phase by sniffing the summary text mislabels every
+    /// parse/resolve failure, because those summaries carry no phase marker.
+    pub fn compile_model_dae_strict_reachable_uncached_with_recovery_detailed(
+        &mut self,
+        model_name: &str,
+    ) -> std::result::Result<Box<DaeCompilationResult>, Box<StrictCompileFailure>> {
+        let target = self
+            .resolve_strict_target(model_name)
+            .map_err(|failure| Box::new(strict_pre_phase_failure(model_name, failure.failures)))?;
+        let tree = target.resolved.inner();
+        let mut failures = Vec::new();
 
         let requested_result = compile_model_dae_internal_with_options(
             tree,
@@ -1360,93 +1373,65 @@ impl Session {
             &requested_result,
         ));
         if !failures.is_empty() {
-            return Err(format_strict_failure_summary(
-                model_name, requested, &failures, 8,
-            ));
+            let summary =
+                format_strict_failure_summary(model_name, requested, &failures, STRICT_MAX_RELATED);
+            return Err(Box::new(StrictCompileFailure::from_dae_phase_result(
+                summary,
+                &requested_result,
+                failures,
+            )));
         }
 
         match requested_result {
             DaePhaseResult::Success(result) => Ok(result),
-            DaePhaseResult::NeedsInner { .. } | DaePhaseResult::Failed { .. } => Err(
-                "strict DAE compile returned non-success requested result without collected diagnostics"
-                    .to_string(),
-            ),
+            DaePhaseResult::NeedsInner { .. } | DaePhaseResult::Failed { .. } => {
+                Err(Box::new(StrictCompileFailure::from_dae_phase_result(
+                    "strict DAE compile returned non-success requested result without collected diagnostics"
+                        .to_string(),
+                    &requested_result,
+                    Vec::new(),
+                )))
+            }
         }
     }
 
-    fn compile_model_strict_reachable_report(
+    fn compile_model_strict_reachable_attempt(
         &mut self,
         model_name: &str,
         use_compile_cache: bool,
-    ) -> StrictCompileReport {
-        let (resolved, resolve_diags) =
-            match self.build_resolved_for_strict_compile_with_diagnostics() {
-                Ok(build) => build,
-                Err(diags) => {
-                    let mut failures = Vec::new();
-                    failures.extend(diags.iter().map(|diag| ModelFailureDiagnostic {
-                        model_name: "<resolve>".to_string(),
-                        phase: None,
-                        error_code: diag.code.clone(),
-                        error: diag.message.clone(),
-                        primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
-                    }));
-                    return StrictCompileReport {
-                        requested_model: model_name.to_string(),
-                        requested_result: None,
-                        summary: CompilationSummary::default(),
-                        failures,
-                        source_map: Some(self.session_source_map()),
-                    };
-                }
-            };
+    ) -> std::result::Result<(StrictCompileReport, ResolvedTree), Box<StrictCompileReport>> {
+        let target = match self.resolve_strict_target(model_name) {
+            Ok(target) => target,
+            Err(failure) => {
+                return Err(Box::new(StrictCompileReport {
+                    requested_model: model_name.to_string(),
+                    requested_result: None,
+                    summary: CompilationSummary::default(),
+                    failures: failure.failures,
+                    source_map: Some(*failure.source_map),
+                }));
+            }
+        };
 
-        let tree = &resolved.0;
-        let closure = self.reachable_model_closure_query(
-            tree,
-            ResolveBuildMode::StrictCompileRecovery,
-            model_name,
-        );
-        let target_source_files = collect_target_source_files(tree, &closure.reachable_classes);
-        let mut failures = collect_parse_failures_for_files(
-            &self.documents,
-            &tree.source_map,
-            &target_source_files,
-        );
-        let resolve_failures = collect_resolve_failures_for_files(
-            &resolve_diags,
-            &tree.source_map,
-            &target_source_files,
-        );
-        failures.extend(resolve_failures);
-        // Resolve errors in the target's own files make every later phase a
-        // cascade (unresolved references re-reported as ED008 etc.), so stop
-        // here: one user error, one diagnostic.
-        if !failures.is_empty() {
-            return StrictCompileReport {
-                requested_model: model_name.to_string(),
-                requested_result: None,
-                summary: CompilationSummary::default(),
-                failures,
-                source_map: Some(tree.source_map.clone()),
-            };
-        }
-        if !use_compile_cache {
-            return finalize_strict_compile_report_from_uncached_targets(
+        let tree = target.resolved.inner();
+        let failures = Vec::new();
+        let report = if use_compile_cache {
+            let results = self.compile_models_with_cache(
+                tree,
+                ResolveBuildMode::StrictCompileRecovery,
+                &target.closure.compile_targets,
+            );
+            finalize_strict_compile_report(tree, model_name, failures, results)
+        } else {
+            finalize_strict_compile_report_from_uncached_targets(
                 tree,
                 model_name,
                 failures,
-                &closure.compile_targets,
+                &target.closure.compile_targets,
                 self.instantiation_options.clone(),
-            );
-        }
-
-        let results = self.compile_models_with_cache(
-            tree,
-            ResolveBuildMode::StrictCompileRecovery,
-            &closure.compile_targets,
-        );
-        finalize_strict_compile_report(tree, model_name, failures, results)
+            )
+        };
+        Ok((report, target.resolved.as_ref().clone()))
     }
 
     /// Compile a model with an explicit compilation mode.
@@ -1470,6 +1455,7 @@ impl Session {
         for doc in self.documents.values() {
             source_map.add_shared(&doc.uri, source_map_content_for_doc(doc));
         }
+        self.register_structural_override_sources(&mut source_map);
         source_map
     }
 

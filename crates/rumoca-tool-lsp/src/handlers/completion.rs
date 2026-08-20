@@ -1,5 +1,6 @@
 //! Enhanced completion handler for Modelica files.
 
+use crate::text_position::{char_column_to_utf16_column, utf16_column_to_byte_column};
 use lsp_types::{CompletionItem, CompletionItemKind, Position};
 use rumoca_compile::Session;
 use rumoca_compile::compile::ClassLocalCompletionKind;
@@ -663,17 +664,21 @@ impl<'a> DotCompletionTargetFinder<'a> {
                 continue;
             }
 
-            let member_start = next_ident.location.start_column.saturating_sub(1);
-            let member_end = next_ident.location.end_column.saturating_sub(1);
-            if self.character < member_start || self.character > member_end {
+            // The lexer records 1-based *character* columns while `self.character`
+            // is the client's UTF-16 column; comparing them directly (and then
+            // using either as a byte index) mis-slices — and can panic — on any
+            // line containing non-ASCII text.
+            let member_start_utf16 =
+                char_column_to_utf16_column(self.source_line, next_ident.location.start_column);
+            let member_end_utf16 =
+                char_column_to_utf16_column(self.source_line, next_ident.location.end_column);
+            if self.character < member_start_utf16 || self.character > member_end_utf16 {
                 continue;
             }
 
-            let Some(member_partial) = slice_line(
-                self.source_line,
-                member_start as usize,
-                self.character as usize,
-            ) else {
+            let start_byte = utf16_column_to_byte_column(self.source_line, member_start_utf16);
+            let cursor_byte = utf16_column_to_byte_column(self.source_line, self.character);
+            let Some(member_partial) = self.source_line.get(start_byte..cursor_byte) else {
                 continue;
             };
             let base_segments = component_ref.parts[..segment_end]
@@ -716,10 +721,6 @@ fn dotted_identifier_segments(path: &str) -> Option<Vec<String>> {
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     (!segments.is_empty()).then_some(segments)
-}
-
-fn slice_line(line: &str, start: usize, end: usize) -> Option<&str> {
-    (start <= end && end <= line.len()).then(|| &line[start..end])
 }
 
 fn dot_completion_items(

@@ -1,5 +1,5 @@
 use super::*;
-use crate::helpers::location_to_range;
+use crate::helpers::{location_to_range_in_optional_source, location_to_range_in_source};
 
 pub(super) async fn references(
     server: &ModelicaLanguageServer,
@@ -17,7 +17,12 @@ pub(super) async fn references(
         if server.analysis_request_is_stale(request_token).await {
             return Ok(None);
         }
-        return Ok(Some(navigation_locations_to_lsp(locations, uri)));
+        let mut sources = SnapshotSourceTexts::new(&snapshot);
+        return Ok(Some(navigation_locations_to_lsp(
+            locations,
+            uri,
+            &mut sources,
+        )));
     }
     Ok(None)
 }
@@ -30,16 +35,16 @@ pub(super) async fn prepare_rename(
     let uri = &params.text_document.uri;
     let uri_path = session_document_uri_key(uri);
     let pos = params.position;
-    if let Some(snapshot) = server.document_lightweight_snapshot(&uri_path).await
+    if let Some((document, snapshot)) = server.document_analysis_snapshot(&uri_path).await
         && let Some(location) =
             snapshot.navigation_prepare_rename_query(&uri_path, pos.line, pos.character)
     {
         if server.analysis_request_is_stale(request_token).await {
             return Ok(None);
         }
-        return Ok(Some(PrepareRenameResponse::Range(location_to_range(
-            &location,
-        ))));
+        return Ok(Some(PrepareRenameResponse::Range(
+            location_to_range_in_source(&document.content, &location),
+        )));
     }
     Ok(None)
 }
@@ -60,7 +65,13 @@ pub(super) async fn rename(
         if server.analysis_request_is_stale(request_token).await {
             return Ok(None);
         }
-        return Ok(Some(navigation_rename_edit(locations, uri, new_name)));
+        let mut sources = SnapshotSourceTexts::new(&snapshot);
+        return Ok(Some(navigation_rename_edit(
+            locations,
+            uri,
+            new_name,
+            &mut sources,
+        )));
     }
     Ok(None)
 }
@@ -68,12 +79,16 @@ pub(super) async fn rename(
 fn navigation_locations_to_lsp(
     locations: Vec<(String, rumoca_compile::parsing::ir_core::Location)>,
     fallback_uri: &Url,
+    sources: &mut SnapshotSourceTexts<'_>,
 ) -> Vec<Location> {
     locations
         .into_iter()
-        .map(|(uri, location)| Location {
-            uri: navigation_location_uri(&uri, fallback_uri),
-            range: location_to_range(&location),
+        .map(|(uri, location)| {
+            let source = sources.source_for(&uri);
+            Location {
+                uri: navigation_location_uri(&uri, fallback_uri),
+                range: location_to_range_in_optional_source(source.as_deref(), &location),
+            }
         })
         .collect()
 }
@@ -82,14 +97,16 @@ fn navigation_rename_edit(
     locations: Vec<(String, rumoca_compile::parsing::ir_core::Location)>,
     fallback_uri: &Url,
     new_name: &str,
+    sources: &mut SnapshotSourceTexts<'_>,
 ) -> WorkspaceEdit {
     let mut changes = HashMap::new();
     for (uri, location) in locations {
+        let source = sources.source_for(&uri);
         changes
             .entry(navigation_location_uri(&uri, fallback_uri))
             .or_insert_with(Vec::new)
             .push(TextEdit {
-                range: location_to_range(&location),
+                range: location_to_range_in_optional_source(source.as_deref(), &location),
                 new_text: new_name.to_string(),
             });
     }

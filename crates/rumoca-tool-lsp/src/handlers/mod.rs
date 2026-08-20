@@ -26,7 +26,7 @@ mod signature_help;
 
 pub use diagnostics::compute_diagnostics;
 #[cfg(feature = "server")]
-pub(crate) use diagnostics::compute_diagnostics_with_mode;
+pub(crate) use diagnostics::compute_diagnostics_with_options;
 pub use document_symbols::handle_document_symbols;
 pub use semantic_tokens::{get_semantic_token_legend, handle_semantic_tokens};
 
@@ -36,7 +36,7 @@ pub(crate) use completion::handle_completion_with_snapshot_and_provenance;
 pub use hover::handle_hover;
 
 pub use folding::handle_folding_ranges;
-pub use formatting::handle_formatting;
+pub use formatting::{handle_formatting, partial_format_options_from_client};
 pub use workspace_symbols::handle_workspace_symbols;
 
 pub use goto_definition::handle_goto_definition;
