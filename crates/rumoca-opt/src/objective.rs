@@ -175,7 +175,7 @@ fn forward_gradients(
 }
 
 fn parameter_columns_by_slot(
-    report: &rumoca_eval_solve::ParameterJacobianReport,
+    report: &rumoca_solver::ParameterJacobianReport,
 ) -> HashMap<usize, usize> {
     report
         .param_slots

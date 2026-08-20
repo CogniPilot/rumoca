@@ -20,7 +20,7 @@ use crate::device::{
 // ── Compiled runtime structures ────────────────────────────────────────────
 
 /// A location within a local: `name` or `name[index]`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Path {
     pub name: String,
     pub index: Option<usize>,

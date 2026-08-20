@@ -16,10 +16,29 @@ use rumoca_exec_mlir::{
 };
 use rumoca_ir_solve::{ComputeBlock, ComputeNode, LinearOp, SolveProblem};
 
+mod support;
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/// Every fixture here solves the 2x2 system `A * xdot = b(y)` over two states
+/// and no parameters, so the derivative seed space is exactly two columns wide.
 fn solve_problem_for(derivative_rhs: ComputeBlock) -> SolveProblem {
-    SolveProblem::with_derivative_rhs(derivative_rhs)
+    SolveProblem::with_derivative_rhs(
+        derivative_rhs,
+        rumoca_ir_solve::VarLayout::from_parts(indexmap::IndexMap::new(), 2, 0),
+    )
+    .expect("fixture derivative problem is valid by construction")
+}
+
+fn full_matrix_pattern(size: usize, span: Span) -> rumoca_ir_solve::StructuralPattern {
+    let provenance = rumoca_ir_solve::PatternProvenance::derived(
+        rumoca_ir_solve::PatternDerivation::TensorOperand,
+        span,
+    )
+    .expect("fixture provenance");
+    let dependencies = (0..size).map(|_| (0..size).collect()).collect::<Vec<_>>();
+    rumoca_ir_solve::StructuralPattern::from_row_dependencies(size, size, &dependencies, provenance)
+        .expect("fixture pattern")
 }
 
 fn compile_derivative_rhs(
@@ -43,6 +62,7 @@ fn eval_at(compiled: &rumoca_exec_mlir::CompiledMlirResidual, y: &[f64]) -> Vec<
 /// b = [y[0], y[1]]       (registers 4-5)
 fn linsolve_block() -> ComputeBlock {
     let label = "linsolve_mlir_node.mo";
+    let span = Span::from_offsets(SourceId::from_source_name(label), 0, label.len());
     // setup_ops loads A and b into registers 0..5
     let setup_ops = vec![
         // A row-major: [2, 1, 1, 3]
@@ -61,8 +81,9 @@ fn linsolve_block() -> ComputeBlock {
             rhs_start: 4,
             n: 2,
             next_reg: 6,
+            matrix_pattern: full_matrix_pattern(2, span),
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+            span,
         }],
     }
 }
@@ -85,7 +106,7 @@ fn linsolve_node_numerics_match_analytical() {
     let compiled = match compile_derivative_rhs(&problem, "linsolve_node") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -114,7 +135,7 @@ fn linsolve_scalar_path_numerics_match_analytical() {
     let compiled = match compile_derivative_rhs(&problem, "linsolve_scalar") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -148,7 +169,7 @@ fn linsolve_node_and_scalar_agree_at_multiple_points() {
         (Ok(a), Ok(b)) => (a, b),
         (Err(MlirError::ToolNotFound { tool, .. }), _)
         | (_, Err(MlirError::ToolNotFound { tool, .. })) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         (Err(e), _) | (_, Err(e)) => panic!("compile failed: {e}"),
@@ -189,6 +210,7 @@ fn linsolve_partial_pivoting_correctness() {
         LinearOp::Const { dst: 5, value: 0.0 },
     ];
     let label = "linsolve_mlir_pivot.mo";
+    let span = Span::from_offsets(SourceId::from_source_name(label), 0, label.len());
     let block = ComputeBlock {
         nodes: vec![ComputeNode::LinSolve {
             setup_ops,
@@ -196,8 +218,9 @@ fn linsolve_partial_pivoting_correctness() {
             rhs_start: 4,
             n: 2,
             next_reg: 6,
+            matrix_pattern: full_matrix_pattern(2, span),
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+            span,
         }],
     };
     let problem = solve_problem_for(block);
@@ -205,7 +228,7 @@ fn linsolve_partial_pivoting_correctness() {
     let compiled = match compile_derivative_rhs(&problem, "ls_pivot") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
