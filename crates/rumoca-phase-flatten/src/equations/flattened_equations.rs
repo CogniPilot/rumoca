@@ -11,7 +11,7 @@ pub(crate) struct FlattenedEquations {
     /// Assertion equations preserved from equation sections (MLS §8.3.7).
     pub assert_equations: Vec<flat::AssertEquation>,
     /// When-clauses extracted from nested when-equations
-    pub when_clauses: Vec<flat::WhenClause>,
+    pub when_chains: Vec<flat::WhenChain>,
     /// Definite roots from Connections.root() calls (MLS §9.4.1).
     /// Stores the qualified path to the overconstrained record.
     pub definite_roots: Vec<String>,
@@ -37,7 +37,7 @@ impl FlattenedEquations {
         self.structured_equations
             .append(&mut other.structured_equations);
         self.assert_equations.append(&mut other.assert_equations);
-        self.when_clauses.append(&mut other.when_clauses);
+        self.when_chains.append(&mut other.when_chains);
         self.definite_roots.append(&mut other.definite_roots);
         self.branches.append(&mut other.branches);
         self.potential_roots.append(&mut other.potential_roots);
@@ -47,7 +47,7 @@ impl FlattenedEquations {
         self.equations.is_empty()
             && self.structured_equations.is_empty()
             && self.assert_equations.is_empty()
-            && self.when_clauses.is_empty()
+            && self.when_chains.is_empty()
             && self.definite_roots.is_empty()
             && self.branches.is_empty()
             && self.potential_roots.is_empty()
