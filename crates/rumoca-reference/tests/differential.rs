@@ -230,13 +230,8 @@ fn static_time_event_instants_agree_with_the_compiler() {
     }
 }
 
-/// Compiles and simulates a generated model on the rk-like session.
-///
-/// Only the rk-like session: the two divergences pinned above are both diffsol
-/// ones, and a generator that rediscovered them on every case would bury a new
-/// finding under known noise. Widening the generator to the diffsol session is
-/// worth doing once those two rows are closed.
-fn generated_pipeline(spec: &Spec) -> SimResult {
+/// Compiles and simulates a generated model on one numerical plugin.
+fn generated_pipeline(spec: &Spec, mode: SimSolverMode) -> SimResult {
     let source = spec.source();
     let mut session = Session::new(SessionConfig::default());
     session
@@ -251,7 +246,7 @@ fn generated_pipeline(spec: &Spec) -> SimResult {
             t_start: T_START,
             t_end: T_STOP,
             dt: Some(0.05),
-            solver_mode: SimSolverMode::RkLike,
+            solver_mode: mode,
             ..SimOptions::default()
         },
     )
@@ -278,20 +273,22 @@ proptest! {
         let model = spec.model();
         let reference = simulate(&model, &NoContinuousState, reference_options())
             .expect("a generated model is inside slice 1");
-        let pipeline = generated_pipeline(&spec);
-        for probe in probes() {
-            for name in spec.observed() {
-                let expected = reference
-                    .value_at(name, probe)
-                    .and_then(Value::as_real)
-                    .expect("the reference carries every generated target");
-                let actual = pipeline_value_at(&pipeline, name, probe);
-                prop_assert!(
-                    (expected - actual).abs() <= VALUE_TOLERANCE,
-                    "`{name}` at t={probe} is {actual} in the pipeline and \
-                     {expected} in the reference, for:\n{}",
-                    spec.source()
-                );
+        for mode in SESSIONS {
+            let pipeline = generated_pipeline(&spec, mode);
+            for probe in probes() {
+                for name in spec.observed() {
+                    let expected = reference
+                        .value_at(name, probe)
+                        .and_then(Value::as_real)
+                        .expect("the reference carries every generated target");
+                    let actual = pipeline_value_at(&pipeline, name, probe);
+                    prop_assert!(
+                        (expected - actual).abs() <= VALUE_TOLERANCE,
+                        "{mode:?}: `{name}` at t={probe} is {actual} in the pipeline and \
+                         {expected} in the reference, for:\n{}",
+                        spec.source()
+                    );
+                }
             }
         }
     }

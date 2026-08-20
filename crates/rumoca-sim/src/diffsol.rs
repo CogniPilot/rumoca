@@ -39,6 +39,13 @@ pub(crate) enum BdfCapability {
     InitialLinearizationUnavailable { reason: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub(crate) enum SelectedAutoIntegrator {
+    Bdf,
+    RkLike,
+}
+
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub(crate) fn assess_bdf_capability(
     artifact: &rumoca_solver::fmi_me::MeModelArtifact,
@@ -57,7 +64,12 @@ pub(crate) fn assess_bdf_capability(
         opts: opts.clone(),
         retained: RefCell::new(retained),
     };
-    match check_prepared_component(&prepared) {
+    classify_bdf_capability(check_prepared_component(&prepared))
+}
+
+#[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+fn classify_bdf_capability(probe: Result<(), SimError>) -> Result<BdfCapability, SimError> {
+    match probe {
         Ok(()) => Ok(BdfCapability::Eligible),
         Err(SimError::ModelExchangeSession(
             rumoca_solver::fmi_me::session::MeSessionError::Component(error),
@@ -68,6 +80,57 @@ pub(crate) fn assess_bdf_capability(
             other => Err(SimError::from(other)),
         },
         Err(error) => Err(error),
+    }
+}
+
+/// Make the one importer-owned automatic integrator decision.
+///
+/// The returned discriminant is final for the run: callers dispatch once and
+/// never reinterpret a later integration failure as permission to switch
+/// solvers.
+#[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub(crate) fn select_auto_integrator(
+    artifact: &rumoca_solver::fmi_me::MeModelArtifact,
+    opts: &rumoca_solver::SimOptions,
+    execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+) -> Result<SelectedAutoIntegrator, SimError> {
+    match assess_bdf_capability(artifact, opts, execution_backend)? {
+        BdfCapability::Eligible => Ok(SelectedAutoIntegrator::Bdf),
+        BdfCapability::InitialLinearizationUnavailable { reason } => {
+            tracing::debug!(
+                target: "rumoca_sim::solver_selection",
+                %reason,
+                "auto selected rk-like because the initial BDF linearization is unavailable"
+            );
+            Ok(SelectedAutoIntegrator::RkLike)
+        }
+    }
+}
+
+#[cfg(all(test, feature = "solver-diffsol", feature = "solver-rk45"))]
+mod auto_selection_tests {
+    use super::{BdfCapability, classify_bdf_capability};
+    use crate::SimError;
+
+    #[test]
+    fn only_directional_derivative_unavailability_is_a_capability_result() {
+        let ordinary_failure = classify_bdf_capability(Err(SimError::EmptySystem));
+        assert!(matches!(ordinary_failure, Err(SimError::EmptySystem)));
+
+        let unavailable = classify_bdf_capability(Err(SimError::ModelExchangeSession(
+            rumoca_solver::fmi_me::session::MeSessionError::Component(
+                rumoca_solver::fmi_me::MeError::DirectionalDerivativeUnavailable {
+                    reason: "undefined local sensitivity".to_owned(),
+                },
+            ),
+        )))
+        .expect("the one typed capability result selects the explicit host");
+        assert_eq!(
+            unavailable,
+            BdfCapability::InitialLinearizationUnavailable {
+                reason: "undefined local sensitivity".to_owned(),
+            }
+        );
     }
 }
 

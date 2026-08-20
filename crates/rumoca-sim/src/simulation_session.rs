@@ -251,21 +251,16 @@ fn new_auto_session(
     let (artifact, execution_backend) = lower_for_simulation_session(dae_model, &opts)?;
     #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
     {
-        match crate::diffsol::assess_bdf_capability(&artifact, &opts, execution_backend.clone())
+        match crate::diffsol::select_auto_integrator(&artifact, &opts, execution_backend.clone())
             .map_err(|error| SimulationDiagnosticError::Solver(error.to_string()))?
         {
-            crate::diffsol::BdfCapability::Eligible => {
+            crate::diffsol::SelectedAutoIntegrator::Bdf => {
                 crate::diffsol::SimulationSession::from_artifact(artifact, opts, execution_backend)
                     .map(|session| SimulationSession {
                         inner: SimulationSessionInner::Diffsol(Box::new(session)),
                     })
             }
-            crate::diffsol::BdfCapability::InitialLinearizationUnavailable { reason } => {
-                tracing::debug!(
-                    target: "rumoca_sim::solver_selection",
-                    %reason,
-                    "auto selected rk-like because the initial BDF linearization is unavailable"
-                );
+            crate::diffsol::SelectedAutoIntegrator::RkLike => {
                 crate::rk45::SimulationSession::from_artifact(artifact, opts, execution_backend)
                     .map(|session| SimulationSession {
                         inner: SimulationSessionInner::RkLike(Box::new(session)),

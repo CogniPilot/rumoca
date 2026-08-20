@@ -164,18 +164,13 @@ fn simulate_artifact_auto(
     opts: &SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    match diffsol::assess_bdf_capability(&artifact, opts, execution_backend.clone())
+    match diffsol::select_auto_integrator(&artifact, opts, execution_backend.clone())
         .map_err(|error| SimulationDiagnosticError::Solver(error.to_string()))?
     {
-        diffsol::BdfCapability::Eligible => {
+        diffsol::SelectedAutoIntegrator::Bdf => {
             simulate_artifact_diffsol(artifact, opts, execution_backend)
         }
-        diffsol::BdfCapability::InitialLinearizationUnavailable { reason } => {
-            tracing::debug!(
-                target: "rumoca_sim::solver_selection",
-                %reason,
-                "auto selected rk-like because the initial BDF linearization is unavailable"
-            );
+        diffsol::SelectedAutoIntegrator::RkLike => {
             simulate_artifact_rk45(artifact, opts, execution_backend)
         }
     }
