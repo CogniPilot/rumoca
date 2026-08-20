@@ -34,7 +34,7 @@ pub(super) fn input_requirements_for_linear_ops(
     row: &[LinearOp],
 ) -> Result<InputRequirements, CompileError> {
     row.iter()
-        .copied()
+        .cloned()
         .map(input_requirements_for_linear_op)
         .try_fold(InputRequirements::default(), |requirements, op| {
             op.map(|op_requirements| requirements.merge(op_requirements))
@@ -63,6 +63,20 @@ fn input_requirements_for_linear_op(op: LinearOp) -> Result<InputRequirements, C
             seed_len: checked_required_indexed_len("seed", base, count)?,
             ..Default::default()
         }),
+        LinearOp::FunctionFold { program, .. }
+        | LinearOp::GuardedFunctionFold { program, .. }
+        | LinearOp::StoreOutputFunctionFold { program, .. } => {
+            input_requirements_for_linear_ops(&program.update)
+        }
+        LinearOp::FunctionConditional { program, .. } => {
+            let mut requirements = input_requirements_for_linear_ops(&program.fallback)?;
+            for arm in &program.arms {
+                requirements = requirements
+                    .merge(input_requirements_for_linear_ops(&arm.condition)?)
+                    .merge(input_requirements_for_linear_ops(&arm.result)?);
+            }
+            Ok(requirements)
+        }
         _ => Ok(InputRequirements::default()),
     }
 }

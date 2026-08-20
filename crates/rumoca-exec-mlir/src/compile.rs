@@ -57,27 +57,33 @@ struct CpuCompileArtifacts {
 
 /// C source for the Rumoca MLIR runtime.
 ///
-/// Provides `rumoca_solve_linear_component` — dense Gaussian elimination with
-/// partial pivoting, called from MLIR-compiled `LinearSolveComponent` and
-/// `LinSolve` nodes.  Pointers are passed as `long long` integers to avoid
-/// the MLIR memref-descriptor ABI complexity.
+/// Provides full-vector and scalar-component dense Gaussian elimination with
+/// partial pivoting for MLIR `LinSolve` and compatibility scalar rows.
+/// Pointers are passed as `long long` integers to avoid the MLIR
+/// memref-descriptor ABI complexity.
 const RUMOCA_MLIR_RUNTIME_C: &str = r#"
 #include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <math.h>
 
-#define RUMOCA_LS_MAXN 64
-
-/* A_ptr, b_ptr are row-major double arrays passed as pointer-integers.
-   Returns x[comp] where A*x = b (Gauss elim with partial pivoting). */
-double rumoca_solve_linear_component(
-        long long A_ptr, long long b_ptr, long long n, long long comp) {
-    double *Ain = (double *)(size_t)A_ptr;
-    double *bin = (double *)(size_t)b_ptr;
-    double A[RUMOCA_LS_MAXN * RUMOCA_LS_MAXN];
-    double x[RUMOCA_LS_MAXN];
+static int rumoca_solve_linear_impl(
+        const double *Ain, const double *bin, long long n, double *x) {
+    size_t un;
+    size_t matrix_count;
+    double *A;
+    size_t element;
     long long i, j, row, col;
 
-    for (i = 0; i < n * n; i++) A[i] = Ain[i];
+    if (n <= 0) return 0;
+    if ((uint64_t)n > SIZE_MAX) return 0;
+    un = (size_t)n;
+    if (un > SIZE_MAX / un || un * un > SIZE_MAX / sizeof(double)) return 0;
+    matrix_count = un * un;
+    A = (double *)malloc(matrix_count * sizeof(double));
+    if (A == NULL) return 0;
+
+    for (element = 0; element < matrix_count; element++) A[element] = Ain[element];
     for (i = 0; i < n;     i++) x[i] = bin[i];
 
     /* Forward elimination with partial pivoting */
@@ -105,7 +111,42 @@ double rumoca_solve_linear_component(
         x[i] /= A[i * n + i];
         for (j = i - 1; j >= 0; j--) x[j] -= A[j * n + i] * x[i];
     }
-    return x[comp];
+    free(A);
+    return 1;
+}
+
+/* A_ptr, b_ptr, x_ptr are row-major arrays passed as pointer-integers.
+   Computes the complete solution once for a native LinSolve node. */
+void rumoca_solve_linear(
+        long long A_ptr, long long b_ptr, long long n, long long x_ptr) {
+    const double *Ain = (const double *)(size_t)A_ptr;
+    const double *bin = (const double *)(size_t)b_ptr;
+    double *x = (double *)(size_t)x_ptr;
+    long long i;
+    if (!rumoca_solve_linear_impl(Ain, bin, n, x)) {
+        for (i = 0; i < n; i++) x[i] = NAN;
+    }
+}
+
+/* Scalar compatibility ABI used by LinearSolveComponent rows. */
+double rumoca_solve_linear_component(
+        long long A_ptr, long long b_ptr, long long n, long long comp) {
+    const double *Ain = (const double *)(size_t)A_ptr;
+    const double *bin = (const double *)(size_t)b_ptr;
+    double *x;
+    double result;
+    if (n <= 0 || comp < 0 || comp >= n || (size_t)n > SIZE_MAX / sizeof(double)) {
+        return NAN;
+    }
+    x = (double *)malloc((size_t)n * sizeof(double));
+    if (x == NULL) return NAN;
+    if (!rumoca_solve_linear_impl(Ain, bin, n, x)) {
+        free(x);
+        return NAN;
+    }
+    result = x[comp];
+    free(x);
+    return result;
 }
 "#;
 
