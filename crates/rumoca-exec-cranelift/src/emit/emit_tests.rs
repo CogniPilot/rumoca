@@ -1976,3 +1976,15 @@ fn table_host_trampolines_keep_abi_boundary_nan_sentinel() {
     assert!(rumoca_host_table_lookup_slope(42.0, 1.0, 1.0).is_nan());
     assert!(rumoca_host_table_next_event(42.0, 0.0).is_nan());
 }
+
+#[test]
+fn cranelift_panics_are_typed_backend_errors_at_the_adapter_boundary() {
+    let error = catch_cranelift_unwind("oversized relocation", || -> () {
+        panic!("relative relocation exceeds i32")
+    })
+    .expect_err("Cranelift panic must not cross the adapter boundary");
+    assert_eq!(
+        error.to_string(),
+        "cranelift execution error: Cranelift oversized relocation failed: relative relocation exceeds i32"
+    );
+}

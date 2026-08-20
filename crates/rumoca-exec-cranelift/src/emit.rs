@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod host_runtime;
 mod input_validation;
 mod interpreter;
+mod owned_jit_module;
 pub(crate) mod typed_program;
 
 use host_runtime::{register_math_symbols, with_active_external_tables};
@@ -38,6 +39,7 @@ use input_validation::{
     validate_output_len,
 };
 use interpreter::execute_row;
+use owned_jit_module::OwnedJitModule;
 
 // Each compiled program writes its outputs through the trailing `*mut f64`
 // pointer (one program may emit several outputs via consecutive StoreOutputs).
@@ -184,22 +186,22 @@ enum SimpleOp {
 }
 
 pub(crate) struct CompiledResidualRows {
-    _module: JITModule,
     _pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
     rows: Vec<CompiledResidualRow>,
     jits: Vec<CompiledResidualJit>,
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
     jit_call_count: Cell<usize>,
+    _module: OwnedJitModule,
 }
 
 pub(crate) struct CompiledAssignmentSchedule {
-    _module: JITModule,
     _pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
     jit: AssignmentScheduleFn,
     input_requirements: InputRequirements,
     required_y_len: usize,
     rows: usize,
+    _module: OwnedJitModule,
 }
 
 impl CompiledAssignmentSchedule {
@@ -358,12 +360,12 @@ fn validate_interpreted_outputs(actual: &[f64], expected: &[f64]) -> Result<(), 
 }
 
 pub(crate) struct CompiledJacobianRows {
-    _module: JITModule,
     _pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
     rows: Vec<CompiledJacobianRow>,
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
     jit_call_count: Cell<usize>,
+    _module: OwnedJitModule,
 }
 
 impl CompiledJacobianRows {
@@ -527,21 +529,18 @@ fn compile_residual_rows_attached(
         validate_row_supported_by_jit(row, RowKind::Residual)?;
     }
     let pending = compile_residual_functions(&mut emitter, rows, &plans)?;
-    emitter
-        .module
-        .finalize_definitions()
-        .map_err(to_backend_err)?;
+    finalize_jit_module(&mut emitter.module)?;
     let input_requirements = input_requirements_for_plans(&plans);
     let compiled_rows = build_compiled_residual_rows(rows, plans)?;
     let jits = finalize_residual_jits(&emitter.module, pending)?;
     Ok(CompiledResidualRows {
-        _module: emitter.module,
         _pure_calls: pure_calls,
         rows: compiled_rows,
         jits,
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
+        _module: emitter.module,
     })
 }
 
@@ -773,18 +772,15 @@ fn compile_assignment_schedule_slices(
         .map_or(0, |index| index.saturating_add(1));
     let mut emitter = CraneliftEmitter::new(pure_calls.as_deref())?;
     let func_id = emitter.compile_assignment_schedule(rows, target_y_indices)?;
-    emitter
-        .module
-        .finalize_definitions()
-        .map_err(to_backend_err)?;
+    finalize_jit_module(&mut emitter.module)?;
     let jit = finalized_assignment_schedule_fn(&emitter.module, func_id)?;
     Ok(CompiledAssignmentSchedule {
-        _module: emitter.module,
         _pure_calls: pure_calls,
         jit,
         input_requirements,
         required_y_len,
         rows: rows.len(),
+        _module: emitter.module,
     })
 }
 
@@ -817,10 +813,7 @@ fn compile_jacobian_rows_attached(
         )?;
         func_ids.push(func_id);
     }
-    emitter
-        .module
-        .finalize_definitions()
-        .map_err(to_backend_err)?;
+    finalize_jit_module(&mut emitter.module)?;
     let input_requirements = input_requirements_for_plans(&plans);
     let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled Jacobian rows")?;
     for (index, (plan, func_id)) in plans.into_iter().zip(func_ids).enumerate() {
@@ -833,12 +826,12 @@ fn compile_jacobian_rows_attached(
         });
     }
     Ok(CompiledJacobianRows {
-        _module: emitter.module,
         _pure_calls: pure_calls,
         rows: compiled_rows,
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
+        _module: emitter.module,
     })
 }
 
@@ -1039,7 +1032,7 @@ fn row_uses_pure_calls(row: &[LinearOp]) -> bool {
 }
 
 struct CraneliftEmitter {
-    module: JITModule,
+    module: OwnedJitModule,
     math: MathImports,
     fold_functions: HashMap<usize, FuncId>,
     canonical_fold_functions: Vec<(Arc<rumoca_ir_solve::FunctionFoldProgram>, FuncId)>,
@@ -1061,7 +1054,7 @@ impl CraneliftEmitter {
         if let Some(pure_calls) = pure_calls {
             pure_calls.register_symbols(&mut builder);
         }
-        let mut module = JITModule::new(builder);
+        let mut module = OwnedJitModule::new(JITModule::new(builder));
         let pure_call_functions = pure_calls
             .map(|pure_calls| pure_calls.declare_imports(&mut module))
             .transpose()?
@@ -8082,6 +8075,25 @@ fn validate_reg_range_defined(
 
 fn to_backend_err<E: std::fmt::Display>(err: E) -> CompileError {
     CompileError::Backend(err.to_string())
+}
+
+pub(super) fn finalize_jit_module(module: &mut JITModule) -> Result<(), CompileError> {
+    catch_cranelift_unwind("finalization", || module.finalize_definitions())?
+        .map_err(to_backend_err)
+}
+
+fn catch_cranelift_unwind<T>(
+    operation: &str,
+    action: impl FnOnce() -> T,
+) -> Result<T, CompileError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(action)).map_err(|payload| {
+        let detail = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("unknown Cranelift panic");
+        CompileError::Backend(format!("Cranelift {operation} failed: {detail}"))
+    })
 }
 
 #[cfg(test)]

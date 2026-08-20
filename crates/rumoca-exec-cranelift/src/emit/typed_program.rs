@@ -9,7 +9,10 @@ mod storage;
 mod tensor;
 
 use super::host_runtime::register_math_symbols;
-use super::{CompileError, MathImports, emit_binary_op, emit_unary_op, to_backend_err};
+use super::owned_jit_module::OwnedJitModule;
+use super::{
+    CompileError, MathImports, emit_binary_op, emit_unary_op, finalize_jit_module, to_backend_err,
+};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
     AbiParam, InstBuilder, MemFlags, StackSlotData, StackSlotKind, Type, Value, types,
@@ -52,9 +55,9 @@ struct PureCallSymbol {
 
 /// Owns the code memory for one completely compiled checked call table.
 pub(crate) struct CompiledPureCallTable {
-    _module: JITModule,
     symbols: Box<[PureCallSymbol]>,
     directional_symbols: Box<[Option<PureCallSymbol>]>,
+    _module: OwnedJitModule,
 }
 
 impl CompiledPureCallTable {
@@ -184,7 +187,7 @@ fn scalar_type_count(
 
 struct TableCompiler {
     table_id: usize,
-    module: JITModule,
+    module: OwnedJitModule,
     math: MathImports,
     functions: Vec<FuncId>,
     directional_functions: Vec<Option<FuncId>>,
@@ -198,7 +201,7 @@ impl TableCompiler {
         )
         .map_err(to_backend_err)?;
         register_math_symbols(&mut builder);
-        let mut module = JITModule::new(builder);
+        let mut module = OwnedJitModule::new(JITModule::new(builder));
         let pointer_type = module.target_config().pointer_type();
         let mut signature = module.make_signature();
         signature.params.push(AbiParam::new(pointer_type));
@@ -243,7 +246,7 @@ impl TableCompiler {
                 self.compile_directional_owner(table, owner)?;
             }
         }
-        self.module.finalize_definitions().map_err(to_backend_err)
+        finalize_jit_module(&mut self.module)
     }
 
     fn compile_owner(
@@ -408,9 +411,9 @@ impl TableCompiler {
             directional_symbols.push(directional_symbol);
         }
         Ok(CompiledPureCallTable {
-            _module: self.module,
             symbols: symbols.into_boxed_slice(),
             directional_symbols: directional_symbols.into_boxed_slice(),
+            _module: self.module,
         })
     }
 }
