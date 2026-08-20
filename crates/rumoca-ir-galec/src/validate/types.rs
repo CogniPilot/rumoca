@@ -25,22 +25,49 @@ use crate::ast::{
     VariableDeclaration,
 };
 use crate::diagnostic::{GalecError, PathSegment};
+use rustc_hash::FxHashMap;
 
 use super::context::{
     BlockContext, BodyView, Cursor, FunctionScope, Resolved, Ty, lexeme, reference_lexeme,
     reference_parts, resolve, resolve_call,
 };
 
-pub(super) fn check(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
+pub(super) fn check(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) -> ExpressionTypes {
+    let mut types = ExpressionTypes::default();
     for body in ctx.bodies() {
         let mut checker = TypeChecker {
             ctx,
             scope: FunctionScope::new(&body),
             cursor: Cursor::for_body(ctx, &body),
+            types: &mut types,
             diags,
         };
         checker.declarations(&body);
         checker.statements(body.statements);
+    }
+    types
+}
+
+/// Types proven for every expression visited by the type analysis.
+///
+/// Expression addresses are stable while the immutable checked block is
+/// borrowed. Keeping this correlation here makes later analyses consume the
+/// type proof instead of independently reimplementing GALEC typing rules.
+#[derive(Default)]
+// Pointer identity is lookup-only evidence shared by later validators. It is
+// never iterated into diagnostics or serialized output, so SPEC_0021 permits
+// a hash table here and avoids O(log n) tree insertion for large tensor code.
+pub(super) struct ExpressionTypes(FxHashMap<usize, Ty>);
+
+impl ExpressionTypes {
+    pub(super) fn get(&self, expression: &Expression) -> Option<Ty> {
+        self.0
+            .get(&(std::ptr::from_ref(expression) as usize))
+            .copied()
+    }
+
+    fn insert(&mut self, expression: &Expression, ty: Ty) {
+        self.0.insert(std::ptr::from_ref(expression) as usize, ty);
     }
 }
 
@@ -48,6 +75,7 @@ struct TypeChecker<'a, 'd> {
     ctx: &'a BlockContext<'a>,
     scope: FunctionScope<'a>,
     cursor: Cursor,
+    types: &'d mut ExpressionTypes,
     diags: &'d mut Vec<GalecError>,
 }
 
@@ -202,7 +230,7 @@ impl<'a> TypeChecker<'a, '_> {
     // -----------------------------------------------------------------
 
     fn type_of(&mut self, expression: &'a Expression) -> Ty {
-        match expression {
+        let ty = match expression {
             Expression::Bool(_) => Ty::Scalar(ScalarType::Boolean),
             Expression::Integer(_) => Ty::Scalar(ScalarType::Integer),
             Expression::Real(_) => Ty::Scalar(ScalarType::Real),
@@ -218,7 +246,9 @@ impl<'a> TypeChecker<'a, '_> {
                 Ty::Scalar(ScalarType::Boolean)
             }
             Expression::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs),
-        }
+        };
+        self.types.insert(expression, ty);
+        ty
     }
 
     /// Type a reference, reporting unresolved names and component-value
