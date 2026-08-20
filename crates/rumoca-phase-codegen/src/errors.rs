@@ -75,6 +75,37 @@ pub enum CodegenError {
         message: String,
         span: Option<rumoca_core::Span>,
     },
+
+    /// A DAE template requested scalar residual rows whose authoritative body
+    /// exists only in a compact structured family.
+    #[error(
+        "DAE scalar residual view is unavailable for structured family `{origin}` in {partition}"
+    )]
+    #[diagnostic(
+        code(rumoca::codegen::EC007),
+        help(
+            "select a target that declares and consumes structured equation families, or lower through Solve IR"
+        )
+    )]
+    NonMaterializedStructuredFamily {
+        partition: &'static str,
+        origin: String,
+        span: Option<rumoca_core::Span>,
+    },
+
+    /// A target declared structured-family support, but the canonical family
+    /// metadata is incomplete or inconsistent with its DAE partition.
+    #[error("invalid structured-family ownership for `{origin}` in {partition}: {reason}")]
+    #[diagnostic(
+        code(rumoca::codegen::EC008),
+        help("fix the DAE producer; code generation cannot infer missing family semantics")
+    )]
+    InvalidStructuredFamilyOwnership {
+        partition: &'static str,
+        origin: String,
+        reason: String,
+        span: Option<rumoca_core::Span>,
+    },
 }
 
 impl CodegenError {
@@ -82,6 +113,21 @@ impl CodegenError {
     pub fn template(message: impl Into<String>) -> Self {
         Self::TemplateError {
             message: message.into(),
+        }
+    }
+
+    /// Create a template diagnostic anchored to model source.
+    pub(crate) fn template_render_at(
+        message: impl Into<String>,
+        source_name: impl Into<String>,
+        source: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        let source_name = source_name.into();
+        Self::TemplateRenderError {
+            message: message.into(),
+            src: NamedSource::new(source_name, source.into()),
+            span: SourceSpan::new(span.start.0.into(), span.end.0.saturating_sub(span.start.0)),
         }
     }
 
@@ -136,13 +182,18 @@ impl From<minijinja::Error> for CodegenError {
             if let Some(source) = err.template_source() {
                 let span = compute_line_span(source, line);
                 return CodegenError::TemplateRenderError {
-                    message: format!("{err:#}"),
+                    // The alternate MiniJinja formatter appends the complete
+                    // serialized render context. For compiler IR this can be
+                    // tens of megabytes and belongs neither in diagnostics nor
+                    // worker protocol rows; source and span are retained
+                    // separately below.
+                    message: err.to_string(),
                     src: NamedSource::new(tmpl_name, source.to_string()),
                     span,
                 };
             }
         }
-        CodegenError::template(format!("{err:#}"))
+        CodegenError::template(err.to_string())
     }
 }
 
@@ -206,6 +257,8 @@ mod tests {
         match &codegen_err {
             CodegenError::TemplateRenderError { message, .. } => {
                 assert!(!message.is_empty());
+                assert!(message.len() < 1024);
+                assert!(!message.contains("Referenced variables:"));
             }
             CodegenError::TemplateError { .. } => {
                 // Also acceptable if debug feature doesn't expose source
@@ -228,6 +281,16 @@ mod tests {
             CodegenError::DaePreparationFailed { .. } => {
                 unreachable!(
                     "From<minijinja::Error> only constructs template errors, never DAE preparation errors"
+                );
+            }
+            CodegenError::NonMaterializedStructuredFamily { .. } => {
+                unreachable!(
+                    "From<minijinja::Error> only constructs template errors, never structured-family errors"
+                );
+            }
+            CodegenError::InvalidStructuredFamilyOwnership { .. } => {
+                unreachable!(
+                    "From<minijinja::Error> only constructs template errors, never structured-family ownership errors"
                 );
             }
         }

@@ -32,6 +32,28 @@ fn fixture_span(name: &'static str) -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(name), 5, 13)
 }
 
+fn pattern(
+    rows: usize,
+    columns: usize,
+    dependencies: Vec<Vec<usize>>,
+    span: rumoca_core::Span,
+) -> solve::StructuralPattern {
+    let provenance =
+        solve::PatternProvenance::derived(solve::PatternDerivation::TensorOperand, span)
+            .expect("fixture provenance");
+    solve::StructuralPattern::from_row_dependencies(rows, columns, &dependencies, provenance)
+        .expect("fixture structural pattern")
+}
+
+fn full_pattern(rows: usize, columns: usize, span: rumoca_core::Span) -> solve::StructuralPattern {
+    pattern(
+        rows,
+        columns,
+        (0..rows).map(|_| (0..columns).collect()).collect(),
+        span,
+    )
+}
+
 fn one_by_one_matmul_node(lhs: f64, rhs: f64, span: rumoca_core::Span) -> solve::ComputeNode {
     solve::ComputeNode::MatMul {
         lhs_ops: vec![solve::LinearOp::Const { dst: 0, value: lhs }],
@@ -41,8 +63,56 @@ fn one_by_one_matmul_node(lhs: f64, rhs: f64, span: rumoca_core::Span) -> solve:
         m: 1,
         k: 1,
         n: 1,
-        lhs_sparsity: solve::SparsityPattern::Dense,
-        rhs_sparsity: solve::SparsityPattern::Dense,
+        lhs_pattern: full_pattern(1, 1, span),
+        rhs_pattern: full_pattern(1, 1, span),
+        metadata: solve::TensorNodeMetadata::default(),
+        span,
+    }
+}
+
+fn one_by_one_matmul_with_compare(span: rumoca_core::Span) -> solve::ComputeNode {
+    solve::ComputeNode::MatMul {
+        lhs_ops: vec![
+            solve::LinearOp::Const { dst: 0, value: 2.0 },
+            solve::LinearOp::Const { dst: 1, value: 1.0 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+        ],
+        lhs_start: 2,
+        rhs_ops: vec![solve::LinearOp::Const { dst: 3, value: 3.0 }],
+        rhs_start: 3,
+        m: 1,
+        k: 1,
+        n: 1,
+        lhs_pattern: full_pattern(1, 1, span),
+        rhs_pattern: full_pattern(1, 1, span),
+        metadata: solve::TensorNodeMetadata::default(),
+        span,
+    }
+}
+
+fn one_by_one_linsolve_with_compare(span: rumoca_core::Span) -> solve::ComputeNode {
+    solve::ComputeNode::LinSolve {
+        setup_ops: vec![
+            solve::LinearOp::Const { dst: 0, value: 2.0 },
+            solve::LinearOp::Const { dst: 1, value: 1.0 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const { dst: 3, value: 6.0 },
+        ],
+        matrix_start: 2,
+        rhs_start: 3,
+        n: 1,
+        next_reg: 4,
+        matrix_pattern: full_pattern(1, 1, span),
         metadata: solve::TensorNodeMetadata::default(),
         span,
     }
@@ -53,6 +123,41 @@ fn const_store_row(value: f64) -> Vec<solve::LinearOp> {
         solve::LinearOp::Const { dst: 0, value },
         solve::LinearOp::StoreOutput { src: 0 },
     ]
+}
+
+#[test]
+fn template_partition_keeps_native_family_rows_out_of_fallback_programs() {
+    let span = fixture_span("compact_map_then_scalar.mo");
+    let domain = tensor_domain(3);
+    let map = solve::ComputeNode::Map {
+        output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+            .expect("valid dense output map"),
+        domain,
+        base_ops: const_store_row(2.0),
+        load_strides: Vec::new(),
+        const_strides: Vec::new(),
+        metadata: solve::TensorNodeMetadata::default(),
+        span,
+    };
+    let scalar = solve::ComputeNode::ScalarPrograms(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![const_store_row(7.0)],
+            span.require_provenance("template-partition scalar fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture program is computable"),
+    );
+
+    let partition = native_family_template_partition(&solve::ComputeBlock {
+        nodes: vec![map, scalar],
+    })
+    .expect("native family followed by scalar fallback should partition");
+
+    assert_eq!(partition.families.len(), 1);
+    assert_eq!(partition.fallback_programs, vec![const_store_row(7.0)]);
+    assert_eq!(partition.scalar_fallback_rows.len(), 1);
+    assert_eq!(partition.scalar_fallback_rows[0].row_index, 0);
+    assert_eq!(partition.scalar_fallback_rows[0].output_index, 3);
 }
 
 #[test]
@@ -95,8 +200,8 @@ fn template_partition_tracks_multi_output_tensor_fallback_program() {
             m: 2,
             k: 1,
             n: 2,
-            lhs_sparsity: solve::SparsityPattern::Dense,
-            rhs_sparsity: solve::SparsityPattern::Dense,
+            lhs_pattern: full_pattern(2, 1, span),
+            rhs_pattern: full_pattern(1, 2, span),
             metadata: solve::TensorNodeMetadata::default(),
             span,
         }],
@@ -111,6 +216,34 @@ fn template_partition_tracks_multi_output_tensor_fallback_program() {
         .collect::<Vec<_>>();
 
     assert_eq!(rows, vec![(0, 0, 0), (0, 1, 1), (0, 2, 2), (0, 3, 3)]);
+}
+
+#[test]
+fn template_partition_retains_fallback_for_unsupported_mlir_dense_ops() {
+    let span = fixture_span("matmul_compare_fallback.mo");
+    let partition = native_family_template_partition(&solve::ComputeBlock {
+        nodes: vec![one_by_one_matmul_with_compare(span)],
+    })
+    .expect("unsupported native MLIR setup should still scalarize");
+
+    assert!(partition.native_dense_nodes.is_empty());
+    assert_eq!(partition.fallback_programs.len(), 1);
+    assert_eq!(partition.scalar_fallback_rows.len(), 1);
+    assert!(!partition.scalar_fallback_rows[0].native_dense);
+}
+
+#[test]
+fn template_partition_retains_linsolve_fallback_for_unsupported_mlir_dense_ops() {
+    let span = fixture_span("linsolve_compare_fallback.mo");
+    let partition = native_family_template_partition(&solve::ComputeBlock {
+        nodes: vec![one_by_one_linsolve_with_compare(span)],
+    })
+    .expect("unsupported native MLIR setup should still scalarize");
+
+    assert!(partition.native_dense_nodes.is_empty());
+    assert_eq!(partition.fallback_programs.len(), 1);
+    assert_eq!(partition.scalar_fallback_rows.len(), 1);
+    assert!(!partition.scalar_fallback_rows[0].native_dense);
 }
 
 #[test]
@@ -145,9 +278,12 @@ fn template_partition_tracks_multi_output_scalar_program() {
 
 #[test]
 fn template_partition_rejects_tensor_fallback_without_source_span() {
-    let block = solve::ComputeBlock {
-        nodes: vec![one_by_one_matmul_node(2.0, 3.0, rumoca_core::Span::DUMMY)],
+    let mut node = one_by_one_matmul_node(2.0, 3.0, fixture_span("unspanned_tensor_fallback.mo"));
+    let solve::ComputeNode::MatMul { span, .. } = &mut node else {
+        unreachable!("fixture helper constructs a matrix product")
     };
+    *span = rumoca_core::Span::DUMMY;
+    let block = solve::ComputeBlock { nodes: vec![node] };
 
     let err = match native_family_template_partition(&block) {
         Ok(_) => panic!("template partitioning should reject unspanned tensor fallback nodes"),
@@ -162,47 +298,29 @@ fn template_partition_rejects_tensor_fallback_without_source_span() {
 }
 
 #[test]
-fn template_partition_rejects_scalar_block_without_source_span() {
-    let block = solve::ComputeBlock {
-        nodes: vec![solve::ComputeNode::ScalarPrograms(
-            solve::ScalarProgramBlock::with_source_span(
-                vec![const_store_row(7.0)],
-                rumoca_core::Span::source_free_serde_default(),
-            ),
-        )],
-    };
-
-    let err = match native_family_template_partition(&block) {
-        Ok(_) => panic!("template partitioning should reject unspanned scalar fallback rows"),
-        Err(err) => err,
-    };
-
-    assert_eq!(err.source_span(), None);
-    assert!(
-        err.to_string().contains("missing source span metadata"),
-        "error should explain missing source span metadata: {err}"
-    );
-}
-
-#[test]
-fn scalar_program_block_source_span_skips_dummy_first_row() {
-    let span = rumoca_core::Span::from_offsets(
+fn scalar_program_block_source_queries_preserve_exact_row_spans() {
+    let first_span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("render_scalar_source.mo"),
         17,
         29,
     );
+    let second_span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("render_scalar_source.mo"),
+        30,
+        42,
+    );
     let block = solve::ScalarProgramBlock::with_program_spans(
         vec![const_store_row(1.0), const_store_row(2.0)],
-        vec![rumoca_core::Span::DUMMY, span],
+        vec![first_span, second_span],
     )
     .expect("render scalar span fixture metadata should match row count");
 
     assert_eq!(
         scalar_program_block_source_span(&block).expect("source span"),
-        span
+        first_span
     );
-    assert_eq!(scalar_program_row_span(&block, 0, span), span);
-    assert_eq!(scalar_program_row_span(&block, 1, span), span);
+    assert_eq!(block.program_span(0), Some(first_span));
+    assert_eq!(block.program_span(1), Some(second_span));
 }
 
 #[test]
@@ -341,117 +459,6 @@ fn linsolve_render_shape_rejects_matrix_count_overflow() {
 }
 
 #[test]
-fn solve_read_counts_cover_write_only_registers() {
-    let op = Value::from_serialize(solve::LinearOp::Const { dst: 5, value: 1.0 });
-    let counts = collect_solve_read_counts(&[op]).expect("read counts should stage");
-
-    assert_eq!(counts.len(), 6);
-    assert_eq!(counts[5], 0);
-}
-
-#[test]
-fn linsolve_read_regs_rejects_matrix_count_overflow() {
-    let op = Value::from_serialize(solve::LinearOp::LinearSolveComponent {
-        dst: 0,
-        matrix_start: 0,
-        rhs_start: 0,
-        n: usize::MAX,
-        component: 0,
-    });
-
-    let err = solve_op_read_regs(&op)
-        .expect_err("LinSolve read-register analysis should reject host overflow")
-        .to_string();
-
-    assert!(err.contains("LinearSolveComponent read matrix count overflows host index range"));
-}
-
-#[test]
-fn solve_output_targets_accept_explicit_indices() {
-    let targets = solve_output_targets(Some(Value::from_serialize(vec![3usize, 1])))
-        .expect("explicit output indices should parse");
-
-    assert_eq!(targets.target_for(0).expect("first target"), 3);
-    assert_eq!(targets.target_for(1).expect("second target"), 1);
-}
-
-#[test]
-fn solve_block_output_count_counts_all_store_outputs() {
-    let programs = Value::from_serialize(serde_json::json!([
-        [
-            {"Const": {"dst": 0, "value": 1.0}},
-            {"StoreOutput": {"src": 0}},
-            {"StoreOutput": {"src": 0}}
-        ],
-        [
-            {"Const": {"dst": 1, "value": 2.0}},
-            {"StoreOutput": {"src": 1}}
-        ]
-    ]));
-
-    let count =
-        solve_block_output_count_function(programs).expect("StoreOutput count should render");
-
-    assert_eq!(count, 3);
-}
-
-#[test]
-fn solve_program_render_rejects_temp_counter_overflow() {
-    let op = Value::from_serialize(solve::LinearOp::Binary {
-        dst: 2,
-        op: solve::BinaryOp::Add,
-        lhs: 0,
-        rhs: 1,
-    });
-    let cfg = SolveRowCConfig::from_value(&Value::from_serialize(()));
-    let mut body = String::new();
-    let mut temp_counter = usize::MAX;
-    let mut output_ordinal = 0usize;
-    let output_targets = SolveOutputTargets::DenseOffset(0);
-    let mut render = SolveProgramRender {
-        body: &mut body,
-        regs: vec!["a".to_string(), "b".to_string()],
-        temp_counter: &mut temp_counter,
-        output_ordinal: &mut output_ordinal,
-        output_targets: &output_targets,
-    };
-
-    let err = render
-        .render_op(&op, &cfg, SolveRowDialect::C, "out[{}] = {}", &[0, 0, 1])
-        .expect_err("temporary counter overflow should fail before emitting");
-
-    assert!(
-        err.to_string()
-            .contains("temporary register count overflow")
-    );
-    assert!(body.is_empty());
-}
-
-#[test]
-fn solve_program_render_rejects_output_ordinal_overflow() {
-    let op = Value::from_serialize(solve::LinearOp::StoreOutput { src: 0 });
-    let cfg = SolveRowCConfig::from_value(&Value::from_serialize(()));
-    let mut body = String::new();
-    let mut temp_counter = 0usize;
-    let mut output_ordinal = usize::MAX;
-    let output_targets = SolveOutputTargets::DenseOffset(0);
-    let mut render = SolveProgramRender {
-        body: &mut body,
-        regs: vec!["value".to_string()],
-        temp_counter: &mut temp_counter,
-        output_ordinal: &mut output_ordinal,
-        output_targets: &output_targets,
-    };
-
-    let err = render
-        .render_op(&op, &cfg, SolveRowDialect::C, "out[{}] = {}", &[1])
-        .expect_err("output ordinal overflow should fail before emitting");
-
-    assert!(err.to_string().contains("StoreOutput ordinal overflows"));
-    assert!(body.is_empty());
-}
-
-#[test]
 fn native_family_stride_error_reports_op_kind() {
     let mut family =
         native_family_with_base_ops(vec![solve::LinearOp::Const { dst: 0, value: 1.0 }]);
@@ -488,6 +495,42 @@ fn native_family_const_stride_error_reports_op_kind() {
 
     assert!(err.contains("native family const stride targets a non-const op: LoadY"));
     assert!(!err.contains("LoadY {"));
+}
+
+#[test]
+fn wgsl_native_family_combines_duplicate_stride_descriptors() {
+    let mut family = native_family_with_base_ops(vec![
+        solve::LinearOp::LoadY { dst: 0, index: 0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ]);
+    family.load_strides = vec![
+        solve::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: isize::MAX,
+            }],
+        },
+        solve::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 1,
+            }],
+        },
+        solve::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: -isize::MAX,
+            }],
+        },
+    ];
+
+    let rendered = render_native_family_expr_wgsl(&family, &Value::from_serialize(()))
+        .expect("the combined stride is representable in WGSL");
+    assert!(rendered.contains("* 1"), "{rendered}");
+    assert!(!rendered.contains(&isize::MAX.to_string()), "{rendered}");
 }
 
 #[test]

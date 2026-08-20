@@ -292,6 +292,7 @@ impl<'a> ScratchLayoutView<'a> {
 #[derive(Debug, Clone, Default, Serialize)]
 struct SemanticOperationUses {
     sign: bool,
+    integer_conversion: bool,
     real_min: bool,
     real_max: bool,
     integer_min: bool,
@@ -310,6 +311,7 @@ impl SemanticOperationUses {
     fn observe_call(&mut self, function: &str) {
         match function {
             "sign" => self.sign = true,
+            "integer" => self.integer_conversion = true,
             "min" => self.real_min = true,
             "max" => self.real_max = true,
             "imin" => self.integer_min = true,
