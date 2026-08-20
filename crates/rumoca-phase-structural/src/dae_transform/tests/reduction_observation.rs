@@ -126,6 +126,7 @@ fn assert_prepared_dae_matches(plain: &PreparedDae<'_>, traced: &PreparedDae<'_>
         dae: plain_dae,
         manifold: plain_manifold,
         pins: plain_pins,
+        ..
     } = plain
     else {
         panic!("fixture requires index reduction");
@@ -134,6 +135,7 @@ fn assert_prepared_dae_matches(plain: &PreparedDae<'_>, traced: &PreparedDae<'_>
         dae: traced_dae,
         manifold: traced_manifold,
         pins: traced_pins,
+        ..
     } = traced
     else {
         panic!("fixture requires index reduction");

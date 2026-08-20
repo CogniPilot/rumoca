@@ -33,6 +33,7 @@ pub(crate) fn lower_solve_problem(
         view,
         manifold,
         pins,
+        structural,
     } = prepared;
     if view.variable_count() == 0
         && view.continuous_owner_count() == 0
@@ -45,7 +46,7 @@ pub(crate) fn lower_solve_problem(
     }
     let lowered = lower_layout(view)?;
     let clocks = clocks::lower_clocks(view, &lowered)?;
-    let structural = structural_matching(view)?;
+    let structural = structural_matching(view, structural.as_ref())?;
     clocks::reject_clocked_continuous_feedback(view, &clocks, &structural)?;
     let derivatives = index_derivative_rows(view, &structural.rows)?;
     let continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
@@ -90,6 +91,7 @@ struct StructuralMatching<'dae> {
 
 fn structural_matching<'dae>(
     view: dae::DaeView<'dae>,
+    sorted: Option<&structural::SortedDae<'dae>>,
 ) -> Result<StructuralMatching<'dae>, LowerError> {
     let scalar_rows = continuous_scalar_row_count(view)?;
     let unknowns = view
@@ -109,10 +111,7 @@ fn structural_matching<'dae>(
             derivative_blocks: Vec::new(),
         });
     }
-    let sorted = rumoca_phase_structural::sort(view).map_err(|error| LowerError::Structural {
-        reason: error.to_string(),
-        span: error.source_span(),
-    })?;
+    let sorted = sorted.expect("non-empty prepared DAE carries its structural analysis");
     let rows = sorted
         .matching
         .iter()

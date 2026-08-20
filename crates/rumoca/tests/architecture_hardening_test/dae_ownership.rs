@@ -106,6 +106,29 @@ fn galec_issues_one_causal_definition_proof_per_entry_operation() {
     }
 }
 
+#[test]
+fn solve_consumes_the_structural_analysis_issued_by_preparation() {
+    let root = workspace_root();
+    let preparation = read(&root, "crates/rumoca-phase-structural/src/dae_transform.rs");
+    assert_eq!(
+        preparation.matches("sort(view)").count(),
+        1,
+        "structural preparation must route every whole-model sort through its one analysis issuer"
+    );
+    assert!(
+        preparation.contains("structural: structural.bind(view)"),
+        "PreparedSystem must rebrand the analysis coupled to its prepared DAE"
+    );
+
+    let solve_lowering = read(&root, "crates/rumoca-phase-solve/src/lower.rs");
+    for prohibited in ["rumoca_phase_structural::sort", "structural::sort("] {
+        assert!(
+            !solve_lowering.contains(prohibited),
+            "Solve lowering must consume PreparedSystem structural analysis, not call `{prohibited}`"
+        );
+    }
+}
+
 fn read(root: &std::path::Path, relative: &str) -> String {
     fs::read_to_string(root.join(relative))
         .unwrap_or_else(|error| panic!("read {relative}: {error}"))

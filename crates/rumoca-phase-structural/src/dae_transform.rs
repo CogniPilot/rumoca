@@ -41,7 +41,9 @@ use self::reconstruction::rebuild_with_state_demotion;
 use self::reconstruction::{
     rebuild_holonomic_constraint, rebuild_with_state_demotion_and_manifold,
 };
-use crate::{StructuralError, sort};
+use crate::{
+    BltBlock, EquationRef, SortedDae, StructuralError, StructuredScalarBlock, UnknownId, sort,
+};
 
 pub use self::initial_pins::{InitialValuePin, InitialValueRole, PinTerm};
 pub use self::observation::{
@@ -54,11 +56,13 @@ pub enum PreparedDae<'source> {
     Borrowed {
         dae: &'source dae::Dae,
         pins: Box<[InitialValuePin]>,
+        structural: PreparedStructuralAnalysis,
     },
     Transformed {
         dae: Box<dae::Dae>,
         manifold: Box<[u32]>,
         pins: Box<[InitialValuePin]>,
+        structural: PreparedStructuralAnalysis,
     },
 }
 
@@ -71,9 +75,16 @@ impl PreparedDae<'_> {
     }
 
     pub fn inspect<R>(&self, inspect: impl for<'dae> FnOnce(PreparedSystem<'_, 'dae>) -> R) -> R {
-        let (manifold, pins) = match self {
-            Self::Borrowed { pins, .. } => ([].as_slice(), pins),
-            Self::Transformed { manifold, pins, .. } => (&**manifold, pins),
+        let (manifold, pins, structural) = match self {
+            Self::Borrowed {
+                pins, structural, ..
+            } => ([].as_slice(), pins, structural),
+            Self::Transformed {
+                manifold,
+                pins,
+                structural,
+                ..
+            } => (&**manifold, pins, structural),
         };
         self.as_dae().inspect(|view| {
             let manifold = manifold
@@ -87,6 +98,7 @@ impl PreparedDae<'_> {
                 view,
                 manifold: &manifold,
                 pins,
+                structural: structural.bind(view),
             })
         })
     }
@@ -107,6 +119,180 @@ pub struct PreparedSystem<'prepared, 'dae> {
     /// which is private — naming it as a doc link would make the public page
     /// point at an item its reader cannot open.
     pub pins: &'prepared [InitialValuePin],
+    /// Structural matching and BLT analysis issued while this exact finalized
+    /// DAE was admitted by structural preparation.
+    pub structural: Option<SortedDae<'dae>>,
+}
+
+/// The structural analysis coupled to one prepared DAE root.
+///
+/// Identities are temporarily stored as DAE-local ordinals because the owned
+/// transformed root cannot carry a self-borrowing brand. `PreparedDae::inspect`
+/// is the only place that rebrands them, against the same root that issued the
+/// analysis. This product is never serialized or accepted from callers.
+pub struct PreparedStructuralAnalysis {
+    sorted: Option<ErasedSortedDae>,
+}
+
+struct ErasedSortedDae {
+    blocks: Vec<ErasedBltBlock>,
+    matching: Vec<(EquationRef, ErasedUnknown)>,
+    diagnostics: Vec<rumoca_core::Diagnostic>,
+}
+
+enum ErasedBltBlock {
+    Scalar {
+        equation: EquationRef,
+        unknown: ErasedUnknown,
+    },
+    AlgebraicLoop {
+        equations: Vec<EquationRef>,
+        unknowns: Vec<ErasedUnknown>,
+    },
+    StructuredScalar(StructuredScalarBlock),
+}
+
+#[derive(Clone, Copy)]
+enum ErasedUnknown {
+    Derivative { variable: u32, scalar: u32 },
+    Algebraic { variable: u32, scalar: u32 },
+    Solver(usize),
+    Unmatched { equation: usize },
+}
+
+impl PreparedStructuralAnalysis {
+    fn empty() -> Self {
+        Self { sorted: None }
+    }
+
+    fn issue(sorted: SortedDae<'_>) -> Self {
+        Self {
+            sorted: Some(ErasedSortedDae::erase(sorted)),
+        }
+    }
+
+    fn bind<'dae>(&self, view: dae::DaeView<'dae>) -> Option<SortedDae<'dae>> {
+        self.sorted.as_ref().map(|sorted| sorted.bind(view))
+    }
+}
+
+impl ErasedSortedDae {
+    fn erase(sorted: SortedDae<'_>) -> Self {
+        Self {
+            blocks: sorted
+                .blocks
+                .into_iter()
+                .map(ErasedBltBlock::erase)
+                .collect(),
+            matching: sorted
+                .matching
+                .into_iter()
+                .map(|(equation, unknown)| (equation, ErasedUnknown::erase(unknown)))
+                .collect(),
+            diagnostics: sorted.diagnostics,
+        }
+    }
+
+    fn bind<'dae>(&self, view: dae::DaeView<'dae>) -> SortedDae<'dae> {
+        SortedDae {
+            blocks: self.blocks.iter().map(|block| block.bind(view)).collect(),
+            matching: self
+                .matching
+                .iter()
+                .map(|(equation, unknown)| (*equation, unknown.bind(view)))
+                .collect(),
+            diagnostics: self.diagnostics.clone(),
+        }
+    }
+}
+
+impl ErasedBltBlock {
+    fn erase(block: BltBlock<'_>) -> Self {
+        match block {
+            BltBlock::Scalar { equation, unknown } => Self::Scalar {
+                equation,
+                unknown: ErasedUnknown::erase(unknown),
+            },
+            BltBlock::AlgebraicLoop {
+                equations,
+                unknowns,
+            } => Self::AlgebraicLoop {
+                equations,
+                unknowns: unknowns.into_iter().map(ErasedUnknown::erase).collect(),
+            },
+            BltBlock::StructuredScalar(block) => Self::StructuredScalar(block),
+        }
+    }
+
+    fn bind<'dae>(&self, view: dae::DaeView<'dae>) -> BltBlock<'dae> {
+        match self {
+            Self::Scalar { equation, unknown } => BltBlock::Scalar {
+                equation: *equation,
+                unknown: unknown.bind(view),
+            },
+            Self::AlgebraicLoop {
+                equations,
+                unknowns,
+            } => BltBlock::AlgebraicLoop {
+                equations: equations.clone(),
+                unknowns: unknowns.iter().map(|unknown| unknown.bind(view)).collect(),
+            },
+            Self::StructuredScalar(block) => BltBlock::StructuredScalar(block.clone()),
+        }
+    }
+}
+
+impl ErasedUnknown {
+    fn erase(unknown: UnknownId<'_>) -> Self {
+        match unknown {
+            UnknownId::Derivative { state, scalar } => Self::Derivative {
+                variable: state.index(),
+                scalar,
+            },
+            UnknownId::Algebraic { variable, scalar } => Self::Algebraic {
+                variable: variable.index(),
+                scalar,
+            },
+            UnknownId::Solver(index) => Self::Solver(index),
+            UnknownId::Unmatched { equation } => Self::Unmatched { equation },
+        }
+    }
+
+    fn bind<'dae>(self, view: dae::DaeView<'dae>) -> UnknownId<'dae> {
+        match self {
+            Self::Derivative { variable, scalar } => {
+                let id = view
+                    .variable_id(variable as usize)
+                    .and_then(|id| view.variable(id))
+                    .and_then(|variable| match variable.identity() {
+                        dae::VariableIdentity::State(state) => Some(state),
+                        _ => None,
+                    })
+                    .expect("prepared derivative identity resolves against its issuing DAE");
+                UnknownId::Derivative { state: id, scalar }
+            }
+            Self::Algebraic { variable, scalar } => {
+                let id = view
+                    .variable_id(variable as usize)
+                    .and_then(|id| view.variable(id))
+                    .and_then(|variable| match variable.identity() {
+                        dae::VariableIdentity::Algebraic(algebraic) => Some(algebraic),
+                        _ => None,
+                    })
+                    .expect("prepared algebraic identity resolves against its issuing DAE");
+                UnknownId::Algebraic {
+                    variable: id,
+                    scalar,
+                }
+            }
+            Self::Solver(index) => UnknownId::Solver(index),
+            Self::Unmatched { equation } => UnknownId::Unmatched { equation },
+        }
+    }
+}
+
+fn structural_analysis(model: &dae::Dae) -> Result<PreparedStructuralAnalysis, StructuralError> {
+    model.inspect(|view| sort(view).map(PreparedStructuralAnalysis::issue))
 }
 
 #[derive(Clone, Copy)]
@@ -196,10 +382,12 @@ fn prepare_for_solve_with_observer<'source>(
     model: &'source dae::Dae,
     observer: &mut impl ReductionObserver,
 ) -> Result<PreparedDae<'source>, StructuralError> {
-    let singular = match model.inspect(|view| sort(view).map(|_| ())) {
-        Ok(_) => return borrowed_with_observer(model, observer),
+    let singular = match structural_analysis(model) {
+        Ok(structural) => return borrowed_with_observer(model, structural, observer),
         Err(error @ StructuralError::Singular { .. }) => error,
-        Err(StructuralError::EmptySystem) => return borrowed_with_observer(model, observer),
+        Err(StructuralError::EmptySystem) => {
+            return borrowed_with_observer(model, PreparedStructuralAnalysis::empty(), observer);
+        }
         Err(error) => {
             observer.observe(ReductionEvent::Stopped {
                 outcome: StoppedOutcome::Failure { error: &error },
@@ -228,8 +416,10 @@ fn prepare_for_solve_with_observer<'source>(
             };
         match round.step {
             None => break round.blocked,
-            Some(DemotionStep::Sorted { dae, .. }) => {
-                return transformed_with_observer(dae, Vec::new(), observer);
+            Some(DemotionStep::Sorted {
+                dae, structural, ..
+            }) => {
+                return transformed_with_observer(dae, Vec::new(), structural, observer);
             }
             Some(DemotionStep::Reduced {
                 dae,
@@ -265,9 +455,10 @@ fn prepare_for_solve_with_observer<'source>(
         };
     }
     match (holonomic.step, blocked.or(holonomic.blocked)) {
-        (Some((dae, manifold)), _) => transformed_with_observer(
+        (Some((dae, manifold, structural)), _) => transformed_with_observer(
             dae,
             manifold.into_iter().map(|entry| entry.expression).collect(),
+            structural,
             observer,
         ),
         // The only reduction left was one that would have discarded a stated
@@ -296,11 +487,15 @@ fn prepare_for_solve_with_observer<'source>(
 
 /// Hand back a system this phase did not have to rewrite, with the initial
 /// values its equalities carry onto the states the runtime seeds.
-fn borrowed(model: &dae::Dae) -> Result<PreparedDae<'_>, StructuralError> {
+fn borrowed(
+    model: &dae::Dae,
+    structural: PreparedStructuralAnalysis,
+) -> Result<PreparedDae<'_>, StructuralError> {
     let pins = model.inspect(transferred_initial_values)?;
     Ok(PreparedDae::Borrowed {
         dae: model,
         pins: pins.into_boxed_slice(),
+        structural,
     })
 }
 
@@ -316,9 +511,10 @@ fn observed_failure<T>(
 
 fn borrowed_with_observer<'source>(
     model: &'source dae::Dae,
+    structural: PreparedStructuralAnalysis,
     observer: &mut impl ReductionObserver,
 ) -> Result<PreparedDae<'source>, StructuralError> {
-    let result = borrowed(model);
+    let result = borrowed(model, structural);
     observer.observe(ReductionEvent::Stopped {
         outcome: match &result {
             Ok(_) => StoppedOutcome::Borrowed,
@@ -333,21 +529,24 @@ fn borrowed_with_observer<'source>(
 fn transformed(
     model: dae::Dae,
     manifold: Vec<u32>,
+    structural: PreparedStructuralAnalysis,
 ) -> Result<PreparedDae<'static>, StructuralError> {
     let pins = model.inspect(transferred_initial_values)?;
     Ok(PreparedDae::Transformed {
         dae: Box::new(model),
         manifold: manifold.into_boxed_slice(),
         pins: pins.into_boxed_slice(),
+        structural,
     })
 }
 
 fn transformed_with_observer(
     model: dae::Dae,
     manifold: Vec<u32>,
+    structural: PreparedStructuralAnalysis,
     observer: &mut impl ReductionObserver,
 ) -> Result<PreparedDae<'static>, StructuralError> {
-    let result = transformed(model, manifold);
+    let result = transformed(model, manifold, structural);
     observer.observe(ReductionEvent::Stopped {
         outcome: match &result {
             Ok(_) => StoppedOutcome::Sorted,
@@ -366,6 +565,7 @@ enum DemotionStep {
     Sorted {
         dae: dae::Dae,
         manifold: Vec<ManifoldConstraint>,
+        structural: PreparedStructuralAnalysis,
     },
     Reduced {
         dae: dae::Dae,
@@ -461,6 +661,7 @@ enum DirectAttempt {
     Sorted {
         rebuilt: dae::Dae,
         manifold: Vec<ManifoldConstraint>,
+        structural: PreparedStructuralAnalysis,
     },
     /// A candidate this round would take, if nothing else outranks it.
     Accepted {
@@ -530,10 +731,10 @@ fn attempt_direct_candidate(
         });
         return Ok(DirectAttempt::Rejected);
     }
-    let (next, retained_error) = match rebuilt.inspect(|view| sort(view).map(|_| ())) {
-        Ok(()) => (None, None),
+    let (next, retained_error, structural) = match structural_analysis(&rebuilt) {
+        Ok(structural) => (None, None, Some(structural)),
         Err(error) => match unmatched_residue(&error) {
-            Some(next) if next <= residue => (Some(next), Some(error)),
+            Some(next) if next <= residue => (Some(next), Some(error), None),
             Some(next) => {
                 observer.observe(ReductionEvent::Attempt {
                     lane: Lane::Direct,
@@ -577,7 +778,11 @@ fn attempt_direct_candidate(
             residue_before: residue,
             residue_after: None,
         });
-        return Ok(DirectAttempt::Sorted { rebuilt, manifold });
+        return Ok(DirectAttempt::Sorted {
+            rebuilt,
+            manifold,
+            structural: structural.expect("a sorted direct attempt retains its analysis"),
+        });
     };
     observer.observe(ReductionEvent::Attempt {
         lane: Lane::Direct,
@@ -621,11 +826,16 @@ fn demotion_pass_with_observer(
     for candidate in candidates {
         match attempt_direct_candidate(model, residue, stated, candidate, prior_manifold, observer)?
         {
-            DirectAttempt::Sorted { rebuilt, manifold } => {
+            DirectAttempt::Sorted {
+                rebuilt,
+                manifold,
+                structural,
+            } => {
                 return Ok(DemotionRound {
                     step: Some(DemotionStep::Sorted {
                         dae: rebuilt,
                         manifold,
+                        structural,
                     }),
                     blocked: None,
                 });
@@ -675,7 +885,11 @@ fn demotion_pass_with_observer(
 /// What one holonomic reduction found.
 struct HolonomicRound {
     /// The replacement DAE and its manifold expressions, if one matched.
-    step: Option<(dae::Dae, Vec<ManifoldConstraint>)>,
+    step: Option<(
+        dae::Dae,
+        Vec<ManifoldConstraint>,
+        PreparedStructuralAnalysis,
+    )>,
     /// A stated initial value the matching reductions would have discarded.
     blocked: Option<DiscardedInitialValue>,
 }
@@ -690,6 +904,7 @@ enum HolonomicStep {
     Sorted {
         dae: dae::Dae,
         manifold: Vec<ManifoldConstraint>,
+        structural: PreparedStructuralAnalysis,
     },
     Reduced {
         dae: dae::Dae,
@@ -796,9 +1011,11 @@ impl HolonomicReductionState {
         )?;
         self.blocked = self.blocked.take().or(round.blocked);
         match round.step {
-            Some(DemotionStep::Sorted { dae, manifold }) => {
-                sorted_holonomic_round(dae, manifold).map(Some)
-            }
+            Some(DemotionStep::Sorted {
+                dae,
+                manifold,
+                structural,
+            }) => sorted_holonomic_round(dae, manifold, structural).map(Some),
             Some(step @ DemotionStep::Reduced { .. }) => {
                 self.accept_reduced(step.into());
                 Ok(None)
@@ -841,10 +1058,11 @@ impl From<DemotionStep> for HolonomicStep {
 fn sorted_holonomic_round(
     dae: dae::Dae,
     manifold: Vec<ManifoldConstraint>,
+    structural: PreparedStructuralAnalysis,
 ) -> Result<HolonomicRound, StructuralError> {
-    let (dae, manifold) = select_dummy_states(dae, manifold)?;
+    let (dae, manifold, structural) = select_dummy_states(dae, manifold, structural)?;
     Ok(HolonomicRound {
-        step: Some((dae, manifold)),
+        step: Some((dae, manifold, structural)),
         blocked: None,
     })
 }
@@ -890,7 +1108,7 @@ fn reduce_holonomic_constraint_with_observer(
     mut perturb_enumeration: impl FnMut(&mut Vec<HolonomicConstraint>),
     observer: &mut impl ReductionObserver,
 ) -> Result<HolonomicRound, StructuralError> {
-    let outcome = model.inspect(|view| sort(view).map(|_| ()));
+    let outcome = structural_analysis(model);
     let (residue, current_error) = match outcome {
         Ok(_) => {
             return Ok(HolonomicRound {
@@ -927,8 +1145,12 @@ fn reduce_holonomic_constraint_with_observer(
         )?;
         state.blocked = state.blocked.take().or(pass.blocked);
         match pass.step {
-            Some(HolonomicStep::Sorted { dae, manifold }) => {
-                return sorted_holonomic_round(dae, manifold);
+            Some(HolonomicStep::Sorted {
+                dae,
+                manifold,
+                structural,
+            }) => {
+                return sorted_holonomic_round(dae, manifold, structural);
             }
             Some(step @ HolonomicStep::Reduced { .. }) => state.accept_reduced(step),
             None => {
@@ -947,21 +1169,31 @@ fn reduce_holonomic_constraint_with_observer(
 fn select_dummy_states(
     mut model: dae::Dae,
     mut manifold: Vec<ManifoldConstraint>,
-) -> Result<(dae::Dae, Vec<ManifoldConstraint>), StructuralError> {
+    mut structural: PreparedStructuralAnalysis,
+) -> Result<
+    (
+        dae::Dae,
+        Vec<ManifoldConstraint>,
+        PreparedStructuralAnalysis,
+    ),
+    StructuralError,
+> {
     loop {
         let round = demote_direct_state_with_observer(&model, 0, &manifold, false, &mut ())?;
         match round.step {
             Some(DemotionStep::Sorted {
                 dae,
                 manifold: next,
+                structural: next_structural,
             }) => {
                 model = dae;
                 manifold = next;
+                structural = next_structural;
             }
             Some(DemotionStep::Reduced { .. }) => {
                 unreachable!("a singular DAE cannot have zero unmatched residue")
             }
-            None => return Ok((model, manifold)),
+            None => return Ok((model, manifold, structural)),
         }
     }
 }
@@ -1024,6 +1256,7 @@ enum HolonomicAttempt {
     Sorted {
         dae: Box<dae::Dae>,
         manifold: Vec<ManifoldConstraint>,
+        structural: PreparedStructuralAnalysis,
     },
     Accepted {
         constraint: HolonomicConstraint,
@@ -1189,10 +1422,10 @@ fn attempt_holonomic_candidate(
         });
         return Ok(HolonomicAttempt::Rejected);
     }
-    let (next, retained_error) = match rebuilt.inspect(|view| sort(view).map(|_| ())) {
-        Ok(()) => (None, None),
+    let (next, retained_error, structural) = match structural_analysis(&rebuilt) {
+        Ok(structural) => (None, None, Some(structural)),
         Err(error) => match unmatched_residue(&error) {
-            Some(next) if next <= residue => (Some(next), Some(error)),
+            Some(next) if next <= residue => (Some(next), Some(error), None),
             Some(next) => {
                 observer.observe(ReductionEvent::Attempt {
                     lane: Lane::Holonomic,
@@ -1238,6 +1471,7 @@ fn attempt_holonomic_candidate(
         return Ok(HolonomicAttempt::Sorted {
             dae: Box::new(rebuilt),
             manifold,
+            structural: structural.expect("a sorted holonomic attempt retains its analysis"),
         });
     };
     observer.observe(ReductionEvent::Attempt {
@@ -1343,11 +1577,16 @@ fn holonomic_pass_with_observer(
             observer,
         )?;
         match attempt {
-            HolonomicAttempt::Sorted { dae, manifold } => {
+            HolonomicAttempt::Sorted {
+                dae,
+                manifold,
+                structural,
+            } => {
                 return Ok(HolonomicPass {
                     step: Some(HolonomicStep::Sorted {
                         dae: *dae,
                         manifold,
+                        structural,
                     }),
                     held: None,
                     blocked: None,
