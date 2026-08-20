@@ -1,0 +1,118 @@
+{#- Single source of the GALEC-derived C symbol policy and of the symbol
+    tables every C artifact prints from.
+
+    Registered in the shared render environment as `galec-c-symbols.jinja`
+    (like `galec-model.c.jinja`), so the header, the source, and the eFMI
+    Production Code manifest all import THIS file:
+
+        {%- import "galec-c-symbols.jinja" as c_symbol_policy -%}
+        {%- set c_symbols = c_symbol_policy.symbols -%}
+        {%- set c_state_symbols = c_symbol_policy.state_symbols -%}
+
+    Importing shares one allocation instead of recreating it from copied
+    inputs: `allocate_symbols` is pure and deterministic, so a single policy
+    declaration and a single pair of allocation calls give every artifact the
+    same checked mapping by construction. A divergent copy would rename the
+    same variable differently across artifacts (a header field the manifest's
+    LogicalData no longer names, for example), which is exactly the failure a
+    second declaration site reintroduces. No template may declare its own
+    reserved list.
+
+    The policy lives here, in the target directory, rather than in
+    `rumoca-phase-codegen` Rust: SPEC_0029 §12 keeps target-specific constants
+    and textual target policy in the owning target's `target.toml` and
+    templates, and SPEC_0034 D2 leaves Rust with the collision-checked
+    semantic context (`algorithm_code.symbol_names` /
+    `algorithm_code.variable_names`) and the generic allocation command.
+
+    `reserved` holds every fixed identifier these templates emit that the
+    allocator cannot infer: C keywords, the `rumoca_galec_` helpers, and the
+    <math.h>/<stdint.h> spellings the C body writes verbatim. Identifiers the
+    templates never emit (fminf/fmaxf/fmodf: Real min/max are the relational
+    `rumoca_galec_` helpers) stay out, and generated names carrying the
+    `rumoca_galec_` prefix are rejected by the allocator's prefix rule. -#}
+{%- set reserved = [
+    "auto", "break", "case", "char", "const", "continue", "default", "do",
+    "double", "else", "enum", "extern", "float", "for", "goto", "if",
+    "inline", "int", "long", "register", "restrict", "return", "short",
+    "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+    "unsigned", "void", "volatile", "while",
+    "_Alignas", "_Alignof", "_Atomic", "_BitInt", "_Bool", "_Complex",
+    "_Decimal32", "_Decimal64", "_Decimal128", "_Generic", "_Imaginary",
+    "_Noreturn", "_Static_assert", "_Thread_local",
+    "alignas", "alignof", "bool", "constexpr", "false", "nullptr",
+    "static_assert", "thread_local", "true", "typeof", "typeof_unqual",
+    "self", "rumoca_galec_sign", "rumoca_galec_min", "rumoca_galec_max",
+    "rumoca_galec_bounded_index",
+    "rumoca_galec_imin", "rumoca_galec_imax", "rumoca_galec_division_towards_zero",
+    "rumoca_galec_compare_lt", "rumoca_galec_compare_gt", "rumoca_galec_compare_le",
+    "rumoca_galec_compare_ge", "rumoca_galec_compare_eq", "rumoca_galec_compare_ne",
+    "rumoca_galec_error_signal_status",
+    "int32_t", "uint32_t", "INT32_C", "UINT32_C", "isnan",
+    "fabsf", "sqrtf", "expf", "logf", "log10f", "floorf", "ceilf",
+    "sinf", "cosf", "tanf", "asinf", "acosf", "atanf", "atan2f",
+    "sinhf", "coshf", "tanhf", "powf"
+] -%}
+{#- The identifiers the `rumoca_galec_` helper bodies in `model.c.jinja`
+    declare themselves: `value`/`extent` (bounded_index and sign),
+    `u1`/`u2` (the Real min/max helpers), `status`/`lhs`/`rhs` (the six
+    comparison helpers, imin/imax, division_towards_zero) and `result` (every
+    one of them). They are the only identifiers these templates emit WITHOUT
+    the generated prefix, so the allocator's prefix rule does not cover them,
+    and a file-scope symbol of the same name — a GALEC function named `result`
+    becomes `static void result(...)` — is shadowed by the helper local of
+    that name under the profile's -Wshadow -Werror. Keep this list in step
+    with the helper bodies.
+
+    It is added to the `symbols` table only. That table is the one that can
+    yield a file-scope C identifier (the user function names), and it cannot
+    tell those apart from the locals and parameters it also holds, so it takes
+    the conservative whole list. `state_symbols` spells struct members, which
+    live in their own C namespace, shadow nothing, and are only ever read as
+    `self-><member>`; reserving there would rename fields (and the manifest
+    components naming them) for no gain.
+
+    The private working-memory aggregate needs nothing in `reserved`. It is one
+    file-scope object spelled `rumoca_galec_scratch`, holding one union per
+    overlay group spelled `rumoca_galec_g<n>`; the prefix rule already makes
+    every one of those unallocatable, and listing them would additionally rename
+    every source symbol spelled `scratch` — the allocator rejects a candidate
+    whose prefixed spelling is reserved, so the entries would buy nothing and
+    cost a rename.
+
+    Four entries do belong here. `ctx` is the per-owner region alias every generated
+    function and method declares at its top, in the same block scope as the
+    frame locals — a GALEC local spelled `ctx` would be a redeclaration, not a
+    shadow. `startup`/`recalibrate`/`dostep` name the three method regions
+    inside that aggregate, where they sit beside one member per user function;
+    reserving them keeps a GALEC function of the same name from claiming a
+    member that is already spoken for. All four are withheld from
+    `state_symbols` for the same reason as the helper locals: they never
+    compete with a declared block variable. -#}
+{%- set helper_locals = [
+    "result", "value", "extent", "lhs", "rhs", "u1", "u2", "status",
+    "ctx", "startup", "recalibrate", "dostep"
+] -%}
+{#- `state_policy` is the base declaration — the separator and the generated
+    namespace are spelled once, here — and `policy` is that same declaration
+    with the helper locals withheld. Derived rather than copied: two literal
+    namespace declarations in one file is the same divergence hazard as two
+    declarations in two files. -#}
+{%- set state_policy = {
+    "separator": "_",
+    "reserved": reserved,
+    "generated_prefixes": ["rumoca_galec_"]
+} -%}
+{%- set policy = {
+    "separator": state_policy.separator,
+    "reserved": reserved + helper_locals,
+    "generated_prefixes": state_policy.generated_prefixes
+} -%}
+{#- `symbols` maps every source reference the block body may print (block
+    name, locals, parameters, functions, fields); `state_symbols` maps the
+    declared block variables that become state-struct fields and manifest
+    components. Both tables are allocated from the one reserved list above —
+    the file-scope-capable one also withholding the helper locals — under the
+    one generated namespace. -#}
+{%- set symbols = allocate_symbols(algorithm_code.symbol_names, policy) -%}
+{%- set state_symbols = allocate_symbols(algorithm_code.variable_names, state_policy) -%}

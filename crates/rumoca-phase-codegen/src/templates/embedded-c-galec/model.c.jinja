@@ -1,66 +1,1111 @@
-/* {{ block_name }} — GALEC-derived embedded C export (SPEC_0034 GAL-024).
- * {{ conformance_header.summary }} Method bodies below are printed
- * from the validated GALEC block by the typed C printer
- * (rumoca-galec-codegen::c_print); this template only lays out the file. */
+{#- Every emitted C identifier comes from the single symbol policy in
+    `embedded-c-galec/symbols.jinja`, registered here as
+    `galec-c-symbols.jinja` and shared by the header, the source, and the
+    Production Code manifest. This template declares no reserved list and no
+    allocation of its own: a second declaration site is what renames the same
+    variable differently across artifacts. -#}
+{%- import "galec-c-symbols.jinja" as c_symbol_policy -%}
+{%- set c_symbols = c_symbol_policy.symbols -%}
+{%- set c_state_symbols = c_symbol_policy.state_symbols -%}
+{%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
+{#- The directory every traced Modelica path is printed relative to. It is the
+    longest prefix all of them share, and it is subtracted rather than printed:
+    a build-machine path in the emitted C would make the file — and the SHA-1
+    the manifest records for it — depend on where the source tree happens to
+    live, which is exactly the property configuration management needs the
+    generated code NOT to have. `none` means the traced files share no
+    directory (sources from unrelated trees) and the paths stay absolute. -#}
+{%- set trace_root = algorithm_code.traces.root -%}
+{#- The block's working memory, decided in the checked view and printed here.
+    `groups` are the overlay groups in declaration order — which regions share
+    storage, and why, is settled in `views/algorithm_code_typed.rs`; this file
+    spells the result and performs no layout reasoning of its own.
+    `region_groups` maps a callee's SOURCE name to its group, which is what a
+    call site has to hand when it reads the callee's outputs back. -#}
+{%- set scratch_layout = algorithm_code.package.block.scratch_layout -%}
+{%- set scratch_groups = scratch_layout.region_groups -%}
+{#- The member one region occupies in its group's union, and the suffix of its
+    own struct type. A user function contributes its allocated C name; a block
+    method contributes its fixed spelling, which `symbols.jinja` reserves so the
+    two can never land on the same member. -#}
+{%- macro region_name(region) -%}
+{%- if region.function is not none -%}{{ symbol(c_symbols, region.function) }}{%- else -%}{{ region.method }}{%- endif -%}
+{%- endmacro -%}
+{%- macro region_dimensions(value) -%}
+{%- for dimension in value %}{% if dimension.kind == "expr" and dimension.value.kind == "integer" %}[{{ dimension.value.value }}]{% else %}{{ fail("unsupported-feature:embedded-c-scratch-dimension") }}{% endif %}{% endfor -%}
+{%- endmacro -%}
+{#- Where one region lives: the private aggregate, its owner's overlay group,
+    the region. Spelled in exactly one macro so an alias and a call-site
+    read-back can never name two different objects. -#}
+{%- macro region_path(group, name) -%}rumoca_galec_scratch.rumoca_galec_g{{ group }}.{{ name }}{%- endmacro -%}
+{%- macro trace_path(path) -%}
+{%- if trace_root is not none -%}{{ path | replace(trace_root ~ "/", "") }}{%- else -%}{{ path }}{%- endif -%}
+{%- endmacro -%}
+{%- macro name_text(value) -%}{{ value.value[0] }}{%- endmacro -%}
+{%- macro state_symbol(part) -%}
+{%- set spelling = part.name.value[0] -%}
+{%- set found = namespace(value="") -%}
+{%- for variable in algorithm_code.variables -%}
+{%- if variable.name == spelling -%}{%- set found.value = symbol(c_state_symbols, variable.name) -%}{%- endif -%}
+{%- endfor -%}
+{%- if found.value == "" -%}{{ fail_closed_unresolved_state_reference }}{%- else -%}{{ found.value }}{%- endif -%}
+{%- endmacro -%}
+{#- A GALEC subscript is 1-based; C is 0-based. When the subscript is a literal
+    the whole conversion is known here, so the folded index is emitted directly.
+    That is not an optimization for the C compiler — it folds this anyway — it is
+    for the reviewer and the MISRA scanner, who read the source. A non-literal
+    subscript keeps the explicit cast-and-decrement, which is where the
+    conversion's width and signedness are actually pinned down. -#}
+{%- macro subscript(index) -%}
+{%- if index.kind == "integer" -%}[{{ index.value - 1 }}]
+{#- A bare Integer reference — overwhelmingly a loop induction variable — is
+    already `int32_t` in the emitted C, so `((int32_t)(i)) - 1` casts an int to
+    int. 1,280 of those in the RDD2 estimator alone. The cast is kept only where
+    the index is a computed expression, which is where the conversion's width
+    and signedness genuinely need pinning down. -#}
+{%- elif index.kind == "ref" -%}[{{ expr(index) }} - 1]
+{%- else -%}[((int32_t)({{ expr(index) }})) - 1]
+{%- endif -%}
+{%- endmacro -%}
+{#- A `local` reference is spelled against whichever storage the view says it
+    got: `ctx->` names a slot in the enclosing owner's block-context region,
+    a bare identifier an object still in the frame. The two are the same C
+    lvalue in every other respect, so subscripting is shared. -#}
+{%- macro reference(value) -%}
+{%- if value.kind == "local" -%}{% if value.context_resident %}ctx->{% endif %}{{ symbol(c_symbols, name_text(value.value.name)) }}{% for index in value.value.subscripts %}{{ subscript(index) }}{% endfor %}
+{%- elif value.kind == "state" -%}
+{%- for part in value.value -%}
+{%- if loop.first -%}self->{{ state_symbol(part) }}{%- else -%}.{{ symbol(c_symbols, name_text(part.name)) }}{%- endif -%}
+{%- for index in part.subscripts %}{{ subscript(index) }}{% endfor -%}
+{%- endfor -%}
+{%- else -%}{{ fail_closed_reference_kind }}{%- endif -%}
+{%- endmacro -%}
+{%- macro bounded_reference(value) -%}
+{%- if value.reference.kind == "local" -%}
+{% if value.reference.context_resident %}ctx->{% endif %}{{ symbol(c_symbols, name_text(value.reference.value.name)) }}{% for index in value.reference.value.subscripts %}[rumoca_galec_bounded_index({{ expr(index) }}, {{ value.extents[loop.index0] }})]{% endfor %}
+{%- elif value.reference.kind == "state" and value.reference.value|length == 1 -%}
+self->{{ state_symbol(value.reference.value[0]) }}{% for index in value.reference.value[0].subscripts %}[rumoca_galec_bounded_index({{ expr(index) }}, {{ value.extents[loop.index0] }})]{% endfor %}
+{%- else -%}{{ fail_closed_bounded_reference_kind }}{%- endif -%}
+{%- endmacro -%}
+{%- macro binary_operator(value) -%}
+{%- if value.kind == "mul" -%}*{%- elif value.kind == "div" -%}/{%- elif value.kind == "add" -%}+{%- elif value.kind == "sub" -%}-{%- elif value.kind == "lt" -%}<{%- elif value.kind == "gt" -%}>{%- elif value.kind == "le" -%}<={%- elif value.kind == "ge" -%}>={%- elif value.kind == "eq" -%}=={%- elif value.kind == "ne" -%}!={%- elif value.kind == "and" -%}&&{%- elif value.kind == "or" -%}||{%- else -%}{{ fail_closed_binary_operator }}{%- endif -%}
+{%- endmacro -%}
+{%- macro binary(value, lhs, rhs) -%}
+{%- if value.op.kind == "pow" and value.square_reducible -%}({{ lhs }} * {{ lhs }})
+{%- elif value.op.kind == "pow" -%}powf({{ lhs }}, {{ rhs }})
+{%- elif value.op.kind in ["lt", "gt", "le", "ge", "eq", "ne"] and (value.lhs.scalar.kind == "real" or value.rhs.scalar.kind == "real") -%}rumoca_galec_compare_{{ value.op.kind }}(&self->rumoca_galec_error_signal_status, {{ lhs }}, {{ rhs }})
+{%- else -%}({{ lhs }} {{ binary_operator(value.op) }} {{ rhs }})
+{%- endif -%}
+{%- endmacro -%}
+{%- macro call(value, indices=[]) -%}
+{%- set function = value.lifted_base if value.lifted_base is not none else value.function.value[0] -%}
+{%- if function == "absolute" -%}fabsf
+{%- elif function == "sign" -%}rumoca_galec_sign
+{%- elif function == "sqrt" -%}sqrtf
+{%- elif function == "exp" -%}expf
+{%- elif function == "ln" -%}logf
+{%- elif function == "lg" -%}log10f
+{%- elif function == "roundDown" -%}floorf
+{%- elif function == "roundUp" -%}ceilf
+{%- elif function == "sin" -%}sinf
+{%- elif function == "cos" -%}cosf
+{%- elif function == "tan" -%}tanf
+{%- elif function == "asin" -%}asinf
+{%- elif function == "acos" -%}acosf
+{%- elif function == "atan" -%}atanf
+{%- elif function == "atan2" -%}atan2f
+{%- elif function == "sinh" -%}sinhf
+{%- elif function == "cosh" -%}coshf
+{%- elif function == "tanh" -%}tanhf
+{%- elif function == "min" -%}rumoca_galec_min
+{%- elif function == "max" -%}rumoca_galec_max
+{%- elif function == "imin" -%}rumoca_galec_imin
+{%- elif function == "imax" -%}rumoca_galec_imax
+{%- elif function == "real" -%}((float)
+{%- elif function == "divisionTowardsZero" -%}rumoca_galec_division_towards_zero
+{%- elif function == "integer" -%}{{ fail("unsupported-feature:embedded-c-integer-conversion:no-adjudicated-signal-row") }}
+{%- elif value.user_function -%}{{ fail("unsupported-feature:embedded-c-user-call:expression-position") }}
+{%- elif indices|length > 0 -%}{{ fail("unsupported-feature:embedded-c-array-expression:user-call") }}
+{%- else -%}{{ fail("unsupported-feature:embedded-c-builtin:" ~ function) }}
+{%- endif -%}
+({% for argument in value.arguments %}{% if indices|length > 0 %}{{ scalar_source(argument, indices) }}{% else %}{{ expr(argument) }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}){% if function == "real" %}){% endif %}
+{%- endmacro -%}
+{%- macro pad(level) %}{% for _ in range(level) %}    {% endfor %}{%- endmacro -%}
+{#- The already-decided C indices of an enclosing loop nest, as `[i][j]…`. The
+    subscripts here are C indices the emitter chose, not GALEC subscripts, so
+    they are printed as-is: the 1-based→0-based conversion `subscript` performs
+    has no business running over them a second time. -#}
+{%- macro subscript_text(indices) -%}{% for index in indices %}[{{ index }}]{% endfor %}{%- endmacro -%}
+{#- Implicit `limit self` at method boundaries (SPEC_0042 T3, SPEC_0034
+    GAL-018/GAL-019): declared min/max ranges SATURATE — they are not Modelica
+    assertions, nothing is signalled, and a qNaN stays a qNaN. The normative
+    behaviour is `rumoca-eval-galec` (`execution.rs::limit_all`, reached from
+    `interpreter.rs::invoke`): every INITIALIZED declared block variable
+    (interface and protected), arrays elementwise, low bound applied before the
+    high bound. These macros mirror that oracle statement for statement. An
+    explicit GALEC `limit` statement is a different construct and keeps failing
+    closed in the statements macro — T3 covers method boundaries only.
+
+    Two facts this target owns and the oracle does not need:
+
+    * **The numeric domain.** This target executes Real as binary32 and Integer
+      as int32 (`c_type`, and the `[integer]` domain in `target.toml`), so a
+      declared bound is decided in THAT domain, not in the f64/i64 the checked
+      block carries it as. `binary32_bound` / `int32_bound` are the decision:
+      each answers `none` when no value of the target type can violate the
+      bound (elide the clamp — this is how a Modelica `min =
+      -Modelica.Constants.inf` / `max = Modelica.Constants.inf` declaration
+      reaches a target that cannot spell `1e60` as a `float`), a literal when
+      the bound is representable, and fails closed when it is neither. This
+      template picks the domain by naming those filters; the arithmetic is not
+      re-derived here against a magic constant.
+    * **Determinacy.** The block state is caller-allocated memory with no
+      per-slot initialized flag, so the `Startup` RETURN boundary — the one
+      boundary that runs before any other method has written anything — clamps
+      only what `Startup` is proven to have written
+      (`startup.definite_state_writes`). That mirrors the oracle skipping an
+      uninitialized slot, and it is what keeps a declared range on a control
+      input (which `Startup` never assigns) from making the generated code read
+      indeterminate memory. Every later boundary limits the full state. -#}
+{%- macro low_bound(variable) -%}
+{%- if variable.kind == "real" -%}{% set text = variable.real_min | binary32_bound("min") %}{% if text is not none %}{{ text }}f{% endif %}
+{%- elif variable.kind == "integer" -%}{% set text = variable.integer_min | int32_bound("min") %}{% if text is not none %}INT32_C({{ text }}){% endif %}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro high_bound(variable) -%}
+{%- if variable.kind == "real" -%}{% set text = variable.real_max | binary32_bound("max") %}{% if text is not none %}{{ text }}f{% endif %}
+{%- elif variable.kind == "integer" -%}{% set text = variable.integer_max | int32_bound("max") %}{% if text is not none %}INT32_C({{ text }}){% endif %}
+{%- endif -%}
+{%- endmacro -%}
+{#- Nonempty exactly when this variable still saturates in the target domain.
+    A declared bound that elided leaves no clamp behind, so a variable whose
+    every bound elided is not limited at all. -#}
+{%- macro limited(variable) -%}{{ low_bound(variable) }}{{ high_bound(variable) }}{%- endmacro -%}
+{#- The one place a boundary scope is spelled: `"all"` is every declaration,
+    `"startup"` only the ones `Startup` definitely wrote. -#}
+{%- macro in_scope(variable, scope) -%}
+{%- if scope != "startup" or variable.name in algorithm_code.package.block.startup.definite_state_writes -%}scoped{%- endif -%}
+{%- endmacro -%}
+{#- The declaration ordinals one boundary limits, as a stable text key. The
+    startup scope is always a subsequence of `"all"`, so dropping any
+    declaration strictly shortens the key: two equal-length keys are the same
+    set, and the two boundaries can then share one C function. -#}
+{%- macro limited_ordinals(scope) -%}
+{%- for variable in algorithm_code.variables -%}
+{%- if limited(variable)|length > 0 and in_scope(variable, scope)|length > 0 -%}{{ variable.ordinal }},{%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+{%- macro limiter_name(scope) -%}
+{%- if scope == "startup" and limited_ordinals("startup")|length != limited_ordinals("all")|length -%}rumoca_galec_limit_startup{%- else -%}rumoca_galec_limit_self{%- endif -%}
+{%- endmacro -%}
+{%- macro limit_target(variable, indices) -%}
+self->{{ symbol(c_state_symbols, variable.name) }}{% for index in indices %}[{{ index }}]{% endfor %}
+{%- endmacro -%}
+{%- macro limit_scalar(variable, indices, indent) -%}
+{%- set low = low_bound(variable) -%}
+{%- set high = high_bound(variable) -%}
+{%- if variable.kind == "real" %}
+{{ pad(indent) }}if (isnan({{ limit_target(variable, indices) }}) == 0) {
+{%- if low|length > 0 %}
+{{ pad(indent + 1) }}if ({{ limit_target(variable, indices) }} < {{ low }}) {
+{{ pad(indent + 2) }}{{ limit_target(variable, indices) }} = {{ low }};
+{{ pad(indent + 1) }}}
+{%- endif %}
+{%- if high|length > 0 %}
+{{ pad(indent + 1) }}if ({{ limit_target(variable, indices) }} > {{ high }}) {
+{{ pad(indent + 2) }}{{ limit_target(variable, indices) }} = {{ high }};
+{{ pad(indent + 1) }}}
+{%- endif %}
+{{ pad(indent) }}}
+{%- elif variable.kind == "integer" -%}
+{%- if low|length > 0 %}
+{{ pad(indent) }}if ({{ limit_target(variable, indices) }} < {{ low }}) {
+{{ pad(indent + 1) }}{{ limit_target(variable, indices) }} = {{ low }};
+{{ pad(indent) }}}
+{%- endif %}
+{%- if high|length > 0 %}
+{{ pad(indent) }}if ({{ limit_target(variable, indices) }} > {{ high }}) {
+{{ pad(indent + 1) }}{{ limit_target(variable, indices) }} = {{ high }};
+{{ pad(indent) }}}
+{%- endif %}
+{%- else -%}{{ fail("unsupported-feature:embedded-c-range:" ~ variable.kind) }}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro limit_variable(variable, depth, indices, indent) -%}
+{%- if limited(variable)|length == 0 -%}
+{%- elif depth == variable.dimensions|length -%}
+{{ limit_scalar(variable, indices, indent) }}
+{%- else -%}
+{%- set iterator = "rumoca_galec_limit_" ~ depth %}
+{{ pad(indent) }}for (int32_t {{ iterator }} = INT32_C(0);
+{{ pad(indent + 1) }}{{ iterator }} < INT32_C({{ variable.dimensions[depth] }});
+{{ pad(indent + 1) }}++{{ iterator }}) {
+{{- limit_variable(variable, depth + 1, indices + [iterator], indent + 1) }}
+{{ pad(indent) }}}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro limiter_body(scope) -%}
+{%- for variable in algorithm_code.variables -%}
+{%- if in_scope(variable, scope)|length > 0 -%}
+{{- limit_variable(variable, 0, [], 1) }}
+{%- endif -%}
+{%- endfor %}
+{%- endmacro -%}
+{%- macro limit_self_boundary(indent, scope) -%}
+{%- if limited_ordinals(scope)|length > 0 %}
+{{ pad(indent) }}{{ limiter_name(scope) }}(self);
+{% endif -%}
+{%- endmacro -%}
+{#- A method whose body is empty already limited its state on entry, and
+    saturation is idempotent, so its return boundary would re-run the identical
+    clamp over values nothing has touched. Emit it only when something ran in
+    between. `Startup` has no entry boundary at all, so it never uses this. -#}
+{%- macro limit_return_boundary(method, indent, scope) -%}
+{%- if method.statements|length > 0 %}{{ limit_self_boundary(indent, scope) }}{% endif -%}
+{%- endmacro -%}
+{#- Whole-array assignment. A copy of N elements is emitted as ONE call to a
+    shared, typed kernel rather than as an open-coded loop, because those are not
+    the same verification object: 344 open-coded three-trip loops are 344
+    induction variables, 344 bounds and 344 increments a DO-178C reviewer has to
+    read, and 344 constructs a MISRA scanner has to analyse, whereas one kernel
+    verified once and called 344 times is a single such object. That is the whole
+    argument for this section — not line count.
+
+    The kernel is emitted ONLY for a genuine copy: the source has to be an
+    array-valued reference whose residual rank matches the loop nest, which is
+    exactly the case where the emitted body would have been `t[i] = s[i]` and
+    nothing else. A computed source (`(-a[i])`, `a[i] - g`, `sinf(a[i])`, a
+    conditional) keeps its loop, because there is no copy there to share.
+
+    Only the INNERMOST dimension becomes a call: the kernel takes a rank-1 run
+    and a count, so a rank-2 copy is one loop over the rows and one call per row.
+    That is deliberate, and it is the rule EVERY kernel in the shared library
+    follows. Parameterising the extent keeps the library at one kernel per
+    element type instead of one per (type, rank, extent), and taking the
+    operands as rank-1 sidesteps the C99 constraint recorded at
+    `function_parameter` — there is no implicit conversion from
+    pointer-to-array-of-T to pointer-to-array-of-const-T, so a rank > 1 kernel
+    could not have been const-correct on its source without a cast this target
+    prohibits. A row of a `float [n][m]` decays to `float *`, which converts to
+    `const float *` without one. Handing the kernel `&m[0][0]` and a computed
+    flat index would have avoided that too, and is exactly what this target does
+    not do: indexing past the end of `m[0]` is out-of-bounds pointer arithmetic
+    on the sub-array it addresses, whatever the enclosing object's total size.
+
+    The kernels themselves live in `rumoca_galec_kernels.c`, one library
+    translation unit with external linkage, emitted whole beside every model.
+    They are NOT `static` copies in this file: several generated blocks linked
+    into one application must share one definition, and the reviewed object has
+    to be one object.
+
+    The kernel copies FORWARD, element 0 first, which is the order the loop it
+    replaces used. That is what makes the substitution value-preserving even when
+    the source and the target overlap. -#}
+{%- macro copy_kernel_name(scalar) -%}
+{%- if scalar is none -%}
+{%- elif scalar.kind == "real" -%}rumoca_galec_copy_real
+{%- elif scalar.kind == "integer" -%}rumoca_galec_copy_integer
+{%- elif scalar.kind == "boolean" -%}rumoca_galec_copy_boolean
+{%- endif -%}
+{%- endmacro -%}
+{#- The kernel call for one rank-1 run: `count`, then the destination run, then
+    the source run. Both operands are the enclosing loops' partial subscripting
+    of an object whose innermost dimension is `count`. -#}
+{%- macro copy_kernel_call(kernel, count, target_text, source_text, indent) -%}
+{{ pad(indent) }}{{ kernel }}(INT32_C({{ count }}), {{ target_text }}, {{ source_text }});
+{%- endmacro -%}
+{#- The fill kernels, the same idea one operand narrower: a whole-array
+    assignment whose every element receives the same literal is a run and a
+    value, not a loop. Which assignments those are is decided in the view
+    (`uniform_fill_literal`), not here — the value arrives already proven
+    uniform and already proven a literal, so the call evaluates it once where
+    the loop evaluated it per element and that is not a change. -#}
+{%- macro fill_kernel_name(scalar) -%}
+{%- if scalar is none -%}
+{%- elif scalar.kind == "real" -%}rumoca_galec_fill_real
+{%- elif scalar.kind == "integer" -%}rumoca_galec_fill_integer
+{%- elif scalar.kind == "boolean" -%}rumoca_galec_fill_boolean
+{%- endif -%}
+{%- endmacro -%}
+{%- macro fill_kernel_call(kernel, count, target_text, value_text, indent) -%}
+{{ pad(indent) }}{{ kernel }}(INT32_C({{ count }}), {{ target_text }}, {{ value_text }});
+{%- endmacro -%}
+{#- A call passes the block context and the operands, and nothing else. The
+    callee's outputs are slots in the callee's own region, so the caller reads
+    them back by name after the call returns.
+
+    The read-back is where the out pointers used to be, and it happens at the
+    same point in the sequence: the callee wrote its outputs before returning
+    (previously into its frame, then through the pointers on the way out), and
+    the caller's targets are written after the call either way. An operand that
+    aliases a target therefore still sees the pre-call value throughout the
+    body, exactly as it did.
+
+    The read-back is also where an overlay could go wrong, so note what makes it
+    safe. It reads the CALLEE's region and writes the CALLER's, and those are in
+    different overlay groups by construction — a callee's call depth is strictly
+    greater than its caller's. It is emitted here, immediately after the call and
+    inside the same macro, so no sibling call can be sequenced between the
+    callee's return and the copy that reads its results. -#}
+{%- macro region_of(call) -%}{{ region_path(scratch_groups[name_text(call.function)], symbol(c_symbols, name_text(call.function))) }}{%- endmacro -%}
+{#- The GALEC-level names of a reference, `.`-joined, subscripts dropped —
+    comment text, never code. -#}
+{%- macro reference_names(target) -%}
+{%- if target.kind == "local" -%}{{ name_text(target.value.name) }}
+{%- elif target.kind == "state" -%}{% for part in target.value %}{% if not loop.first %}.{% endif %}{{ name_text(part.name) }}{% endfor %}
+{%- endif -%}
+{%- endmacro -%}
+{#- The semantic binding a marshalling read-back implements: which callee
+    output lands in which caller object. The C spelling below it is mangled
+    and region-qualified (`self->rumoca_galec_scratch...`), so without this
+    line a reviewer un-mangles two identifiers to learn what moved; with it
+    the copy reads as the model fact it is. Array outputs only: they are the
+    whole-array marshalling moves, one comment per moved object — a scalar
+    read-back is a single assignment whose target is already legible. -#}
+{%- macro binding_comment(call, output, target, indent) -%}
+{%- if output.dimensions|length > 0 %}
+{{ pad(indent) }}/* = {{ (name_text(call.function) ~ "." ~ name_text(output.name) ~ " -> " ~ reference_names(target)) | replace("*/", "* /") | replace("/*", "/ *") }} */
+{%- endif -%}
+{%- endmacro -%}
+{%- macro read_back(call, output, target, depth, indices, indent) -%}
+{%- if depth == output.dimensions|length %}
+{{ pad(indent) }}{{ scalar_target(target, indices) }} = {{ region_of(call) }}.{{ symbol(c_symbols, name_text(output.name)) }}{% for index in indices %}[{{ index }}]{% endfor %};
+{%- else -%}
+{%- set dimension = output.dimensions[depth] -%}
+{%- set kernel = copy_kernel_name(target.scalar) -%}
+{%- if dimension.kind != "expr" or dimension.value.kind != "integer" -%}{{ fail("unsupported-feature:embedded-c-function-dimension") }}
+{#- A read-back is a copy by construction: the callee left its output in its own
+    region and the caller moves it, unchanged, into the target. -#}
+{%- elif depth + 1 == output.dimensions|length and kernel|length > 0 %}
+{{ copy_kernel_call(kernel, dimension.value.value, scalar_target(target, indices), region_of(call) ~ "." ~ symbol(c_symbols, name_text(output.name)) ~ subscript_text(indices), indent) }}
+{%- else -%}
+{%- set iterator = "rumoca_galec_read_back_" ~ depth %}
+{{ pad(indent) }}for (int32_t {{ iterator }} = INT32_C(0);
+{{ pad(indent + 1) }}{{ iterator }} < INT32_C({{ dimension.value.value }});
+{{ pad(indent + 1) }}++{{ iterator }}) {
+{{- read_back(call, output, target, depth + 1, indices + [iterator], indent + 1) }}
+{{ pad(indent) }}}
+{%- endif -%}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro user_call(value, target, indent) -%}
+{{ pad(indent) }}{{ symbol(c_symbols, name_text(value.function)) }}(
+{{ pad(indent + 1) }}self{% for argument in value.arguments %},
+{{ pad(indent + 1) }}{{ expr(argument) }}{% endfor %});
+{%- if value.outputs|length != 1 -%}{{ fail("unsupported-feature:embedded-c-user-call:single-target-arity") }}{%- endif -%}
+{{ binding_comment(value, value.outputs[0], target, indent) }}{{ read_back(value, value.outputs[0], target, 0, [], indent) }}
+{%- endmacro -%}
+{%- macro user_multi_call(value, indent) -%}
+{{ pad(indent) }}{{ symbol(c_symbols, name_text(value.call.function)) }}(
+{{ pad(indent + 1) }}self{% for argument in value.call.arguments %},
+{{ pad(indent + 1) }}{{ expr(argument) }}{% endfor %});
+{%- if value.call.outputs|length != value.targets|length -%}{{ fail("unsupported-feature:embedded-c-user-call:target-arity") }}{%- endif -%}
+{%- for target in value.targets -%}
+{{ binding_comment(value.call, value.call.outputs[loop.index0], target, indent) }}{{ read_back(value.call, value.call.outputs[loop.index0], target, 0, [], indent) }}
+{%- endfor -%}
+{%- endmacro -%}
+{%- macro if_expression(value) -%}
+{%- for branch in value.branches -%}({{ expr(branch[0]) }} ? {{ expr(branch[1]) }} : {% endfor -%}
+{{- expr(value.else_value) -}}
+{%- for _ in value.branches -%}){%- endfor -%}
+{%- endmacro -%}
+{%- macro expr(value) -%}
+{%- if value.kind == "bool" -%}{% if value.value %}true{% else %}false{% endif %}
+{%- elif value.kind == "integer" -%}{{ value.value }}
+{%- elif value.kind == "real" -%}{{ value.value | xs_double }}f
+{%- elif value.kind == "ref" -%}{{ reference(value.value) }}
+{%- elif value.kind == "size" -%}{{ fail_closed_dynamic_size }}
+{%- elif value.kind == "call" -%}{{ call(value.value) }}
+{%- elif value.kind == "paren" -%}({{ expr(value.value) }})
+{%- elif value.kind == "if" -%}{{ if_expression(value.value) }}
+{%- elif value.kind == "bounded_selection" -%}{{ bounded_reference(value.value) }}
+{%- elif value.kind == "neg" -%}(-{{ reference(value.value) }})
+{%- elif value.kind == "not" -%}(!({{ expr(value.value) }}))
+{%- elif value.kind == "binary" -%}{{ binary(value.value, expr(value.value.lhs), expr(value.value.rhs)) }}
+{%- elif value.kind == "array" -%}{{ fail_closed_array_in_scalar_expression }}
+{%- else -%}{{ fail_closed_expression_kind }}{%- endif -%}
+{%- endmacro -%}
+{%- macro scalar_target(reference_value, indices) -%}
+{{ reference(reference_value) }}{% for index in indices %}[{{ index }}]{% endfor %}
+{%- endmacro -%}
+{%- macro scalar_reference(value, indices) -%}
+{{ reference(value) }}{%- if value.rank > 0 -%}{% for index in indices %}[{{ index }}]{% endfor %}{%- endif -%}
+{%- endmacro -%}
+{%- macro scalar_if_tail(branches, index, else_value, indices) -%}
+({{ expr(branches[index][0]) }} ? {{ scalar_source(branches[index][1], indices) }} : {% if index + 1 < branches|length %}{{ scalar_if_tail(branches, index + 1, else_value, indices) }}{% else %}{{ scalar_source(else_value, indices) }}{% endif %})
+{%- endmacro -%}
+{%- macro scalar_source(value, indices) -%}
+{%- if indices|length == 0 -%}{{ expr(value) }}
+{%- elif value.kind == "array" -%}
+{%- set current = namespace(value=value) -%}
+{%- for index in indices -%}
+{%- if current.value.kind != "array" -%}{{ fail("unsupported-feature:embedded-c-array-expression:constructor-rank") }}
+{%- else -%}{%- set current.value = current.value.value[index] -%}
+{%- endif -%}
+{%- endfor -%}
+{%- if current.value.kind == "array" -%}{{ fail("unsupported-feature:embedded-c-array-expression:constructor-rank") }}
+{%- else -%}{{ expr(current.value) }}
+{%- endif -%}
+{%- elif value.kind == "ref" -%}{{ scalar_reference(value.value, indices) }}
+{%- elif value.kind == "neg" -%}(-{{ scalar_reference(value.value, indices) }})
+{%- elif value.kind == "paren" -%}({{ scalar_source(value.value, indices) }})
+{%- elif value.kind == "binary" -%}
+{{ binary(value.value, scalar_source(value.value.lhs, indices), scalar_source(value.value.rhs, indices)) }}
+{%- elif value.kind == "if" -%}{{ scalar_if_tail(value.value.branches, 0, value.value.else_value, indices) }}
+{%- elif value.kind == "bounded_selection" -%}{{ expr(value) }}
+{%- elif value.kind == "call" -%}{{ call(value.value, indices) }}
+{%- elif value.kind == "bool" or value.kind == "integer" or value.kind == "real" or value.kind == "size" or value.kind == "not" -%}{{ expr(value) }}
+{%- else -%}{{ fail("unsupported-feature:embedded-c-array-expression:" ~ value.kind) }}
+{%- endif -%}
+{%- endmacro -%}
+{#- Whitespace contract, shared by every statement-emitting macro below: a
+    macro starts at column 0 of a fresh line and ends WITHOUT a trailing
+    newline. The caller owns the line break. That is what keeps a nested
+    emission from leaving a stray blank line before its closing brace — the
+    defect the emitted `.clang-format` would otherwise have to repair, which
+    would make the generated file non-idempotent under its own formatter. -#}
+{%- macro array_assignment(target, value, dimensions, depth, indices, indent, fill_value) -%}
+{%- if depth == dimensions|length -%}
+{{ pad(indent) }}{{ scalar_target(target, indices) }} = {{ scalar_source(value, indices) }};
+{%- else -%}
+{%- set iterator = "rumoca_galec_copy_" ~ depth -%}
+{%- set kernel = copy_kernel_name(target.scalar) -%}
+{%- set fill = fill_kernel_name(target.scalar) -%}
+{#- A proven-uniform literal fill collapses at the innermost dimension, before
+    the array-constructor branch below gets a chance to unroll it. A 15x15
+    `zeros(...)` reaches here as a nest of constructors and would otherwise be
+    225 stores. -#}
+{%- if fill_value is not none and depth + 1 == dimensions|length and fill|length > 0 -%}
+{{ fill_kernel_call(fill, dimensions[depth], scalar_target(target, indices), expr(fill_value), indent) }}
+{%- elif fill_value is none and value.kind == "array" -%}
+{%- for index in range(dimensions[depth]) -%}
+{% if not loop.first %}
+{% endif %}{{ array_assignment(target, value, dimensions, depth + 1, indices + [index], indent, fill_value) }}
+{%- endfor -%}
+{#- A copy, and only a copy: an array-valued reference whose residual rank is
+    exactly the loop nest this assignment builds. `scalar_reference` appends one
+    subscript per enclosing index when the reference still has rank, so equal
+    rank is the condition under which the element form would have been the bare
+    `target[…] = source[…]` the kernel performs. A rank-0 source is a broadcast
+    fill, not a copy, and keeps its loop. -#}
+{%- elif depth + 1 == dimensions|length and value.kind == "ref" and value.value.rank == dimensions|length and kernel|length > 0 -%}
+{{ copy_kernel_call(kernel, dimensions[depth], scalar_target(target, indices), scalar_reference(value.value, indices), indent) }}
+{%- else -%}
+{{ pad(indent) }}for (int32_t {{ iterator }} = INT32_C(0);
+{{ pad(indent + 1) }}{{ iterator }} < INT32_C({{ dimensions[depth] }});
+{{ pad(indent + 1) }}++{{ iterator }}) {
+{{ array_assignment(target, value, dimensions, depth + 1, indices + [iterator], indent + 1, fill_value) }}
+{{ pad(indent) }}}
+{%- endif -%}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro c_condition(value) -%}
+{%- if value.kind == "binary" -%}
+{%- if value.value.op.kind in ["lt", "gt", "le", "ge", "eq", "ne"] and (value.value.lhs.scalar.kind == "real" or value.value.rhs.scalar.kind == "real") -%}
+({{ expr(value) }})
+{%- else -%}
+{{ expr(value) }}
+{%- endif -%}
+{%- elif value.kind in ["paren", "if", "not"] -%}
+{{ expr(value) }}
+{%- else -%}
+({{ expr(value) }})
+{%- endif -%}
+{%- endmacro -%}
+{#- One `if`/`else if` arm. `attach` is true for every arm after the first:
+    those follow the previous arm's closing brace on the SAME line
+    (`} else if (…) {`), which is the brace placement the emitted
+    `.clang-format` fixes and therefore the only one that survives a format
+    run unchanged. The first arm instead opens its own line at `pad`. -#}
+{%- macro branch(value, keyword, indent, attach) -%}
+{% if attach %} {% else %}{{ pad(indent) }}{% endif %}{{ keyword }} {{ c_condition(value.condition.value) }} {
+{{ local_declarations(value.c_locals, indent + 1) }}{{ statements(value.body, indent + 1) }}{{ pad(indent) }}}
+{%- endmacro -%}
+{#- Statement traceability (SPEC_0034 GAL-032). The anchor a reviewer can act
+    on leads: the source path and a 1-based line:column, which is what an
+    editor, `grep -n`, a diff, and a DO-178C trace matrix all address. The byte
+    range trails because it is the range the compiler actually decided on and
+    is therefore the machine-checkable half of the link. The source-id hash is
+    NOT repeated per statement — it identifies a file, not a statement, and the
+    file legend at the top of this unit carries it once.
+
+    A trace comment also opens a paragraph: one blank line separates it from
+    the previous statement, and none from its own statement, so a reviewer sees
+    "anchor + code" as a unit. `loop.first` suppresses that blank at the start
+    of a block, where a leading blank line is what a formatter deletes. -#}
+{%- macro trace_text(trace) -%}
+/* Modelica trace: {% if trace.path is not none %}{{ trace_path(trace.path) }}:{{ trace.line }}:{{ trace.column }}-{{ trace.end_line }}:{{ trace.end_column }}{% else %}source-id {{ trace.source_id }}, bytes {{ trace.byte_start }}..{{ trace.byte_end }} (unresolved source){% endif %}. */
+{%- endmacro -%}
+{#- One Modelica statement can expand to hundreds of C statements — a whole-array
+    relationship, a scalarized copy-back, a lifted call — and every one of them
+    carried an identical copy of the same anchor. That is not traceability, it is
+    the same fact restated until it stops being read: on the RDD2 navigation
+    estimator a single anchor appeared 251 times in a row and the trace comments
+    were 15% of the file.
+
+    So a trace opens a RUN, not a line. It is emitted when it differs from the
+    trace the previous statement emitted, and suppressed while the run continues.
+    The invariant a reviewer relies on is unchanged and is the one to keep in
+    mind when editing this: *every emitted statement's provenance is the nearest
+    trace comment above it*. A run-collapsed form still satisfies that, because
+    the only comment a suppressed statement can reach upward to is the one that
+    opened its own run.
+
+    Two deliberate conservatisms keep that invariant true rather than merely
+    likely:
+
+    * An **untraced** statement breaks the run (the run key becomes empty). It
+      has no provenance of its own, so it must not silently extend a run whose
+      anchor does not describe it, and the next traced statement re-announces.
+    * Each emitted C function **starts a fresh run** (`trace_run_reset`). Reading
+      upward past a function's opening brace would land in a different function's
+      body, which is not provenance.
+
+    The run key is the rendered comment text, so a change of line, column, or
+    file all re-announce; and it is compared across nesting levels, which is
+    what collapses the common `if`-statement-and-its-only-body-statement pair
+    that share one Modelica span. -#}
+{%- set trace_state = namespace(previous="") -%}
+{%- macro trace_run_reset() -%}{%- set trace_state.previous = "" -%}{%- endmacro -%}
+{%- macro statements(values, indent) -%}
+{#- Whether this list has printed anything yet. `loop.first` used to answer
+    that, and stopped being able to when a statement gained the ability to print
+    nothing at all: a leading absorbed statement would make the next one think
+    it had a predecessor and open with the blank separator line a formatter
+    deletes. Each macro invocation gets its own namespace, so recursion is
+    unaffected. -#}
+{%- set emitted = namespace(any=false) -%}
+{%- for wrapped in values -%}
+{#- `wrapped.kernel` is the view's decision, already taken, about whether this
+    statement prints as a call into the shared array-kernel library. Nothing is
+    detected here: the template selects on `kind` and prints the operands the
+    view handed it. An `absorbed` statement prints NOTHING — not even its trace
+    comment, because the surviving statement of its group carries the anchor
+    and an anchor with no statement under it is not provenance. -#}
+{%- if wrapped.kernel is not none and wrapped.kernel.kind == "absorbed" -%}
+{%- else -%}
+{%- set trace_current = trace_text(wrapped.trace) if wrapped.trace is not none else "" -%}
+{%- if trace_current|length > 0 and trace_current != trace_state.previous -%}
+{%- if emitted.any %}
+{% endif %}{{ pad(indent) }}{{ trace_current }}
+{% endif -%}
+{%- set trace_state.previous = trace_current -%}
+{%- set emitted.any = true -%}
+{%- set value = wrapped.node -%}
+{#- One contraction group's surviving statement: the whole reduction, including
+    the loop and the accumulator that are gone from this scope, is the call. -#}
+{%- if wrapped.kernel is not none and wrapped.kernel.kind == "dot" -%}
+{{ pad(indent) }}{{ reference(wrapped.kernel.target) }} = rumoca_galec_dot_real(INT32_C({{ wrapped.kernel.count }}), {{ reference(wrapped.kernel.lhs) }}, {{ reference(wrapped.kernel.rhs) }});
+{#- One result row of a matrix product: the row loop is gone and the row is
+    accumulated in place. The contracted loop survives because its extent is
+    the number of source rows, and a rank-1 kernel reads one of those at a
+    time. -#}
+{%- elif wrapped.kernel is not none and wrapped.kernel.kind == "scaled_add" -%}
+{{ pad(indent) }}rumoca_galec_fill_real(INT32_C({{ wrapped.kernel.count }}), {{ reference(wrapped.kernel.target) }}, {{ expr(wrapped.kernel.zero) }});
+{{ pad(indent) }}for (int32_t {{ symbol(c_symbols, name_text(wrapped.kernel.iterator)) }} = 1; {{ symbol(c_symbols, name_text(wrapped.kernel.iterator)) }} <= {{ wrapped.kernel.extent }}; {{ symbol(c_symbols, name_text(wrapped.kernel.iterator)) }} += 1) {
+{{ pad(indent + 1) }}rumoca_galec_scaled_add_real(INT32_C({{ wrapped.kernel.count }}), {{ reference(wrapped.kernel.target) }}, {{ expr(wrapped.kernel.scale) }}, {{ reference(wrapped.kernel.source) }});
+{{ pad(indent) }}}
+{%- elif value.kind == "assignment" -%}
+{%- if value.value.value.kind == "call" and value.value.value.value.user_function -%}
+{{ user_call(value.value.value.value, value.value.target, indent) }}
+{%- elif value.value.target.rank > 0 -%}
+{%- if value.value.target.extents is none -%}{{ fail("unsupported-feature:embedded-c-array-expression:unknown-target-extents") }}
+{%- elif value.value.value.extents is none and (wrapped.kernel is none or wrapped.kernel.kind != "fill") -%}{{ fail("unsupported-feature:embedded-c-array-expression:unproven-source-extents") }}
+{%- else -%}{{ array_assignment(value.value.target, value.value.value, value.value.target.extents, 0, [], indent, wrapped.kernel.value if (wrapped.kernel is not none and wrapped.kernel.kind == "fill") else none) }}
+{%- endif -%}
+{%- else -%}
+{{ pad(indent) }}{{ reference(value.value.target) }} = {{ expr(value.value.value) }};
+{%- endif -%}
+{%- elif value.kind == "multi_assignment" -%}
+{{ user_multi_call(value.value, indent) }}
+{%- elif value.kind == "call" -%}
+{{ pad(indent) }}(void){{ call(value.value) }};
+{%- elif value.kind == "if" -%}
+{%- for item in value.value.branches %}{{ branch(item, "if" if loop.first else "else if", indent, not loop.first) }}{% endfor %}
+{%- if value.value.else_body is not none %} else {
+{{ local_declarations(value.value.else_c_locals, indent + 1) }}{{ statements(value.value.else_body, indent + 1) }}{{ pad(indent) }}}
+{%- endif -%}
+{%- elif value.kind == "for" -%}
+{%- if value.value.iterator is none -%}{{ fail("unsupported-feature:embedded-c-anonymous-for") }}
+{%- else -%}
+{%- set iterator = symbol(c_symbols, name_text(value.value.iterator)) -%}
+{%- set step = expr(value.value.step) if value.value.step is not none else "1" -%}
+{#- A Modelica range may step either direction, so the general form needs a
+    two-way guard. But when the step is a literal positive integer — which is
+    every implicit `for i in 1:n` — the direction is known here, the guard
+    collapses to the ascending test, and the whole header fits one line. That
+    is three lines saved per loop and one dead conditional the reviewer and the
+    MISRA scanner no longer have to discharge. A computed or negative step
+    keeps the explicit two-way guard, unchanged. -#}
+{%- if value.value.step is none or (value.value.step.kind == "integer" and value.value.step.value > 0) -%}
+{{ pad(indent) }}for (int32_t {{ iterator }} = {{ expr(value.value.start) }}; {{ iterator }} <= {{ expr(value.value.stop) }}; {{ iterator }} += {{ step }}) {
+{% else -%}
+{{ pad(indent) }}for (int32_t {{ iterator }} = {{ expr(value.value.start) }};
+{{ pad(indent + 1) }}(({{ step }}) > 0 ? {{ iterator }} <= {{ expr(value.value.stop) }} : {{ iterator }} >= {{ expr(value.value.stop) }});
+{{ pad(indent + 1) }}{{ iterator }} += {{ step }}) {
+{% endif -%}
+{{ local_declarations(value.value.c_locals, indent + 1) }}{{ statements(value.value.body, indent + 1) }}{{ pad(indent) }}}
+{%- endif -%}
+{%- elif value.kind == "signal" -%}
+{%- for signal in value.value -%}
+{%- if not loop.first %}
+{% endif %}{{ pad(indent) }}self->rumoca_galec_error_signal_status |= {% if signal == "INVALID_ARGUMENT" %}UINT32_C(1){% elif signal == "OVERFLOW" %}UINT32_C(2){% elif signal == "NAN" %}UINT32_C(4){% elif signal == "SOLVE_LINEAR_EQUATIONS_FAILED" %}UINT32_C(8){% elif signal == "NO_SOLUTION_FOUND" %}UINT32_C(16){% elif signal == "UNSPECIFIED_ERROR" %}UINT32_C(32){% else %}{{ fail("unsupported-feature:embedded-c-user-error-signal") }}{% endif %};
+{%- endfor %}
+{%- else -%}{{ fail_closed_unsupported_c_statement }}{%- endif -%}
+{{ "\n" }}
+{%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+{%- macro c_type(kind) -%}
+{%- if kind == "real" -%}float{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
+{%- endmacro -%}
+{#- Unlike the statement macros this one emits WHOLE lines and closes with a
+    blank separator line, because a C declaration group is a paragraph: the
+    reviewer reads "here is the working storage", then the algorithm. It starts
+    at column 0 like everything else, so a caller that has just closed a brace
+    line needs no adjustment. -#}
+{%- macro local_declarations(values, indent) -%}
+{%- for declaration in values -%}
+{#- `(void)&x;` is emitted ONLY where the projection says the body never reads
+    the declaration. It is warning suppression, not algorithm: every one of them
+    is an executable statement a structural-coverage obligation must account
+    for, so a declaration that the body reads — where the read is itself the use
+    — gets none. Which is which is decided in the view
+    (`TypedLocalView::needs_unused_marker`), which fails closed: an unproven
+    read keeps its marker, because a redundant marker is noise and a missing one
+    is a failed build under `-Werror`.
+
+    It gets its own line. It used to ride on the declaration's, which put two
+    statements on one line and made `.clang-format`'s no-replacements assertion
+    false — and that file is emitted beside the code and checksummed by the
+    manifest. -#}
+{{ pad(indent) }}{{ c_type(declaration.ty.value.kind) }} {{ symbol(c_symbols, name_text(declaration.name)) }}{% for dimension in declaration.dimensions %}{% if dimension.kind == "expr" and dimension.value.kind == "integer" %}[{{ dimension.value.value }}]{% else %}{{ fail("unsupported-feature:embedded-c-local-array-dimension") }}{% endif %}{% endfor %};
+{% if declaration.needs_unused_marker %}{{ pad(indent) }}(void)&{{ symbol(c_symbols, name_text(declaration.name)) }};
+{% endif %}{% endfor -%}
+{%- if values|length > 0 %}
+{% endif -%}
+{%- endmacro -%}
+{#- Only the inputs are still formal parameters: an output is a slot in the
+    callee's own context region, which the caller reads back. Const-correctness
+    is therefore untouched by the move — the qualifier still says exactly what
+    it said, on exactly the operands it said it about, and no operand became
+    reachable through a mutable aggregate that was not already. -#}
+{%- macro function_parameter(value) -%}
+{%- if value.direction.kind == "input" -%}
+{# C99 does not permit implicit conversion from pointer-to-array-of-T to
+   pointer-to-array-of-const-T; rank > 1 therefore stays unqualified. Checked
+   Algorithm Code construction still proves that input parameters are not
+   written. A cast would obscure the language constraint and is prohibited. #}
+{%- if value.decl.dimensions|length == 1 %}const {% endif -%}{{ c_type(value.decl.ty.value.kind) }} {{ symbol(c_symbols, name_text(value.decl.name)) }}{% for dimension in value.decl.dimensions %}{% if dimension.kind == "expr" and dimension.value.kind == "integer" %}[{{ dimension.value.value }}]{% else %}{{ fail("unsupported-feature:embedded-c-function-dimension") }}{% endif %}{% endfor %}
+{%- else -%}{{ fail("unsupported-feature:embedded-c-function-parameter-direction") }}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro function_signature(value) -%}
+static void {{ symbol(c_symbols, name_text(value.name)) }}(
+    {{ c_model }}State *self{% for parameter in value.input_parameters %},
+    {{ function_parameter(parameter) }}{% endfor %})
+{%- endmacro -%}
+{#- The alias the body works through. `ctx` is THIS owner's region inside the
+    unit's private working memory, and nothing else: an owner never holds a
+    pointer into another owner's region across a call, which is what makes the
+    overlay observable only through this one declaration. Declaring it once
+    means the body reads `ctx->x` rather than repeating the whole path at every
+    use. -#}
+{%- macro region_alias(region, indent) -%}
+{%- set name = region_name(region) %}
+{{ pad(indent) }}{{ c_model }}Scratch_{{ name }} *const ctx = &{{ region_path(region.group, name) }};
+{%- endmacro -%}
+{#- Every emitted C function is headed by the GALEC declaration it implements
+    and by that declaration's source anchor. This is the unit a reviewer reads
+    first, and without it the only thing naming the origin of a 700-line
+    function is the identifier — which the symbol policy is free to rename. -#}
+{%- macro user_function(value, visibility) -%}
+{{- trace_run_reset() -}}
+/* GALEC {{ visibility }} {% if value.kind.kind == "stateless" %}function{% else %}method{% endif %} `{{ name_text(value.name) }}`.
+{% if value.trace is not none %} * Modelica: {% if value.trace.path is not none %}{{ trace_path(value.trace.path) }}:{{ value.trace.line }}:{{ value.trace.column }}-{{ value.trace.end_line }}:{{ value.trace.end_column }}{% else %}source-id {{ value.trace.source_id }}, bytes {{ value.trace.byte_start }}..{{ value.trace.byte_end }} (unresolved source){% endif %}
+{% endif %} * Outputs are left in this owner's context region; the caller reads them back
+ * after the call returns. Only inputs are formal parameters. */
+{{ function_signature(value) }} {
+{# Unused-parameter suppression is bookkeeping, not algorithm, and each one is
+    an executable statement a structural-coverage obligation has to account for.
+    So only the parameters the projection proves the body never mentions get one
+    — checked construction proves an input is never written, so a mention is a
+    read and needs no suppression at all.
+
+    `self` keeps its suppression unconditionally. Whether a body reaches `self`
+    is not a GALEC-level fact: this target passes `self` to every user call, to
+    the saturation helpers, and by address to every Real comparison, so the
+    answer depends on target spellings the projection deliberately does not
+    know. One statement per emitted function is the honest, fail-closed price.
+
+    ONE PER LINE. They used to wrap six to a line, because there were 63 of them
+    at the head of `step` and a paragraph read better than a column. There are
+    now at most a handful, and `.clang-format` — which this target emits beside
+    the code and the manifest checksums — asserts that `clang-format --dry-run
+    -Werror` reports no replacements. A formatter would split these, so packing
+    them made that assertion false. The claim is worth more than the lines. #}    (void)self;
+{%- for parameter in value.input_parameters %}{% if parameter.needs_unused_marker %}
+{{ pad(1) }}(void){{ symbol(c_symbols, name_text(parameter.decl.name)) }};{% endif %}{% endfor %}
+{%- if value.uses_scratch %}{{ region_alias(value.scratch, 1) }}{% endif %}
+{{ local_declarations(value.c_locals, 1) }}{{ statements(value.statements, 1) }}}
+{%- endmacro -%}
+{#- Section banner. A generated translation unit has no author to group it,
+    so the grouping has to be emitted: helpers, saturation boundaries,
+    declarations, definitions, entry points. Each banner also carries the one
+    blank line that separates it from the previous section, which is why every
+    top-level chunk below starts with `\n\n` and ends without a newline — the
+    invariant that makes the file already formatter-clean. -#}
+{%- macro banner(title) %}
+
+/* ---------------------------------------------------------------------------
+ * {{ title }}
+ * ------------------------------------------------------------------------ */
+{%- endmacro -%}
+{%- set protected_functions = algorithm_code.package.block.protected_functions -%}
+{%- set public_functions = algorithm_code.package.block.public_functions -%}
+{#- The block's functions and its three eFMI entry points are rendered HERE and
+    printed unchanged at the bottom of the file. Nothing is emitted at this
+    point; the only thing this ordering buys is that the copy-kernel section can
+    be conditioned on the calls the body actually contains.
+
+    That is worth the indirection. Dead code in a flight translation unit is a
+    review liability — a boolean kernel in a unit that copies no boolean array is
+    something a reviewer must read and justify for no reason — and the obvious
+    alternative, a separate "which kernels would this block need" analysis, is a
+    second decision procedure that can disagree with the emitter. Deriving the
+    set from the very text that will be printed cannot disagree with it.
+
+    The capture is also why every statement macro is a macro rather than inline
+    template body, and why `trace_run_reset` exists: the body is rendered exactly
+    once, in file order, so the trace-run state it threads is the state a reader
+    of the printed file sees. -#}
+{%- set body_text -%}
+{%- if protected_functions|length + public_functions|length > 0 %}
+{{- banner("Block function declarations") }}
+{% for function in protected_functions %}
+{{ function_signature(function) }};
+{%- endfor %}
+{%- for function in public_functions %}
+{{ function_signature(function) }};
+{%- endfor %}
+{{- banner("Block function definitions") }}
+{%- for function in protected_functions %}
+
+{{ user_function(function, "protected") }}
+{%- endfor %}
+{%- for function in public_functions %}
+
+{{ user_function(function, "public") }}
+{%- endfor %}
+{%- endif %}
+{{- banner("eFMI methods — the only entry points into this block (GAL-017)") }}
+{%- set startup = algorithm_code.package.block.startup -%}
+{%- set recalibrate = algorithm_code.package.block.recalibrate -%}
+{%- set do_step = algorithm_code.package.block.do_step %}
+
+/* eFMI `Startup`: one-time initialization of caller-allocated block state. */
+void {{ c_model }}_startup({{ c_model }}State *self) {
+    (void)self;
+{%- if startup.uses_scratch %}{{ region_alias(startup.scratch, 1) }}{% endif %}
+    self->rumoca_galec_error_signal_status = UINT32_C(0);
+{{ local_declarations(startup.c_locals, 1) }}{{ trace_run_reset() }}{{ statements(startup.statements, 1) }}{{ limit_self_boundary(1, "startup") }}}
+
+/* eFMI `Recalibrate`: re-derive dependent parameters after tunables change. */
+void {{ c_model }}_recalibrate({{ c_model }}State *self) {
+    (void)self;
+{%- if recalibrate.uses_scratch %}{{ region_alias(recalibrate.scratch, 1) }}{% endif %}
+    self->rumoca_galec_error_signal_status = UINT32_C(0);
+{{ limit_self_boundary(1, "all") }}{{ local_declarations(recalibrate.c_locals, 1) }}{{ trace_run_reset() }}{{ statements(recalibrate.statements, 1) }}{{ limit_return_boundary(recalibrate, 1, "all") }}}
+
+/* eFMI `DoStep`: one control cycle. */
+void {{ c_model }}_dostep({{ c_model }}State *self) {
+    (void)self;
+{%- if do_step.uses_scratch %}{{ region_alias(do_step.scratch, 1) }}{% endif %}
+    self->rumoca_galec_error_signal_status = UINT32_C(0);
+{{ limit_self_boundary(1, "all") }}{{ local_declarations(do_step.c_locals, 1) }}{{ trace_run_reset() }}{{ statements(do_step.statements, 1) }}{{ limit_return_boundary(do_step, 1, "all") }}}
+{%- endset -%}
+{% block conformance %}/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
+ * GALEC-derived embedded C export (SPEC_0034 GAL-024).
+ * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
+ * MISRA compliance and DO-178C compliance are not claimed. */{% endblock %}
 #include "{{ model_name }}.h"
 
-#include <math.h>
-#include <string.h> /* memcpy, for whole-array state copies */
+#include "rumoca_galec_kernels.h"
 
-/* A model uses only some of the fixed helper prelude below. `static inline`
- * alone is not enough to keep the rest quiet under -Wall -Werror: clang's
- * -Wunused-function flags an unused `static inline` (gcc does not), so the
- * helpers are marked maybe-unused. The macro is a no-op on compilers without
- * the GNU attribute. */
-#if defined(__GNUC__) || defined(__clang__)
-#  define RUMOCA_MAYBE_UNUSED __attribute__((unused))
-#else
-#  define RUMOCA_MAYBE_UNUSED
+/* Every whole-array move, fill and inner product below is a call into the
+ * shared kernel library emitted beside this file. That library is
+ * model-independent and identical for every block this compiler build
+ * generates, so an application linking several generated blocks carries one
+ * copy of it. This check makes a mismatched copy a compile error rather than a
+ * silent link: the constant is a hash of the kernel sources' content. */
+#if RUMOCA_GALEC_KERNELS_VERSION != UINT32_C(0x{{ "%08x" | format(galec_kernels_version) }})
+#error "this generated source and rumoca_galec_kernels.h come from different rumoca builds"
 #endif
 
-/* GALEC §3.2.6 builtins without a direct C99 counterpart. The names are a
- * fixed contract with the typed C printer (compile-checked in CI). min/max use
- * the GALEC relational definition (`u1 < u2` selects), NOT fmin/fmax: a false
- * qNaN comparison must take the else operand (eFMI traps T9/T14). */
-RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_sign(double x) {
-    return (double)((x > 0.0) - (x < 0.0));
-}
-RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_min(double u1, double u2) {
-    return u1 < u2 ? u1 : u2;
-}
-RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_max(double u1, double u2) {
-    return u1 > u2 ? u1 : u2;
-}
-RUMOCA_MAYBE_UNUSED static inline int32_t rumoca_ir_galec_imin(int32_t u1, int32_t u2) {
-    return u1 < u2 ? u1 : u2;
-}
-RUMOCA_MAYBE_UNUSED static inline int32_t rumoca_ir_galec_imax(int32_t u1, int32_t u2) {
-    return u1 > u2 ? u1 : u2;
-}
+#include <math.h>
+{%- if algorithm_code.traces.files|length > 0 %}
 
-void {{ function_prefix }}_startup({{ struct_name }} *self) {
-    (void)self;
-{%- for statement in methods.startup %}
-{%- for line in statement.c_lines %}
-    {{ line }}
+/* ---------------------------------------------------------------------------
+ * Modelica sources traced by this translation unit (SPEC_0034 GAL-032)
+ *
+ * Every `Modelica trace:` comment below names one of these files with a
+ * 1-based line:column and the byte range the compiler anchored the statement
+ * to.
+ *
+{%- if trace_root is not none %}
+ * Paths are relative to the common source root of the files listed here, so
+ * they are identical on every checkout: this file carries no build-machine
+ * path and is byte-reproducible across machines.
+{%- else %}
+ * These files share no common directory, so their paths are absolute and this
+ * file is NOT byte-reproducible across machines.
+{%- endif %}
+ * ---------------------------------------------------------------------------
+{%- for file in algorithm_code.traces.files %}
+ *   {{ file.path | replace("*/", "* /") | replace("/*", "/ *") }}
 {%- endfor %}
-{%- endfor %}
-}
+ * ------------------------------------------------------------------------ */
+{%- endif %}
+{%- set uses = algorithm_code.package.block.semantic_uses -%}
+{%- if uses.bounded_selection or uses.sign or uses.real_min or uses.real_max or uses.compare_lt or uses.compare_gt or uses.compare_le or uses.compare_ge or uses.compare_eq or uses.compare_ne or uses.integer_min or uses.integer_max or uses.division_towards_zero %}
 
-void {{ function_prefix }}_recalibrate({{ struct_name }} *self) {
-    (void)self;
-{%- for statement in methods.recalibrate %}
-{%- for line in statement.c_lines %}
-    {{ line }}
-{%- endfor %}
-{%- endfor %}
-}
+/* ---------------------------------------------------------------------------
+ * GALEC semantics that C99 does not already provide
+ *
+ * Real `min`/`max` select by a relational comparison; C99 `fminf`/`fmaxf`
+ * instead discard one qNaN operand, so they are not semantic substitutes.
+ * Relational comparisons on Real signal NAN and evaluate to false when either
+ * operand is NaN — in particular C's native `!=` result for NaN is not
+ * GALEC-conformant. Every helper below evaluates each argument exactly once.
+ * ------------------------------------------------------------------------ */
+{%- endif %}
+{%- if uses.bounded_selection %}
 
-void {{ function_prefix }}_dostep({{ struct_name }} *self) {
-    (void)self;
-{%- for statement in methods.do_step %}
-{%- for line in statement.c_lines %}
-    {{ line }}
-{%- endfor %}
-{%- endfor %}
+/* Clamp a 1-based GALEC subscript into a 0-based C index that is in range for
+ * `extent`; an out-of-range subscript selects the last element. */
+static inline int32_t rumoca_galec_bounded_index(int32_t value, int32_t extent) {
+    int32_t result = extent - INT32_C(1);
+    if ((value >= INT32_C(1)) && (value <= extent)) {
+        result = value - INT32_C(1);
+    }
+    return result;
 }
+{%- endif %}
+{%- if uses.sign %}
+
+/* GALEC `sign`: -1, 0, or +1. */
+static inline float rumoca_galec_sign(float value) {
+    float result = 0.0f;
+    if (value > 0.0f) {
+        result = 1.0f;
+    } else if (value < 0.0f) {
+        result = -1.0f;
+    } else {
+        result = 0.0f;
+    }
+    return result;
+}
+{%- endif %}
+{%- if uses.real_min %}
+
+/* GALEC Real `min`. */
+static inline float rumoca_galec_min(float u1, float u2) {
+    float result = u2;
+    if (u1 < u2) {
+        result = u1;
+    }
+    return result;
+}
+{%- endif %}
+{%- if uses.real_max %}
+
+/* GALEC Real `max`. */
+static inline float rumoca_galec_max(float u1, float u2) {
+    float result = u2;
+    if (u1 > u2) {
+        result = u1;
+    }
+    return result;
+}
+{%- endif %}
+{%- if uses.compare_lt %}
+
+/* GALEC Real `<`; signals NAN and yields false on a NaN operand. */
+static inline bool rumoca_galec_compare_lt(uint32_t *status, float lhs, float rhs) {
+    bool result = false;
+    if ((isnan(lhs) != 0) || (isnan(rhs) != 0)) {
+        *status |= UINT32_C(4);
+    } else {
+        result = lhs < rhs;
+    }
+    return result;
+}
+{%- endif %}
+{%- if uses.compare_gt %}
+
+/* GALEC Real `>`; signals NAN and yields false on a NaN operand. */
+static inline bool rumoca_galec_compare_gt(uint32_t *status, float lhs, float rhs) {
+    bool result = false;
+    if ((isnan(lhs) != 0) || (isnan(rhs) != 0)) {
+        *status |= UINT32_C(4);
+    } else {
+        result = lhs > rhs;
+    }
+    return result;
+}
+{%- endif %}
+{%- if uses.compare_le %}
+
+/* GALEC Real `<=`; signals NAN and yields false on a NaN operand. */
+static inline bool rumoca_galec_compare_le(uint32_t *status, float lhs, float rhs) {
+    bool result = false;
+    if ((isnan(lhs) != 0) || (isnan(rhs) != 0)) {
+        *status |= UINT32_C(4);
+    } else {
+        result = lhs <= rhs;
+    }
+    return result;
+}
+{%- endif %}
+{%- if uses.compare_ge %}
+
+/* GALEC Real `>=`; signals NAN and yields false on a NaN operand. */
+static inline bool rumoca_galec_compare_ge(uint32_t *status, float lhs, float rhs) {
+    bool result = false;
+    if ((isnan(lhs) != 0) || (isnan(rhs) != 0)) {
+        *status |= UINT32_C(4);
+    } else {
+        result = lhs >= rhs;
+    }
+    return result;
+}
+{%- endif %}
+{%- if uses.compare_eq %}
+
+/* GALEC Real `==`; signals NAN and yields false on a NaN operand. */
+static inline bool rumoca_galec_compare_eq(uint32_t *status, float lhs, float rhs) {
+    bool result = false;
+    if ((isnan(lhs) != 0) || (isnan(rhs) != 0)) {
+        *status |= UINT32_C(4);
+    } else {
+        result = lhs == rhs;
+    }
+    return result;
+}
+{%- endif %}
+{%- if uses.compare_ne %}
+
+/* GALEC Real `<>`; signals NAN and yields false on a NaN operand. */
+static inline bool rumoca_galec_compare_ne(uint32_t *status, float lhs, float rhs) {
+    bool result = false;
+    if ((isnan(lhs) != 0) || (isnan(rhs) != 0)) {
+        *status |= UINT32_C(4);
+    } else {
+        result = lhs != rhs;
+    }
+    return result;
+}
+{%- endif %}
+{%- if uses.integer_min %}
+
+/* GALEC Integer `min`. */
+static inline int32_t rumoca_galec_imin(int32_t lhs, int32_t rhs) {
+    int32_t result = rhs;
+    if (lhs < rhs) {
+        result = lhs;
+    }
+    return result;
+}
+{%- endif %}
+{%- if uses.integer_max %}
+
+/* GALEC Integer `max`. */
+static inline int32_t rumoca_galec_imax(int32_t lhs, int32_t rhs) {
+    int32_t result = rhs;
+    if (lhs > rhs) {
+        result = lhs;
+    }
+    return result;
+}
+{%- endif %}
+{%- if uses.division_towards_zero %}
+
+/* Checked construction proves a nonzero divisor and excludes INT32_MIN / -1
+ * before this helper can be emitted (SPEC_0034 GAL-028/GAL-030). */
+static inline int32_t rumoca_galec_division_towards_zero(int32_t lhs, int32_t rhs) {
+    return lhs / rhs;
+}
+{%- endif %}
+{%- if limited_ordinals("all")|length > 0 %}
+{{- banner("Declared-range saturation at method boundaries (SPEC_0042 T3)") }}
+
+/* Implicit `limit self`: the declared min/max ranges saturate at every method
+ * boundary — on entry to Recalibrate and DoStep and on return from all three
+ * methods (Startup: return only). Saturation raises no signal and leaves a
+ * qNaN untouched, matching `rumoca-eval-galec::limit_all`. */
+static void rumoca_galec_limit_self({{ c_model }}State *self) {
+{{- limiter_body("all") }}
+}
+{%- endif %}
+{%- if limited_ordinals("startup")|length > 0 and limiter_name("startup") != "rumoca_galec_limit_self" %}
+
+/* The Startup return boundary. Startup runs on caller-allocated state that
+ * nothing has written yet, so it saturates only the declarations Startup
+ * itself assigned — the same slots `rumoca-eval-galec::limit_all` treats as
+ * initialized there. Reading any other field would be an indeterminate read,
+ * not a saturation. */
+static void rumoca_galec_limit_startup({{ c_model }}State *self) {
+{{- limiter_body("startup") }}
+}
+{%- endif %}
+{#- The private working memory. Emitted before the bodies that alias it, and
+    only when a printed body actually names it — the same "derive the set from
+    the very text that will be printed" test the copy kernels above use, so a
+    block whose regions are all dead gets no object rather than an object the
+    strict profile then rejects as unused. -#}
+{%- if scratch_layout.groups|length > 0 and "rumoca_galec_scratch." in body_text %}
+{{- banner("Private working memory — one instance per program (GAL-024)") }}
+
+/* The array intermediates the generated bodies work in, plus every generated
+ * function's outputs. This is NOT interface: no caller binds to a function's
+ * intermediate row buffer, so it is file-scope here rather than a member of
+ * {{ c_model }}State, out of the header, and out of any manifest describing the
+ * block's data.
+ *
+ * Regions are OVERLAID. Each union below is one group, and two regions share a
+ * group only where the checked projection has established that their owners can
+ * never be active at the same time: a caller's call depth is strictly below its
+ * callee's, so equal-depth owners lie on no common call chain, transitively or
+ * otherwise. That decision is taken in the projection — this file prints it.
+ * Nothing keeps a pointer into another owner's region across a call: `ctx` is
+ * declared once per body and names that body's own region.
+ *
+ * {{ scratch_layout.summary }}
+ *
+ * ONE INSTANCE PER PROGRAM: every {{ c_model }}State shares this one object. */
+{%- for group in scratch_layout.groups %}
+{%- for region in group.regions %}
+typedef struct {{ c_model }}Scratch_{{ region_name(region) }}Tag {
+{%- for slot in region.slots %}
+    {{ c_type(slot.ty.value.kind) }} {{ symbol(c_symbols, slot.name.value[0]) }}{{ region_dimensions(slot.dimensions) }};
+{%- endfor %}
+} {{ c_model }}Scratch_{{ region_name(region) }};
+{% endfor %}
+{%- endfor %}
+{%- for group in scratch_layout.groups %}
+/* Overlay group {{ group.ordinal }}. */
+typedef union {{ c_model }}ScratchGroup{{ group.ordinal }}Tag {
+{%- for region in group.regions %}
+    {{ c_model }}Scratch_{{ region_name(region) }} {{ region_name(region) }};
+{%- endfor %}
+} {{ c_model }}ScratchGroup{{ group.ordinal }};
+{% endfor %}
+typedef struct {{ c_model }}ScratchTag {
+{%- for group in scratch_layout.groups %}
+    {{ c_model }}ScratchGroup{{ group.ordinal }} rumoca_galec_g{{ group.ordinal }};
+{%- endfor %}
+} {{ c_model }}Scratch;
+
+static {{ c_model }}Scratch rumoca_galec_scratch;
+{%- endif %}
+{{- body_text }}
