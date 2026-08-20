@@ -34,11 +34,11 @@ fn index_dependency_source_root_with_cache(
 }
 
 fn strict_model_closure(session: &mut Session, model_name: &str) -> ReachableModelClosure {
-    let (resolved, _) = session
-        .build_resolved_for_strict_compile_with_diagnostics()
+    let (plan, _) = session
+        .build_resolution_plan_for_strict_compile()
         .expect("strict compile tree should build");
     session.reachable_model_closure_query(
-        &resolved.0,
+        plan.tree(),
         ResolveBuildMode::StrictCompileRecovery,
         model_name,
     )
@@ -186,8 +186,8 @@ fn warm_source_root_restore_keeps_reachable_model_closure_warm_for_unchanged_tar
         "warm reopen should reuse the outer parsed source-root snapshot",
     );
 
-    let (resolved, _) = second
-        .build_resolved_for_strict_compile_with_diagnostics()
+    let (plan, _) = second
+        .build_resolution_plan_for_strict_compile()
         .expect("strict compile tree should build after warm reopen");
     second
         .query_state
@@ -202,7 +202,7 @@ fn warm_source_root_restore_keeps_reachable_model_closure_warm_for_unchanged_tar
         );
 
     let first_closure = second.reachable_model_closure_query(
-        &resolved.0,
+        plan.tree(),
         ResolveBuildMode::StrictCompileRecovery,
         "Lib.Derived",
     );
@@ -234,7 +234,7 @@ fn warm_source_root_restore_keeps_reachable_model_closure_warm_for_unchanged_tar
     };
 
     let warm = second.reachable_model_closure_query(
-        &resolved.0,
+        plan.tree(),
         ResolveBuildMode::StrictCompileRecovery,
         "Lib.Derived",
     );
@@ -243,4 +243,162 @@ fn warm_source_root_restore_keeps_reachable_model_closure_warm_for_unchanged_tar
         vec!["SENTINEL".to_string()],
         "unchanged targets should keep the reachable-model closure warm after warm reopen"
     );
+}
+
+#[test]
+fn reachable_model_closure_follows_redeclared_package_members() {
+    // MLS §7.3: a lookup written against a replaceable package slot cannot be
+    // bound by Resolve, because the class occupying the slot is chosen by a
+    // redeclaration. Strict pruning must still keep every member such a lookup
+    // can select, otherwise the pruned tree loses the nested function and
+    // record the instantiated model needs.
+    let mut session = Session::default();
+    session
+        .add_document(
+            "redeclared_package.mo",
+            r#"
+package P
+  partial package PartialRotation
+    replaceable record Orientation
+      Real interfaceMarker[0];
+    end Orientation;
+
+    replaceable function first
+      input Orientation element;
+      output Real y;
+    end first;
+  end PartialRotation;
+
+  package Quaternion
+    extends PartialRotation;
+
+    redeclare record extends Orientation
+      Real q[4];
+    end Orientation;
+
+    redeclare function first
+      input Orientation element;
+      output Real y;
+    algorithm
+      y := element.q[1];
+    end first;
+  end Quaternion;
+
+  package Generic
+    replaceable package Rotation = Quaternion
+      constrainedby PartialRotation;
+
+    record Element
+      Real position[3];
+      Rotation.Orientation rotation;
+    end Element;
+
+    function product
+      input Element left;
+      output Real y;
+    algorithm
+      y := Rotation.first(left.rotation);
+    end product;
+  end Generic;
+
+  package Concrete
+    extends Generic(redeclare package Rotation = Quaternion);
+  end Concrete;
+
+  model Probe
+    parameter Concrete.Element left;
+    Real x(start = 0.0, fixed = true);
+  equation
+    der(x) = Concrete.product(left);
+  end Probe;
+end P;
+"#,
+        )
+        .expect("redeclared package fixture should parse");
+
+    let closure = strict_model_closure(&mut session, "P.Probe");
+
+    for expected in [
+        "P.Quaternion.first",
+        "P.PartialRotation.first",
+        "P.Quaternion.Orientation",
+        "P.PartialRotation.Orientation",
+    ] {
+        assert!(
+            closure
+                .reachable_classes
+                .iter()
+                .any(|name| name == expected),
+            "strict closure must retain `{expected}` reached through the redeclared package: {:?}",
+            closure.reachable_classes
+        );
+    }
+}
+
+#[test]
+fn strict_model_closure_retains_component_redeclare_function_value() {
+    // MLS §7.2: the function substituted by a component modifier is looked
+    // up where the modifier occurs. Its exact source-ordered identity must keep
+    // the function definition in the pruned strict-target Resolve proof.
+    let mut session = Session::default();
+    session
+        .add_document(
+            "redeclared_function.mo",
+            r#"
+package Shapes
+  partial function Characteristic
+    input Real length = 1;
+    output Real x;
+  end Characteristic;
+
+  function defaultCharacteristic
+    extends Characteristic;
+  algorithm
+    x := 0;
+  end defaultCharacteristic;
+
+  function rectangle
+    extends Characteristic;
+  algorithm
+    x := length;
+  end rectangle;
+
+  partial model PartialSurface
+    replaceable function surfaceCharacteristic = defaultCharacteristic
+      constrainedby Characteristic;
+  end PartialSurface;
+
+  model Surface
+    extends PartialSurface;
+  end Surface;
+
+  model Probe
+    Surface surface(
+      redeclare function surfaceCharacteristic = rectangle(length = 2));
+  end Probe;
+end Shapes;
+"#,
+        )
+        .expect("redeclared function fixture should parse");
+
+    let closure = strict_model_closure(&mut session, "Shapes.Probe");
+    assert!(
+        closure
+            .reachable_classes
+            .iter()
+            .any(|name| name == "Shapes.rectangle"),
+        "strict closure must retain the exact redeclared function: {:?}",
+        closure.reachable_classes
+    );
+    assert!(
+        closure
+            .reachable_classes
+            .iter()
+            .any(|name| name == "Shapes.PartialSurface.surfaceCharacteristic"),
+        "strict closure must retain the inherited redeclare slot: {:?}",
+        closure.reachable_classes
+    );
+    session
+        .resolve_strict_target("Shapes.Probe")
+        .unwrap_or_else(|_| panic!("pruned strict Resolve must retain the redeclared function"));
 }

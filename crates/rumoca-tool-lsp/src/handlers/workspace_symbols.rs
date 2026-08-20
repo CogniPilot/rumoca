@@ -2,17 +2,28 @@
 
 use std::path::Path;
 
-use lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Url};
+use lsp_types::{Location, Range, SymbolInformation, SymbolKind, Url};
 use rumoca_compile::{
     compile::WorkspaceSymbol,
     compile::WorkspaceSymbolKind,
     parsing::{ast, qualify_stored_definition_class_name},
 };
 
-use crate::helpers::location_to_range;
+use crate::helpers::{location_to_range_in_optional_source, location_to_range_in_source};
 
 /// Handle workspace symbols request - fuzzy search across all documents.
-pub fn handle_workspace_symbols(entries: &[WorkspaceSymbol]) -> Vec<SymbolInformation> {
+///
+/// `source_for_uri` resolves the text of each symbol's *own* file; without it
+/// the emitted ranges would be lexer character columns rather than the UTF-16
+/// columns LSP requires. A symbol whose file text is unavailable still gets a
+/// best-effort range from its character columns.
+pub fn handle_workspace_symbols<F>(
+    entries: &[WorkspaceSymbol],
+    mut source_for_uri: F,
+) -> Vec<SymbolInformation>
+where
+    F: FnMut(&str) -> Option<std::sync::Arc<str>>,
+{
     let mut symbols = Vec::with_capacity(entries.len());
 
     for symbol in entries {
@@ -20,7 +31,8 @@ pub fn handle_workspace_symbols(entries: &[WorkspaceSymbol]) -> Vec<SymbolInform
             continue;
         };
         let kind = match_symbol_kind(&symbol.kind);
-        let range = location_to_range(&symbol.location);
+        let source = source_for_uri(&symbol.uri);
+        let range = location_to_range_in_optional_source(source.as_deref(), &symbol.location);
         symbols.push(new_symbol_information(
             symbol.name.clone(),
             kind,
@@ -95,7 +107,10 @@ fn new_symbol_information(
 }
 
 /// Collect all class names and their ranges for code lens / diagnostics.
-pub fn collect_model_names(ast: &ast::StoredDefinition) -> Vec<(String, Range)> {
+///
+/// `source` is the text `ast` was parsed from, so the emitted ranges are UTF-16
+/// columns rather than lexer character columns.
+pub fn collect_model_names(ast: &ast::StoredDefinition, source: &str) -> Vec<(String, Range)> {
     let mut names = Vec::new();
     for (name, class) in &ast.classes {
         if matches!(
@@ -104,16 +119,7 @@ pub fn collect_model_names(ast: &ast::StoredDefinition) -> Vec<(String, Range)> 
                 | rumoca_compile::parsing::ir_core::ClassType::Block
                 | rumoca_compile::parsing::ir_core::ClassType::Class
         ) {
-            let range = Range {
-                start: Position::new(
-                    class.name.location.start_line.saturating_sub(1),
-                    class.name.location.start_column.saturating_sub(1),
-                ),
-                end: Position::new(
-                    class.name.location.end_line.saturating_sub(1),
-                    class.name.location.end_column.saturating_sub(1),
-                ),
-            };
+            let range = location_to_range_in_source(source, &class.name.location);
             let model_name = qualify_stored_definition_class_name(ast, name);
             names.push((model_name, range));
         }

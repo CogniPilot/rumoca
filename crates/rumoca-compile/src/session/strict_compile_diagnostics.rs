@@ -1,9 +1,6 @@
 use super::{DaePhaseResult, Document, FailedPhase, ModelFailureDiagnostic, PhaseResult};
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{
-    Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, PrimaryLabel,
-    SourceMap,
-};
+use rumoca_core::{Diagnostic as CommonDiagnostic, Label, PrimaryLabel, SourceMap};
 use rumoca_core::{SourceId, Span};
 use rumoca_ir_ast as ast;
 use std::collections::HashMap;
@@ -30,6 +27,8 @@ pub(super) fn phase_result_to_failures(
                 missing_inners.join(", ")
             ),
             primary_label: missing_inner_primary_label(tree, model_name, missing_spans),
+            secondary_labels: missing_inner_secondary_labels(missing_spans),
+            notes: Vec::new(),
         }],
         PhaseResult::Failed {
             phase,
@@ -59,14 +58,106 @@ pub(super) fn dae_phase_result_to_failures(
                 missing_inners.join(", ")
             ),
             primary_label: missing_inner_primary_label(tree, model_name, missing_spans),
+            secondary_labels: missing_inner_secondary_labels(missing_spans),
+            notes: Vec::new(),
         }],
         DaePhaseResult::Failed {
             phase,
             error,
             error_code,
             diagnostics,
+            ..
         } => failed_phase_failures(tree, model_name, *phase, error, error_code, diagnostics),
     }
+}
+
+/// Structured outcome of a failed strict-reachable-with-recovery compile.
+///
+/// The string `summary` is what the `Result<_, String>` API returns; the
+/// remaining fields carry the machine-readable facts that the string throws
+/// away — which phase actually failed, the SPEC_0008 error code (normalized to
+/// its bare form, e.g. `ED001` rather than `rumoca::todae::ED001`), and the
+/// balance breakdown when the failure is an unbalanced model.
+///
+/// `phase: None` means the compile never reached a model phase at all: parse or
+/// resolve failed first. Callers must not attribute those failures to ToDae.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StrictCompileFailure {
+    pub summary: String,
+    pub phase: Option<FailedPhase>,
+    pub error_code: Option<String>,
+    pub balance_detail: Option<Box<rumoca_phase_dae::balance::BalanceDetail>>,
+    pub failures: Vec<ModelFailureDiagnostic>,
+}
+
+impl StrictCompileFailure {
+    /// Failure that never reached a model phase (parse/resolve stage).
+    pub(super) fn pre_phase(summary: String, failures: Vec<ModelFailureDiagnostic>) -> Self {
+        let error_code = first_error_code(&failures);
+        Self {
+            summary,
+            phase: None,
+            error_code,
+            balance_detail: None,
+            failures,
+        }
+    }
+
+    /// Failure attributed to the requested model's DAE phase result.
+    pub(super) fn from_dae_phase_result(
+        summary: String,
+        result: &DaePhaseResult,
+        failures: Vec<ModelFailureDiagnostic>,
+    ) -> Self {
+        match result {
+            DaePhaseResult::Failed {
+                phase,
+                error_code,
+                balance_detail,
+                ..
+            } => Self {
+                summary,
+                phase: Some(*phase),
+                error_code: error_code.as_deref().map(short_error_code),
+                balance_detail: balance_detail.clone(),
+                failures,
+            },
+            // A missing `inner` is diagnosed by instantiation, so the model did
+            // reach a model phase. Reporting `phase: None` here would render as
+            // `Resolve` and mislabel the failure.
+            DaePhaseResult::NeedsInner { .. } => Self {
+                summary,
+                phase: Some(FailedPhase::Instantiate),
+                error_code: first_error_code(&failures),
+                balance_detail: None,
+                failures,
+            },
+            DaePhaseResult::Success(_) => Self::pre_phase(summary, failures),
+        }
+    }
+
+    /// The phase name used by MSL/worker artifacts. Falls back to `Resolve`
+    /// because a `None` phase means the compile failed before instantiation.
+    pub fn phase_name(&self) -> &'static str {
+        match self.phase {
+            Some(FailedPhase::Instantiate) => "Instantiate",
+            Some(FailedPhase::Typecheck) => "Typecheck",
+            Some(FailedPhase::Flatten) => "Flatten",
+            Some(FailedPhase::ToDae) => "ToDae",
+            None => "Resolve",
+        }
+    }
+}
+
+fn short_error_code(code: &str) -> String {
+    rumoca_core::short_phase_error_code(code).to_string()
+}
+
+fn first_error_code(failures: &[ModelFailureDiagnostic]) -> Option<String> {
+    failures
+        .iter()
+        .find_map(|failure| failure.error_code.as_deref())
+        .map(short_error_code)
 }
 
 /// One failure per spanned phase diagnostic when the phase produced them, so
@@ -82,18 +173,17 @@ fn failed_phase_failures(
 ) -> Vec<ModelFailureDiagnostic> {
     let spanned: Vec<ModelFailureDiagnostic> = diagnostics
         .iter()
+        .filter(|diag| diag.is_error())
         .filter_map(|diag| {
-            let label = diag
-                .labels
-                .iter()
-                .find(|label| label.primary)
-                .or_else(|| diag.labels.first())?;
+            let (primary_label, secondary_labels) = ModelFailureDiagnostic::split_labels(diag)?;
             Some(ModelFailureDiagnostic {
                 model_name: model_name.to_string(),
                 phase: Some(phase),
                 error_code: diag.code.clone(),
                 error: diag.message.clone(),
-                primary_label: Some(label.clone()),
+                primary_label: Some(primary_label),
+                secondary_labels,
+                notes: diag.notes.clone(),
             })
         })
         .collect();
@@ -106,6 +196,8 @@ fn failed_phase_failures(
         error_code: error_code.clone(),
         error: error.to_string(),
         primary_label: class_primary_label(tree, model_name, "phase failed"),
+        secondary_labels: Vec::new(),
+        notes: Vec::new(),
     }]
 }
 
@@ -114,11 +206,10 @@ pub(super) fn class_primary_span(tree: &ast::ClassTree, model_name: &str) -> Opt
     let name_location = &class.name.location;
     let start = name_location.start as usize;
     let end = (name_location.end as usize).max(start.saturating_add(1));
-    let span = if let Some(source_id) = tree.source_map.get_id(&name_location.file_name) {
-        Span::from_offsets(source_id, start, end)
-    } else {
-        default_tree_span(&tree.source_map)
-    };
+    let span = tree
+        .source_map
+        .try_span(name_location.source, start, end)
+        .unwrap_or_else(|| default_tree_span(&tree.source_map));
     Some(span)
 }
 
@@ -138,36 +229,6 @@ pub(super) fn collect_parse_failures_for_files(
                 return Vec::new();
             }
             collect_document_parse_failures(doc, source_map)
-        })
-        .collect()
-}
-
-pub(super) fn collect_resolve_failures_for_files(
-    diagnostics: &CommonDiagnostics,
-    source_map: &SourceMap,
-    files: &IndexSet<String>,
-) -> Vec<ModelFailureDiagnostic> {
-    if files.is_empty() {
-        return Vec::new();
-    }
-    diagnostics
-        .iter()
-        .filter(|diag| diag.is_error())
-        .filter(|diag| {
-            diag.labels.iter().any(|label| {
-                source_map
-                    .get_source(label.span.source)
-                    .is_some_and(|(file_name, _)| {
-                        files.iter().any(|file| same_path(file, file_name))
-                    })
-            })
-        })
-        .map(|diag| ModelFailureDiagnostic {
-            model_name: "<resolve>".to_string(),
-            phase: None,
-            error_code: diag.code.clone(),
-            error: diag.message.clone(),
-            primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
         })
         .collect()
 }
@@ -234,14 +295,41 @@ pub(super) fn collect_target_source_files(
     tree: &ast::ClassTree,
     targets: &[String],
 ) -> IndexSet<String> {
+    let class_index = ast::ClassDefIndex::from_tree(tree);
     let mut files = IndexSet::new();
     for target in targets {
-        let Some(class) = tree.get_class_by_qualified_name(target) else {
+        let Some(def_id) = class_index.def_id_by_qualified_name(target) else {
             continue;
         };
-        files.insert(class.location.file_name.clone());
+        for ancestor in class_index.def_ancestry(def_id) {
+            if let Some(class) = class_index.get(ancestor) {
+                files.extend(source_file_key(&tree.source_map, class.location.source));
+            }
+        }
     }
     files
+}
+
+/// The per-file key a target and a diagnostic are matched on.
+///
+/// A source the map has no name for must not be dropped from the target set:
+/// silently losing it would suppress every resolve failure raised in that file
+/// (SPEC_0008 fail-fast). Its stable placeholder name is used instead, which
+/// both sides of the match agree on because they derive it the same way.
+///
+/// `SourceId::DUMMY` is the one case with no file to key on at all: it marks
+/// compiler-generated constructs, and inventing a key for it would attach
+/// unrelated source-free diagnostics to every target.
+fn source_file_key(source_map: &SourceMap, source: SourceId) -> Option<String> {
+    if source == SourceId::DUMMY {
+        return None;
+    }
+    Some(
+        source_map
+            .name(source)
+            .map(str::to_string)
+            .unwrap_or_else(|| rumoca_core::placeholder_source_name(source)),
+    )
 }
 
 fn class_primary_label(tree: &ast::ClassTree, model_name: &str, message: &str) -> Option<Label> {
@@ -261,6 +349,19 @@ fn missing_inner_primary_label(
         .or_else(|| class_primary_label(tree, model_name, "model needs inner declarations"))
 }
 
+/// The remaining `outer` declarations that also lack an `inner`.
+///
+/// The first span anchors the report; naming only that one would report a
+/// single site for a failure that has several, so the rest are carried as
+/// secondary labels rather than discarded.
+fn missing_inner_secondary_labels(missing_spans: &[Span]) -> Vec<Label> {
+    missing_spans
+        .iter()
+        .skip(1)
+        .map(|span| Label::secondary(*span).with_message("missing matching `inner`"))
+        .collect()
+}
+
 fn collect_document_parse_failures(
     doc: &Document,
     source_map: &SourceMap,
@@ -271,12 +372,16 @@ fn collect_document_parse_failures(
             .iter()
             .map(|error| {
                 let diagnostic = parse_error_to_common_diagnostic(error, doc, source_map);
+                let (primary_label, secondary_labels) =
+                    ModelFailureDiagnostic::split_labels(&diagnostic).unzip();
                 ModelFailureDiagnostic {
                     model_name: doc.uri.clone(),
                     phase: None,
                     error_code: diagnostic.code.clone(),
                     error: diagnostic.message,
-                    primary_label: diagnostic.labels.into_iter().find(|label| label.primary),
+                    primary_label,
+                    secondary_labels: secondary_labels.unwrap_or_default(),
+                    notes: diagnostic.notes,
                 }
             })
             .collect();
@@ -292,6 +397,8 @@ fn collect_document_parse_failures(
         error: err.to_string(),
         primary_label: doc_default_parse_span(doc, source_map)
             .map(|span| Label::primary(span).with_message("parse error in this document")),
+        secondary_labels: Vec::new(),
+        notes: Vec::new(),
     }]
 }
 
@@ -413,4 +520,24 @@ fn canonicalized_path_key(path: &str) -> PathBuf {
     }
 
     resolved
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn needs_inner_failure_is_attributed_to_instantiation() {
+        let result = DaePhaseResult::NeedsInner {
+            missing_inners: vec!["world".to_string()],
+            missing_spans: Vec::new(),
+        };
+        let failure = StrictCompileFailure::from_dae_phase_result(
+            "model needs inner declarations: world".to_string(),
+            &result,
+            Vec::new(),
+        );
+        assert_eq!(failure.phase, Some(FailedPhase::Instantiate));
+        assert_eq!(failure.phase_name(), "Instantiate");
+    }
 }

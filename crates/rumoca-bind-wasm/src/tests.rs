@@ -495,20 +495,22 @@ fn test_interactive_session_runs_pure_discrete_model_with_guarded_dynamic_subscr
 
     let source = r#"
     model DiscreteController
-      input Real u;
+      input Real u = 0.0;
       parameter Real table[2] = {2.0, 4.0};
       discrete output Real y(start = 0.0);
       discrete Integer k(start = 1);
     protected
       discrete Real prev(start = 0.0);
     algorithm
-      if pre(k) == 1 then
-        prev := 0.0;
-      else
-        prev := table[pre(k) - 1];
-      end if;
-      y := u + prev;
-      k := if pre(k) >= 2 then 1 else pre(k) + 1;
+      when sample(0.02, 0.02) then
+        if pre(k) == 1 then
+          prev := 0.0;
+        else
+          prev := table[pre(k) - 1];
+        end if;
+        y := u + prev;
+        k := if pre(k) >= 2 then 1 else pre(k) + 1;
+      end when;
     end DiscreteController;
     "#;
 
@@ -716,16 +718,21 @@ fn test_parse_source_root_file_and_merge_parsed_source_roots_support_compilation
     let _guard = session_test_guard();
     clear_source_root_cache().expect("clear source-root cache");
 
-    let ast_json = parse_source_root_file(MINI_MODELICA_LIBRARY, "Modelica/package.mo")
-        .expect("parse_source_root_file should serialize an AST");
-    let parsed: rumoca_compile::parsing::ast::StoredDefinition =
-        serde_json::from_str(&ast_json).expect("parse_source_root_file should return AST JSON");
-    assert!(
-        parsed.classes.contains_key("Modelica"),
-        "expected parsed source-root AST to include the top-level package"
+    let parsed_source = parse_source_root_file(MINI_MODELICA_LIBRARY, "Modelica/package.mo")
+        .expect("parse_source_root_file should serialize a checked source");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&parsed_source).expect("checked source JSON should decode");
+    assert_eq!(
+        parsed.get("filename").and_then(serde_json::Value::as_str),
+        Some("Modelica/package.mo")
+    );
+    assert_eq!(
+        parsed.get("source").and_then(serde_json::Value::as_str),
+        Some(MINI_MODELICA_LIBRARY),
+        "the parsed source artifact must retain the exact provenance text"
     );
 
-    let definitions_json = serde_json::to_string(&vec![("Modelica/package.mo", ast_json)])
+    let definitions_json = serde_json::to_string(&vec![("Modelica/package.mo", parsed_source)])
         .expect("serialize parsed source-root definitions");
     let merged = merge_parsed_source_roots(&definitions_json)
         .expect("merge_parsed_source_roots should succeed");
@@ -751,6 +758,33 @@ fn test_parse_source_root_file_and_merge_parsed_source_roots_support_compilation
         "expected merged source-root definitions to support successful compilation, got: {compiled_result:?}"
     );
 
+    clear_source_root_cache().expect("clear source-root cache");
+}
+
+#[test]
+fn test_binary_source_root_round_trip_retains_compilable_source_text() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().expect("clear source-root cache");
+    load_source_roots(&mini_modelica_source_root_json()).expect("load source root");
+
+    let bytes = export_parsed_source_roots_binary(r#"["Modelica/package.mo"]"#)
+        .expect("export source-root snapshot");
+    clear_source_root_cache().expect("clear source-root cache before import");
+    assert_eq!(
+        merge_parsed_source_roots_binary(&bytes).expect("import source-root snapshot"),
+        1
+    );
+
+    let compiled = compile(USES_MODELICA_SOURCE, "UsesModelica")
+        .expect("binary source-root snapshot should remain compilable");
+    let response: serde_json::Value = serde_json::from_str(&compiled).expect("compile response");
+    assert_eq!(
+        response
+            .get("balance")
+            .and_then(|balance| balance.get("is_balanced"))
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
     clear_source_root_cache().expect("clear source-root cache");
 }
 
@@ -1538,16 +1572,12 @@ fn test_compile_to_json_exposes_orbit_algebraics_from_native_dae() {
     let result: serde_json::Value =
         serde_json::from_str(&json).expect("compile should return valid JSON");
 
-    let native_y = result
+    let native_variables = result
         .get("dae_native")
-        .and_then(|d| d.get("y"))
-        .and_then(|y| y.as_object())
-        .expect("dae_native.y should exist for orbit model");
-    assert!(
-        native_y.contains_key("inv_r"),
-        "native dae should include algebraic variable inv_r, got keys: {:?}",
-        native_y.keys().collect::<Vec<_>>()
-    );
+        .and_then(|dae| dae.get("storage"))
+        .and_then(|storage| storage.get("variables"))
+        .and_then(serde_json::Value::as_array)
+        .expect("canonical dae_native variable catalog should exist");
     for expected in [
         "inv_r",
         "inv_v2",
@@ -1560,9 +1590,11 @@ fn test_compile_to_json_exposes_orbit_algebraics_from_native_dae() {
         "inv_ecc",
     ] {
         assert!(
-            native_y.contains_key(expected),
-            "missing expected algebraic `{expected}`; got: {:?}",
-            native_y.keys().collect::<Vec<_>>()
+            native_variables.iter().any(|variable| {
+                variable.get("name").and_then(serde_json::Value::as_str) == Some(expected)
+                    && variable.get("role").and_then(serde_json::Value::as_str) == Some("algebraic")
+            }),
+            "canonical native DAE should classify {expected} as algebraic"
         );
     }
 }
@@ -1587,7 +1619,7 @@ fn test_render_target_wrapper_serializes_target_files() {
         .get("dae_native")
         .expect("compile response should contain dae_native");
 
-    let rendered = render_target(&native.to_string(), "SimpleDecay", "sympy", "", "{}")
+    let rendered = render_target(&native.to_string(), "SimpleDecay", "c-ode", "", "{}")
         .expect("render target should succeed");
     let decoded: serde_json::Value = decode_wasm_value(rendered);
     assert!(
@@ -1595,9 +1627,9 @@ fn test_render_target_wrapper_serializes_target_files() {
             .get("files")
             .and_then(serde_json::Value::as_array)
             .is_some_and(|files| files.iter().any(|file| {
-                file.get("path").and_then(serde_json::Value::as_str) == Some("SimpleDecay_sympy.py")
+                file.get("path").and_then(serde_json::Value::as_str) == Some("SimpleDecay_ode.c")
             })),
-        "render target should include the SymPy target file"
+        "render target should include the checked ODE RHS C target file"
     );
 }
 

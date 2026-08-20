@@ -10,7 +10,6 @@ repository.workspace = true
 rumoca-signal-frame = { workspace = true }
 
 anyhow = { workspace = true }
-indexmap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

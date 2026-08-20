@@ -10,12 +10,23 @@ pub(crate) enum ItemKind {
     Component,
 }
 
+/// Identity of one declaration in the session's workspace index.
+///
+/// The two name parts are interned. This key is the lookup identity for six
+/// separate session-wide `IndexMap`s (declaration index, class interfaces,
+/// class bodies and their fingerprints, body semantics, file summaries), so
+/// every probe used to re-hash a fully-qualified Modelica path; it now hashes
+/// two `u32`s. Interning also makes the maps' keys share one allocation per
+/// distinct path instead of one per map entry.
+///
+/// `VarName` serializes as its spelling, so the persisted session index shape
+/// is unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct ItemKey {
     file_id: FileId,
     kind: ItemKind,
-    container_path: String,
-    name: String,
+    container_path: rumoca_core::VarName,
+    name: rumoca_core::VarName,
 }
 
 impl ItemKey {
@@ -28,13 +39,13 @@ impl ItemKey {
         Self {
             file_id,
             kind,
-            container_path: container_path.into(),
-            name: name.into(),
+            container_path: rumoca_core::VarName::new(container_path),
+            name: rumoca_core::VarName::new(name),
         }
     }
 
     pub(crate) fn qualified_name(&self) -> String {
-        join_path(&self.container_path, &self.name)
+        join_path(self.container_path(), self.name())
     }
 
     pub(crate) fn file_id(&self) -> FileId {
@@ -42,11 +53,11 @@ impl ItemKey {
     }
 
     pub(crate) fn container_path(&self) -> &str {
-        &self.container_path
+        self.container_path.as_str()
     }
 
     pub(crate) fn name(&self) -> &str {
-        &self.name
+        self.name.as_str()
     }
 }
 
@@ -133,7 +144,7 @@ impl DeclarationIndex {
                 index.insert(
                     component_key,
                     WorkspaceSymbolKind::Component,
-                    Some(item_key.name.clone()),
+                    Some(item_key.name().to_string()),
                     component.name_location.clone(),
                 );
             }
@@ -148,7 +159,7 @@ impl DeclarationIndex {
     pub(crate) fn workspace_symbols(&self, uri: &str) -> Vec<WorkspaceSymbol> {
         self.iter()
             .map(|(key, entry)| WorkspaceSymbol {
-                name: key.name.clone(),
+                name: key.name().to_string(),
                 kind: entry.symbol_kind.clone(),
                 container_name: entry.container_name.clone(),
                 location: entry.location.clone(),
@@ -180,8 +191,8 @@ impl DeclarationIndex {
             .iter()
             .map(|(key, entry)| PersistedDeclarationIndexEntry {
                 kind: key.kind,
-                container_path: key.container_path.clone(),
-                name: key.name.clone(),
+                container_path: key.container_path().to_string(),
+                name: key.name().to_string(),
                 symbol_kind: PersistedWorkspaceSymbolKind::from_symbol_kind(&entry.symbol_kind),
                 container_name: entry.container_name.clone(),
                 location: entry.location.clone(),
@@ -252,6 +263,6 @@ fn join_path(prefix: &str, name: &str) -> String {
 }
 
 fn container_name_for_item_key(item_key: &ItemKey) -> Option<String> {
-    (!item_key.container_path.is_empty())
-        .then(|| rumoca_core::top_level_last_segment(&item_key.container_path).to_string())
+    (!item_key.container_path().is_empty())
+        .then(|| rumoca_core::top_level_last_segment(item_key.container_path()).to_string())
 }

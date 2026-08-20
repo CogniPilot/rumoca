@@ -5,7 +5,9 @@
 use ::rumoca::CompilationResult as HighLevelCompilationResult;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt};
-use rumoca_compile::compile::{Session as CompileSession, SessionConfig, StructuralOverride};
+use rumoca_compile::compile::{
+    Session as CompileSession, SessionConfig, StructuralOverride, VariableRole,
+};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
@@ -287,89 +289,50 @@ impl Model {
 
     #[getter]
     fn states(&self) -> VarView {
-        VarView::new(
-            self.result
-                .dae
-                .variables
-                .states
-                .iter()
-                .map(|(k, v)| VariableInfo::from_variable(k.as_str(), v))
-                .collect(),
-        )
+        self.variables_with_role(VariableRole::State)
     }
 
     #[getter]
     fn algebraics(&self) -> VarView {
-        VarView::new(
-            self.result
-                .dae
-                .variables
-                .algebraics
-                .iter()
-                .map(|(k, v)| VariableInfo::from_variable(k.as_str(), v))
-                .collect(),
-        )
+        self.variables_with_role(VariableRole::Algebraic)
     }
 
     #[getter]
     fn inputs(&self) -> VarView {
-        VarView::new(
-            self.result
-                .dae
-                .variables
-                .inputs
-                .iter()
-                .map(|(k, v)| VariableInfo::from_variable(k.as_str(), v))
-                .collect(),
-        )
+        self.variables_with_role(VariableRole::Input)
     }
 
     #[getter]
     fn outputs(&self) -> VarView {
-        VarView::new(
-            self.result
-                .dae
-                .variables
-                .outputs
-                .iter()
-                .map(|(k, v)| VariableInfo::from_variable(k.as_str(), v))
-                .collect(),
-        )
+        self.variables_with_role(VariableRole::Output)
     }
 
     #[getter]
     fn parameters(&self) -> ParamView {
-        ParamView::new(
-            self.result
-                .dae
-                .variables
-                .parameters
-                .iter()
-                .map(|(k, v)| ParameterInfo::from_variable(k.as_str(), v))
-                .collect(),
-        )
+        ParamView::new(self.result.dae.inspect(|view| {
+            view.variables()
+                .filter(|(_, variable)| variable.role() == VariableRole::Parameter)
+                .map(|(_, variable)| ParameterInfo::from_variable(view, variable))
+                .collect()
+        }))
     }
 
     fn summary(&self) -> String {
-        let v = &self.result.dae.variables;
+        let (states, algebraics, inputs, outputs, parameters) = self.variable_role_counts();
         format!(
             "{} — {} states, {} algebraic, {} inputs, {} outputs, {} parameters",
-            self.name,
-            v.states.len(),
-            v.algebraics.len(),
-            v.inputs.len(),
-            v.outputs.len(),
-            v.parameters.len(),
+            self.name, states, algebraics, inputs, outputs, parameters,
         )
     }
 
     fn structure(&self) -> StructuralInfo {
         let b = &self.result.balance_detail;
         let (n_eq, n_unk) = b.equations_unknowns();
+        let (n_states, n_algebraic, _, n_outputs, _) = self.variable_role_counts();
         let mut info = StructuralInfo {
-            n_states: self.result.dae.variables.states.len(),
-            n_algebraic: self.result.dae.variables.algebraics.len(),
-            n_outputs: self.result.dae.variables.outputs.len(),
+            n_states,
+            n_algebraic,
+            n_outputs,
             n_equations: n_eq,
             n_unknowns: n_unk,
             is_balanced: b.is_balanced(),
@@ -580,44 +543,16 @@ impl Model {
         Ok(GradientResult::from_probe(self.name.clone(), mode, probe))
     }
 
-    // ── live symbolic exports — render the existing target in memory, then
-    //    exec+wrap it (roadmap §5.3). Shares the same tested templates as
-    //    `codegen()`, so the live path cannot drift from the file path.
-    #[pyo3(signature = (form="dae", *, mode="mx"))]
-    fn to_casadi(&self, form: &str, mode: &str) -> ApiResult<PyObject> {
-        let target = match (form, mode) {
-            ("dae", "mx") => "casadi-mx",
-            ("dae", "sx") => "casadi-sx",
-            ("solve", "mx" | "sx") => "casadi-solve",
-            _ => {
-                return Err(ApiError::NotImplemented(format!(
-                    "unsupported casadi form/mode: form={form:?}, mode={mode:?} \
-                     (form is \"dae\"|\"solve\", mode is \"mx\"|\"sx\")"
-                )));
-            }
-        };
-        self.live_export("build_casadi", target, form)
+    // ── live symbolic exports — both consume the checked Solve program. The
+    // removed DAE-template schema is not reconstructed for language backends.
+    #[pyo3(signature = ())]
+    fn to_casadi(&self) -> ApiResult<PyObject> {
+        self.live_export("build_casadi", "casadi-ode", "solve")
     }
 
-    /// Live JAX export. `form="dae"` (default) yields a richly-typed `JaxModel`
-    /// with an explicit `ode_fn` + diffrax `simulate`; `form="solve"` taps the
-    /// lower-level `jax-solve` target (returned as a generic module wrapper).
-    #[pyo3(signature = (form="dae"))]
-    fn to_jax(&self, form: &str) -> ApiResult<PyObject> {
-        let target = match form {
-            "dae" => "jax",
-            "solve" => "jax-solve",
-            _ => {
-                return Err(ApiError::NotImplemented(format!(
-                    "unsupported jax form: {form:?} (expected \"dae\" or \"solve\")"
-                )));
-            }
-        };
-        self.live_export("build_jax", target, form)
-    }
-
-    fn to_sympy(&self) -> ApiResult<PyObject> {
-        self.live_export("build_sympy", "sympy", "dae")
+    #[pyo3(signature = ())]
+    fn to_jax(&self) -> ApiResult<PyObject> {
+        self.live_export("build_jax", "jax-ode", "solve")
     }
 
     /// A new `Model` handle with tunable parameter overrides applied at the next
@@ -657,22 +592,36 @@ impl Model {
     }
 
     fn _repr_html_(&self) -> String {
-        let v = &self.result.dae.variables;
+        let (states, algebraics, inputs, outputs, parameters) = self.variable_role_counts();
         format!(
             "<b>Model</b> <code>{}</code><ul>\
              <li>{} states</li><li>{} algebraic</li><li>{} inputs</li>\
              <li>{} outputs</li><li>{} parameters</li></ul>",
-            self.name,
-            v.states.len(),
-            v.algebraics.len(),
-            v.inputs.len(),
-            v.outputs.len(),
-            v.parameters.len(),
+            self.name, states, algebraics, inputs, outputs, parameters,
         )
     }
 }
 
 impl Model {
+    fn variables_with_role(&self, role: VariableRole) -> VarView {
+        VarView::new(self.result.dae.inspect(|view| {
+            view.variables()
+                .filter(|(_, variable)| variable.role() == role)
+                .map(|(_, variable)| VariableInfo::from_variable(view, variable))
+                .collect()
+        }))
+    }
+
+    fn variable_role_counts(&self) -> (usize, usize, usize, usize, usize) {
+        self.result.dae.inspect(|view| {
+            let mut counts = (0, 0, 0, 0, 0);
+            for (_, variable) in view.variables() {
+                increment_role_count(&mut counts, variable.role());
+            }
+            counts
+        })
+    }
+
     /// Validate tunable parameter overrides against the compiled model, raising a
     /// precise typed error: unknown name (`KeyError`) or structural parameter
     /// (`StructuralParamError`, needs recompile). Dependent parameters (e.g.
@@ -682,16 +631,20 @@ impl Model {
         if overrides.is_empty() {
             return Ok(());
         }
-        let params = &self.result.dae.variables.parameters;
+        let params = self.result.dae.inspect(|view| {
+            view.variables()
+                .filter(|(_, variable)| variable.role() == VariableRole::Parameter)
+                .map(|(_, variable)| (variable.name().to_string(), variable.is_tunable()))
+                .collect::<Vec<_>>()
+        });
         for (name, _) in overrides {
             let is_tunable = params
                 .iter()
-                .find(|(key, _)| key.as_str() == name)
-                .map(|(_, var)| var.is_tunable);
+                .find(|(key, _)| key == name)
+                .map(|(_, is_tunable)| *is_tunable);
             match is_tunable {
                 None => {
-                    let names: Vec<String> =
-                        params.keys().map(|k| k.as_str().to_string()).collect();
+                    let names: Vec<String> = params.iter().map(|(name, _)| name.clone()).collect();
                     return Err(ApiError::Py(pyo3::exceptions::PyKeyError::new_err(
                         crate::unknown_name_message("parameter", name, &names),
                     )));
@@ -715,16 +668,18 @@ impl Model {
         if overrides.is_empty() {
             return Ok(());
         }
-        let states = &self.result.dae.variables.states;
+        let states = self.result.dae.inspect(|view| {
+            view.variables()
+                .filter(|(_, variable)| variable.role() == VariableRole::State)
+                .map(|(_, variable)| variable.name().to_string())
+                .collect::<Vec<_>>()
+        });
         for (name, _) in overrides {
             let base = name.split('[').next().unwrap_or(name);
-            let known = states
-                .keys()
-                .any(|key| key.as_str() == name || key.as_str() == base);
+            let known = states.iter().any(|key| key == name || key == base);
             if !known {
-                let names: Vec<String> = states.keys().map(|k| k.as_str().to_string()).collect();
                 return Err(ApiError::Py(pyo3::exceptions::PyKeyError::new_err(
-                    crate::unknown_name_message("state", name, &names),
+                    crate::unknown_name_message("state", name, &states),
                 )));
             }
         }
@@ -782,5 +737,16 @@ impl Model {
             }
         }
         .map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
+    }
+}
+
+fn increment_role_count(counts: &mut (usize, usize, usize, usize, usize), role: VariableRole) {
+    match role {
+        VariableRole::State => counts.0 += 1,
+        VariableRole::Algebraic => counts.1 += 1,
+        VariableRole::Input => counts.2 += 1,
+        VariableRole::Output => counts.3 += 1,
+        VariableRole::Parameter => counts.4 += 1,
+        VariableRole::Constant | VariableRole::DiscreteReal | VariableRole::DiscreteValue => {}
     }
 }

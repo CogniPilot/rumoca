@@ -12,9 +12,10 @@ use std::time::Instant;
 use anyhow::{Result, anyhow, bail};
 
 use crate::config::{DeriveSpec, InputConfig, LocalDef};
-#[allow(unused_imports)]
-use crate::device::{GamepadAxis, GamepadButton, KeyCode, KeyModifiers};
+#[cfg(test)]
+use crate::device::{GamepadAxis, GamepadButton};
 pub use crate::device::{GamepadSnapshot, InputMode, KeyboardEvent};
+use crate::device::{KeyCode, KeyModifiers};
 
 pub use compile::{
     ButtonAction, CompiledDerive, CompiledGamepadAxis, CompiledGamepadButton, CompiledInput,

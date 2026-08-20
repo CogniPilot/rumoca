@@ -54,6 +54,17 @@ end M;
         !session.has_standard_resolved_cached(),
         "save diagnostics should stay off the standard resolved cache"
     );
+    assert_eq!(
+        session
+            .query_state
+            .flat
+            .semantic_diagnostics
+            .save_resolution_proofs
+            .keys()
+            .count(),
+        1,
+        "save diagnostics should retain exactly one reusable target proof"
+    );
 
     model_stage_semantic_diagnostics_artifact_mut(&mut session, "M", SemanticDiagnosticsMode::Save)
         .diagnostics
@@ -80,6 +91,65 @@ end M;
             .iter()
             .all(|diag| diag.code.as_deref() != Some("ESAVE")),
         "standard diagnostics should not reuse save-mode cache artifacts"
+    );
+}
+
+#[test]
+fn save_resolution_proof_is_reused_exactly_then_invalidated_by_document_edit() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            "model M\n  Real x;\nequation\n  x = 1;\nend M;\n",
+        )
+        .expect("document should parse");
+
+    let diagnostics = session.semantic_diagnostics_query("M", SemanticDiagnosticsMode::Save);
+    assert!(diagnostics.diagnostics.is_empty());
+    assert_eq!(
+        session
+            .query_state
+            .flat
+            .semantic_diagnostics
+            .save_resolution_proofs
+            .keys()
+            .count(),
+        1
+    );
+    let key = SemanticDiagnosticsCacheKey::new("M", SemanticDiagnosticsMode::Save);
+    let saved = session
+        .query_state
+        .flat
+        .semantic_diagnostics
+        .save_resolution_proofs
+        .get(&key)
+        .expect("Save target proof should be cached")
+        .resolved
+        .clone();
+    let reused = session
+        .resolve_strict_target("M")
+        .unwrap_or_else(|_| panic!("strict target resolution should reuse the Save proof"));
+    assert!(
+        std::sync::Arc::ptr_eq(&saved, &reused.resolved),
+        "strict target resolution must reuse the exact completed proof"
+    );
+
+    assert!(
+        session
+            .update_document(
+                "test.mo",
+                "model M\n  Real y;\nequation\n  y = 2;\nend M;\n",
+            )
+            .is_none()
+    );
+    assert!(
+        session
+            .query_state
+            .flat
+            .semantic_diagnostics
+            .save_resolution_proofs
+            .is_empty(),
+        "document edits must invalidate the completed Save resolution proof"
     );
 }
 

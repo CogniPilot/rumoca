@@ -10,14 +10,23 @@ use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower_lsp::LspService;
 
+mod code_lens_tests;
+mod compile_unit_source_tests;
+mod completion_surface_tests;
 mod diagnostics_timing_tests;
 mod editor_surface_session_tests;
 mod editor_surface_tests;
+mod hover_definition_timing_tests;
+mod hover_preview_tests;
 mod multi_source_root_completion_tests;
+mod simulation_override_diagnostic_tests;
 mod simulation_surface_tests;
+mod source_root_load_diagnostic_tests;
 mod source_root_read_prewarm_tests;
 mod source_root_refresh_tests;
 mod startup_timing_tests;
+mod tool_config_tests;
+mod utf16_range_tests;
 mod workspace_query_tests;
 
 static SESSION_STATS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -62,6 +71,17 @@ fn new_test_service() -> LspService<ModelicaLanguageServer> {
     service
 }
 
+fn checked_variable_count(
+    dae: &rumoca_compile::compile::Dae,
+    role: rumoca_compile::compile::VariableRole,
+) -> usize {
+    dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| variable.role() == role)
+            .count()
+    })
+}
+
 pub(super) async fn wait_for_namespace_cache_prewarm(
     server: &ModelicaLanguageServer,
 ) -> Vec<String> {
@@ -94,8 +114,6 @@ struct LoggedCompletionTimingSummary {
     uri: String,
     #[serde(default)]
     semantic_layer: String,
-    #[serde(default)]
-    namespace_completion_prime_ms: u64,
     #[serde(default)]
     needs_resolved_session: bool,
     #[serde(default)]
@@ -1628,32 +1646,53 @@ fn goto_definition_on_qualified_type_path_resolves_cross_file_target() {
     });
 }
 
+/// Outcome of driving `initialize` against a freshly created workspace that
+/// declares a single durable source root.
+struct InitializedServerFixture {
+    workspace_root: PathBuf,
+    source_root_path: String,
+    capabilities: ServerCapabilities,
+}
+
+async fn initialize_server_fixture(
+    server: &ModelicaLanguageServer,
+    temp_dir_name: &str,
+) -> InitializedServerFixture {
+    let workspace_root = new_temp_dir(temp_dir_name);
+    let source_root_dir = write_test_source_root(&workspace_root, "InitLib");
+    let source_root_path = source_root_dir.to_string_lossy().to_string();
+    let workspace_uri = Url::from_directory_path(&workspace_root).expect("workspace uri");
+    let capabilities = server
+        .initialize(InitializeParams {
+            root_uri: Some(workspace_uri.clone()),
+            initialization_options: Some(serde_json::json!({
+                "sourceRootPaths": [source_root_path]
+            })),
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: workspace_uri,
+                name: "workspace".to_string(),
+            }]),
+            ..InitializeParams::default()
+        })
+        .await
+        .expect("initialize should succeed")
+        .capabilities;
+    InitializedServerFixture {
+        workspace_root,
+        source_root_path,
+        capabilities,
+    }
+}
+
 #[test]
-fn initialize_advertises_supported_capabilities_and_tracks_workspace_root() {
+fn initialize_advertises_core_document_capabilities() {
     run_async_test(async {
-        let workspace_root = new_temp_dir("initialize-capabilities");
-        let source_root_dir = write_test_source_root(&workspace_root, "InitLib");
-        let source_root_path = source_root_dir.to_string_lossy().to_string();
-        let workspace_uri = Url::from_directory_path(&workspace_root).expect("workspace uri");
         let service = new_test_service();
-        let server = service.inner();
+        let capabilities =
+            initialize_server_fixture(service.inner(), "initialize-core-capabilities")
+                .await
+                .capabilities;
 
-        let result = server
-            .initialize(InitializeParams {
-                root_uri: Some(workspace_uri.clone()),
-                initialization_options: Some(serde_json::json!({
-                    "sourceRootPaths": [source_root_path]
-                })),
-                workspace_folders: Some(vec![WorkspaceFolder {
-                    uri: workspace_uri,
-                    name: "workspace".to_string(),
-                }]),
-                ..InitializeParams::default()
-            })
-            .await
-            .expect("initialize should succeed");
-
-        let capabilities = result.capabilities;
         assert_eq!(
             capabilities.text_document_sync,
             Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL))
@@ -1680,6 +1719,18 @@ fn initialize_advertises_supported_capabilities_and_tracks_workspace_root() {
             capabilities.document_formatting_provider,
             Some(OneOf::Left(true))
         );
+    });
+}
+
+#[test]
+fn initialize_advertises_editor_assist_capabilities() {
+    run_async_test(async {
+        let service = new_test_service();
+        let capabilities =
+            initialize_server_fixture(service.inner(), "initialize-assist-capabilities")
+                .await
+                .capabilities;
+
         assert!(
             capabilities.completion_provider.is_some(),
             "completion provider should be advertised"
@@ -1716,17 +1767,37 @@ fn initialize_advertises_supported_capabilities_and_tracks_workspace_root() {
             capabilities.execute_command_provider.is_some(),
             "execute command should be advertised"
         );
+        // The full-MSL editor gate validates this exact shape over the wire, so
+        // pin the advertised options here too: hints are computed eagerly and
+        // never resolved lazily.
+        let inlay_options = match &capabilities.inlay_hint_provider {
+            Some(OneOf::Right(InlayHintServerCapabilities::Options(options))) => options,
+            other => panic!(
+                "inlay hints are implemented and UTF-16-correct, so they are advertised as options: {other:?}"
+            ),
+        };
         assert_eq!(
-            capabilities.inlay_hint_provider, None,
-            "inlay hints stay disabled until the selective mode is re-enabled"
+            inlay_options.resolve_provider,
+            Some(false),
+            "inlay hints carry their full label, so resolve support is advertised as false"
         );
+    });
+}
+
+#[test]
+fn initialize_tracks_workspace_root_and_source_root_paths() {
+    run_async_test(async {
+        let service = new_test_service();
+        let server = service.inner();
+        let fixture = initialize_server_fixture(server, "initialize-workspace-root").await;
+
         assert_eq!(
             server.workspace_root.read().await.as_ref(),
-            Some(&workspace_root)
+            Some(&fixture.workspace_root)
         );
         assert_eq!(
             *server.initial_source_root_paths.read().await,
-            vec![source_root_path.clone()]
+            vec![fixture.source_root_path.clone()]
         );
 
         server.initialized(InitializedParams {}).await;

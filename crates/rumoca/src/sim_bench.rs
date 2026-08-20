@@ -51,6 +51,14 @@ pub struct SimBenchArgs {
     #[arg(long)]
     pub(crate) dt: Option<f64>,
 
+    /// Absolute solver tolerance (overrides the backend default).
+    #[arg(long)]
+    pub(crate) atol: Option<f64>,
+
+    /// Relative solver tolerance (overrides the backend default).
+    #[arg(long)]
+    pub(crate) rtol: Option<f64>,
+
     /// Solver mode. Hot benchmarking uses the prepared BDF/diffsol path or the
     /// reusable rk-like session, depending on this selection.
     #[arg(long, value_enum)]
@@ -89,6 +97,8 @@ struct BenchInput {
     input: ModelInputArgs,
     t_end: f64,
     dt: Option<f64>,
+    atol: Option<f64>,
+    rtol: Option<f64>,
     solver_mode: SimSolverMode,
     solver_label: String,
 }
@@ -149,12 +159,18 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
     let (result, model) = compile_dae_with_inferred_model(&bench.input, args.diagnostics.verbose)?;
     let compile_elapsed = compile_start.elapsed();
 
-    let opts = SimOptions {
+    let mut opts = SimOptions {
         t_end: bench.t_end,
         dt: bench.dt,
         solver_mode: bench.solver_mode,
         ..SimOptions::default()
     };
+    if let Some(atol) = bench.atol {
+        opts.atol = atol;
+    }
+    if let Some(rtol) = bench.rtol {
+        opts.rtol = rtol;
+    }
 
     let prepare_start = Instant::now();
     let (mut prepared, prepare_timings) = PreparedHotBench::build(result.dae.as_ref(), &opts)?;
@@ -283,6 +299,7 @@ impl RkLikeHotBench {
                 .advance_to(target)
                 .map_err(|err| anyhow::anyhow!("failed to step rk-like simulation: {err}"))?;
         }
+        self.session.trace_eval_snapshot("rumoca sim bench");
         Ok(HotRunSummary {
             points: self.sample_times.len(),
             final_time: Some(self.session.time()),
@@ -307,6 +324,8 @@ fn resolve_bench_input(args: &SimBenchArgs) -> Result<BenchInput> {
         },
         t_end: args.t_end.unwrap_or(1.0),
         dt: args.dt,
+        atol: args.atol,
+        rtol: args.rtol,
         solver_mode: solver.into(),
         solver_label: solver.as_label().to_string(),
     })
@@ -349,6 +368,11 @@ fn resolve_config_bench_input(args: &SimBenchArgs, config_path: &str) -> Result<
         .map(|solver| SimulateSolverMode::from(solver).as_label().to_string())
         .or_else(|| config.sim.solver.clone())
         .unwrap_or_else(|| "auto".to_string());
+    // The report prints this label as the solver that ran. A label from the
+    // scenario config is free text, so it is checked against the valid set here
+    // — otherwise an unrunnable name would be printed as "Solver:" while BDF
+    // actually did the work.
+    rumoca_core::canonical_solver_name(&solver_label)?;
 
     Ok(BenchInput {
         input: ModelInputArgs {
@@ -360,6 +384,8 @@ fn resolve_config_bench_input(args: &SimBenchArgs, config_path: &str) -> Result<
         },
         t_end: args.t_end.unwrap_or(config.sim.t_end),
         dt: args.dt.or(Some(config.sim.dt)),
+        atol: args.atol.or(config.sim.atol),
+        rtol: args.rtol.or(config.sim.rtol),
         solver_mode: SimSolverMode::from_external_name(&solver_label),
         solver_label,
     })

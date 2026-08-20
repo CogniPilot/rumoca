@@ -104,6 +104,13 @@ pub(crate) struct ClassSummary {
     pub(crate) expandable: bool,
     pub(crate) operator_record: bool,
     pub(crate) pure: bool,
+    /// MLS §12.3: whether the declaration wrote `pure`/`impure` at all.
+    ///
+    /// Semantic, not cosmetic: adding `pure` to a bare `external` function
+    /// turns an impure body into a pure one, so a summary that hashed only
+    /// `pure` would call the two interfaces identical and reuse results
+    /// computed for the other one.
+    pub(crate) purity_declared: bool,
     pub(crate) causality: rumoca_core::Causality,
     pub(crate) is_protected: bool,
     pub(crate) is_final: bool,
@@ -191,7 +198,7 @@ fn collect_class_summaries(
 }
 
 impl ClassSummary {
-    fn from_class(class: &ast::ClassDef) -> Self {
+    pub(super) fn from_class(class: &ast::ClassDef) -> Self {
         Self {
             name_location: class.name.location.clone(),
             class_type: class.class_type.clone(),
@@ -200,6 +207,7 @@ impl ClassSummary {
             expandable: class.expandable,
             operator_record: class.operator_record,
             pure: class.pure,
+            purity_declared: class.purity_declared,
             causality: class.causality.clone(),
             is_protected: class.is_protected,
             is_final: class.is_final,

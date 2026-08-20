@@ -1,5 +1,5 @@
 use super::*;
-use crate::helpers::location_to_range;
+use crate::helpers::location_to_range_in_optional_source;
 
 pub(super) fn is_hover_preview_candidate(ast: &ast::StoredDefinition, word: &str) -> bool {
     ast.classes.get(word).is_some_and(|class| {
@@ -12,17 +12,40 @@ pub(super) fn is_hover_preview_candidate(ast: &ast::StoredDefinition, word: &str
     })
 }
 
+/// Build a goto-definition response for a class declaration.
+///
+/// `target_source` is the text of the *declaration's* file when it is loaded;
+/// it is what turns the location's byte span into UTF-16 LSP columns. A target
+/// in an unopened file falls back to the lexer's character columns.
+/// [`class_target_definition`] with the target file's text pulled from the
+/// session snapshot, which is where its UTF-16 columns are measured.
+pub(super) fn class_target_definition_in_snapshot(
+    snapshot: &SessionSnapshot,
+    target_uri: &str,
+    declaration_location: &rumoca_compile::parsing::ir_core::Location,
+    fallback_uri: &Url,
+) -> Option<GotoDefinitionResponse> {
+    let source = snapshot.get_document(target_uri).map(|doc| doc.content);
+    class_target_definition(
+        target_uri,
+        declaration_location,
+        fallback_uri,
+        source.as_deref(),
+    )
+}
+
 pub(super) fn class_target_definition(
     target_uri: &str,
     declaration_location: &rumoca_compile::parsing::ir_core::Location,
     fallback_uri: &Url,
+    target_source: Option<&str>,
 ) -> Option<GotoDefinitionResponse> {
     let target_uri = Url::from_file_path(target_uri)
         .ok()
         .unwrap_or_else(|| fallback_uri.clone());
     Some(GotoDefinitionResponse::Scalar(Location {
         uri: target_uri,
-        range: location_to_range(declaration_location),
+        range: location_to_range_in_optional_source(target_source, declaration_location),
     }))
 }
 
@@ -91,104 +114,217 @@ fn class_type_keyword(class_type: &rumoca_compile::parsing::ir_core::ClassType) 
     }
 }
 
-pub(super) fn flattened_preview_for_model(
-    session: &mut Session,
+/// Render the hover markdown for an already-compiled model.
+///
+/// Pure formatting: the compile itself is owned by
+/// [`super::preview_cache`], which caches results and runs off the session
+/// write lock.
+pub(super) fn render_flattened_preview(
     model_name: &str,
-) -> Option<String> {
-    let mut report = session.compile_model_strict_reachable_uncached_with_recovery(model_name);
-    if !report.requested_succeeded() {
-        return None;
-    }
-    let Some(PhaseResult::Success(result)) = report.requested_result.take() else {
-        return None;
-    };
-
-    let mut lines = Vec::new();
-    lines.push(format!(
-        "model={model_name} | f_x={} | f_z={} | f_m={} | m={} | balance={}",
-        result.dae.continuous.equations.len(),
-        result.dae.discrete.real_updates.len(),
-        result.dae.discrete.valued_updates.len(),
-        result.dae.variables.discrete_valued.len(),
-        result.balance_detail.balance()
-    ));
-    lines.push(format!("f_x ({}):", result.dae.continuous.equations.len()));
-    for (idx, eq) in result.dae.continuous.equations.iter().take(6).enumerate() {
-        let lhs = eq
-            .lhs
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "0".to_string());
-        let rhs = truncate_debug(&eq.rhs, 140);
-        lines.push(format!("  {idx}: {lhs} = {rhs}"));
-    }
-    push_more_equations_line(&mut lines, result.dae.continuous.equations.len(), 6, "f_x");
-    lines.push(format!("f_z ({}):", result.dae.discrete.real_updates.len()));
-    for (idx, eq) in result.dae.discrete.real_updates.iter().take(4).enumerate() {
-        let lhs = eq
-            .lhs
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "0".to_string());
-        let rhs = truncate_debug(&eq.rhs, 140);
-        lines.push(format!("  {idx}: {lhs} = {rhs}"));
-    }
-    push_more_equations_line(&mut lines, result.dae.discrete.real_updates.len(), 4, "f_z");
-    lines.push(format!(
-        "f_m ({}):",
-        result.dae.discrete.valued_updates.len()
-    ));
-    for (idx, eq) in result
-        .dae
-        .discrete
-        .valued_updates
-        .iter()
-        .take(4)
-        .enumerate()
-    {
-        let lhs = eq
-            .lhs
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "0".to_string());
-        let rhs = truncate_debug(&eq.rhs, 140);
-        lines.push(format!("  {idx}: {lhs} = {rhs}"));
-    }
-    push_more_equations_line(
-        &mut lines,
-        result.dae.discrete.valued_updates.len(),
-        4,
-        "f_m",
-    );
-    if !result.dae.variables.discrete_valued.is_empty() {
-        lines.push("m (discrete-valued variables):".to_string());
-        for (idx, (name, var)) in result
-            .dae
-            .variables
-            .discrete_valued
-            .iter()
-            .take(6)
-            .enumerate()
-        {
-            let start = var
-                .start
-                .as_ref()
-                .map(|expr| truncate_debug(expr, 80))
-                .unwrap_or_else(|| "<none>".to_string());
-            lines.push(format!("{idx}: {name} start={start}"));
+    result: &rumoca_compile::compile::DaeCompilationResult,
+) -> String {
+    let lines = result.dae.inspect(|view| {
+        let discrete_values = view
+            .variables()
+            .filter(|(_, variable)| {
+                variable.role() == rumoca_compile::compile::VariableRole::DiscreteValue
+            })
+            .collect::<Vec<_>>();
+        let mut lines = vec![format!(
+            "model={model_name} | f_x={} | f_z={} | f_m={} | m={} | balance={}",
+            view.continuous_owner_count(),
+            view.discrete_real_equation_count(),
+            view.discrete_value_definition_count(),
+            discrete_values.len(),
+            result.balance_detail.balance()
+        )];
+        push_checked_residuals(
+            &mut lines,
+            "f_x",
+            view.continuous_equation_count(),
+            6,
+            |index| view.continuous_equation(index),
+            view,
+        );
+        push_checked_discrete_real_equations(&mut lines, 4, view);
+        lines.push(format!(
+            "f_m ({} definitions in {} owners):",
+            view.discrete_value_definition_count(),
+            view.discrete_value_owner_count()
+        ));
+        push_discrete_value_owners(&mut lines, view, 4);
+        push_more_equations_line(
+            &mut lines,
+            view.discrete_value_owner_count(),
+            4,
+            "f_m owners",
+        );
+        if !discrete_values.is_empty() {
+            lines.push("m (discrete-valued variables):".to_string());
+            for (index, (_, variable)) in discrete_values.iter().take(6).enumerate() {
+                let start = variable
+                    .start()
+                    .and_then(|expression| view.expression(expression))
+                    .and_then(|expression| view.source_text(expression.provenance()))
+                    .map_or("<none>".to_string(), |source| truncate_text(source, 80));
+                lines.push(format!("{index}: {} start={start}", variable.name()));
+            }
+            if discrete_values.len() > 6 {
+                lines.push(format!(
+                    "... {} more discrete-valued variables",
+                    discrete_values.len() - 6
+                ));
+            }
         }
-        if result.dae.variables.discrete_valued.len() > 6 {
-            lines.push(format!(
-                "... {} more discrete-valued variables",
-                result.dae.variables.discrete_valued.len() - 6
-            ));
-        }
-    }
+        lines
+    });
 
-    Some(format!(
+    format!(
         "**Flattened DAE Preview**\n\n```text\n{}\n```",
         lines.join("\n")
-    ))
+    )
+}
+
+fn push_discrete_value_owners(
+    lines: &mut Vec<String>,
+    view: rumoca_compile::compile::DaeView<'_>,
+    limit: usize,
+) {
+    for index in 0..view.discrete_value_owner_count().min(limit) {
+        let id = view
+            .discrete_value_owner_id(index)
+            .expect("finalized B.1c owner has an identity");
+        let owner = view
+            .discrete_value_owner(id)
+            .expect("branded B.1c owner resolves");
+        let targets = owner
+            .targets()
+            .iter()
+            .map(|target| {
+                view.variables()
+                    .find(|(id, _)| id.index() == target.index())
+                    .map_or_else(
+                        || format!("<discrete:{}>", target.index()),
+                        |(_, variable)| variable.name().to_string(),
+                    )
+            })
+            .collect::<Vec<_>>();
+        lines.push(format!(
+            "  {index}: [{}] := {} ordered branch(es) | owner {} at `{}`",
+            targets.join(", "),
+            owner.branches().len(),
+            owner.provenance().origin(),
+            provenance_text(view, owner.provenance())
+        ));
+        for (branch_index, branch) in owner.branches().iter().enumerate() {
+            let activation = match branch.activation() {
+                rumoca_compile::compile::DiscreteBranchActivation::Always => "always".to_string(),
+                rumoca_compile::compile::DiscreteBranchActivation::When { trigger, guard } => {
+                    format!(
+                        "when trigger=`{}` guard=`{}`",
+                        condition_text(view, trigger),
+                        condition_text(view, guard)
+                    )
+                }
+            };
+            lines.push(format!(
+                "    branch {branch_index}: {activation} | {} at `{}`",
+                branch.provenance().origin(),
+                provenance_text(view, branch.provenance())
+            ));
+            for (target, (value, action)) in targets.iter().zip(branch.values().iter()) {
+                let value_source = expression_provenance_text(view, value);
+                lines.push(format!(
+                    "      {target} := `{value_source}` | action {} at `{}`",
+                    action.origin(),
+                    provenance_text(view, action)
+                ));
+            }
+        }
+    }
+}
+
+fn expression_provenance_text<'dae>(
+    view: rumoca_compile::compile::DaeView<'dae>,
+    expression: rumoca_compile::compile::ExprId<'dae>,
+) -> String {
+    view.expression(expression)
+        .map_or("<expression unavailable>".to_string(), |expression| {
+            provenance_text(view, expression.provenance())
+        })
+}
+
+fn condition_text<'dae>(
+    view: rumoca_compile::compile::DaeView<'dae>,
+    condition: rumoca_compile::compile::ConditionId<'dae>,
+) -> String {
+    view.condition(condition).map_or_else(
+        || format!("<condition:{}>", condition.index()),
+        |condition| provenance_text(view, condition.provenance()),
+    )
+}
+
+fn provenance_text(
+    view: rumoca_compile::compile::DaeView<'_>,
+    provenance: rumoca_compile::compile::DaeProvenance,
+) -> String {
+    view.source_text(provenance)
+        .map_or("<source unavailable>".to_string(), |source| {
+            truncate_text(source, 100)
+        })
+}
+
+fn push_checked_residuals<'dae>(
+    lines: &mut Vec<String>,
+    label: &str,
+    total: usize,
+    limit: usize,
+    equation: impl Fn(usize) -> Option<rumoca_compile::compile::ResidualEquationView<'dae>>,
+    view: rumoca_compile::compile::DaeView<'dae>,
+) {
+    lines.push(format!("{label} ({total}):"));
+    for index in 0..total.min(limit) {
+        let equation = equation(index).expect("finalized residual equation resolves");
+        let source = view
+            .expression(equation.residual())
+            .and_then(|expression| view.source_text(expression.provenance()))
+            .map_or("<generated residual>", |source| source);
+        lines.push(format!("  {index}: {}", truncate_text(source, 140)));
+    }
+    push_more_equations_line(lines, total, limit, label);
+}
+
+fn push_checked_discrete_real_equations(
+    lines: &mut Vec<String>,
+    limit: usize,
+    view: rumoca_compile::compile::DaeView<'_>,
+) {
+    let total = view.discrete_real_equation_count();
+    lines.push(format!("f_z ({total}):"));
+    for index in 0..total.min(limit) {
+        let equation = view
+            .discrete_real_equation(index)
+            .expect("finalized discrete Real equation resolves");
+        let source = view
+            .expression(equation.residual())
+            .and_then(|expression| view.source_text(expression.provenance()))
+            .map_or("<generated residual>", |source| source);
+        let activation = match equation.activation() {
+            rumoca_compile::compile::DiscreteRealActivation::Always => "always".to_string(),
+            rumoca_compile::compile::DiscreteRealActivation::When { trigger, guard } => format!(
+                "when trigger=`{}` guard=`{}`",
+                condition_text(view, trigger),
+                condition_text(view, guard)
+            ),
+        };
+        lines.push(format!(
+            "  {index}: {} | {activation} | owner {} at `{}`",
+            truncate_text(source, 140),
+            equation.provenance().origin(),
+            provenance_text(view, equation.provenance())
+        ));
+    }
+    push_more_equations_line(lines, total, limit, "f_z");
 }
 
 fn push_more_equations_line(lines: &mut Vec<String>, total: usize, shown: usize, label: &str) {
@@ -197,12 +333,11 @@ fn push_more_equations_line(lines: &mut Vec<String>, total: usize, shown: usize,
     }
 }
 
-fn truncate_debug<T: std::fmt::Debug>(value: &T, max_chars: usize) -> String {
-    let rendered = format!("{value:?}");
-    if rendered.chars().count() <= max_chars {
-        return rendered;
+fn truncate_text(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
     }
-    let mut out = rendered.chars().take(max_chars).collect::<String>();
+    let mut out = value.chars().take(max_chars).collect::<String>();
     out.push_str("...");
     out
 }
