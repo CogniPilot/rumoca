@@ -4,7 +4,7 @@ use crate::format_errors::FormatError;
 use crate::format_options::{FormatOptions, FormatProfile};
 
 use rumoca_compile::parsing::{
-    Causality, OpBinary, Span, Token, Variability, ast, ir_core, parse_source_to_ast,
+    Causality, OpBinary, Span, Token, Variability, ast, parse_source_to_ast,
 };
 use std::ops::ControlFlow::{self, Continue};
 
@@ -1711,5 +1711,7 @@ impl ast::Visitor for AstTriviaReplacementCollector<'_, '_> {
     }
 }
 
+#[cfg(test)]
+mod stability_tests;
 #[cfg(test)]
 mod tests;

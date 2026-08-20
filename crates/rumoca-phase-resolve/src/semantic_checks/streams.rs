@@ -202,7 +202,7 @@ fn validate_stream_connector_level(
     }
 
     if !matches!(
-        resolve_component_type_root(flow_component, def),
+        resolve_component_interface_type_root(flow_component, def),
         Some(ResolvedTypeRoot::Builtin("Real"))
     ) {
         diags.push(semantic_error(

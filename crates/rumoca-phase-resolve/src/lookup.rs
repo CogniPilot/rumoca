@@ -4,6 +4,7 @@
 //! looking up inherited members during extends resolution.
 
 use crate::Resolver;
+use indexmap::IndexSet;
 use rumoca_core::{ComponentPath, DefId, ScopeId};
 use std::collections::HashSet;
 
@@ -79,7 +80,7 @@ impl Resolver {
             // Reuse inherited-member lookup for this dotted navigation step.
             if self.class_types.contains_key(&current_def_id)
                 && let Some(inherited_def_id) =
-                    self.lookup_inherited_member(current_qualified, &part.text)
+                    self.lookup_inherited_member_of(current_def_id, &part.text)
             {
                 current_def_id = inherited_def_id;
                 continue;
@@ -115,64 +116,80 @@ impl Resolver {
     /// For deep inheritance chains (e.g., WaterIF97_pT → WaterIF97_base →
     /// PartialTwoPhaseMedium → PartialPureSubstance → PartialMedium), the search
     /// is recursive to find members from any ancestor class.
+    pub(crate) fn lookup_inherited_member_of(
+        &self,
+        container: DefId,
+        member_name: &str,
+    ) -> Option<DefId> {
+        let mut candidates = IndexSet::new();
+        self.collect_inherited_member_candidates(
+            container,
+            member_name,
+            &mut HashSet::new(),
+            &mut candidates,
+        );
+        (candidates.len() == 1)
+            .then(|| candidates.first().copied())
+            .flatten()
+    }
+
+    /// Name-keyed adapter over [`Resolver::lookup_inherited_member_of`].
+    ///
+    /// Only for call sites that hold nothing but a rendered scope path (the
+    /// unresolved-reference report, whose records carry scope text rather than
+    /// resolved ids). Semantic call sites must pass the container's `DefId`.
+    #[cfg(test)]
     pub(crate) fn lookup_inherited_member(
         &self,
         container_qualified_name: &str,
         member_name: &str,
     ) -> Option<DefId> {
-        self.lookup_inherited_member_recursive(
-            container_qualified_name,
-            member_name,
-            &mut HashSet::new(),
-        )
+        let container = *self.name_to_def.get(container_qualified_name)?;
+        self.lookup_inherited_member_of(container, member_name)
     }
 
-    /// Recursive helper for inherited member lookup with cycle detection.
+    /// Collect every visible inherited declaration with cycle detection.
     ///
-    /// Uses the `class_to_bases` index for O(1) base class lookup instead of
-    /// iterating through all inheritance edges.
-    fn lookup_inherited_member_recursive(
+    /// A direct declaration in one base hides that base's ancestors, while
+    /// declarations from distinct bases remain separate candidates. Returning
+    /// only a unique candidate prevents multiple inheritance from selecting an
+    /// arbitrary redeclare target.
+    fn collect_inherited_member_candidates(
         &self,
-        container_qualified_name: &str,
+        container: DefId,
         member_name: &str,
-        visited: &mut HashSet<String>,
-    ) -> Option<DefId> {
-        // Avoid infinite loops in case of circular inheritance
-        if !visited.insert(container_qualified_name.to_string()) {
-            return None;
+        visited: &mut HashSet<DefId>,
+        candidates: &mut IndexSet<DefId>,
+    ) {
+        if !visited.insert(container) {
+            return;
         }
 
-        // Get container class's DefId
-        let container_def_id = self.name_to_def.get(container_qualified_name)?;
-
-        // O(1) lookup of base classes using the index
-        let base_ids = self.class_to_bases.get(container_def_id)?;
-
+        let Some(base_ids) = self.class_to_bases.get(&container) else {
+            return;
+        };
         for base_id in base_ids {
-            if let Some(result) = self.check_base_for_member(base_id, member_name, visited) {
-                return Some(result);
-            }
+            self.collect_base_member_candidate(*base_id, member_name, visited, candidates);
         }
-
-        None
     }
 
-    /// Check a single base class for an inherited member.
-    fn check_base_for_member(
+    fn collect_base_member_candidate(
         &self,
-        base_id: &DefId,
+        base_id: DefId,
         member_name: &str,
-        visited: &mut HashSet<String>,
-    ) -> Option<DefId> {
-        let base_qualified = self.def_names.get(base_id)?;
-
-        // Check if base_qualified.member_name exists directly
+        visited: &mut HashSet<DefId>,
+        candidates: &mut IndexSet<DefId>,
+    ) {
+        let Some(base_qualified) = self.def_names.get(&base_id) else {
+            return;
+        };
+        // Composing `Base.Member` addresses the base's own declaration table;
+        // the base itself is already identified by `base_id`.
         let inherited_name = format!("{}.{}", base_qualified, member_name);
         if let Some(&inherited_def_id) = self.name_to_def.get(&inherited_name) {
-            return Some(inherited_def_id);
+            candidates.insert(inherited_def_id);
+            return;
         }
-
-        // Recursively search the base class's inheritance chain
-        self.lookup_inherited_member_recursive(base_qualified, member_name, visited)
+        self.collect_inherited_member_candidates(base_id, member_name, visited, candidates);
     }
 }
