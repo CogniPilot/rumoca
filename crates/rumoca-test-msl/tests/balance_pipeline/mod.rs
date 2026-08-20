@@ -1,9 +1,9 @@
 use super::*;
+use std::collections::HashSet;
 
 mod balance_pipeline_balance_cohort;
 mod balance_pipeline_config;
 mod balance_pipeline_core;
-mod balance_pipeline_debug_introspection;
 mod balance_pipeline_example_targets;
 mod balance_pipeline_merge;
 mod balance_pipeline_perf;
@@ -17,7 +17,6 @@ mod balance_pipeline_stats_report;
 mod balance_pipeline_summary;
 
 pub(crate) use balance_pipeline_config::*;
-use balance_pipeline_debug_introspection::*;
 use balance_pipeline_example_targets::*;
 use balance_pipeline_perf::*;
 use balance_pipeline_quality_gate::*;
@@ -28,25 +27,6 @@ use balance_pipeline_selection::*;
 use balance_pipeline_sim_worker::*;
 use balance_pipeline_stats_report::*;
 use balance_pipeline_summary::*;
-
-/// Per-equation introspection dump. Edit to enable while debugging.
-fn msl_introspect_enabled() -> bool {
-    false
-}
-
-fn msl_introspect_eq_limit() -> usize {
-    120
-}
-
-fn should_introspect_model(_model_name: &str) -> bool {
-    // No model filter; introspection (when enabled above) applies to all.
-    true
-}
-
-/// Render simulation plots during the MSL run. Edit to enable.
-fn msl_render_enabled() -> bool {
-    false
-}
 
 /// Two count families over the checked DAE, deliberately kept distinct:
 ///
@@ -185,40 +165,6 @@ pub(super) fn model_attempt_timeout_secs() -> f64 {
         .map_or(MODEL_ATTEMPT_TIMEOUT_SECS, |value| {
             value.max(MODEL_ATTEMPT_TIMEOUT_SECS)
         })
-}
-
-pub(super) struct ModelCompileEntry {
-    model_name: String,
-    compile_outcome: ModelCompileOutcome,
-    remaining_budget_secs: Option<f64>,
-    compile_seconds: f64,
-    compile_perf_profile_file: Option<String>,
-}
-
-pub(super) enum ModelCompileOutcome {
-    Phase(PhaseResult),
-    StrictReport(Box<StrictCompileReport>),
-    StrictDaeSuccess(Box<rumoca_compile::compile::DaeCompilationResult>),
-    StrictDaeFailure(String),
-}
-
-impl ModelCompileOutcome {
-    fn is_success(&self) -> bool {
-        self.success_result().is_some() || matches!(self, ModelCompileOutcome::StrictDaeSuccess(_))
-    }
-
-    fn success_result(&self) -> Option<&rumoca_compile::compile::CompilationResult> {
-        match self {
-            Self::Phase(PhaseResult::Success(result)) => Some(result.as_ref()),
-            Self::StrictReport(report) if report.requested_succeeded() => {
-                match report.requested_result.as_ref() {
-                    Some(PhaseResult::Success(result)) => Some(result.as_ref()),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
 }
 
 pub(super) struct StageAbortWatchdog {
@@ -1049,19 +995,6 @@ pub(super) fn summarize_success_result(
     )
 }
 
-pub(super) fn summarize_dae_success_result(
-    name: String,
-    result: &rumoca_compile::compile::DaeCompilationResult,
-) -> MslModelResult {
-    summarize_dae_success_fields(
-        name,
-        result.dae.as_ref(),
-        result.flat.as_ref(),
-        &result.balance_detail,
-        result.dae.active_discrete_scalar_count() as i64,
-    )
-}
-
 fn summarize_dae_success_fields(
     name: String,
     dae: &Dae,
@@ -1155,70 +1088,6 @@ fn summarize_dae_success_fields(
     }
 }
 
-pub(super) fn convert_compile_outcome(
-    name: String,
-    compile_outcome: ModelCompileOutcome,
-) -> MslModelResult {
-    match compile_outcome {
-        ModelCompileOutcome::Phase(phase_result) => convert_phase_result(name, phase_result),
-        ModelCompileOutcome::StrictDaeSuccess(result) => {
-            summarize_dae_success_result(name, &result)
-        }
-        ModelCompileOutcome::StrictDaeFailure(failure_summary) => {
-            let phase = strict_dae_failure_phase(&failure_summary);
-            phase_error_result(name, phase, Some(failure_summary), None)
-        }
-        ModelCompileOutcome::StrictReport(report) => {
-            let report = *report;
-            let failure_summary = report.failure_summary(usize::MAX);
-            let error_code = report
-                .failures
-                .iter()
-                .find_map(|failure| failure.error_code.clone());
-            match report.requested_result {
-                Some(PhaseResult::Success(result)) if report.failures.is_empty() => {
-                    convert_phase_result(name, PhaseResult::Success(result))
-                }
-                Some(phase_result @ PhaseResult::NeedsInner { .. })
-                | Some(phase_result @ PhaseResult::Failed { .. }) => {
-                    convert_phase_result(name, phase_result)
-                }
-                Some(PhaseResult::Success(_)) | None => {
-                    let phase = strict_dae_failure_phase(&failure_summary);
-                    phase_error_result(name, phase, Some(failure_summary), error_code)
-                }
-            }
-        }
-    }
-}
-
-fn strict_dae_failure_phase(failure_summary: &str) -> &'static str {
-    const PHASE_MARKERS: &[(&str, &str)] = &[
-        (" failed in Instantiate:", "Instantiate"),
-        (" failed in Typecheck:", "Typecheck"),
-        (" failed in Flatten:", "Flatten"),
-        (" failed in ToDae:", "ToDae"),
-    ];
-    PHASE_MARKERS
-        .iter()
-        .find_map(|(marker, phase)| failure_summary.contains(marker).then_some(*phase))
-        .unwrap_or("Resolve")
-}
-
-fn write_rendered_artifact<E>(
-    render_result: Result<String, E>,
-    path: std::path::PathBuf,
-    rendered: &AtomicUsize,
-    render_errors: &AtomicUsize,
-) {
-    if let Ok(code) = render_result {
-        let _ = fs::write(path, code);
-        rendered.fetch_add(1, Ordering::Relaxed);
-    } else {
-        render_errors.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
 fn pct(part: usize, total: usize) -> f64 {
     if total > 0 {
         (part as f64 / total as f64) * 100.0
@@ -1227,22 +1096,10 @@ fn pct(part: usize, total: usize) -> f64 {
     }
 }
 
-fn maybe_log_render_progress(run_simulation: bool, done: usize, total: usize) {
-    if !run_simulation && (done.is_multiple_of(50) || done == total) {
-        eprintln!("  render progress: {done}/{total}");
-    }
-}
-
 struct RenderSimContext<'a> {
     run_simulation: bool,
     sim_target_names: Option<&'a HashSet<String>>,
-    total_render_targets: usize,
     total_sim_targets: usize,
-    dae_dir: &'a Path,
-    flat_dir: &'a Path,
-    dae_rendered: &'a AtomicUsize,
-    flat_rendered: &'a AtomicUsize,
-    render_errors: &'a AtomicUsize,
     sim_attempted: &'a AtomicUsize,
     sim_completed: &'a AtomicUsize,
     sim_ok_live: &'a AtomicUsize,
@@ -1250,23 +1107,4 @@ struct RenderSimContext<'a> {
     sim_timeout_live: &'a AtomicUsize,
     sim_solver_fail_live: &'a AtomicUsize,
     sim_balance_fail_live: &'a AtomicUsize,
-    render_completed: &'a AtomicUsize,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn strict_dae_failure_phase_uses_reported_stage_marker() {
-        assert_eq!(
-            strict_dae_failure_phase("Modelica.A failed in Flatten: unsupported equation form"),
-            "Flatten"
-        );
-        assert_eq!(
-            strict_dae_failure_phase("Modelica.A failed in ToDae: unresolved reference"),
-            "ToDae"
-        );
-        assert_eq!(strict_dae_failure_phase("resolve diagnostics"), "Resolve");
-    }
 }

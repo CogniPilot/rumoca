@@ -91,8 +91,6 @@ pub(crate) enum MslParityUnmeasuredReason {
     OmcUnavailable { detail: String },
     /// The comparator stage ran and failed.
     ComparatorStageFailed { detail: String },
-    /// The comparator stage never executed in this process.
-    StageNotExecuted { detail: String },
     /// No `omc_simulation_reference.json` exists at the expected path.
     ReferenceAbsent { path: String },
     /// A reference exists but does not carry a readable set of bands.
@@ -116,9 +114,6 @@ impl MslParityUnmeasuredReason {
             }
             Self::ComparatorStageFailed { detail } => {
                 format!("the comparator stage failed: {detail}")
-            }
-            Self::StageNotExecuted { detail } => {
-                format!("the comparator stage never executed: {detail}")
             }
             Self::ReferenceAbsent { path } => {
                 format!("no OMC reference at {path}")

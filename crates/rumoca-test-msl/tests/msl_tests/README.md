@@ -112,8 +112,9 @@ grows the list; never lower it to make a red gate green.
 
 ## Split of Responsibilities
 
-- `balance_pipeline.rs`
-  - Owns high-level orchestration and core data structures for parse/session/compile.
+- `balance_pipeline/mod.rs` and `balance_pipeline_core.rs`
+  - Own high-level orchestration, result types, and the persistent typed
+    `ModelWorkerDaemon` compile/simulation queue.
 - `balance_pipeline_selection.rs`
   - Owns focused simulation subset selection via `RUMOCA_MSL_SIM_*` controls.
   - Owns state-count-ranked fast/long/full simulation-set selection via
@@ -126,9 +127,9 @@ grows the list; never lower it to make a red gate green.
   asset and treats `Complex.mo` plus `Modelica 4.1.0/package.mo` as required
   cache-layout sentinels, so stale partial MSL caches are rejected and rebuilt.
 - `balance_pipeline_sim_worker.rs`
-  - Owns isolated simulation worker execution and timeout/result mapping.
+  - Owns the timeout and memory policy inputs passed to the typed model worker.
 - `balance_pipeline_render_sim.rs`
-  - Owns render + simulation orchestration over compiled model results.
+  - Owns simulation-target selection and live status aggregation.
 - `balance_pipeline_summary.rs`
   - Owns post-compile summary aggregation and timing bookkeeping.
 - `balance_pipeline_reporting.rs`
@@ -137,8 +138,6 @@ grows the list; never lower it to make a red gate green.
   - Owns machine-readable MSL quality baseline gate logic.
 - `balance_pipeline_stats_report.rs`
   - Owns simulation/timing/failure stats printing and final stats emission.
-- `balance_pipeline_debug_introspection.rs`
-  - Owns per-model DAE/flat introspection dumps used during focused simulation triage.
 
 ## Pipeline Invariants
 

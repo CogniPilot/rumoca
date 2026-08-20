@@ -462,16 +462,6 @@ fn tensor_preservation_percent(preserved: usize, total: usize) -> Option<f64> {
     (total != 0).then(|| 100.0 * preserved as f64 / total as f64)
 }
 
-pub(super) fn compile_success_rate(
-    compiled_models: usize,
-    simulatable_attempted: usize,
-) -> Option<f64> {
-    if simulatable_attempted == 0 {
-        return None;
-    }
-    Some(compiled_models as f64 / simulatable_attempted as f64)
-}
-
 pub(super) fn balance_success_rate(
     balanced_models: usize,
     balance_denominator: usize,
@@ -1211,23 +1201,6 @@ pub(super) fn write_current_msl_quality_snapshot(
         msl_quality_baseline_path().display()
     );
     Ok(())
-}
-
-pub(super) fn sim_rate_gate_override_enabled() -> bool {
-    false
-}
-
-fn skip_omc_compile_reference_enabled() -> bool {
-    false
-}
-
-fn msl_quality_env_flag_enabled(name: &str) -> bool {
-    std::env::var(name).is_ok_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
 }
 
 pub(super) fn msl_quality_context_mismatch_reason(

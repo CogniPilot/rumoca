@@ -656,18 +656,6 @@ pub(super) fn print_final_stats(summary: &MslSummary) {
     print_simulatable_compilation_rate(summary);
 }
 
-fn env_flag_enabled(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|raw| {
-            matches!(
-                raw.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
 pub(super) fn print_timing_breakdown(summary: &MslSummary) {
     println!("Performance Snapshot:");
     if summary.timings.compile_chunk_count <= 1 {

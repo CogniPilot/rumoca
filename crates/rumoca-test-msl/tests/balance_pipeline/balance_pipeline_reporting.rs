@@ -4,7 +4,7 @@ use rumoca_sim::sim_trace_compare::{
     MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE, MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
     ModelDeviationMetric, classify_trace_metric_channel_distribution,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 // =============================================================================
 // Result JSON write + balance summary printing

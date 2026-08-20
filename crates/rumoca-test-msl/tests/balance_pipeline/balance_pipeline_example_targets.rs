@@ -1,5 +1,6 @@
 use super::*;
 use rumoca_compile::parsing::ast;
+use std::collections::HashSet;
 
 // =============================================================================
 // MSL example target discovery
@@ -40,16 +41,6 @@ pub(super) fn is_root_msl_example_model_name(model_name: &str) -> bool {
 /// - non-partial
 /// - no top-level input scalars requiring external bindings
 /// - no unbound fixed-parameter scalars (fixed=true by default for parameters)
-pub(super) fn is_root_standalone_msl_example_model(
-    model_name: &str,
-    result: &rumoca_compile::compile::CompilationResult,
-) -> bool {
-    is_root_msl_example_model_name(model_name)
-        && !result.flat.is_partial
-        && !checked_dae_has_input_scalars(&result.dae)
-        && !result.flat.has_unbound_fixed_parameters()
-}
-
 pub(super) fn is_root_standalone_msl_example_dae_model(
     model_name: &str,
     result: &rumoca_compile::compile::DaeCompilationResult,

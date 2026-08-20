@@ -238,19 +238,6 @@ fn sum_optional_usize(values: &[&Value], path: &[&str]) -> Option<usize> {
     found.then_some(total)
 }
 
-fn sum_optional_f64(values: &[&Value], path: &[&str]) -> Option<f64> {
-    let mut found = false;
-    let total = values
-        .iter()
-        .filter_map(|value| {
-            let item = json_f64(value, path)?;
-            found = true;
-            Some(item)
-        })
-        .sum();
-    found.then_some(total)
-}
-
 fn percent(count: usize, total: usize) -> f64 {
     if total == 0 {
         return 0.0;

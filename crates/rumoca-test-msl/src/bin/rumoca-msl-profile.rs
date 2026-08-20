@@ -6,8 +6,7 @@ use clap::{Parser, ValueEnum};
 use rumoca_compile::compile::{
     CompilationResult, ContinuousOwnerView, CoordinateView, Dae, ExpressionOperation, PhaseResult,
     Session, SessionConfig, SourceRootKind, StrictCompileReport, VariableId, VariableRole,
-    VariableView, compile_phase_timing_stats, core as rumoca_core,
-    reset_compile_phase_timing_stats,
+    VariableView, compile_phase_timing_stats, reset_compile_phase_timing_stats,
 };
 use rumoca_compile::source_roots::parse_source_root_with_cache;
 use rumoca_sim::simulate_dae;

@@ -31,11 +31,10 @@
 //! in full, including why measurement stops at the ceiling rather than
 //! discovering how far past it a model went.
 
-use rayon::prelude::*;
 use rumoca_compile::{
     compile::{
-        CompiledSourceRoot, Dae, FailedPhase, PhaseResult, StrictCompileReport,
-        compile_phase_timing_stats, reset_compile_phase_timing_stats,
+        CompiledSourceRoot, Dae, FailedPhase, PhaseResult, compile_phase_timing_stats,
+        reset_compile_phase_timing_stats,
     },
     parsing::{LenientParseResult, parse_files_parallel_lenient},
 };

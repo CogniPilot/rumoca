@@ -1,6 +1,7 @@
 use super::*;
 use indexmap::IndexSet;
 use rumoca_worker::MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT;
+use std::collections::HashSet;
 
 // =============================================================================
 // Focused simulation target selection and subset controls
@@ -10,7 +11,6 @@ const MSL_HEADROOM_CORE_THRESHOLD: usize = 16;
 const MSL_RESERVED_CORES_ON_LARGE_HOSTS: usize = 2;
 /// Default resident-memory estimate per persistent MSL model-worker slot.
 pub(super) const MSL_COMPILE_MODEL_MEMORY_MB_DEFAULT: usize = 1536;
-const MSL_COMPILE_MODEL_MEMORY_MB_MIN: usize = 128;
 /// Floor on the memory left to the OS, desktop, and filesystem cache during MSL
 /// gates. See [`reserved_memory_mb_for_total`] for the host-scaled reserve that
 /// supersedes it on larger machines.
@@ -156,52 +156,6 @@ fn prior_model_schedule_score(metrics: PriorModelScheduleMetrics) -> u64 {
     metrics
         .compile_millis
         .unwrap_or_else(|| prior_model_complexity_score(metrics.complexity) as u64)
-}
-
-pub(super) fn compile_model_memory_mb_from_complexity_score(
-    complexity_score: usize,
-    fallback_mb: usize,
-) -> usize {
-    let fallback_mb = fallback_mb.max(1);
-    let quarter_mb = (fallback_mb / 4).max(MSL_COMPILE_MODEL_MEMORY_MB_MIN);
-    let half_mb = (fallback_mb / 2).max(quarter_mb);
-    if complexity_score == 0 {
-        fallback_mb
-    } else if complexity_score < 100 {
-        quarter_mb
-    } else if complexity_score < 1_000 {
-        half_mb
-    } else if complexity_score < 5_000 {
-        fallback_mb
-    } else {
-        fallback_mb.saturating_mul(2)
-    }
-}
-
-fn compile_model_memory_mb_from_complexity(
-    complexity: PriorModelComplexity,
-    fallback_mb: usize,
-) -> usize {
-    compile_model_memory_mb_from_complexity_score(
-        prior_model_complexity_score(complexity),
-        fallback_mb,
-    )
-}
-
-pub(super) fn compile_model_memory_costs_for_names(names: &[String]) -> HashMap<String, usize> {
-    let fallback_mb = compile_model_memory_mb();
-    let complexities = prior_results_file().and_then(|path| load_prior_model_complexities(&path));
-    names
-        .iter()
-        .map(|name| {
-            let cost_mb = complexities
-                .as_ref()
-                .and_then(|entries| entries.get(name).copied())
-                .map(|complexity| compile_model_memory_mb_from_complexity(complexity, fallback_mb))
-                .unwrap_or(fallback_mb);
-            (name.clone(), cost_mb)
-        })
-        .collect()
 }
 
 /// Memory held back from every MSL budget.
@@ -388,18 +342,6 @@ fn generated_sim_targets_file() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-fn env_var_bool(key: &str) -> bool {
-    std::env::var(key)
-        .ok()
-        .map(|raw| {
-            matches!(
-                raw.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
 fn committed_sim_targets_file() -> Option<PathBuf> {
     let path = msl_crate_manifest_dir().join(DEFAULT_SIM_TARGETS_FILE_REL);
     path.is_file().then_some(path)
@@ -509,19 +451,6 @@ fn retain_selected_model_order(names: &mut Vec<String>, selected: &[String]) -> 
         .filter(|name| !available.contains(*name))
         .cloned()
         .collect()
-}
-
-fn load_prior_model_complexities(path: &Path) -> Option<HashMap<String, PriorModelComplexity>> {
-    let metrics = load_prior_model_schedule_metrics(path)?;
-    Some(
-        metrics
-            .into_iter()
-            .filter_map(|(name, metrics)| {
-                (metrics.complexity != PriorModelComplexity::default())
-                    .then_some((name, metrics.complexity))
-            })
-            .collect(),
-    )
 }
 
 fn load_prior_model_schedule_metrics(
@@ -940,10 +869,6 @@ fn compile_target_candidates(
     names
 }
 
-pub(super) fn is_selected_sim_target(name: &str, ctx: &RenderSimContext<'_>) -> bool {
-    ctx.sim_target_names.is_none_or(|set| set.contains(name))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1070,21 +995,6 @@ mod tests {
     }
 
     #[test]
-    fn compile_memory_cost_from_complexity_uses_tiered_tokens() {
-        assert_eq!(compile_model_memory_mb_from_complexity_score(0, 768), 768);
-        assert_eq!(compile_model_memory_mb_from_complexity_score(42, 768), 192);
-        assert_eq!(compile_model_memory_mb_from_complexity_score(500, 768), 384);
-        assert_eq!(
-            compile_model_memory_mb_from_complexity_score(2_000, 768),
-            768
-        );
-        assert_eq!(
-            compile_model_memory_mb_from_complexity_score(8_000, 768),
-            1_536
-        );
-    }
-
-    #[test]
     fn load_target_model_names_preserves_record_order() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("targets.json");
@@ -1196,59 +1106,6 @@ mod tests {
 
         assert!(resolve_sim_targets_file_path(crate_relative).is_file());
         assert!(resolve_sim_targets_file_path(repo_relative).is_file());
-    }
-
-    #[test]
-    fn load_prior_model_complexities_reads_state_rankings() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("msl_results.json");
-        fs::write(
-            &path,
-            serde_json::to_string_pretty(&serde_json::json!({
-                "model_results": [
-                    {
-                        "model_name": "Modelica.Electrical.Digital.Examples.DFFREG",
-                        "num_states": 0,
-                        "num_algebraics": 42,
-                        "num_f_x": 0,
-                        "scalar_equations": 84,
-                        "scalar_unknowns": 84
-                    },
-                    {
-                        "model_name": "Modelica.Blocks.Examples.BooleanNetwork1",
-                        "num_states": 4,
-                        "num_algebraics": 8,
-                        "num_f_x": 18,
-                        "scalar_equations": 18,
-                        "scalar_unknowns": 18
-                    }
-                ]
-            }))
-            .expect("serialize prior results"),
-        )
-        .expect("write prior results");
-
-        let complexities = load_prior_model_complexities(&path).expect("prior complexities");
-        assert_eq!(
-            complexities.get("Modelica.Blocks.Examples.BooleanNetwork1"),
-            Some(&PriorModelComplexity {
-                num_states: 4,
-                num_algebraics: 8,
-                num_f_x: 18,
-                scalar_equations: 18,
-                scalar_unknowns: 18,
-            })
-        );
-        assert_eq!(
-            complexities.get("Modelica.Electrical.Digital.Examples.DFFREG"),
-            Some(&PriorModelComplexity {
-                num_states: 0,
-                num_algebraics: 42,
-                num_f_x: 0,
-                scalar_equations: 84,
-                scalar_unknowns: 84,
-            })
-        );
     }
 
     #[test]
