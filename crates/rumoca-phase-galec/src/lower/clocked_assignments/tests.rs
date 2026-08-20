@@ -17,7 +17,9 @@ fn enclosed(source: SourceId, text: &str, first: &str, last: &str) -> dae::DaePr
 
 fn project(model: &dae::Dae) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
     model.inspect(|view| {
-        let classified = classify_variables(view).expect("test variables are classifiable");
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let classified =
+            classify_variables(view, &definitions).expect("test variables are classifiable");
         let by_id = classified
             .iter()
             .map(|variable| (variable.id.index(), variable.clone()))
@@ -31,7 +33,7 @@ fn project(model: &dae::Dae) -> Result<Vec<gast::Spanned<gast::Statement>>, Gale
                 )
             })
             .expect("test has one periodic clock");
-        lower_clocked_assignments(view, clock, &by_id, &HashMap::new())
+        lower_clocked_assignments(view, &definitions, clock, &by_id, &HashMap::new())
             .map(|assignments| assignments.statements)
     })
 }

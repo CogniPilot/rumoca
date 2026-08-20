@@ -574,6 +574,10 @@ pub struct Dae {
     schema_version: u16,
     source_map: SourceMap,
     storage: FrozenStorage,
+    /// DAE-owned derived metric: discrete coordinate scalars referenced by the
+    /// finalized checked expression graph.
+    #[serde(skip)]
+    active_discrete_scalar_count: usize,
 }
 
 impl Dae {
@@ -595,10 +599,13 @@ impl Dae {
             build(&mut construction)?;
         }
         storage.finish_construction()?;
+        let storage = storage.freeze();
+        let active_discrete_scalar_count = active_discrete_scalar_count(&storage);
         Ok(Self {
             schema_version: DAE_SCHEMA_VERSION,
             source_map,
-            storage: storage.freeze(),
+            storage,
+            active_discrete_scalar_count,
         })
     }
 
@@ -608,6 +615,11 @@ impl Dae {
 
     pub fn source_map(&self) -> &SourceMap {
         &self.source_map
+    }
+
+    /// Number of scalar discrete coordinates used by the finalized DAE graph.
+    pub const fn active_discrete_scalar_count(&self) -> usize {
+        self.active_discrete_scalar_count
     }
 
     pub fn source_text(&self, provenance: DaeProvenance) -> Option<&str> {
@@ -621,6 +633,45 @@ impl Dae {
             marker: PhantomData,
         })
     }
+}
+
+fn active_discrete_scalar_count(storage: &FrozenStorage) -> usize {
+    let active = storage
+        .expressions
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            ExprNode::Coordinate(
+                Coordinate::Parameter(variable)
+                | Coordinate::Input(variable)
+                | Coordinate::State(variable)
+                | Coordinate::Derivative(variable)
+                | Coordinate::Algebraic(variable)
+                | Coordinate::DiscreteReal(variable)
+                | Coordinate::DiscreteValue(variable)
+                | Coordinate::PreDiscreteReal(variable)
+                | Coordinate::PreDiscreteValue(variable)
+                | Coordinate::PreState(variable)
+                | Coordinate::PreAlgebraic(variable),
+            ) => Some(*variable),
+            _ => None,
+        })
+        .collect::<rustc_hash::FxHashSet<_>>();
+    active
+        .into_iter()
+        .filter_map(|variable| storage.variables.get(variable as usize))
+        .filter(|variable| {
+            matches!(
+                variable.role,
+                VariableRole::DiscreteReal | VariableRole::DiscreteValue
+            )
+        })
+        .map(|variable| {
+            storage.value_types[variable.value_type as usize]
+                .scalar_count()
+                .expect("final DAE value type has a checked scalar capacity")
+        })
+        .sum()
 }
 
 /// The single mutable aggregate lent to semantic owner closures.

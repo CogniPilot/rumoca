@@ -32,6 +32,7 @@ struct ScheduledAssignment<'dae> {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn lower_clock_schedule<'dae>(
     view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     schedule: &AdmittedClock,
     classified: &[ClassifiedVariable<'dae>],
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
@@ -57,6 +58,7 @@ pub(super) fn lower_clock_schedule<'dae>(
             let clock_view = view.clock(clock).expect("admitted clock resolves");
             let assignments = lower_clocked_assignments_for_domain(
                 view,
+                definitions,
                 clock,
                 by_id,
                 pre_names,

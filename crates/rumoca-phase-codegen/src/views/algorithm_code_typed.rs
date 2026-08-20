@@ -693,6 +693,8 @@ enum TypedExpressionNodeView<'a> {
     Not(Box<TypedExpressionView<'a>>),
     Binary {
         op: ast::BinaryOp,
+        precedence_class: ast::PrecedenceClass,
+        associativity: ast::Associativity,
         lhs: Box<TypedExpressionView<'a>>,
         rhs: Box<TypedExpressionView<'a>>,
         /// `true` when this is `<real> ^ 2` with a base cheap enough to print
@@ -2018,6 +2020,8 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             shape,
             TypedExpressionNodeView::Binary {
                 op,
+                precedence_class: op.precedence_class(),
+                associativity: op.precedence_class().associativity(),
                 lhs,
                 rhs,
                 square_reducible,
@@ -2915,6 +2919,8 @@ mod square_reduction_tests {
             ast::ScalarType::Integer,
             TypedExpressionNodeView::Binary {
                 op: ast::BinaryOp::Add,
+                precedence_class: ast::PrecedenceClass::Additive,
+                associativity: ast::Associativity::Left,
                 lhs: Box::new(real_ref(&i)),
                 rhs: Box::new(integer_literal(1)),
                 square_reducible: false,
@@ -3275,6 +3281,8 @@ mod kernelize_tests {
             ast::ScalarType::Real,
             TypedExpressionNodeView::Binary {
                 op,
+                precedence_class: op.precedence_class(),
+                associativity: op.precedence_class().associativity(),
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
                 square_reducible: false,

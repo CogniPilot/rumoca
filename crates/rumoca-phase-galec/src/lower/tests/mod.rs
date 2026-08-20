@@ -72,7 +72,8 @@ fn binding_dependencies_issue_dependent_parameters_in_topological_order() {
     .unwrap();
 
     model.inspect(|view| {
-        let classified = classify_variables(view).unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let classified = classify_variables(view, &definitions).unwrap();
         let classes: HashMap<_, _> = classified
             .iter()
             .map(|variable| (variable.variable.name().as_str(), variable.class))
@@ -139,7 +140,8 @@ fn rank_two_dependent_parameter_preserves_one_checked_whole_array_move() {
     .unwrap();
 
     model.inspect(|view| {
-        let classified = classify_variables(view).unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let classified = classify_variables(view, &definitions).unwrap();
         let by_id = classified
             .iter()
             .map(|variable| (variable.id.index(), variable.clone()))
@@ -157,7 +159,8 @@ fn rank_two_dependent_parameter_preserves_one_checked_whole_array_move() {
         );
 
         let previous = HashMap::new();
-        let statement = dependent_assignment(view, guidance, &by_id, &previous).unwrap();
+        let statement =
+            dependent_assignment(view, &definitions, guidance, &by_id, &previous).unwrap();
         let gast::Statement::Assignment { target, value } = statement.node else {
             panic!("dependent parameter must lower to one assignment")
         };
@@ -176,7 +179,7 @@ fn rank_two_dependent_parameter_preserves_one_checked_whole_array_move() {
                     && parts[0].subscripts.is_empty()
         ));
 
-        let mut lowerer = ExpressionLowerer::new(view, &by_id, &previous);
+        let mut lowerer = ExpressionLowerer::new(view, &definitions, &by_id, &previous);
         for indices in [
             Vec::new(),
             vec![gast::Expression::Integer(1)],
@@ -249,9 +252,11 @@ fn static_integer_index_arithmetic_folds_without_overflow() {
 fn dynamic_function_local_index_is_checked_and_exhaustively_projected() {
     let model = dae::Dae::construct(SourceMap::new(), |_| Ok(())).unwrap();
     model.inspect(|view| {
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let mut lowerer =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
         let index = gast::Expression::Ref(gast::Reference::local(gast::Name::ident("segment")));
         let selected = lowerer
             .lower_local_reference(gast::Name::ident("waypoint"), &[3], &[index], Span::DUMMY)
@@ -320,7 +325,9 @@ fn whole_array_function_arguments_preserve_checked_references() {
             },
         );
         let previous = HashMap::new();
-        let lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let lowerer =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
         let argument = view.expression_id(0).unwrap();
         let direct = lowerer.direct_whole_aggregate_reference(argument).unwrap();
         assert!(matches!(
@@ -385,7 +392,9 @@ fn whole_array_function_value_arguments_preserve_the_proven_current_storage() {
             .unwrap();
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let mut lowerer =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
         lowerer.function_scope = Some(function.id());
         let direct = lowerer.direct_whole_aggregate_reference(argument).unwrap();
         assert!(matches!(
@@ -471,7 +480,9 @@ fn single_aggregate_function_result_writes_its_checked_destination_directly() {
             .unwrap();
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let mut lowerer =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
         lowerer.function_scope = Some(caller.id());
         let statement = lowerer
             .lower_direct_aggregate_call_assignment(call, gast::Name::ident("y"), span)
@@ -538,7 +549,8 @@ fn causally_defined_output_remains_an_interface_and_gets_an_assignment() {
     })
     .unwrap();
     model.inspect(|view| {
-        let classified = classify_variables(view).unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let classified = classify_variables(view, &definitions).unwrap();
         assert!(classified.iter().any(|variable| {
             variable.class == VariableClass::Output && variable.variable.name().as_str() == "y"
         }));
@@ -550,6 +562,7 @@ fn causally_defined_output_remains_an_interface_and_gets_an_assignment() {
         let mut locals = Vec::new();
         causal_outputs::append_causal_assignments(
             view,
+            &definitions,
             classified.as_slice(),
             &by_id,
             &HashMap::new(),
@@ -632,7 +645,10 @@ fn function_assertion_is_detected_before_expression_inlining() {
         ));
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let Err(rejected) = ExpressionLowerer::new(view, &variables, &previous).lower(call) else {
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let Err(rejected) =
+            ExpressionLowerer::new(view, &definitions, &variables, &previous).lower(call)
+        else {
             panic!("an assertion needs an explicit call-scoped action sink")
         };
         assert!(matches!(
@@ -640,7 +656,8 @@ fn function_assertion_is_detected_before_expression_inlining() {
             GalecTargetError::UnsupportedFeature { feature, .. }
                 if feature == "function-assertion"
         ));
-        let mut lowerer = ExpressionLowerer::with_assertions(view, &variables, &previous);
+        let mut lowerer =
+            ExpressionLowerer::with_assertions(view, &definitions, &variables, &previous);
         assert_eq!(
             lowerer.lower(call).unwrap().expression,
             gast::Expression::Real(0.0)
@@ -703,7 +720,9 @@ fn prefix_boundary_rematerializes_function_calls_for_reorder_safety() {
             .unwrap();
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let mut lowerer =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
 
         let first = lowerer.lower(call).unwrap().expression;
         let first_prefix = lowerer.take_prefix_statements();
@@ -1079,8 +1098,10 @@ fn assert_atomic_multi_output_group(model: &dae::Dae) {
             dae::FunctionStatementView::AssignmentGroup { definitions, .. }
                 if definitions.len() == 2
         ));
-        let lowered = user_functions::lower_reachable(view, HashSet::from([caller.index()]))
-            .expect("the atomic multi-output group lowers");
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let lowered =
+            user_functions::lower_reachable(view, &definitions, HashSet::from([caller.index()]))
+                .expect("the atomic multi-output group lowers");
         let caller = lowered
             .iter()
             .find(|function| function.name.lexeme() == "caller")
@@ -1093,9 +1114,11 @@ fn assert_atomic_multi_output_group(model: &dae::Dae) {
 fn lazy_tensor_selection_guards_hoisted_calls_and_indexed_contractions() {
     let model = dae::Dae::construct(SourceMap::new(), |_| Ok(())).unwrap();
     model.inspect(|view| {
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let mut lowerer =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
         let outer = gast::Name::ident("outer");
         let enabled = gast::Name::ident("enabled");
         let shared = gast::Name::ident("shared");
@@ -1232,7 +1255,9 @@ fn scalar_conditional_branches_do_not_share_materialized_calls() {
         assert_eq!(calls.len(), 2);
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut distinct = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let mut distinct =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
         for call in calls {
             distinct.lower(call).unwrap();
         }
@@ -1250,7 +1275,8 @@ fn scalar_conditional_branches_do_not_share_materialized_calls() {
                 )
             })
             .unwrap();
-        let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let mut lowerer =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
         lowerer.lower(conditional).unwrap();
         let prefix = lowerer.take_prefix_statements();
         let gast::Statement::If(selection) = &prefix[0].node else {
@@ -1456,8 +1482,10 @@ fn record_field_of_checked_function_call_is_projected_before_scalar_lowering() {
 
     model.inspect(|view| {
         let function = view.function_id(0).unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
         let lowered_functions =
-            user_functions::lower_reachable(view, HashSet::from([function.index()])).unwrap();
+            user_functions::lower_reachable(view, &definitions, HashSet::from([function.index()]))
+                .unwrap();
         assert_eq!(lowered_functions.len(), 1);
         let field = (0..view.expression_count())
             .filter_map(|index| view.expression_id(index))
@@ -1470,13 +1498,14 @@ fn record_field_of_checked_function_call_is_projected_before_scalar_lowering() {
             .unwrap();
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let lowered = ExpressionLowerer::new(view, &variables, &previous)
+        let lowered = ExpressionLowerer::new(view, &definitions, &variables, &previous)
             .lower(field)
             .unwrap();
         assert_eq!(lowered.scalar_type, gast::ScalarType::Real);
         assert_eq!(lowered.expression, gast::Expression::Real(2.0));
 
-        let mut materialized = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let mut materialized =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
         let selected = materialized.lower(field).unwrap().expression;
         let prefix = materialized.take_prefix_statements();
         assert_eq!(prefix.len(), 1);
@@ -1555,8 +1584,10 @@ fn function_identity_assignments_are_not_emitted() {
 
     model.inspect(|view| {
         let function = view.function_id(0).unwrap();
-        let lowered = user_functions::lower_reachable(view, HashSet::from([function.index()]))
-            .expect("identity assignment lowers");
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let lowered =
+            user_functions::lower_reachable(view, &definitions, HashSet::from([function.index()]))
+                .expect("identity assignment lowers");
         assert_eq!(lowered.len(), 1);
         assert_eq!(lowered[0].statements.len(), 2);
         assert!(lowered[0].statements.iter().all(|statement| {
@@ -1666,7 +1697,9 @@ fn assert_dynamic_array_record_calls_are_lazy(view: dae::DaeView<'_>) {
     let dynamic_index = gast::Expression::Ref(gast::Reference::local(index_name.clone()));
     let variables = HashMap::new();
     let previous = HashMap::new();
-    let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+    let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+    let mut lowerer =
+        ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
     lowerer.loop_index_bounds.push(LoopIndexBound {
         name: index_name,
         minimum: 1,
@@ -1710,7 +1743,9 @@ fn conditional_record_call_is_materialized_only_in_its_selected_branch() {
             .unwrap();
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let mut lowerer =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
         let selected = lowerer.lower(field).unwrap();
         let prefix = lowerer.take_prefix_statements();
 
@@ -1739,7 +1774,9 @@ fn conditional_record_call_is_materialized_only_in_its_selected_branch() {
                 )
             })
             .unwrap();
-        let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let mut lowerer =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
         lowerer.lower(shared_call_field).unwrap();
         let prefix = lowerer.take_prefix_statements();
         let gast::Statement::If(selection) = &prefix[0].node else {
@@ -1798,7 +1835,8 @@ fn sum_reduction_projects_the_tensor_in_row_major_order() {
             .unwrap();
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut lowerer = ExpressionLowerer::new(view, &variables, &previous);
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let mut lowerer = ExpressionLowerer::new(view, &definitions, &variables, &previous);
         let expected = gast::Expression::binary(
             gast::BinaryOp::Add,
             gast::Expression::binary(
@@ -1861,7 +1899,8 @@ fn array_update_projects_updated_and_historical_elements() {
             .unwrap();
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut lowerer = ExpressionLowerer::new(view, &variables, &previous);
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let mut lowerer = ExpressionLowerer::new(view, &definitions, &variables, &previous);
         assert_eq!(
             lowerer.lower_element(update, &[1]).unwrap().expression,
             gast::Expression::Real(1.0)
@@ -1919,7 +1958,8 @@ fn comprehension_projects_checked_binder_values() {
             .unwrap();
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut lowerer = ExpressionLowerer::new(view, &variables, &previous);
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let mut lowerer = ExpressionLowerer::new(view, &definitions, &variables, &previous);
         for (ordinal, expected) in [(1, -1), (2, 1), (3, 3)] {
             assert_eq!(
                 lowerer
@@ -1950,9 +1990,11 @@ fn comprehension_projects_checked_binder_values() {
 fn whole_array_move_needs_shape_equality_not_just_subscript_identity() {
     let model = dae::Dae::construct(SourceMap::new(), |_| Ok(())).unwrap();
     model.inspect(|view| {
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let mut lowerer =
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
         for (name, extent) in [("wide", 5), ("exact", 2)] {
             lowerer.temporary_locals.push(gast::VariableDeclaration {
                 ty: gast::TypeRef::Primitive(gast::ScalarType::Real),

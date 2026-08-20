@@ -23,11 +23,17 @@ pub struct AdmittedClock {
 /// Inspect checked DAE ownership directly and collect every projection-scope
 /// rejection. No preparation pass may erase semantics before this check.
 pub fn check_admissibility(input: &GalecInput<'_>) -> Result<AdmittedClock, Vec<GalecTargetError>> {
-    input.dae.inspect(check_view)
+    input.dae.inspect(|view| {
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        check_view(view, &definitions)
+    })
 }
 
-fn check_view(view: dae::DaeView<'_>) -> Result<AdmittedClock, Vec<GalecTargetError>> {
-    let mut errors = projection_errors(view);
+pub(crate) fn check_view<'dae>(
+    view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+) -> Result<AdmittedClock, Vec<GalecTargetError>> {
+    let mut errors = projection_errors(view, definitions);
     let periodic = periodic_clocks(view);
     if periodic.is_empty() {
         errors.push(GalecTargetError::NoPeriodicClock);
@@ -38,14 +44,17 @@ fn check_view(view: dae::DaeView<'_>) -> Result<AdmittedClock, Vec<GalecTargetEr
     admit_clock_lattice(view, &periodic).map_err(|error| vec![error])
 }
 
-fn projection_errors(view: dae::DaeView<'_>) -> Vec<GalecTargetError> {
+fn projection_errors<'dae>(
+    view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+) -> Vec<GalecTargetError> {
     let mut errors = Vec::new();
     let states = view
         .variables()
         .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
         .map(|(_, variable)| variable.scalar_count())
         .sum::<usize>();
-    let equations = continuous_scalar_rows(view);
+    let equations = continuous_scalar_rows(view, definitions);
     if states != 0 || equations != 0 {
         errors.push(GalecTargetError::ContinuousDynamics { states, equations });
     }
@@ -142,8 +151,10 @@ fn admit_clock_lattice(
     })
 }
 
-fn continuous_scalar_rows(view: dae::DaeView<'_>) -> usize {
-    let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+fn continuous_scalar_rows<'dae>(
+    view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+) -> usize {
     view.continuous_owners()
         .map(|owner| match owner {
             dae::ContinuousOwnerView::Residual { id, .. } if definitions.consumes(id) => 0,

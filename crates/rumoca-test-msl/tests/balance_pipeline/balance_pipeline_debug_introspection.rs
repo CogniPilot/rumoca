@@ -294,7 +294,7 @@ pub(super) fn print_compiled_debug_with_limit(
     );
     println!(
         "active_discrete_scalar_count = {}",
-        active_discrete_scalar_count(flat, dae)
+        dae.active_discrete_scalar_count()
     );
     println!(
         "flat class_type={} partial={}",

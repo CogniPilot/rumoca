@@ -1669,8 +1669,6 @@ pub struct DaeCompilationResult {
     pub source_map: Option<SourceMap>,
     /// True if any fixed parameter had no binding while Flat was available.
     pub has_unbound_fixed_parameters: bool,
-    /// Active discrete scalar count computed before dropping Flat.
-    pub active_discrete_scalar_count: i64,
     /// Detailed continuous balance inputs for callers that need compact status.
     pub balance_detail: rumoca_phase_dae::balance::BalanceDetail,
     /// Optional simulation start time from `annotation(experiment(StartTime=...))`

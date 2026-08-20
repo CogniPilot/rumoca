@@ -1039,7 +1039,7 @@ pub(super) fn summarize_success_result(
     name: String,
     result: &rumoca_compile::compile::CompilationResult,
 ) -> MslModelResult {
-    let discrete_scalars = active_discrete_scalar_count(&result.flat, &result.dae);
+    let discrete_scalars = result.dae.active_discrete_scalar_count() as i64;
     summarize_dae_success_fields(
         name,
         &result.dae,
@@ -1058,7 +1058,7 @@ pub(super) fn summarize_dae_success_result(
         result.dae.as_ref(),
         result.flat.as_ref(),
         &result.balance_detail,
-        result.active_discrete_scalar_count,
+        result.dae.active_discrete_scalar_count() as i64,
     )
 }
 

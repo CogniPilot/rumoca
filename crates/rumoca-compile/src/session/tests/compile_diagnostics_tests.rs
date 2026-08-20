@@ -512,7 +512,7 @@ fn test_dae_strict_compile_projects_flat_derived_metadata() {
         .expect("DAE strict compile should succeed");
 
     assert!(result.has_unbound_fixed_parameters);
-    assert_eq!(result.active_discrete_scalar_count, 1);
+    assert_eq!(result.dae.active_discrete_scalar_count(), 1);
     assert_eq!(result.balance_detail.state_unknowns, 1);
 }
 

@@ -28,15 +28,17 @@ pub(super) struct ClockedAssignments {
 #[cfg(test)]
 pub(super) fn lower_clocked_assignments<'dae>(
     view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     clock: dae::ClockId<'dae>,
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
 ) -> Result<ClockedAssignments, GalecTargetError> {
-    lower_clocked_assignments_for_domain(view, clock, by_id, pre_names, true)
+    lower_clocked_assignments_for_domain(view, definitions, clock, by_id, pre_names, true)
 }
 
 pub(super) fn lower_clocked_assignments_for_domain<'dae>(
     view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     clock: dae::ClockId<'dae>,
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
@@ -45,10 +47,10 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
     let mut pending = Vec::new();
     let mut locals = Vec::new();
     let mut called_user_functions = HashSet::new();
-    let mut lowerer = ExpressionLowerer::with_do_step_effects(view, by_id, pre_names)
+    let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names)
         .with_causal_inlining()
         .with_temporary_namespace(format!("clocked{}", clock.index()));
-    let causal = CausalReadExpansion::derive(view);
+    let causal = CausalReadExpansion::new(view, definitions);
     let shared_calls = lower_clock_domain_preamble(
         view,
         clock,
@@ -80,6 +82,7 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
     called_user_functions.extend(lowerer.take_called_user_functions());
     lower_event_actions(
         view,
+        definitions,
         clock,
         by_id,
         pre_names,
@@ -111,11 +114,11 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
 /// value. Admitting only domain-entry-stable calls also keeps the preamble free
 /// of incoming schedule edges, so the barrier every assignment in the domain
 /// places on it can never close a cycle.
-fn lower_clock_domain_preamble<'dae>(
+fn lower_clock_domain_preamble<'a, 'dae>(
     view: dae::DaeView<'dae>,
     clock: dae::ClockId<'dae>,
     include_unclocked: bool,
-    causal: &CausalReadExpansion<'dae>,
+    causal: &CausalReadExpansion<'a, 'dae>,
     lowerer: &mut ExpressionLowerer<'_, 'dae>,
     pending: &mut Vec<ClockedAssignment>,
 ) -> Result<SharedMaterializedFunctionCalls, GalecTargetError> {
@@ -294,16 +297,19 @@ fn collect_eager_calls<'dae>(
 /// Deriving the proof is whole-model work; every clock domain and every
 /// assignment in it asks the same questions, so it is derived once per domain
 /// and reused.
-struct CausalReadExpansion<'dae> {
+struct CausalReadExpansion<'a, 'dae> {
     view: dae::DaeView<'dae>,
-    definitions: rumoca_phase_structural::CausalDefinitions<'dae>,
+    definitions: &'a rumoca_phase_structural::CausalDefinitions<'dae>,
     variables: HashMap<u32, dae::VariableId<'dae>>,
 }
 
-impl<'dae> CausalReadExpansion<'dae> {
-    fn derive(view: dae::DaeView<'dae>) -> Self {
+impl<'a, 'dae> CausalReadExpansion<'a, 'dae> {
+    fn new(
+        view: dae::DaeView<'dae>,
+        definitions: &'a rumoca_phase_structural::CausalDefinitions<'dae>,
+    ) -> Self {
         Self {
-            definitions: rumoca_phase_structural::CausalDefinitions::derive(view),
+            definitions,
             variables: view.variables().map(|(id, _)| (id.index(), id)).collect(),
             view,
         }
@@ -803,14 +809,15 @@ fn discrete_real_clock_owners(view: dae::DaeView<'_>) -> HashMap<u32, u32> {
 
 fn lower_event_actions<'dae>(
     view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     clock: dae::ClockId<'dae>,
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
     include_unclocked: bool,
     pending: &mut Vec<ClockedAssignment>,
 ) -> Result<(), GalecTargetError> {
-    let mut lowerer =
-        ExpressionLowerer::with_assertions(view, by_id, pre_names).with_causal_inlining();
+    let mut lowerer = ExpressionLowerer::with_assertions(view, definitions, by_id, pre_names)
+        .with_causal_inlining();
     for index in 0..view.event_action_count() {
         let action = view
             .event_action(

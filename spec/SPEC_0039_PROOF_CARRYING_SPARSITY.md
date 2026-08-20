@@ -24,10 +24,10 @@ formats are separate runtime or target choices.
 | Solve artifacts own Jacobian and mass-matrix patterns | phase-solve | Optional solver-facing products |
 | Tensor operand patterns stay on checked tensor operations | Solve IR | Kernel semantics need local structure |
 
-`Full` is the explicit conservative pattern. It is never an implicit default.
-An unavailable or opaque dependency becomes `Full`, or artifact construction
-fails when the derivative operation itself is unavailable. It never becomes
-`Empty`.
+`Full` is an explicit conservative pattern, never an implicit default. Every
+checked Solve operation has an exhaustive dependency rule. An unavailable
+derivative operation fails artifact construction; an unclassified operation is
+a compiler error rather than a silently dense or empty dependency.
 
 ### Canonical Pattern
 
@@ -56,8 +56,8 @@ the decoded programs and domains.
 
 ### Dependency Derivation
 
-Dependency state is explicitly either `Known(set)` or `Unknown`; absence from
-a register table means `Unknown`.
+Every initialized register carries one exact may-depend set. Absence from the
+register table is a construction error; there is no unknown dependency state.
 
 | Operation | Derived dependency |
 |---|---|
@@ -73,7 +73,7 @@ a register table means `Unknown`.
 | Map/stencil | Compact affine propagation over its owner domain |
 | Matrix multiply | Algebraic propagation from both operand patterns |
 | Linear solve | All matrix/RHS dependencies unless a proved diagonal or block rule applies |
-| Opaque runtime operation | Unknown, becoming Full at the artifact boundary |
+| Runtime/effect operation | Union of its explicit register operands; the independent effect query records the runtime effect |
 
 Algebraic cancellation does not remove a dependency unless a separately proved
 rewrite establishes the identity under the selected numeric semantics.

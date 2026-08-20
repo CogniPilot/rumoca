@@ -4,14 +4,14 @@ use super::*;
 
 pub(super) fn append_causal_assignments<'dae>(
     view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     classified: &[ClassifiedVariable<'dae>],
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
     method_locals: &mut Vec<gast::VariableDeclaration>,
     statements: &mut Vec<gast::Spanned<gast::Statement>>,
 ) -> Result<HashSet<u32>, GalecTargetError> {
-    let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-    let mut lowerer = ExpressionLowerer::with_do_step_effects(view, by_id, pre_names)
+    let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names)
         .with_temporary_namespace("causal");
     for algebraic in definitions.order() {
         let id = dae::VariableId::from(*algebraic);
@@ -21,13 +21,13 @@ pub(super) fn append_causal_assignments<'dae>(
         else {
             continue;
         };
-        append_local_assignments(local, &definitions, &mut lowerer, statements)?;
+        append_local_assignments(local, definitions, &mut lowerer, statements)?;
     }
     for output in classified
         .iter()
         .filter(|variable| variable.class == VariableClass::Output)
     {
-        append_output_assignments(output, &definitions, &mut lowerer, statements)?;
+        append_output_assignments(output, definitions, &mut lowerer, statements)?;
     }
     method_locals.extend(lowerer.take_temporary_locals());
     Ok(lowerer.take_called_user_functions())

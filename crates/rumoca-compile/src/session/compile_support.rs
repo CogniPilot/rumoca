@@ -362,41 +362,17 @@ fn take_or_clone_flat(value: Arc<flat::Model>) -> flat::Model {
     Arc::unwrap_or_clone(value)
 }
 
-fn active_discrete_scalar_count(dae_model: &dae::Dae) -> i64 {
-    dae_model.inspect(|view| {
-        let active = (0..view.expression_count())
-            .filter_map(|index| view.expression_id(index))
-            .filter_map(|expression| view.expression(expression))
-            .filter_map(dae::ExpressionView::variable_coordinate)
-            .collect::<HashSet<_>>();
-
-        view.variables()
-            .filter(|(id, variable)| {
-                active.contains(id)
-                    && matches!(
-                        variable.role(),
-                        dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue
-                    )
-            })
-            .map(|(_, variable)| variable.scalar_count())
-            .sum::<usize>() as i64
-    })
-}
-
 fn dae_compilation_result_from_artifact(
     artifact: DaeModelArtifactData,
     experiment_settings: ExperimentSettings,
     source_map: SourceMap,
 ) -> Result<DaeCompilationResult, ToDaeError> {
     let has_unbound_fixed_parameters = artifact.flat.has_unbound_fixed_parameters();
-    let active_discrete_scalar_count = active_discrete_scalar_count(&artifact.dae);
-
     Ok(DaeCompilationResult {
         flat: artifact.flat,
         dae: artifact.dae,
         source_map: Some(source_map),
         has_unbound_fixed_parameters,
-        active_discrete_scalar_count,
         balance_detail: artifact.balance_detail,
         experiment_start_time: experiment_settings.start_time,
         experiment_stop_time: experiment_settings.stop_time,

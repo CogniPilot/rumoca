@@ -523,11 +523,7 @@ impl StructuralPattern {
                 Some(owner_span),
             ));
         };
-        let DependencyState::Known(dependencies) = dependencies else {
-            let provenance =
-                PatternProvenance::derived(PatternDerivation::ConservativeFull, owner_span)?;
-            return Self::full(rows, columns, provenance);
-        };
+        let DependencyState::Known(dependencies) = dependencies;
         let mut column_maps = derive_affine_column_maps(
             dependencies,
             &seed_positions,
@@ -848,12 +844,9 @@ impl StructuralPattern {
             DependencySource::SolverP,
         )?
         .into_iter()
-        .map(|dependencies| match dependencies {
-            DependencyState::Known(indices) => Ok(indices),
-            DependencyState::Unknown => Err(dependency_error(
-                "scalar output has an opaque solver-P dependency",
-                span,
-            )),
+        .map(|dependencies| {
+            let DependencyState::Known(indices) = dependencies;
+            Ok(indices)
         })
         .collect()
     }
@@ -864,7 +857,7 @@ impl StructuralPattern {
         program: &[LinearOp],
         span: Option<Span>,
     ) -> Result<Vec<bool>, StructuralPatternError> {
-        derive_output_dependency_presence(program, span, DependencySource::Seed, "AD-seed")
+        derive_output_dependency_presence(program, span, DependencySource::Seed)
     }
 
     /// Whether each output of one checked scalar program contains an opaque
@@ -878,7 +871,7 @@ impl StructuralPattern {
         program: &[LinearOp],
         span: Option<Span>,
     ) -> Result<Vec<bool>, StructuralPatternError> {
-        derive_output_dependency_presence(program, span, DependencySource::Effect, "runtime-effect")
+        derive_output_dependency_presence(program, span, DependencySource::Effect)
     }
 
     /// Whether each output of one checked scalar program depends on time.
@@ -890,7 +883,7 @@ impl StructuralPattern {
         program: &[LinearOp],
         span: Option<Span>,
     ) -> Result<Vec<bool>, StructuralPatternError> {
-        derive_output_dependency_presence(program, span, DependencySource::Time, "time")
+        derive_output_dependency_presence(program, span, DependencySource::Time)
     }
 
     /// Non-production fixture constructor.
@@ -1256,7 +1249,7 @@ fn derive_scalar_jvp_row_dependencies(
                     span,
                 ));
             }
-            let dependencies = dependencies.into_conservative_set(columns);
+            let dependencies = dependencies.into_set();
             if let Some(index) = dependencies.iter().find(|index| **index >= columns) {
                 return Err(dependency_error(
                     format!("Jacobian seed index {index} is outside 0..{columns}"),
@@ -1448,7 +1441,6 @@ fn banded_nonzero_count(
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DependencyState {
     Known(BTreeSet<usize>),
-    Unknown,
 }
 
 #[derive(Clone, Copy)]
@@ -1464,16 +1456,12 @@ fn derive_output_dependency_presence(
     program: &[LinearOp],
     span: Option<Span>,
     source: DependencySource,
-    source_name: &'static str,
 ) -> Result<Vec<bool>, StructuralPatternError> {
     program_output_dependencies_with_fold(program, span, None, None, None, source)?
         .into_iter()
-        .map(|dependencies| match dependencies {
-            DependencyState::Known(indices) => Ok(!indices.is_empty()),
-            DependencyState::Unknown => Err(dependency_error(
-                format!("scalar output has an opaque {source_name} dependency"),
-                span,
-            )),
+        .map(|dependencies| {
+            let DependencyState::Known(indices) = dependencies;
+            Ok(!indices.is_empty())
         })
         .collect()
 }
@@ -1493,17 +1481,12 @@ impl DependencyState {
                 lhs.extend(rhs);
                 Self::Known(lhs)
             }
-            (Self::Known(_), Self::Unknown)
-            | (Self::Unknown, Self::Known(_))
-            | (Self::Unknown, Self::Unknown) => Self::Unknown,
         }
     }
 
-    fn into_conservative_set(self, columns: usize) -> BTreeSet<usize> {
-        match self {
-            Self::Known(indices) => indices,
-            Self::Unknown => (0..columns).collect(),
-        }
+    fn into_set(self) -> BTreeSet<usize> {
+        let Self::Known(indices) = self;
+        indices
     }
 }
 
@@ -1521,13 +1504,8 @@ fn scalar_row_seed_dependencies(
             None,
         ));
     };
-    match dependencies {
-        DependencyState::Known(indices) => Ok(indices.iter().copied().collect()),
-        DependencyState::Unknown => Err(dependency_error(
-            "scalar row has an opaque dependency without a known column bound",
-            None,
-        )),
-    }
+    let DependencyState::Known(indices) = dependencies;
+    Ok(indices.iter().copied().collect())
 }
 
 fn program_output_dependencies(
@@ -1550,12 +1528,9 @@ fn program_output_y_dependencies(
         DependencySource::SolverY,
     )?
     .into_iter()
-    .map(|dependencies| match dependencies {
-        DependencyState::Known(indices) => Ok(indices),
-        DependencyState::Unknown => Err(dependency_error(
-            "scalar output has an opaque solver-Y dependency",
-            span,
-        )),
+    .map(|dependencies| {
+        let DependencyState::Known(indices) = dependencies;
+        Ok(indices)
     })
     .collect()
 }
@@ -1583,7 +1558,7 @@ pub(crate) fn program_register_y_dependencies(
         .into_iter()
         .map(|dependencies| match dependencies {
             Some(DependencyState::Known(indices)) => Some(indices),
-            Some(DependencyState::Unknown) | None => None,
+            None => None,
         })
         .collect())
 }

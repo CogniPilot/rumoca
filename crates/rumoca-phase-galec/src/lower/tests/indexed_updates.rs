@@ -392,9 +392,13 @@ fn function_array_updates_preserve_nested_writes_without_replaying_prior_definit
             let function = view
                 .function(view.function_id(function_index).unwrap())
                 .unwrap();
-            let lowered =
-                user_functions::lower_reachable(view, HashSet::from([function.id().index()]))
-                    .unwrap();
+            let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+            let lowered = user_functions::lower_reachable(
+                view,
+                &definitions,
+                HashSet::from([function.id().index()]),
+            )
+            .unwrap();
             let name = function.name().as_str();
             let diverted = name == "conditional" || name == "fresh";
             let expected: &[i64] = if diverted { &[] } else { &[1, 2, 3, 4] };
@@ -460,8 +464,13 @@ fn a_write_reading_the_chain_root_diverts_instead_of_replaying_in_place() {
 
     model.inspect(|view| {
         let function = view.function(view.function_id(0).unwrap()).unwrap();
-        let lowered =
-            user_functions::lower_reachable(view, HashSet::from([function.id().index()])).unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let lowered = user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([function.id().index()]),
+        )
+        .unwrap();
         let statements = &lowered
             .iter()
             .find(|lowered| lowered.name.lexeme() == "dependent")
@@ -610,8 +619,13 @@ fn aggregate_call_is_materialized_once_before_scalar_projection() {
 
     model.inspect(|view| {
         let consumer = view.function(view.function_id(1).unwrap()).unwrap();
-        let lowered = user_functions::lower_reachable(view, HashSet::from([consumer.id().index()]))
-            .expect("aggregate projections should lower from one materialized call");
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let lowered = user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([consumer.id().index()]),
+        )
+        .expect("aggregate projections should lower from one materialized call");
         let statements = &lowered
             .iter()
             .find(|function| function.name.lexeme() == "consumer")
@@ -705,7 +719,9 @@ fn a_diverted_conditional_update_keeps_each_materialized_call_inside_its_guard()
     .unwrap();
 
     model.inspect(|view| {
-        let lowered = user_functions::lower_reachable(view, HashSet::from([1])).unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let lowered =
+            user_functions::lower_reachable(view, &definitions, HashSet::from([1])).unwrap();
         let function = lowered
             .iter()
             .find(|function| function.name.lexeme() == "guardedUpdate")

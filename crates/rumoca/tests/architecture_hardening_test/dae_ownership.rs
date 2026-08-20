@@ -73,6 +73,39 @@ fn rendering_borrows_the_checked_dae_without_copy_adapters() {
     );
 }
 
+#[test]
+fn galec_issues_one_causal_definition_proof_per_entry_operation() {
+    let root = workspace_root();
+    let galec = root.join("crates/rumoca-phase-galec/src");
+    let admissibility = read(&root, "crates/rumoca-phase-galec/src/admissibility.rs");
+    let lowering = read(&root, "crates/rumoca-phase-galec/src/lower.rs");
+    let derivation = "CausalDefinitions::derive(view)";
+    assert_eq!(
+        admissibility.matches(derivation).count(),
+        1,
+        "the standalone admissibility entry must issue exactly one causal-definition proof"
+    );
+    assert_eq!(
+        lowering.matches(derivation).count(),
+        1,
+        "the GALEC lowering entry must issue exactly one causal-definition proof"
+    );
+
+    for relative in [
+        "lower/causal_outputs.rs",
+        "lower/clock_schedule.rs",
+        "lower/clocked_assignments.rs",
+        "lower/user_functions.rs",
+    ] {
+        let source = fs::read_to_string(galec.join(relative))
+            .unwrap_or_else(|error| panic!("read {relative}: {error}"));
+        assert!(
+            !source.contains(derivation),
+            "{relative} must borrow the entry-issued causal-definition proof"
+        );
+    }
+}
+
 fn read(root: &std::path::Path, relative: &str) -> String {
     fs::read_to_string(root.join(relative))
         .unwrap_or_else(|error| panic!("read {relative}: {error}"))

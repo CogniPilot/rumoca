@@ -687,7 +687,7 @@ fn summarize_dae_success(
     let balanced_discrete_scalars =
         (detail.discrete_real_unknowns + detail.discrete_value_unknowns) as i64;
     let extra_discrete_report_scalars =
-        (result.active_discrete_scalar_count - balanced_discrete_scalars).max(0);
+        (result.dae.active_discrete_scalar_count() as i64 - balanced_discrete_scalars).max(0);
     let report_offset = input_scalars + extra_discrete_report_scalars;
     let scalar_unknowns_for_report = scalar_unknowns + report_offset;
     let scalar_equations_for_report = scalar_equations_with_init + report_offset;

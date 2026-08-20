@@ -13,15 +13,11 @@
 {%- macro binary_operator(value) -%}
 {%- if value.kind == "pow" -%}^{%- elif value.kind == "mul" -%}*{%- elif value.kind == "div" -%}/{%- elif value.kind == "add" -%}+{%- elif value.kind == "sub" -%}-{%- elif value.kind == "lt" -%}<{%- elif value.kind == "gt" -%}>{%- elif value.kind == "le" -%}<={%- elif value.kind == "ge" -%}>={%- elif value.kind == "eq" -%}=={%- elif value.kind == "ne" -%}<>{%- elif value.kind == "and" -%}and{%- elif value.kind == "or" -%}or{%- else -%}{{ fail_closed_binary_operator }}{%- endif -%}
 {%- endmacro -%}
-{%- macro binary_class(value) -%}
-{%- if value.kind == "pow" -%}power{%- elif value.kind == "mul" or value.kind == "div" -%}multiplicative{%- elif value.kind == "add" or value.kind == "sub" -%}additive{%- elif value.kind == "lt" or value.kind == "gt" or value.kind == "le" or value.kind == "ge" -%}relational{%- elif value.kind == "eq" or value.kind == "ne" -%}equality{%- elif value.kind == "and" -%}logical_and{%- elif value.kind == "or" -%}logical_or{%- else -%}{{ fail_closed_binary_operator }}{%- endif -%}
-{%- endmacro -%}
-{%- macro operand(value, parent, side) -%}
-{%- set parent_class = binary_class(parent) -%}
+{%- macro operand(value, parent_class, parent_associativity, side) -%}
 {%- set needs_parens = value.kind == "neg" or value.kind == "not" or value.kind == "integer" and value.value < 0 or value.kind == "real" and value.value < 0 -%}
 {%- if value.kind == "binary" -%}
-{%- set child_class = binary_class(value.value.op) -%}
-{%- set needs_parens = child_class != parent_class or parent_class == "power" and side != "right" or parent_class != "power" and side != "left" -%}
+{%- set child_class = value.value.precedence_class.kind -%}
+{%- set needs_parens = child_class != parent_class or parent_associativity == "right" and side != "right" or parent_associativity == "left" and side != "left" -%}
 {%- endif -%}
 {%- if needs_parens -%}({{ expr(value) }}){%- else -%}{{ expr(value) }}{%- endif -%}
 {%- endmacro -%}
@@ -41,7 +37,7 @@
 {%- elif value.kind == "array" -%}{% raw %}{{% endraw %}{% for item in value.value %}{{ expr(item) }}{% if not loop.last %}, {% endif %}{% endfor %}{% raw %}}{% endraw %}
 {%- elif value.kind == "neg" -%}-{{ reference(value.value) }}
 {%- elif value.kind == "not" -%}not {% if value.value.kind == "if" or value.value.kind == "paren" %}{{ expr(value.value) }}{% else %}({{ expr(value.value) }}){% endif %}
-{%- elif value.kind == "binary" -%}{{ operand(value.value.lhs, value.value.op, "left") }} {{ binary_operator(value.value.op) }} {{ operand(value.value.rhs, value.value.op, "right") }}
+{%- elif value.kind == "binary" -%}{{ operand(value.value.lhs, value.value.precedence_class.kind, value.value.associativity.kind, "left") }} {{ binary_operator(value.value.op) }} {{ operand(value.value.rhs, value.value.precedence_class.kind, value.value.associativity.kind, "right") }}
 {%- else -%}{{ fail_closed_expression_kind }}{%- endif -%}
 {%- endmacro -%}
 {%- macro declaration(value, prefix) -%}

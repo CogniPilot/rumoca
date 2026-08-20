@@ -23,7 +23,7 @@ use rumoca_eval_dae::NumericEvaluator;
 use rumoca_ir_dae as dae;
 use rumoca_ir_galec::ast as gast;
 
-use crate::admissibility::{AdmittedClock, check_admissibility};
+use crate::admissibility::{AdmittedClock, check_view as check_admissibility_view};
 use crate::diagnostic::GalecTargetError;
 use crate::input::{GalecInput, GalecOptions};
 use rumoca_ir_galec::package::AlgorithmCodePackage;
@@ -91,21 +91,23 @@ pub fn lower_to_algorithm_code(
     input: &GalecInput<'_>,
     options: &GalecOptions,
 ) -> Result<AlgorithmCodePackage, Vec<GalecTargetError>> {
-    let clock = check_admissibility(input)?;
-    input
-        .dae
-        .inspect(|view| lower_view(input, options, view, clock))
+    input.dae.inspect(|view| {
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let clock = check_admissibility_view(view, &definitions)?;
+        lower_view(input, options, view, &definitions, clock)
+    })
 }
 
 fn lower_view<'dae>(
     input: &GalecInput<'_>,
     options: &GalecOptions,
     view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     clock: AdmittedClock,
 ) -> Result<AlgorithmCodePackage, Vec<GalecTargetError>> {
     let clock_id = admitted_clock_id(view, &clock).map_err(single)?;
     validate_clocks(&clock, view).map_err(single)?;
-    let classified = classify_variables(view)?;
+    let classified = classify_variables(view, definitions)?;
     let by_id = classified
         .iter()
         .map(|variable| (variable.id.index(), variable.clone()))
@@ -113,7 +115,14 @@ fn lower_view<'dae>(
     let referenced_pre = referenced_pre_variables(view)?;
     let pre_names = build_pre_names(&referenced_pre, &by_id)?;
 
-    let mut parts = build_variable_parts(view, &classified, &by_id, &referenced_pre, &pre_names)?;
+    let mut parts = build_variable_parts(
+        view,
+        definitions,
+        &classified,
+        &by_id,
+        &referenced_pre,
+        &pre_names,
+    )?;
 
     let period_ref = append_clock_period(
         &clock,
@@ -130,6 +139,7 @@ fn lower_view<'dae>(
 
     let clocked = lower_clock_schedule(
         view,
+        definitions,
         &clock,
         classified.as_slice(),
         &by_id,
@@ -145,6 +155,7 @@ fn lower_view<'dae>(
     called_user_functions.extend(
         causal_outputs::append_causal_assignments(
             view,
+            definitions,
             classified.as_slice(),
             &by_id,
             &pre_names,
@@ -169,7 +180,8 @@ fn lower_view<'dae>(
     block.startup.statements = parts.startup;
     block.recalibrate.statements = parts.recalibrate;
     block.protected_functions =
-        user_functions::lower_reachable(view, called_user_functions).map_err(single)?;
+        user_functions::lower_reachable(view, definitions, called_user_functions)
+            .map_err(single)?;
     block.do_step.locals = parts.do_step_locals;
     block.do_step.statements = do_step;
     AlgorithmCodePackage::construct(block, parts.nominals, &period_ref).map_err(|error| {
@@ -181,6 +193,7 @@ fn lower_view<'dae>(
 
 fn build_variable_parts<'dae>(
     view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     classified: &ClassifiedVariables<'dae>,
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     referenced_pre: &[dae::VariableId<'dae>],
@@ -206,7 +219,8 @@ fn build_variable_parts<'dae>(
                 detail: format!("dependent parameter variable #{id} is absent from classification"),
             }]
         })?;
-        let assignment = dependent_assignment(view, variable, by_id, pre_names).map_err(single)?;
+        let assignment =
+            dependent_assignment(view, definitions, variable, by_id, pre_names).map_err(single)?;
         parts.startup.push(assignment.clone());
         parts.recalibrate.push(assignment);
     }
@@ -331,10 +345,10 @@ fn validate_clocks(clock: &AdmittedClock, view: dae::DaeView<'_>) -> Result<(), 
 
 fn classify_variables<'dae>(
     view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
 ) -> Result<ClassifiedVariables<'dae>, Vec<GalecTargetError>> {
     let parameter_dependencies =
         ParameterDependencyProof::derive(view).map_err(|error| vec![error])?;
-    let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
     let mut variables = Vec::new();
     let mut errors = Vec::new();
     for (id, variable) in view.variables() {
@@ -717,6 +731,7 @@ fn initial_assignment(
 
 fn dependent_assignment<'dae>(
     view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     classified: &ClassifiedVariable<'dae>,
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
@@ -731,7 +746,7 @@ fn dependent_assignment<'dae>(
             reason: "dependent parameter has no defining expression".to_owned(),
             span: Some(classified.variable.declaration().span()),
         })?;
-    let mut lowerer = ExpressionLowerer::new(view, by_id, pre_names);
+    let mut lowerer = ExpressionLowerer::new(view, definitions, by_id, pre_names);
     let node = view
         .expression(expression)
         .expect("checked dependent-parameter expression resolves");
@@ -1009,7 +1024,7 @@ struct ExpressionLowerer<'a, 'dae> {
     view: dae::DaeView<'dae>,
     by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &'a HashMap<u32, gast::Name>,
-    definitions: rumoca_phase_structural::CausalDefinitions<'dae>,
+    definitions: &'a rumoca_phase_structural::CausalDefinitions<'dae>,
     call_frames: Vec<CallFrame<'dae>>,
     function_fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<TypedExpression>>)>,
     function_fold_output_cache: HashMap<FunctionFoldOutputKey, TypedExpression>,
@@ -1221,6 +1236,7 @@ fn expression_depth(expression: &gast::Expression) -> usize {
 impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     fn new(
         view: dae::DaeView<'dae>,
+        definitions: &'a rumoca_phase_structural::CausalDefinitions<'dae>,
         by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
         pre_names: &'a HashMap<u32, gast::Name>,
     ) -> Self {
@@ -1228,7 +1244,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             view,
             by_id,
             pre_names,
-            definitions: rumoca_phase_structural::CausalDefinitions::derive(view),
+            definitions,
             call_frames: Vec::new(),
             function_fold_values: Vec::new(),
             function_fold_output_cache: HashMap::new(),
@@ -1258,24 +1274,26 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     fn with_assertions(
         view: dae::DaeView<'dae>,
+        definitions: &'a rumoca_phase_structural::CausalDefinitions<'dae>,
         by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
         pre_names: &'a HashMap<u32, gast::Name>,
     ) -> Self {
         Self {
             capture_assertions: true,
-            ..Self::new(view, by_id, pre_names)
+            ..Self::new(view, definitions, by_id, pre_names)
         }
     }
 
     fn with_do_step_effects(
         view: dae::DaeView<'dae>,
+        definitions: &'a rumoca_phase_structural::CausalDefinitions<'dae>,
         by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
         pre_names: &'a HashMap<u32, gast::Name>,
     ) -> Self {
         Self {
             capture_assertions: true,
             materialize_function_values: true,
-            ..Self::new(view, by_id, pre_names)
+            ..Self::new(view, definitions, by_id, pre_names)
         }
     }
 
