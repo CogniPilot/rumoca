@@ -67,5 +67,5 @@ If `net_added_lines` is positive, add:
 - [ ] New APIs are required and minimal.
 - [ ] Old/new parallel paths removed unless explicitly migrating.
 - [ ] No `#[allow(clippy::...)]` added outside generated code.
-- [ ] Every commit signed off (`git commit -s`); no `Co-Authored-By` for AI.
+- [ ] Every commit signed off (`git commit -s`); no named AI assistant/session references or AI `Co-Authored-By` trailers.
 - [ ] External material (if any) attributed and Apache-2.0 compatible.

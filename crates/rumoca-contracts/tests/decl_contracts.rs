@@ -2,7 +2,7 @@
 //!
 //! Tests for the 36 declaration contracts defined in SPEC_0022.
 
-use rumoca_compile::compile::FailedPhase;
+use rumoca_compile::compile::{FailedPhase, VariableRole};
 use rumoca_contracts::test_support::{
     expect_balanced, expect_compile_failure, expect_failure_in_phase_with_code,
     expect_parse_err_with_code, expect_parse_ok, expect_resolve_failure_with_code, expect_success,
@@ -88,7 +88,7 @@ fn decl_002_block_connector_needs_io_prefix() {
 
 #[test]
 fn decl_002_allows_block_connector_with_member_level_io() {
-    expect_success(
+    let result = expect_success(
         r#"
         connector C
             input Real u;
@@ -102,6 +102,15 @@ fn decl_002_allows_block_connector_with_member_level_io() {
     "#,
         "B",
     );
+    result.dae.inspect(|view| {
+        let role = |name| {
+            view.variables()
+                .find(|(_, variable)| variable.name().as_str() == name)
+                .map(|(_, variable)| variable.role())
+        };
+        assert_eq!(role("c.u"), Some(VariableRole::Input));
+        assert_eq!(role("c.y"), Some(VariableRole::Output));
+    });
 }
 
 // =============================================================================

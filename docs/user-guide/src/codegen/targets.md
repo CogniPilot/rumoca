@@ -1,8 +1,8 @@
 # Targets and Templates
 
-Rumoca can render a compiled model into other languages and ecosystems:
-symbolic math packages, compiled simulation kernels, FMUs, or Modelica
-source at any pipeline stage. Code generation is *target-directory based*: a
+Rumoca can render a compiled model into symbolic frameworks, compiled
+simulation kernels, eFMI artifacts, or Modelica source. Code generation is
+*target-directory based*: a
 target is a `target.toml` manifest plus Jinja templates, and each target
 declares which compiler IR stage it consumes.
 
@@ -16,19 +16,23 @@ Built-in targets include:
 
 | Target | IR | Mode | Output |
 |---|---|---|---|
-| `sympy` | dae | symbolic | SymPy model classes |
-| `jax` | dae | symbolic | JAX functions |
-| `casadi-sx` / `casadi-mx` | dae | symbolic | CasADi expressions |
-| `julia-mtk` | dae | symbolic | ModelingToolkit.jl |
-| `symforce` | dae | symbolic | SymForce, with native AD support |
-| `onnx` | dae | symbolic | ONNX graph |
-| `rust-fixed-solve` | solve | compiled | Fixed-size Rust derivative kernel with `State`, `Parameters`, `Derivative`, and `derivative_rhs_into` |
-| `rust-solve` / `c-solve` / `embedded-c` | solve | compiled | Self-contained simulation kernels |
-| `cuda-c` / `cuda-nvrtc-solve-jit` | solve | compiled/JIT | GPU kernels |
-| `wgsl-solve` | solve | compiled | Experimental WebGPU kernels for browser runs |
-| `cranelift-solve-jit` / `mlir` | solve | JIT/compiled | In-process execution backends |
-| `fmi2` / `fmi3` | solve | packaged | FMU export |
-| `modelica` / `flat-modelica` / `dae-modelica` / `base-modelica` | ast/flat/dae | source-transform | Modelica source at each stage |
+| `casadi-ode` | solve | symbolic | Differentiable CasADi explicit RHS |
+| `jax-ode` | solve | symbolic | JIT/AD-capable JAX explicit RHS |
+| `rust-fixed-ode` | solve | compiled | Fixed-size, allocation-free Rust explicit-ODE derivative kernel |
+| `rust-ode` / `c-ode` | solve | compiled | Checked explicit-ODE derivative kernels |
+| `cuda-ode` | solve | compiled | Batched CUDA explicit-ODE derivative kernel |
+| `wgsl-ode` | solve | JIT | Experimental WebGPU explicit-ODE kernels for browser execution |
+| `mlir` | solve | source | Inspectible MLIR solve-kernel source with affine tensor loops |
+| `flat-modelica` / `base-modelica` | flat | source-transform | Flattened Modelica-family interchange artifacts |
+| `dae-modelica` | dae | source-transform | Modelica representation of the checked DAE |
+| `fmi2` / `fmi3` | fmi | standards container | Source-code Model Exchange and Co-Simulation FMUs |
+| `fmi-ls-wasm` | fmi | compiled component | Experimental FMI-LS WebAssembly component crate |
+| `galec` / `galec-production` | algorithm-code | eFMI | Algorithm Code and Production Code eFMU containers |
+| `embedded-c-galec` | algorithm-code | compiled | GALEC-derived embedded C without an eFMI container |
+
+Targets without a complete checked artifact and executable or independent
+validation evidence are intentionally absent. Rumoca does not expose aliases
+for removed target names or route those names through a weaker IR.
 
 The `rumoca targets` table also reports a readiness level (0 = experimental
 … 2 = validated) and per-feature support columns (scalarization, tensor
@@ -41,8 +45,8 @@ truth.
 ```bash
 rumoca compile examples/models/SympyDecay.mo \
   --model SympyDecay \
-  --target sympy \
-  --output /tmp/sympy_decay
+  --target c-ode \
+  --output /tmp/decay_c_ode
 ```
 
 `--output` may be a file or directory depending on what the target renders.
@@ -53,10 +57,12 @@ Like simulations, generation jobs worth repeating belong in a `rumoca-scenario.t
 with `task = "codegen"`. Runnable examples live under `examples/codegen/`
 and write into `examples/codegen/gen/` (git-ignored):
 
-- `examples/codegen/rumoca-scenario.ball_jax.toml` — built-in JAX target
-- `examples/codegen/rumoca-scenario.sympy_decay_sympy.toml` — built-in SymPy target
-- `examples/codegen/rumoca-scenario.sympy_decay_standalone_web.toml` — custom web target
-- `examples/codegen/rumoca-scenario.sympy_decay_custom_casadi.toml` — raw Jinja template
+- `examples/codegen/rumoca-scenario.ball_jax_ode.toml` — checked ODE RHS JAX target
+- `examples/codegen/rumoca-scenario.sympy_decay_c_ode.toml` — checked ODE RHS C target
+- `examples/codegen/rumoca-scenario.sympy_decay_checked_dae_report.toml` —
+  custom checked-DAE report target
+- `examples/codegen/rumoca-scenario.sympy_decay_custom_checked_variables.toml`
+  — raw checked-DAE Jinja template
 
 ## IR Dumps vs Targets
 

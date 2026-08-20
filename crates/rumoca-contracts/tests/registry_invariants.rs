@@ -90,3 +90,57 @@ fn implemented_id_list_is_unique_and_exists_in_registry() {
         );
     }
 }
+
+/// The SPEC_0022 catalog is the source of truth for which contracts exist;
+/// `data/contracts.toml` is its machine-readable mirror. Adding a catalog row
+/// without a registry row (or the reverse) is drift, so pin set equality here
+/// rather than only the per-category counts.
+#[test]
+fn registry_ids_match_spec_0022_catalog() {
+    let catalog = std::fs::read_to_string(spec_0022_path())
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", spec_0022_path().display()));
+    let catalog_ids = catalog_contract_ids(&catalog);
+    assert!(
+        !catalog_ids.is_empty(),
+        "SPEC_0022 catalog parsed to zero contract rows; the table format changed"
+    );
+
+    let registry_ids: BTreeSet<String> = create_registry()
+        .all()
+        .map(|contract| contract.id.to_string())
+        .collect();
+
+    let missing_in_registry: Vec<&String> = catalog_ids.difference(&registry_ids).collect();
+    let missing_in_catalog: Vec<&String> = registry_ids.difference(&catalog_ids).collect();
+    assert!(
+        missing_in_registry.is_empty() && missing_in_catalog.is_empty(),
+        "SPEC_0022 catalog and contract registry disagree; \
+         in catalog only: {missing_in_registry:?}, in registry only: {missing_in_catalog:?}"
+    );
+}
+
+fn spec_0022_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../spec/SPEC_0022_MLS_COMPILER_COMPLIANCE.md")
+}
+
+/// Collect the leading cell of every catalog row that is shaped like a
+/// contract ID (`| XXX-NNN | ... |`), ignoring the spec's other tables.
+fn catalog_contract_ids(catalog: &str) -> BTreeSet<String> {
+    catalog
+        .lines()
+        .filter_map(|line| {
+            let (cell, _) = line.strip_prefix('|')?.split_once('|')?;
+            contract_id_shaped(cell.trim()).map(str::to_string)
+        })
+        .collect()
+}
+
+fn contract_id_shaped(cell: &str) -> Option<&str> {
+    let (prefix, digits) = cell.split_once('-')?;
+    let shaped = !prefix.is_empty()
+        && prefix.chars().all(|c| c.is_ascii_uppercase())
+        && digits.len() == 3
+        && digits.chars().all(|c| c.is_ascii_digit());
+    shaped.then_some(cell)
+}

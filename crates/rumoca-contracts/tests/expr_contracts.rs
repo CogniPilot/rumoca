@@ -617,8 +617,23 @@ fn expr_039_noevent_usage() {
 }
 
 // =============================================================================
-// EXPR-040: Event triggering operators
-// "div, ceil, floor, integer can only change values at events"
+// EXPR-040: Event triggering operators (MLS §3.7.2)
+// "div, ceil, floor, integer can only change values at events and will trigger
+// events as needed"
+//
+// Registry status is Partial: event generation for div/ceil/floor/integer is
+// unimplemented. They are constructed and lowered as pure builtins (Solve
+// UnaryOp::Floor/Ceil, no relation-memory owner), so no event root exists at
+// their step points and the requirement holds only for arguments that are
+// already discrete between events. The test below therefore asserts nothing
+// beyond successful compilation, and EXPR-040 is deliberately absent from
+// `data/contract_cases.toml` and from IMPLEMENTED_CONTRACT_IDS.
+//
+// A future event-root implementation must make this test assert the behavior,
+// not just the compile: that `integer(x)` owns an event root over the crossing
+// of each integer step point, that `n` is held constant between those events
+// rather than tracking `x` continuously, and that the state event is reported
+// at the crossing time. Only then may EXPR-040 be promoted out of Partial.
 // =============================================================================
 
 #[test]
@@ -800,7 +815,7 @@ fn expr_022_string_of_string_rejected() {
 // =============================================================================
 // EXPR-034: homotopy types
 // "Scalar expressions actual and simplified are subtypes of Real"
-// (MLS §3.7.2.4)
+// (MLS 3.6 §3.7.4.3)
 // =============================================================================
 
 #[test]
@@ -921,6 +936,15 @@ fn expr_038_smooth_expression_accepted() {
 // EXPR-010/011/030/031: spatialDistribution restrictions. The operator is not
 // supported yet; every use (and therefore every violation) is rejected at the
 // DAE boundary as an unresolved function call.
+//
+// The DAE boundary is the first owner (SPEC_0008) that can prove the call has
+// no checked owner: `spatialDistribution` is a legal MLS name that Resolve
+// registers as a predefined member, and Flatten legitimately forwards any
+// non-intrinsic call as a user-function call, so neither earlier phase holds
+// the proof. `ED005` (`UnresolvedFunctionCall`) was retired when DAE
+// construction became valid-by-construction; SPEC_0008 requires retiring rather
+// than reusing a code, so the surviving DAE-boundary code for a call with no
+// resolved owner is `ED008` (`UnresolvedReference`).
 // =============================================================================
 
 #[test]
@@ -936,7 +960,7 @@ fn expr_010_spatial_distribution_rejected_as_unsupported() {
     "#,
         "M",
         FailedPhase::ToDae,
-        "ED005",
+        "ED008",
     );
 }
 
@@ -953,7 +977,7 @@ fn expr_011_spatial_distribution_unsorted_points_rejected_as_unsupported() {
     "#,
         "M",
         FailedPhase::ToDae,
-        "ED005",
+        "ED008",
     );
 }
 
@@ -970,7 +994,7 @@ fn expr_030_spatial_distribution_size_mismatch_rejected_as_unsupported() {
     "#,
         "M",
         FailedPhase::ToDae,
-        "ED005",
+        "ED008",
     );
 }
 
@@ -987,6 +1011,6 @@ fn expr_031_spatial_distribution_vectorized_rejected_as_unsupported() {
     "#,
         "M",
         FailedPhase::ToDae,
-        "ED005",
+        "ED008",
     );
 }

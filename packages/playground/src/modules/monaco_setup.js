@@ -256,106 +256,67 @@ monaco.languages.setMonarchTokensProvider('jinja2', {
     }
 });
 
-// Store current DAE for dynamic completions
 window.currentDaeForCompletions = null;
 
-// Extract dynamic completions from the current DAE
-function getDynamicDaeCompletions(dae) {
-    if (!dae) return [];
-    const completions = [];
-
-    // Component fields that can be accessed on variables
-    const componentFields = [
-        { name: 'type_name', detail: 'Type name (e.g., Real, Integer)' },
-        { name: 'shape', detail: 'Array shape' },
-        { name: 'start', detail: 'Start value' },
-        { name: 'variability', detail: 'Variability (parameter, constant, etc.)' },
-        { name: 'causality', detail: 'Causality (input, output, etc.)' },
-        { name: 'description', detail: 'Description string' },
+function checkedVariableCompletions(dae) {
+    const variables = dae?.storage?.variables;
+    if (!Array.isArray(variables)) return [];
+    const fields = [
+        ['name', 'Source variable name'],
+        ['role', 'Checked DAE variable role'],
+        ['variability', 'Expression variability'],
+        ['value_type.scalar', 'Primitive scalar type'],
+        ['value_type.dimensions', 'Checked array dimensions'],
+        ['scalar_count', 'Derived scalar cardinality'],
+        ['scalar_names', 'Canonical scalar element names'],
+        ['attributes.unit', 'Declared unit'],
+        ['attributes.start_values', 'Checked numeric start values'],
+        ['attributes.binding_values', 'Checked static binding values'],
     ];
-
-    // Variable maps to iterate over
-    const varMaps = [
-        { key: 'x', name: 'State', desc: 'state variable' },
-        { key: 'y', name: 'Algebraic', desc: 'algebraic variable' },
-        { key: 'p', name: 'Parameter', desc: 'parameter' },
-        { key: 'cp', name: 'Constant', desc: 'constant parameter' },
-        { key: 'u', name: 'Input', desc: 'input variable' },
-        { key: 'z', name: 'Discrete Real', desc: 'discrete Real variable' },
-        { key: 'm', name: 'Discrete', desc: 'discrete-valued variable' },
-        { key: 'c', name: 'Condition', desc: 'condition variable' },
-    ];
-
-    // Add variable name completions for each map
-    for (const { key, name, desc } of varMaps) {
-        const varMap = dae[key];
-        if (varMap && typeof varMap === 'object') {
-            for (const varName of Object.keys(varMap)) {
-                // Add dae.x.varname style completion
-                completions.push({
-                    label: `dae.${key}.${varName}`,
-                    kind: monaco.languages.CompletionItemKind.Variable,
-                    insertText: `dae.${key}.${varName}`,
-                    detail: `${name}: ${varName} (${desc})`,
-                    sortText: `0_${key}_${varName}` // Sort model vars first
-                });
-
-                // Add component field completions (dae.x.varname.start, etc.)
-                for (const field of componentFields) {
-                    completions.push({
-                        label: `dae.${key}.${varName}.${field.name}`,
-                        kind: monaco.languages.CompletionItemKind.Property,
-                        insertText: `dae.${key}.${varName}.${field.name}`,
-                        detail: `${varName}.${field.name} - ${field.detail}`,
-                        sortText: `1_${key}_${varName}_${field.name}`
-                    });
-                }
-            }
-        }
-    }
-
-    return completions;
+    const suggestions = [];
+    variables.forEach((variable, ordinal) => {
+        if (!variable || typeof variable.name !== 'string') return;
+        const base = `dae.variables[${ordinal}]`;
+        suggestions.push({
+            label: `${base} (${variable.name})`,
+            kind: monaco.languages.CompletionItemKind.Variable,
+            insertText: base,
+            detail: `${variable.role || 'variable'} ${variable.name}`,
+            sortText: `0_${String(ordinal).padStart(8, '0')}`,
+        });
+        fields.forEach(([field, detail], fieldOrdinal) => {
+            suggestions.push({
+                label: `${base}.${field} (${variable.name})`,
+                kind: monaco.languages.CompletionItemKind.Property,
+                insertText: `${base}.${field}`,
+                detail: `${variable.name}: ${detail}`,
+                sortText: `1_${String(ordinal).padStart(8, '0')}_${String(fieldOrdinal).padStart(2, '0')}`,
+            });
+        });
+    });
+    return suggestions;
 }
 
-// Jinja2 completion provider for DAE fields
+// Jinja2 completion provider for the canonical checked DAE template schema.
 monaco.languages.registerCompletionItemProvider('jinja2', {
     triggerCharacters: ['.', '{'],
-    provideCompletionItems: (model, position) => {
-        const textUntilPosition = model.getValueInRange({
-            startLineNumber: 1,
-            startColumn: 1,
-            endLineNumber: position.lineNumber,
-            endColumn: position.column
-        });
-
-        // Get the word being typed
-        const lineText = model.getLineContent(position.lineNumber);
-        const textBeforeCursor = lineText.substring(0, position.column - 1);
-
-        // Check for context-specific completions
-        // Match patterns like "dae.", "dae.x.", "dae.x.varname."
-        const daePathMatch = textBeforeCursor.match(/dae\.(\w*)$/);
-        const daeVarMatch = textBeforeCursor.match(/dae\.(\w+)\.(\w*)$/);
-        const daeFieldMatch = textBeforeCursor.match(/dae\.(\w+)\.(\w+)\.(\w*)$/);
-
-        // Static DAE field suggestions (always available)
+    provideCompletionItems: () => {
         const daeFields = [
-            { label: 'dae.model_name', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.model_name', detail: 'Model name', sortText: '2_model_name' },
-            { label: 'dae.rumoca_version', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.rumoca_version', detail: 'Rumoca version', sortText: '2_rumoca_version' },
-            { label: 'dae.x', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.x', detail: 'State variables (IndexMap)', sortText: '2_x' },
-            { label: 'dae.y', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.y', detail: 'Algebraic variables (IndexMap)', sortText: '2_y' },
-            { label: 'dae.p', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.p', detail: 'Parameters (IndexMap)', sortText: '2_p' },
-            { label: 'dae.cp', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.cp', detail: 'Constant parameters (IndexMap)', sortText: '2_cp' },
-            { label: 'dae.u', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.u', detail: 'Inputs (IndexMap)', sortText: '2_u' },
-            { label: 'dae.z', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.z', detail: 'Discrete Real variables (IndexMap)', sortText: '2_z' },
-            { label: 'dae.m', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.m', detail: 'Discrete-valued variables (IndexMap)', sortText: '2_m' },
-            { label: 'dae.c', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.c', detail: 'Conditions (IndexMap)', sortText: '2_c' },
-            { label: 'dae.fx', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.fx', detail: 'Continuous equations (Vec)', sortText: '2_fx' },
-            { label: 'dae.fx_init', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.fx_init', detail: 'Initial equations (Vec)', sortText: '2_fx_init' },
-            { label: 'dae.fz', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.fz', detail: 'Algebraic equations (Vec)', sortText: '2_fz' },
-            { label: 'dae.fm', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.fm', detail: 'Discrete equations (Vec)', sortText: '2_fm' },
-            { label: 'dae.fr', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.fr', detail: 'Reset statements (IndexMap)', sortText: '2_fr' },
-            { label: 'dae.fc', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.fc', detail: 'Condition updates (IndexMap)', sortText: '2_fc' },
+            { label: 'dae.schema', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.schema', detail: 'Checked template schema identity', sortText: '2_schema' },
+            { label: 'dae.value_types', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.value_types', detail: 'Dense checked value types', sortText: '2_value_types' },
+            { label: 'dae.variables', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.variables', detail: 'Dense typed variable catalog', sortText: '2_variables' },
+            { label: 'dae.functions', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.functions', detail: 'Checked function owners', sortText: '2_functions' },
+            { label: 'dae.domains', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.domains', detail: 'Compact structured domains', sortText: '2_domains' },
+            { label: 'dae.expressions', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.expressions', detail: 'Dense expression arena', sortText: '2_expressions' },
+            { label: 'dae.modelica', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.modelica', detail: 'Checked Modelica display projection', sortText: '2_modelica' },
+            { label: 'dae.systems', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.systems', detail: 'DAE semantic owner systems', sortText: '2_systems' },
+            { label: 'dae.systems.continuous', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.systems.continuous', detail: 'Continuous equation owners', sortText: '2_systems_continuous' },
+            { label: 'dae.systems.initialization', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.systems.initialization', detail: 'Initialization owners', sortText: '2_systems_initialization' },
+            { label: 'dae.systems.discrete_real', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.systems.discrete_real', detail: 'B.1b residual owners', sortText: '2_systems_discrete_real' },
+            { label: 'dae.systems.conditions', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.systems.conditions', detail: 'Relations, conditions, and roots', sortText: '2_systems_conditions' },
+            { label: 'dae.systems.events', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.systems.events', detail: 'Time events and actions', sortText: '2_systems_events' },
+            { label: 'dae.systems.clocks', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.systems.clocks', detail: 'Clock owners and assignments', sortText: '2_systems_clocks' },
+            { label: 'dae.systems.temporal', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.systems.temporal', detail: 'History, terminal, and delay owners', sortText: '2_systems_temporal' },
         ];
 
         // Jinja2 snippets
@@ -374,10 +335,13 @@ monaco.languages.registerCompletionItemProvider('jinja2', {
             { label: 'loop.length', kind: monaco.languages.CompletionItemKind.Property, insertText: 'loop.length', detail: 'Total number of items', sortText: '4_loop_length' },
         ];
 
-        // Get dynamic completions from current DAE
-        const dynamicCompletions = getDynamicDaeCompletions(window.currentDaeForCompletions);
-
-        return { suggestions: [...dynamicCompletions, ...daeFields, ...snippets] };
+        return {
+            suggestions: [
+                ...checkedVariableCompletions(window.currentDaeForCompletions),
+                ...daeFields,
+                ...snippets,
+            ],
+        };
     }
 });
 

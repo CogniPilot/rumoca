@@ -379,6 +379,12 @@ impl LspStdioClient {
         }) {
             Ok(response) => response,
             Err(error) => {
+                // Name the request that stalled: a bare timeout message cannot
+                // be traced back to a method once the report is partial.
+                let error = error.context(format!(
+                    "rumoca-lsp request `{method}` (id {id}) produced no response within {}s",
+                    timeout.as_secs()
+                ));
                 if method == "textDocument/completion"
                     && let Some(detail) = self.latest_completion_progress_detail()
                 {

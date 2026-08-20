@@ -81,7 +81,7 @@ dt = 0.01          # simulation timestep [s]
 t_end = 10.0       # batch/results-panel output horizon
 atol = 1e-6        # optional absolute solver tolerance
 rtol = 1e-6        # optional relative solver tolerance
-solver = "auto"    # auto | bdf | esdirk34 | trbdf2 | rk-like
+solver = "auto"    # auto | bdf | rk-like
 output = "results.html"
 mode = "realtime"  # optional pacing, see below
 ```
