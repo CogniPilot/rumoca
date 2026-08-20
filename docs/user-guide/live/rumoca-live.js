@@ -2715,7 +2715,7 @@ self.onmessage = async (event) => {
         gpuCheck.type = 'checkbox';
         gpuCheck.checked = gpuDefault;
         gpuLabel.append(gpuCheck, document.createTextNode(' GPU'));
-        gpuLabel.title = 'Run on WebGPU (wgsl-solve backend; experimental)';
+        gpuLabel.title = 'Run on WebGPU (wgsl-ode backend; experimental)';
         const liveLabel = document.createElement('label');
         liveLabel.className = 'rumoca-live-gpu';
         const liveCheck = document.createElement('input');
@@ -3898,7 +3898,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                             variables: variableNames.length,
                         },
                         requested: {
-                            solver: 'wgsl-solve interactive',
+                            solver: 'wgsl-ode interactive',
                             t_start: t0,
                             dt: outputDt,
                             internal_dt: stepDt,
@@ -4017,7 +4017,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 const adapter = await gpu.probeGpu();
                 if (typeof wasm.prepare_gpu_simulation !== 'function') {
                     throw new Error(
-                        'This WASM build predates the wgsl-solve backend; '
+                        'This WASM build predates the wgsl-ode backend; '
                         + 'rebuild the package (cargo xtask playground build) or '
                         + 'uncheck GPU to simulate on the CPU (WASM) path.'
                     );

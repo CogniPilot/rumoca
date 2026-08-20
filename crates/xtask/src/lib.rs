@@ -1,6 +1,5 @@
 pub mod web_assets;
 
-#[path = "bin/rumoca-traversal-policy-check.rs"]
 mod traversal_policy_check;
 
 pub fn run_traversal_policy_check() -> anyhow::Result<()> {
