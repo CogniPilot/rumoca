@@ -42,6 +42,8 @@ struct MslModelResult {
     phase_reached: String,
     #[serde(default)]
     error_code: Option<String>,
+    #[serde(default)]
+    sim_status: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -152,8 +154,14 @@ fn build_catalog_with_limit(
                 .then_with(|| lhs.model_name.cmp(&rhs.model_name))
         });
         if let Some(summary) = categories.get_mut(&category) {
+            // Only fully simulating models may become representatives: the CI
+            // gate runs the promoted list under `--require-selected-targets-
+            // success`, which hard-fails on any selected model that is not
+            // `sim_ok`. Seeding the ratchet from a model that merely compiles
+            // would red the gate on every unrelated PR.
             summary.representatives = entries
                 .into_iter()
+                .filter(modelica_test_result_simulates)
                 .take(representatives_per_category)
                 .map(|entry| entry.model_name)
                 .collect();
@@ -165,6 +173,11 @@ fn build_catalog_with_limit(
         total_modelica_test_models,
         categories,
     })
+}
+
+/// A promotion candidate must have compiled *and* simulated cleanly.
+fn modelica_test_result_simulates(result: &MslModelResult) -> bool {
+    result.phase_reached == "Success" && result.sim_status.as_deref() == Some("sim_ok")
 }
 
 fn modelica_test_phase_rank(phase: &str) -> usize {
@@ -238,17 +251,17 @@ fn write_promoted_targets(
     base_targets_path: &PathBuf,
     out_path: &PathBuf,
 ) -> Result<()> {
-    let mut targets = read_target_list_if_present(base_targets_path)?;
-    let mut seen = targets.iter().cloned().collect::<BTreeSet<_>>();
-    for representative in catalog
-        .categories
-        .values()
-        .flat_map(|summary| summary.representatives.iter())
-    {
-        if seen.insert(representative.clone()) {
-            targets.push(representative.clone());
-        }
-    }
+    let base = read_target_list_if_present(base_targets_path)?;
+    let mut seen = base.into_iter().collect::<BTreeSet<_>>();
+    seen.extend(
+        catalog
+            .categories
+            .values()
+            .flat_map(|summary| summary.representatives.iter().cloned()),
+    );
+    // Sorted and deduplicated: the promoted list is committed, and the growth
+    // ratchet asserts both properties so a hand edit cannot reintroduce dupes.
+    let targets = seen.into_iter().collect::<Vec<_>>();
     if let Some(parent) = out_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -340,22 +353,24 @@ mod tests {
         fs::write(
             &path,
             serde_json::to_vec_pretty(&json!({
-                "model_results": [
-                    {
-                        "model_name": "ModelicaTest.Redeclare.ModifierCase",
-                        "phase_reached": "Success"
-                    },
-                    {
-                        "model_name": "ModelicaTest.Events.WhenCase",
-                        "phase_reached": "Flatten",
-                        "error_code": "unsupported-feature:events"
-                    },
-                    {
-                        "model_name": "Modelica.Blocks.Examples.PID_Controller",
-                        "phase_reached": "Success"
-                    }
-                ]
-            }))
+                            "model_results": [
+                                {
+                                    "model_name": "ModelicaTest.Redeclare.ModifierCase",
+                                    "phase_reached": "Success"
+            ,
+                                    "sim_status": "sim_ok"
+                                },
+                                {
+                                    "model_name": "ModelicaTest.Events.WhenCase",
+                                    "phase_reached": "Flatten",
+                                    "error_code": "unsupported-feature:events"
+                                },
+                                {
+                                    "model_name": "Modelica.Blocks.Examples.PID_Controller",
+                                    "phase_reached": "Success"
+                                }
+                            ]
+                        }))
             .expect("json"),
         )
         .expect("write fixture");
@@ -374,8 +389,11 @@ mod tests {
         );
     }
 
+    /// The CI gate runs the promoted list with `--require-selected-targets-
+    /// success`, so a model that compiles but does not simulate must never be
+    /// promoted — it would red the gate on every unrelated PR.
     #[test]
-    fn promoted_targets_extend_base_list_with_representatives() {
+    fn promoted_targets_exclude_models_that_did_not_simulate() {
         let dir = tempdir().expect("tempdir");
         let results_path = dir.path().join("msl_results.json");
         let base_path = dir.path().join("base.json");
@@ -385,19 +403,120 @@ mod tests {
             serde_json::to_vec_pretty(&json!({
                 "model_results": [
                     {
-                        "model_name": "ModelicaTest.Arrays.ForEquation",
+                        "model_name": "ModelicaTest.Arrays.Passing",
+                        "phase_reached": "Success",
+                        "sim_status": "sim_ok"
+                    },
+                    {
+                        "model_name": "ModelicaTest.Arrays.CompilesOnly",
+                        "phase_reached": "Success",
+                        "sim_status": "sim_solver_fail"
+                    },
+                    {
+                        "model_name": "ModelicaTest.Arrays.NoSimAttempted",
+                        "phase_reached": "Success"
+                    },
+                    {
+                        "model_name": "ModelicaTest.Arrays.FailsToCompile",
                         "phase_reached": "Flatten"
-                    },
-                    {
-                        "model_name": "ModelicaTest.Arrays.ArraySuccess",
-                        "phase_reached": "Success"
-                    },
-                    {
-                        "model_name": "ModelicaTest.Events.WhenCase",
-                        "phase_reached": "Success"
                     }
                 ]
             }))
+            .expect("json"),
+        )
+        .expect("write results");
+        fs::write(&base_path, b"[]").expect("write base");
+
+        let catalog = build_catalog_with_limit(&results_path, 10).expect("catalog");
+        assert_eq!(
+            catalog.categories["arrays_for_equations"].representatives,
+            vec!["ModelicaTest.Arrays.Passing"]
+        );
+        // The category still *counts* every model; only promotion is filtered.
+        assert_eq!(catalog.categories["arrays_for_equations"].count, 4);
+
+        write_promoted_targets(&catalog, &base_path, &out_path).expect("promote targets");
+        let targets: Vec<String> =
+            serde_json::from_slice(&fs::read(&out_path).expect("read targets")).expect("targets");
+        assert_eq!(targets, vec!["ModelicaTest.Arrays.Passing"]);
+    }
+
+    #[test]
+    fn promoted_targets_are_sorted_and_deduplicated() {
+        let dir = tempdir().expect("tempdir");
+        let results_path = dir.path().join("msl_results.json");
+        let base_path = dir.path().join("base.json");
+        let out_path = dir.path().join("expanded.json");
+        fs::write(
+            &results_path,
+            serde_json::to_vec_pretty(&json!({
+                "model_results": [
+                    {
+                        "model_name": "ModelicaTest.Events.WhenCase",
+                        "phase_reached": "Success",
+                        "sim_status": "sim_ok"
+                    },
+                    {
+                        "model_name": "ModelicaTest.Arrays.ArraySuccess",
+                        "phase_reached": "Success",
+                        "sim_status": "sim_ok"
+                    }
+                ]
+            }))
+            .expect("json"),
+        )
+        .expect("write results");
+        fs::write(
+            &base_path,
+            serde_json::to_vec_pretty(&vec![
+                "ModelicaTest.Events.WhenCase",
+                "ModelicaTest.Arrays.ArraySuccess",
+            ])
+            .expect("json"),
+        )
+        .expect("write base");
+
+        let catalog = build_catalog_with_limit(&results_path, 3).expect("catalog");
+        write_promoted_targets(&catalog, &base_path, &out_path).expect("promote targets");
+        let targets: Vec<String> =
+            serde_json::from_slice(&fs::read(&out_path).expect("read targets")).expect("targets");
+        assert_eq!(
+            targets,
+            vec![
+                "ModelicaTest.Arrays.ArraySuccess",
+                "ModelicaTest.Events.WhenCase"
+            ]
+        );
+    }
+
+    #[test]
+    fn promoted_targets_extend_base_list_with_representatives() {
+        let dir = tempdir().expect("tempdir");
+        let results_path = dir.path().join("msl_results.json");
+        let base_path = dir.path().join("base.json");
+        let out_path = dir.path().join("expanded.json");
+        fs::write(
+            &results_path,
+            serde_json::to_vec_pretty(&json!({
+                            "model_results": [
+                                {
+                                    "model_name": "ModelicaTest.Arrays.ForEquation",
+                                    "phase_reached": "Flatten"
+                                },
+                                {
+                                    "model_name": "ModelicaTest.Arrays.ArraySuccess",
+                                    "phase_reached": "Success"
+            ,
+                                    "sim_status": "sim_ok"
+                                },
+                                {
+                                    "model_name": "ModelicaTest.Events.WhenCase",
+                                    "phase_reached": "Success"
+            ,
+                                    "sim_status": "sim_ok"
+                                }
+                            ]
+                        }))
             .expect("json"),
         )
         .expect("write results");

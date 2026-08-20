@@ -4,13 +4,15 @@
 //! structural/lowering phases. It must stay free of DAE evaluation and phase
 //! logic.
 
-// SPEC_0021 file-size exception - split plan: extract the Solve program validation and invariant checks into ir-solve/src/program_checks.rs, leaving this file as the module facade and re-exports; tracked as RDD2/GALEC cleanup debt (dev/2026-08-11 remediation note).
+// SPEC_0021 file-size exception - split plan: extract the Solve program validation and invariant checks into ir-solve/src/program_checks.rs, leaving this file as the module facade and re-exports; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 
 mod certificate;
 #[cfg(test)]
 mod certificate_tests;
 #[cfg(test)]
 mod compute_block_tests;
+mod feature_query;
+pub mod fmi;
 mod layout;
 mod linear_op;
 mod model;
@@ -33,6 +35,10 @@ use std::collections::{BTreeSet, HashMap};
 pub use certificate::{
     derive_root_reachable_runtime_rows, derive_root_relation_refresh_roles,
     derive_runtime_assignment_roles,
+};
+pub use feature_query::{
+    SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events,
+    solve_has_initialization, solve_has_runtime_events,
 };
 pub use layout::{
     ComponentReferenceKey, ComponentReferenceKeyError, ComponentReferenceKeyErrorKind,
@@ -2111,6 +2117,7 @@ fn validate_discrete_system_shape(
         system.rhs.len(),
         system.observation_refresh.len(),
     )?;
+    validate_observation_refresh_coupling(system)?;
     validate_count(
         "discrete.integrator_history_effects",
         system.rhs.len(),
@@ -2124,6 +2131,15 @@ fn validate_discrete_system_shape(
     let clock_count = problem.clocks.periodic_event_schedules.len();
     for clock in system.clock_owners.iter().flatten().copied() {
         validate_indices("discrete.clock_owners", &[clock.index()], clock_count)?;
+    }
+    for clocks in &system.clock_partition_intermediate_clocks {
+        for clock in clocks {
+            validate_indices(
+                "discrete.clock_partition_intermediate_clocks",
+                &[clock.index()],
+                clock_count,
+            )?;
+        }
     }
     validate_structured_discrete_shape(problem, clock_count)?;
     validate_guarded_assignment_shape(problem, clock_count)?;
@@ -2142,6 +2158,72 @@ fn validate_discrete_system_shape(
         "clocks.activation_parameter_indices",
         &problem.clocks.activation_parameter_indices,
     )?;
+    Ok(())
+}
+
+fn validate_observation_refresh_coupling(
+    system: &DiscreteSolveSystem,
+) -> Result<(), SolveProblemShapeContractError> {
+    for (row, selected) in system.observation_refresh.iter().copied().enumerate() {
+        if !selected {
+            continue;
+        }
+        if system.clock_owners.get(row) != Some(&None)
+            || system.pre_modes.get(row) != Some(&DiscreteEventPreMode::FollowCurrent)
+        {
+            return Err(SolveProblemShapeContractError::DiscreteCertificate {
+                context: "discrete.observation_refresh",
+                row,
+                detail: "selected observation row is not unclocked FollowCurrent",
+                span: system.rhs.span_for_output(row),
+            });
+        }
+    }
+    if system.observation_refresh_reads_y {
+        return Ok(());
+    }
+    let mut output_ordinal = 0usize;
+    for (program_index, program) in system.rhs.programs().iter().enumerate() {
+        let span = system.rhs.program_span(program_index);
+        let dependencies =
+            StructuralPattern::derive_output_y_dependencies(program, span).map_err(|_| {
+                SolveProblemShapeContractError::DiscreteCertificate {
+                    context: "discrete.observation_refresh_reads_y",
+                    row: program_index,
+                    detail: "observation dependency program is not certifiable",
+                    span,
+                }
+            })?;
+        for y_dependencies in dependencies {
+            let row = system
+                .rhs
+                .output_indices()
+                .get(output_ordinal)
+                .copied()
+                .ok_or(SolveProblemShapeContractError::DiscreteCertificate {
+                    context: "discrete.observation_refresh_reads_y",
+                    row: program_index,
+                    detail: "observation output has no row identity",
+                    span,
+                })?;
+            if system.observation_refresh.get(row) == Some(&true) && !y_dependencies.is_empty() {
+                return Err(SolveProblemShapeContractError::DiscreteCertificate {
+                    context: "discrete.observation_refresh_reads_y",
+                    row,
+                    detail: "false certificate omits a selected row Y dependency",
+                    span: system.rhs.span_for_output(row),
+                });
+            }
+            output_ordinal = output_ordinal.checked_add(1).ok_or(
+                SolveProblemShapeContractError::DiscreteCertificate {
+                    context: "discrete.observation_refresh_reads_y",
+                    row,
+                    detail: "observation output ordinal overflow",
+                    span,
+                },
+            )?;
+        }
+    }
     Ok(())
 }
 

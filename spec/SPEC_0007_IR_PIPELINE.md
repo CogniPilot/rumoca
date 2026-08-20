@@ -256,7 +256,7 @@ that tick exchange same-tick values through construction-issued intermediates,
 guarded producers lacking that proof remain hold-fallback members under the
 checked hold rows, and event-transaction, `sample`, and causally unowned rows
 keep their existing owners (SOLVE-C57; pending design
-`dev/2026-08-11-clock-partition-transaction-design.md`).
+SPEC_0046).
 
 Serialized Solve roots carry a mandatory schema version; unsupported and
 pre-versioned payloads are rejected.

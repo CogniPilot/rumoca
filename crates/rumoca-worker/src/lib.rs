@@ -24,7 +24,7 @@ pub use memory_limit::{
 /// Per-model wall timeout (seconds) for one MSL-parity simulation. Shared so the
 /// rumoca sim worker and the OMC reference run use the *same* budget (a model is
 /// only fairly comparable when both tools are given identical time to simulate).
-pub const MSL_SIM_TIMEOUT_SECS: f64 = 10.0;
+pub const MSL_SIM_TIMEOUT_SECS: f64 = 12.0;
 /// Uniform output intervals used by the MSL parity oracle when a model has no
 /// explicit `experiment(Interval=...)` annotation.
 ///
@@ -264,6 +264,34 @@ pub enum ModelWorkerRunOutcome {
     Failed(String),
 }
 
+/// Parent-watchdog budgets for one persistent model-worker request.
+///
+/// Simulation can require a small process-orchestration allowance beyond its
+/// own solver budget. Keeping that allowance separate prevents it from
+/// weakening the compiler-phase timeout gate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModelWorkerPhaseTimeouts {
+    default_secs: f64,
+    simulation_secs: f64,
+}
+
+impl ModelWorkerPhaseTimeouts {
+    pub const fn new(default_secs: f64, simulation_secs: f64) -> Self {
+        Self {
+            default_secs,
+            simulation_secs,
+        }
+    }
+
+    pub const fn timeout_secs_for(self, phase: Option<WorkerProgressPhase>) -> f64 {
+        if matches!(phase, Some(WorkerProgressPhase::Sim)) {
+            self.simulation_secs
+        } else {
+            self.default_secs
+        }
+    }
+}
+
 pub struct ModelWorkerDaemon {
     child: Child,
     stdin: ChildStdin,
@@ -328,7 +356,7 @@ impl ModelWorkerDaemon {
     pub fn run_request(
         &mut self,
         request: &ModelWorkerRequest,
-        timeout_secs: f64,
+        phase_timeouts: ModelWorkerPhaseTimeouts,
         progress_jsonl: &Path,
     ) -> ModelWorkerRunOutcome {
         if let Err(error) = self.send_command(&ModelWorkerCommand::Run {
@@ -340,6 +368,7 @@ impl ModelWorkerDaemon {
         let mut phase_monitor = ModelWorkerPhaseMonitor::new();
         loop {
             let active_phase = phase_monitor.update(progress_jsonl);
+            let timeout_secs = phase_timeouts.timeout_secs_for(active_phase);
             if let Some(active_phase) = active_phase
                 && phase_monitor.phase_elapsed() >= Duration::from_secs_f64(timeout_secs)
             {
@@ -1024,5 +1053,19 @@ mod tests {
             msl_sim_output_dt(0.0, 1.0e-7, Some(2.5e-10), 500),
             Some(2.5e-10)
         );
+    }
+
+    #[test]
+    fn model_worker_timeout_grace_is_scoped_to_simulation() {
+        let timeouts = ModelWorkerPhaseTimeouts::new(10.0, 14.0);
+        assert_eq!(
+            timeouts.timeout_secs_for(Some(WorkerProgressPhase::Flatten)),
+            10.0
+        );
+        assert_eq!(
+            timeouts.timeout_secs_for(Some(WorkerProgressPhase::Sim)),
+            14.0
+        );
+        assert_eq!(timeouts.timeout_secs_for(None), 10.0);
     }
 }

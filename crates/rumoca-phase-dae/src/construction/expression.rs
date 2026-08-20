@@ -1,13 +1,13 @@
-// SPEC_0021 file-size exception - split plan: extract array/comprehension and subscript expression lowering into construction/expression/arrays.rs alongside the existing calls and operators submodules; tracked as RDD2/GALEC cleanup debt (dev/2026-08-11 remediation note).
-
-use super::*;
-
 mod calls;
 mod operators;
+mod temporal;
+
+use super::*;
 
 use calls::*;
 pub(super) use calls::{FunctionCallLowering, classify_function_call};
 use operators::*;
+use temporal::*;
 
 pub(super) fn lower_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
@@ -510,6 +510,9 @@ fn lower_builtin_expression<'dae>(
         }
         BuiltinFunction::Pre => {
             lower_pre(construction, symbols, binders, arguments, provenance, span)
+        }
+        BuiltinFunction::Edge | BuiltinFunction::Change => {
+            lower_history_operator(construction, symbols, binders, function, arguments, span)
         }
         BuiltinFunction::Initial => lower_initial_expression(construction, arguments, provenance),
         BuiltinFunction::Terminal => lower_terminal_expression(construction, arguments, provenance),
@@ -1203,52 +1206,6 @@ fn lower_unary_expression<'dae>(
     })
 }
 
-fn lower_derivative<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    symbols: LoweringSymbols<'_, 'dae>,
-    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    arguments: &[Expression],
-    provenance: dae::DaeProvenance,
-    span: Span,
-) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let (name, subscripts) =
-        derivative_reference(&arguments[0]).expect("analysis proves the derivative target shape");
-    let coordinate = symbols.coordinates[name.var_name()]
-        .derivative(span)
-        .expect("analysis proves derivative role");
-    lower_coordinate_reference(
-        construction,
-        symbols,
-        binders,
-        coordinate,
-        subscripts,
-        provenance,
-    )
-}
-
-fn lower_pre<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    symbols: LoweringSymbols<'_, 'dae>,
-    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    arguments: &[Expression],
-    provenance: dae::DaeProvenance,
-    span: Span,
-) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let (name, subscripts) =
-        derivative_reference(&arguments[0]).expect("analysis proves the pre-value target shape");
-    let coordinate = symbols.coordinates[name.var_name()]
-        .previous(span)
-        .expect("analysis proves the pre-value role");
-    lower_coordinate_reference(
-        construction,
-        symbols,
-        binders,
-        coordinate,
-        subscripts,
-        provenance,
-    )
-}
-
 pub(super) fn derivative_reference(
     expression: &Expression,
 ) -> Option<(&rumoca_core::Reference, &[Subscript])> {
@@ -1306,11 +1263,34 @@ fn lower_builtin_call<'dae>(
             lower_expression_scoped(construction, symbols, binders, argument, None)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    construction.expressions(|expressions| {
-        expressions
-            .at(provenance)
-            .builtin(pure_builtin(function), arguments)
-    })
+    let builtin = pure_builtin(function);
+    // MLS §3.7.2 div/mod/rem generate events at quotient changes. The static
+    // path folds a fully static call; a call the static proof refuses as a
+    // runtime discontinuity is handed to the checked runtime owner, which
+    // admits it exactly when the divisor is proven time-invariant and builds
+    // the sin-indicator event root. A statically undefined domain (proven
+    // zero divisor) stays rejected — only the non-static refusal reroutes.
+    if matches!(
+        builtin,
+        dae::PureBuiltin::Div | dae::PureBuiltin::Mod | dae::PureBuiltin::Rem
+    ) && let [lhs, rhs] = arguments.as_slice()
+    {
+        let (lhs, rhs) = (*lhs, *rhs);
+        let attempted = construction
+            .expressions(|expressions| expressions.at(provenance).builtin(builtin, arguments));
+        let Err(dae::DaeConstructionError::NonStaticDiscontinuity { .. }) = attempted else {
+            return attempted;
+        };
+        // MLS §3.7.2: no events are generated inside a function body — the
+        // quotient stands alone, proven against the exact open body
+        // capability; at model scope the checked runtime owner builds the
+        // discontinuity root.
+        if let Some(body) = symbols.function_body {
+            return construction.function_runtime_quotient(body, builtin, [lhs, rhs], provenance);
+        }
+        return construction.runtime_quotient(builtin, [lhs, rhs], provenance);
+    }
+    construction.expressions(|expressions| expressions.at(provenance).builtin(builtin, arguments))
 }
 
 fn lower_function_call<'dae>(

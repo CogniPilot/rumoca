@@ -164,6 +164,7 @@ pub(super) fn run_model_worker_queue(queue: ModelWorkerQueue<'_>) {
                 queue.source_root_path,
                 startup_timeout_secs,
                 queue.cpu_core_id,
+                model_worker_memory_limit_mb(),
             ) {
                 Ok(spawned) => worker = Some(spawned),
                 Err(error) => {
@@ -334,6 +335,7 @@ pub(super) fn prepare_successful_streaming_entry(
         ) {
             Ok(settings) => settings,
             Err(_) => {
+                let counts = checked_dae_counts(&result.dae);
                 let timeout_result = MslSimModelResult {
                     name: model_name,
                     status: SimStatus::Timeout,
@@ -343,8 +345,8 @@ pub(super) fn prepare_successful_streaming_entry(
                     ic_status: None,
                     ic_error: None,
                     ic_seconds: None,
-                    n_states: Some(result.dae.variables.states.len()),
-                    n_algebraics: Some(result.dae.variables.algebraics.len()),
+                    n_states: Some(counts.state_variables),
+                    n_algebraics: Some(counts.algebraic_variables),
                     sim_seconds: Some(0.0),
                     sim_build_seconds: Some(0.0),
                     ir_solve_seconds: Some(0.0),
@@ -366,15 +368,10 @@ pub(super) fn prepare_successful_streaming_entry(
             }
         };
 
-    let n_states = result.dae.variables.states.len();
-    let n_algebraics = result.dae.variables.algebraics.len();
-    let n_state_scalars: usize = result
-        .dae
-        .variables
-        .states
-        .values()
-        .map(|value| value.size())
-        .sum();
+    let counts = checked_dae_counts(&result.dae);
+    let n_states = counts.state_variables;
+    let n_algebraics = counts.algebraic_variables;
+    let n_state_scalars = counts.state_scalars;
     let output_samples = output_samples_for_model(n_state_scalars);
     let memory_permit = resources
         .sim_memory_tokens
@@ -427,6 +424,7 @@ pub(super) fn prepare_successful_dae_streaming_entry(
         ) {
             Ok(settings) => settings,
             Err(_) => {
+                let counts = checked_dae_counts(result.dae.as_ref());
                 let timeout_result = MslSimModelResult {
                     name: model_name,
                     status: SimStatus::Timeout,
@@ -436,8 +434,8 @@ pub(super) fn prepare_successful_dae_streaming_entry(
                     ic_status: None,
                     ic_error: None,
                     ic_seconds: None,
-                    n_states: Some(result.dae.variables.states.len()),
-                    n_algebraics: Some(result.dae.variables.algebraics.len()),
+                    n_states: Some(counts.state_variables),
+                    n_algebraics: Some(counts.algebraic_variables),
                     sim_seconds: Some(0.0),
                     sim_build_seconds: Some(0.0),
                     ir_solve_seconds: Some(0.0),
@@ -459,15 +457,10 @@ pub(super) fn prepare_successful_dae_streaming_entry(
             }
         };
 
-    let n_states = result.dae.variables.states.len();
-    let n_algebraics = result.dae.variables.algebraics.len();
-    let n_state_scalars: usize = result
-        .dae
-        .variables
-        .states
-        .values()
-        .map(|value| value.size())
-        .sum();
+    let counts = checked_dae_counts(result.dae.as_ref());
+    let n_states = counts.state_variables;
+    let n_algebraics = counts.algebraic_variables;
+    let n_state_scalars = counts.state_scalars;
     let output_samples = output_samples_for_model(n_state_scalars);
     let memory_permit = resources
         .sim_memory_tokens
@@ -599,7 +592,7 @@ pub(super) fn should_simulate_compilation_result(
     ctx: &RenderSimContext<'_>,
 ) -> bool {
     ctx.run_simulation
-        && !result.dae.metadata.is_partial
+        && !result.flat.is_partial
         && is_selected_sim_target(model_name, ctx)
         && (sim_targets_file_override().is_some()
             || is_root_standalone_msl_example_model(model_name, result))
@@ -611,7 +604,7 @@ pub(super) fn should_simulate_dae_compilation_result(
     ctx: &RenderSimContext<'_>,
 ) -> bool {
     ctx.run_simulation
-        && !result.dae.metadata.is_partial
+        && !result.flat.is_partial
         && is_selected_sim_target(model_name, ctx)
         && (sim_targets_file_override().is_some()
             || is_root_standalone_msl_example_dae_model(model_name, result))
@@ -977,6 +970,10 @@ pub(super) fn log_compile_scope(compile_count: usize) {
     println!(
         "  Compiling {} models with memory-aware batching...",
         compile_count
+    );
+    println!(
+        "  Model worker memory ceiling: {} MB resident-plus-swap per worker",
+        model_worker_memory_limit_mb()
     );
 }
 

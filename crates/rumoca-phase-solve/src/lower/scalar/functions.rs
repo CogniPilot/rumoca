@@ -4,7 +4,7 @@
 //! own checked result definition, with the caller's arguments bound on an
 //! explicit stack so a parameter cannot escape the call that supplies it.
 
-// SPEC_0021 file-size exception - split plan: extract record projection lowering into lower/scalar/functions/records.rs and function-loop lowering into lower/scalar/functions/loops.rs; tracked as RDD2/GALEC cleanup debt (dev/2026-08-11 remediation note).
+// SPEC_0021 file-size exception - split plan: extract record projection lowering into lower/scalar/functions/records.rs and function-loop lowering into lower/scalar/functions/loops.rs; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 use super::*;
 
 type RecordCondition<'dae> = (dae::ExprId<'dae>, solve::Reg, dae::ExprId<'dae>);
@@ -914,6 +914,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.active_clock = self.active_clock;
         compiler.sampled_source = self.sampled_source;
         compiler.derivative_definitions = self.derivative_definitions;
+        compiler.affine_derivative_systems = self.affine_derivative_systems;
+        compiler.active_derivatives = self.active_derivatives.clone();
+        compiler.derivative_seeds = self.derivative_seeds.clone();
         compiler.parameter_substitutions = self.parameter_substitutions;
         compiler.active_parameters = self.active_parameters.clone();
         compiler.active_call_assertions = self.active_call_assertions.clone();
@@ -1218,7 +1221,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 | ScalarContextFrame::Function { parent, .. }
                 | ScalarContextFrame::Domain { parent, .. }
                 | ScalarContextFrame::Parameter { parent, .. }
-                | ScalarContextFrame::Derivative { parent, .. } => *parent,
+                | ScalarContextFrame::Derivative { parent, .. }
+                | ScalarContextFrame::DerivativeSeed { parent, .. } => *parent,
             };
             ancestors.push(parent);
             current = parent;
@@ -1438,8 +1442,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         field: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        if let Some((start, registered)) =
-            self.emit_typed_pure_call(call, function, arguments, span)?
+        if let Some((start, registered)) = self
+            .emit_typed_pure_call(call, function, arguments, span)
+            .map_err(|error| {
+                LowerError::non_computable(
+                    format!(
+                        "typed record field {field} of `{}` could not be invoked: {error}",
+                        self.function_name_for_diagnostic(function)
+                    ),
+                    span,
+                )
+            })?
         {
             let range = typed_call_record_field_scalar_range(
                 self.view,
@@ -1699,8 +1712,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         let (field, scalar) = projection;
-        if let Some((start, registered)) =
-            self.emit_typed_pure_call(call, function, arguments, span)?
+        if let Some((start, registered)) = self
+            .emit_typed_pure_call(call, function, arguments, span)
+            .map_err(|error| {
+                LowerError::non_computable(
+                    format!(
+                        "typed record field {field} of `{}` could not be invoked: {error}",
+                        self.function_name_for_diagnostic(function)
+                    ),
+                    span,
+                )
+            })?
         {
             let range = typed_call_record_field_scalar_range(
                 self.view,
@@ -1769,7 +1791,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         } else {
             Ok(())
         };
-        let lowered = lowered.and_then(|()| self.record_field(result, field, scalar, span));
+        let lowered = lowered
+            .and_then(|()| self.record_field(result, field, scalar, span))
+            .map_err(|error| {
+                LowerError::non_computable(
+                    format!(
+                        "record field {field} of `{}` could not be projected: {error}",
+                        self.function_name_for_diagnostic(function)
+                    ),
+                    span,
+                )
+            });
         if owns_assertion {
             self.active_call_assertions.remove(&assertion);
         }
@@ -3586,6 +3618,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.active_clock = self.active_clock;
         compiler.sampled_source = self.sampled_source;
         compiler.derivative_definitions = self.derivative_definitions;
+        compiler.affine_derivative_systems = self.affine_derivative_systems;
+        compiler.active_derivatives = self.active_derivatives.clone();
+        compiler.derivative_seeds = self.derivative_seeds.clone();
         compiler.parameter_substitutions = self.parameter_substitutions;
         compiler.active_parameters = self.active_parameters.clone();
         compiler.active_call_assertions = self.active_call_assertions.clone();
@@ -3890,7 +3925,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .map_err(|error| LowerError::contract(error.to_string(), span))?;
         let scheduled = self.active_clock.is_none() && !registered.assertions.is_empty();
         if scheduled {
-            self.schedule_typed_pure_call_assertions(call, function, &registered, span)?;
+            self.schedule_typed_pure_call_assertions(call, function, &registered, span)
+                .map_err(|error| {
+                    LowerError::non_computable(
+                        format!(
+                            "typed assertions for `{}` could not be specialized: {error}",
+                            self.function_name_for_diagnostic(function)
+                        ),
+                        span,
+                    )
+                })?;
         }
         Ok(scheduled)
     }

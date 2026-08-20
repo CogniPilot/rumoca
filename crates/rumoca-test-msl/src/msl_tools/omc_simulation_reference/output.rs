@@ -67,6 +67,12 @@ pub(super) fn compute_trace_output_summary(
         models_compared: model_count,
         missing_trace_models: trace_report.missing_trace.len(),
         skipped_models: trace_report.skipped.len(),
+        policy_excluded_models: trace_report
+            .skipped
+            .values()
+            .filter(|exit| exit.kind == TraceExitKind::PolicyExcluded)
+            .count(),
+        trace_nonidentifiable_models: trace_report.trace_nonidentifiable.len(),
         agreement_high: agreement.high_agreement,
         agreement_minor: agreement.minor_agreement,
         agreement_deviation: agreement.deviation,
@@ -185,6 +191,11 @@ fn trace_channel_summary_from_totals(
 fn initial_condition_summary(trace_report: &TraceQuantification) -> InitialConditionSummary {
     let model_count = trace_report.models.len();
     let model_count_f64 = model_count.max(1) as f64;
+    let models_with_unmeasured_initial_conditions = trace_report
+        .models
+        .values()
+        .filter(|item| item.metric.initial_condition.channels_compared == 0)
+        .count();
     let models_with_initial_condition_deviation = trace_report
         .models
         .values()
@@ -197,8 +208,10 @@ fn initial_condition_summary(trace_report: &TraceQuantification) -> InitialCondi
     let mut summary = InitialConditionSummary {
         models_compared: model_count,
         models_with_accurate_initial_conditions: model_count
-            .saturating_sub(models_with_initial_condition_deviation),
+            .saturating_sub(models_with_initial_condition_deviation)
+            .saturating_sub(models_with_unmeasured_initial_conditions),
         models_with_initial_condition_deviation,
+        models_with_unmeasured_initial_conditions,
         ..InitialConditionSummary::default()
     };
     for stats in channels {
@@ -219,6 +232,8 @@ fn initial_condition_summary(trace_report: &TraceQuantification) -> InitialCondi
         summary.models_with_accurate_initial_conditions as f64 * 100.0 / model_count_f64;
     summary.models_with_initial_condition_deviation_percent =
         summary.models_with_initial_condition_deviation as f64 * 100.0 / model_count_f64;
+    summary.models_with_unmeasured_initial_conditions_percent =
+        summary.models_with_unmeasured_initial_conditions as f64 * 100.0 / model_count_f64;
     summary.high_channels_percent = summary.high_channels_total as f64 * 100.0 / channel_count_f64;
     summary.near_channels_percent = summary.near_channels_total as f64 * 100.0 / channel_count_f64;
     summary.deviation_channels_percent =
@@ -245,7 +260,7 @@ fn sorted_trace_metrics(quantification: &TraceQuantification) -> Vec<TraceModelM
 fn candidate_model_count(all_results: &BTreeMap<String, SimModelResult>) -> usize {
     all_results
         .values()
-        .filter(|result| omc_model_is_trace_candidate(result))
+        .filter(|result| rumoca_model_is_trace_candidate(result))
         .count()
 }
 
@@ -285,16 +300,25 @@ fn build_trace_report_payload(
     trace_summary: &TraceOutputSummary,
     metrics: &[TraceModelMetric],
     candidate: usize,
+    provenance: &ComparisonProvenance,
 ) -> Value {
     let (total_rumoca_wall, total_rumoca_build, total_rumoca_sim, total_omc_sim, speedup_ratio) =
         trace_runtime_totals(metrics);
     let shape_counts = trace_shape_counts(metrics);
     json!({
         "generated_at_unix_seconds": unix_timestamp_seconds(),
+        // Binary provenance: which commit produced these numbers, and whether
+        // the tree that produced them matched it. A comparison artifact with no
+        // commit stamp cannot be traced back to the code that wrote it, and a
+        // dirty stamp says the commit alone will not reproduce it.
+        "git_commit": provenance.git_commit,
+        "git_worktree_dirty": provenance.git_worktree_dirty,
         "models_candidate": candidate,
         "models_compared": trace_summary.models_compared,
         "missing_trace_models": trace_summary.missing_trace_models,
         "skipped_models": trace_summary.skipped_models,
+        "policy_excluded_models": trace_summary.policy_excluded_models,
+        "trace_nonidentifiable_models": trace_summary.trace_nonidentifiable_models,
         "agreement_bands": {
             "high_agreement": trace_summary.agreement_high,
             "minor_agreement": trace_summary.agreement_minor,
@@ -340,6 +364,7 @@ fn build_trace_report_payload(
         "shape_counts": shape_counts,
         "missing_trace": quantification.missing_trace,
         "skipped": quantification.skipped,
+        "trace_nonidentifiable": quantification.trace_nonidentifiable,
         "models": quantification.models,
     })
 }
@@ -357,6 +382,21 @@ fn trace_shape_counts(metrics: &[TraceModelMetric]) -> BTreeMap<String, usize> {
     counts
 }
 
+/// The commit an artifact was written at, and whether the tree matched it.
+pub(super) struct ComparisonProvenance {
+    git_commit: String,
+    git_worktree_dirty: bool,
+}
+
+impl ComparisonProvenance {
+    fn current(repo_root: &std::path::Path) -> Self {
+        Self {
+            git_commit: get_git_commit(repo_root),
+            git_worktree_dirty: git_worktree_is_dirty(repo_root),
+        }
+    }
+}
+
 pub(super) fn write_trace_report(
     paths: &MslPaths,
     all_results: &BTreeMap<String, SimModelResult>,
@@ -365,7 +405,13 @@ pub(super) fn write_trace_report(
     let metrics = sorted_trace_metrics(quantification);
     let trace_summary = compute_trace_output_summary(quantification);
     let candidate = candidate_model_count(all_results);
-    let payload = build_trace_report_payload(quantification, &trace_summary, &metrics, candidate);
+    let payload = build_trace_report_payload(
+        quantification,
+        &trace_summary,
+        &metrics,
+        candidate,
+        &ComparisonProvenance::current(&paths.repo_root),
+    );
     let trace_file = paths.results_dir.join("sim_trace_comparison.json");
     write_pretty_json(&trace_file, &payload)
 }
@@ -421,6 +467,8 @@ fn build_trace_comparison_payload(paths: &MslPaths, trace_summary: &TraceOutputS
         "models_compared": trace_summary.models_compared,
         "missing_trace_models": trace_summary.missing_trace_models,
         "skipped_models": trace_summary.skipped_models,
+        "policy_excluded_models": trace_summary.policy_excluded_models,
+        "trace_nonidentifiable_models": trace_summary.trace_nonidentifiable_models,
         "agreement_high": trace_summary.agreement_high,
         "agreement_high_percent": trace_summary.agreement_high_percent,
         "agreement_near": trace_summary.agreement_minor,
@@ -628,10 +676,13 @@ fn print_trace_snapshot(trace_summary: &TraceOutputSummary) {
         trace_summary.violation_mass_total
     );
     println!(
-        "    initial_conditions: accurate_models={:.2}%, deviation_channels={:.2}%, violation_mass_total={:.6e}",
+        "    initial_conditions: accurate_models={:.2}%, unmeasured_models={}, deviation_channels={:.2}%, violation_mass_total={:.6e}",
         trace_summary
             .initial_condition
             .accurate_initial_conditions_percent,
+        trace_summary
+            .initial_condition
+            .models_with_unmeasured_initial_conditions,
         trace_summary.initial_condition.deviation_channels_percent,
         trace_summary.initial_condition.violation_mass_total
     );
