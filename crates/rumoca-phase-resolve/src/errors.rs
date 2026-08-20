@@ -1,7 +1,7 @@
 //! Error types for name resolution phase.
 
-use miette::{Diagnostic as MietteDiagnostic, SourceSpan};
-use rumoca_core::Span;
+use miette::Diagnostic as MietteDiagnostic;
+use rumoca_core::{Diagnostic, PhaseError, Span, miette_phase_error_to_diagnostic};
 use thiserror::Error;
 
 /// Type alias for resolve results with boxed errors.
@@ -23,7 +23,7 @@ pub enum ResolveError {
     DuplicateDefinition {
         name: String,
         #[label("duplicate definition here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// A name was referenced but not found.
@@ -35,7 +35,7 @@ pub enum ResolveError {
     UndefinedReference {
         name: String,
         #[label("not found in scope")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Base class in extends clause not found.
@@ -47,7 +47,7 @@ pub enum ResolveError {
     BaseClassNotFound {
         name: String,
         #[label("base class not found")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Circular inheritance detected.
@@ -59,7 +59,7 @@ pub enum ResolveError {
     CircularInheritance {
         name: String,
         #[label("circular extends chain")]
-        span: SourceSpan,
+        span: Span,
     },
 }
 
@@ -68,7 +68,7 @@ impl ResolveError {
     pub fn duplicate_definition(name: impl Into<String>, span: Span) -> Self {
         Self::DuplicateDefinition {
             name: name.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -76,7 +76,7 @@ impl ResolveError {
     pub fn undefined_reference(name: impl Into<String>, span: Span) -> Self {
         Self::UndefinedReference {
             name: name.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -84,7 +84,7 @@ impl ResolveError {
     pub fn base_class_not_found(name: impl Into<String>, span: Span) -> Self {
         Self::BaseClassNotFound {
             name: name.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -92,7 +92,41 @@ impl ResolveError {
     pub fn circular_inheritance(name: impl Into<String>, span: Span) -> Self {
         Self::CircularInheritance {
             name: name.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
+    }
+}
+
+impl PhaseError for ResolveError {
+    fn to_diagnostic(&self) -> Diagnostic {
+        let span = match self {
+            Self::DuplicateDefinition { span, .. }
+            | Self::UndefinedReference { span, .. }
+            | Self::BaseClassNotFound { span, .. }
+            | Self::CircularInheritance { span, .. } => span,
+        };
+        miette_phase_error_to_diagnostic(self, std::slice::from_ref(span))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::SourceId;
+
+    #[test]
+    fn phase_error_preserves_source_identity_and_help() {
+        let span = Span::from_offsets(SourceId::from_source_name("resolve-errors.mo"), 4, 9);
+        let error = ResolveError::base_class_not_found("Missing", span);
+        let diagnostic = error.to_diagnostic();
+
+        assert_eq!(diagnostic.code.as_deref(), Some("ER003"));
+        assert_eq!(diagnostic.labels[0].span, span);
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("MLS §7.1"))
+        );
     }
 }

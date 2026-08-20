@@ -1,8 +1,7 @@
-use super::{ClassDef, DefId, SourceId, SourceMap, StoredDefinition};
+use super::{ClassDef, DefId, StoredDefinition};
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 thread_local! {
-    static ACTIVE_SEMANTIC_SOURCE_IDS: RefCell<Option<HashMap<String, SourceId>>> = const { RefCell::new(None) };
     static ACTIVE_SEMANTIC_LOOKUP: RefCell<Option<SemanticLookupIndex>> = const { RefCell::new(None) };
 }
 
@@ -51,33 +50,25 @@ impl SemanticLookupIndex {
 }
 
 pub(super) struct ActiveSemanticContextGuard {
-    previous_source_ids: Option<HashMap<String, SourceId>>,
     previous_lookup: Option<SemanticLookupIndex>,
 }
 
 impl Drop for ActiveSemanticContextGuard {
     fn drop(&mut self) {
-        ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| {
-            *slot.borrow_mut() = self.previous_source_ids.take();
-        });
         ACTIVE_SEMANTIC_LOOKUP.with(|slot| {
             *slot.borrow_mut() = self.previous_lookup.take();
         });
     }
 }
 
-pub(super) fn activate_semantic_context(
-    def: &StoredDefinition,
-    source_map: &SourceMap,
-) -> ActiveSemanticContextGuard {
-    let previous_source_ids =
-        ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| slot.borrow_mut().replace(source_map.source_ids()));
+/// Install the per-`StoredDefinition` class lookup index for the current thread.
+///
+/// There is no longer a file-name → `SourceId` sidecar here: `Location` carries
+/// its own `SourceId`, so spans never need rebasing (SPEC_0029 §3a).
+pub(super) fn activate_semantic_context(def: &StoredDefinition) -> ActiveSemanticContextGuard {
     let previous_lookup = ACTIVE_SEMANTIC_LOOKUP
         .with(|slot| slot.borrow_mut().replace(SemanticLookupIndex::build(def)));
-    ActiveSemanticContextGuard {
-        previous_source_ids,
-        previous_lookup,
-    }
+    ActiveSemanticContextGuard { previous_lookup }
 }
 
 fn with_active_lookup<T>(
@@ -88,16 +79,6 @@ fn with_active_lookup<T>(
         let lookup = slot.borrow();
         let active = lookup.as_ref()?;
         std::ptr::eq(active.def, std::ptr::from_ref(def)).then(|| f(active))
-    })
-}
-
-pub(super) fn source_id_for(file_name: &str) -> SourceId {
-    ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| {
-        let ids_ref = slot.borrow();
-        ids_ref
-            .as_ref()
-            .and_then(|ids| ids.get(file_name).copied())
-            .unwrap_or_else(|| SourceId::from_source_name(file_name))
     })
 }
 
@@ -227,7 +208,7 @@ end Outer;
         let def = &tree.definitions;
         let inner = &def.classes["Outer"].classes["Inner"];
         let inner_def_id = inner.def_id.expect("Inner should have DefId after resolve");
-        let _context = activate_semantic_context(def, &tree.source_map);
+        let _context = activate_semantic_context(def);
 
         let by_name = find_class_by_name(def, "Inner").expect("nested short-name lookup");
         let by_def_id = find_class_by_def_id(def, inner_def_id).expect("nested def-id lookup");

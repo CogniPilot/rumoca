@@ -200,29 +200,6 @@ pub(super) fn check_component_restrictions(
             ));
         }
 
-        // MLS §12.6 / OPREC-011: algebra over zero-sized operator-record
-        // arrays needs the record's '0' operator (e.g. a matrix product with
-        // zero inner dimension sums no terms). Reject zero-dimension
-        // operator-record components when the record does not define one.
-        if let Some(ResolvedTypeRoot::Class(type_class)) = &type_root
-            && type_class.operator_record
-            && component_has_literal_zero_dimension(comp)
-            && !type_class.classes.contains_key("'0'")
-        {
-            diags.push(semantic_error(
-                ER129_OPREC_ZERO_DIMENSION,
-                format!(
-                    "operator record '{}' has no '0' operator: zero-sized array component '{}' cannot participate in sum-style algebra (MLS §12.6)",
-                    type_class.name.text, name
-                ),
-                label_from_token(
-                    &comp.name_token,
-                    "restrictions/oprec_zero_dimension",
-                    "declare an operator '0' in the operator record or use a non-zero dimension",
-                ),
-            ));
-        }
-
         if (comp.inner || comp.outer)
             && let Some(ResolvedTypeRoot::Class(type_class)) = &type_root
             && type_class.class_type == ClassType::Connector
@@ -1442,14 +1419,20 @@ pub(super) fn check_annotation_advisories(
     def: &StoredDefinition,
     diags: &mut Vec<Diagnostic>,
 ) {
-    // MLS §12.9 / FUNC-032: external functions without an explicit
-    // pure/impure declaration are deprecated.
+    // MLS 3.7 §12.3 / FUNC-032: "External functions not explicitly declared
+    // with pure or impure is deprecated." Such a function "shall be treated as
+    // impure", but the deprecation is a report, not a call restriction, so the
+    // declaration is reported and compiled, never rejected. MLS 3.6 §12.3
+    // stated the report as a requirement ("a diagnostic must be given if
+    // called in a simulation model"), so it is emitted for every such
+    // declaration rather than only at simulation-model call sites.
     if class.class_type == ClassType::Function && class.external.is_some() && !class.purity_declared
     {
         diags.push(Diagnostic::warning(
             WR001_EXTERNAL_PURITY_UNDECLARED,
             format!(
-                "external function '{}' should declare `pure` or `impure` explicitly; the bare form is deprecated (MLS §12.9)",
+                "external function '{}' should declare `pure` or `impure` explicitly; the bare \
+                 form is deprecated and is treated as impure (MLS 3.7 §12.3)",
                 class.name.text
             ),
             label_from_token(
@@ -1515,6 +1498,9 @@ pub(super) fn check_annotation_advisories(
 /// has no effect; warn so the annotation is not silently ignored.
 pub(super) fn check_evaluate_annotations(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     for (name, comp) in &class.components {
+        if !matches!(comp.variability, Variability::Parameter(_)) {
+            continue;
+        }
         let has_evaluate = comp.annotation.iter().any(|entry| {
             matches!(
                 entry,
@@ -1727,21 +1713,6 @@ pub(super) fn check_operator_constructor_pairing(
             }
         }
     }
-}
-
-/// True when any declared dimension of the component is a literal zero.
-fn component_has_literal_zero_dimension(comp: &ast::Component) -> bool {
-    comp.shape.contains(&0)
-        || comp.shape_expr.iter().any(|sub| {
-            matches!(
-                sub,
-                Subscript::Expression(Expression::Terminal {
-                    terminal_type: TerminalType::UnsignedInteger,
-                    token,
-                    ..
-                }) if token.text.as_ref() == "0"
-            )
-        })
 }
 
 /// Whether the operator record declares a 'constructor' operator with an

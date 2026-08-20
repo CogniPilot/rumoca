@@ -13,7 +13,6 @@ tracing = ["dep:tracing"]
 [dependencies]
 rumoca-core = { workspace = true }
 rumoca-ir-ast = { workspace = true }
-anyhow = { workspace = true }
 indexmap = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }

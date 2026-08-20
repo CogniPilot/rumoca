@@ -120,6 +120,7 @@ fn test_propagate_alias_map_copies_root_and_prefixed_fields() {
 fn test_extract_simple_path_preserves_subscripted_component_refs() {
     let expr = Expression::ComponentReference(ComponentReference {
         local: false,
+        qualified_display_name: None,
         parts: vec![
             ComponentRefPart {
                 ident: Token {
@@ -129,6 +130,7 @@ fn test_extract_simple_path_preserves_subscripted_component_refs() {
                     token_type: 0,
                 },
                 subs: None,
+                def_id: None,
             },
             ComponentRefPart {
                 ident: Token {
@@ -159,9 +161,9 @@ fn test_extract_simple_path_preserves_subscripted_component_refs() {
                         span: rumoca_core::Span::DUMMY,
                     }),
                 ]),
+                def_id: None,
             },
         ],
-        def_id: None,
         span: rumoca_core::Span::DUMMY,
     });
 
@@ -193,25 +195,12 @@ fn test_propagate_alias_map_copies_indexed_record_fields() {
 }
 
 #[test]
-fn test_insert_instanced_aliases_ignores_dot_inside_subscript_expression() {
-    let mut out = HashMap::new();
-    TypeChecker::insert_instanced_aliases(
-        &mut out,
-        "plug[data.medium]",
-        TypeId::new(7),
-        Some("Top"),
-    );
-
-    assert_eq!(out.get("plug[data.medium]"), Some(&TypeId::new(7)));
-    assert_eq!(out.get("Top.plug[data.medium]"), Some(&TypeId::new(7)));
-}
-
-#[test]
-fn test_build_instanced_component_type_scope_keeps_subscript_dot_single_segment() {
+fn instance_identity_scope_keeps_subscript_dot_single_segment() {
     let mut overlay = InstanceOverlay::default();
     overlay.components.insert(
         InstanceId::new(1),
         InstanceData {
+            instance_id: InstanceId::new(1),
             qualified_name: QualifiedName {
                 parts: vec![("plug[data.medium]".to_string(), vec![])],
             },
@@ -220,14 +209,182 @@ fn test_build_instanced_component_type_scope_keeps_subscript_dot_single_segment(
         },
     );
 
-    let (full_prefix, short_model) = TypeChecker::instanced_scope_prefixes("Top.Model");
-    let scope_map =
-        TypeChecker::build_instanced_component_type_scope(&overlay, &full_prefix, &short_model);
-    assert_eq!(
-        scope_map.get("plug[data.medium]"),
-        Some(&TypeId::new(11)),
+    let scope = InstanceSemanticScope::from_overlay(&overlay);
+    let reference = make_comp_ref("plug[data.medium]");
+    assert!(
+        matches!(
+            scope.lookup_reference(&reference, 1, None, None),
+            SemanticLookup::Found(ComponentSemantics {
+                type_id,
+                ..
+            }) if type_id == TypeId::new(11)
+        ),
         "dot inside subscript content must not block top-level instanced scope aliases"
     );
+}
+
+#[test]
+fn instance_identity_scope_uses_typed_component_family_domain() {
+    let source = r#"
+        model Cell
+            Real member[2];
+        end Cell;
+        model Test
+            Cell cells[3];
+        end Test;
+    "#;
+    let resolved = resolve(parse(source)).expect("resolve should succeed");
+    let cells_def_id = resolved.definitions.classes["Test"].components["cells"]
+        .def_id
+        .expect("cells declaration identity");
+    let member_def_id = resolved.definitions.classes["Cell"].components["member"]
+        .def_id
+        .expect("member declaration identity");
+    let instanced = rumoca_phase_instantiate::instantiate(resolved, "Test")
+        .expect("instantiate should succeed");
+    let root_class_id = instanced
+        .overlay
+        .classes
+        .values()
+        .find(|class| class.owner_component_id.is_none())
+        .map(|class| class.instance_id)
+        .expect("root class occurrence");
+    let scope = InstanceSemanticScope::from_overlay(&instanced.overlay);
+    let cells = exact_component_reference(&[("cells", None)], cells_def_id, cells_def_id);
+    let selected_cell =
+        exact_component_reference(&[("cells", Some(1))], cells_def_id, cells_def_id);
+    let selected_member = exact_component_reference(
+        &[("cells", Some(1)), ("member", None)],
+        cells_def_id,
+        member_def_id,
+    );
+
+    assert!(
+        matches!(
+            scope.lookup_reference_shape(&cells, 1, Some(root_class_id), None),
+            SemanticLookup::Found(Some(shape)) if shape == vec![3]
+        ),
+        "the exact family owner and declaration must retain the root array domain"
+    );
+    assert!(
+        matches!(
+            scope.lookup_reference(&selected_cell, 1, Some(root_class_id), None),
+            SemanticLookup::Found(ComponentSemantics { shape: Some(shape), .. })
+                if shape.is_empty()
+        ),
+        "selecting one expanded family occurrence must produce a scalar component"
+    );
+    assert!(
+        matches!(
+            scope.lookup_reference_shape(&selected_member, 2, Some(root_class_id), None),
+            SemanticLookup::Found(Some(shape)) if shape == vec![2]
+        ),
+        "the exact nested member declaration must retain its own typed family domain"
+    );
+}
+
+#[test]
+fn exact_local_scalar_shape_precedes_same_named_parent_array_domain() {
+    let source = r#"
+        connector Pin
+            Real value;
+        end Pin;
+        model Adapter
+            Pin pin;
+        end Adapter;
+        model Owner
+            Pin pin[3];
+            Adapter adapters[1];
+        end Owner;
+        model Test
+            Owner owner;
+        end Test;
+    "#;
+    let resolved = resolve(parse(source)).expect("resolve should succeed");
+    let owner_class_def_id = resolved.definitions.classes["Owner"]
+        .def_id
+        .expect("Owner class identity");
+    let adapter_class_def_id = resolved.definitions.classes["Adapter"]
+        .def_id
+        .expect("Adapter class identity");
+    let owner_pin_def_id = resolved.definitions.classes["Owner"].components["pin"]
+        .def_id
+        .expect("Owner.pin declaration identity");
+    let adapter_pin_def_id = resolved.definitions.classes["Adapter"].components["pin"]
+        .def_id
+        .expect("Adapter.pin declaration identity");
+    let instanced = rumoca_phase_instantiate::instantiate(resolved, "Test")
+        .expect("instantiate should succeed");
+    let owner_class_id = instanced
+        .overlay
+        .classes
+        .values()
+        .find(|class| class.class_def_id == Some(owner_class_def_id))
+        .map(|class| class.instance_id)
+        .expect("Owner class occurrence");
+    let adapter_class_id = instanced
+        .overlay
+        .classes
+        .values()
+        .find(|class| class.class_def_id == Some(adapter_class_def_id))
+        .map(|class| class.instance_id)
+        .expect("Adapter class occurrence");
+    let scope = InstanceSemanticScope::from_overlay(&instanced.overlay);
+    let owner_pin = exact_component_reference(&[("pin", None)], owner_pin_def_id, owner_pin_def_id);
+    let adapter_pin =
+        exact_component_reference(&[("pin", None)], adapter_pin_def_id, adapter_pin_def_id);
+
+    assert!(
+        matches!(
+            scope.lookup_reference_shape(&owner_pin, 1, Some(owner_class_id), None),
+            SemanticLookup::Found(Some(shape)) if shape == vec![3]
+        ),
+        "the enclosing same-named declaration must retain its typed array domain"
+    );
+    assert!(
+        matches!(
+            scope.lookup_reference_shape(&adapter_pin, 1, Some(adapter_class_id), None),
+            SemanticLookup::Found(Some(shape)) if shape.is_empty()
+        ),
+        "the exact local scalar declaration must not inherit the enclosing array domain"
+    );
+}
+
+fn exact_component_reference(
+    parts: &[(&str, Option<u64>)],
+    root_def_id: DefId,
+    target_def_id: DefId,
+) -> ComponentReference {
+    ComponentReference {
+        local: false,
+        qualified_display_name: None,
+        parts: parts
+            .iter()
+            .enumerate()
+            .map(|(index, (name, subscript))| ComponentRefPart {
+                ident: Token {
+                    text: Arc::from(*name),
+                    ..Default::default()
+                },
+                subs: subscript.map(|value| {
+                    vec![Subscript::Expression(Expression::Terminal {
+                        terminal_type: TerminalType::UnsignedInteger,
+                        token: Token {
+                            text: Arc::from(value.to_string()),
+                            ..Default::default()
+                        },
+                        span: rumoca_core::Span::DUMMY,
+                    })]
+                }),
+                def_id: Some(if index == 0 {
+                    root_def_id
+                } else {
+                    target_def_id
+                }),
+            })
+            .collect(),
+        span: rumoca_core::Span::DUMMY,
+    }
 }
 
 #[test]
@@ -260,6 +417,7 @@ fn test_type_scope_hint_fallback_keeps_subscript_dot_single_segment() {
 
     let subscript = Subscript::Expression(Expression::ComponentReference(ComponentReference {
         local: false,
+        qualified_display_name: None,
         parts: vec![ComponentRefPart {
             ident: Token {
                 text: Arc::from("nX"),
@@ -268,8 +426,8 @@ fn test_type_scope_hint_fallback_keeps_subscript_dot_single_segment() {
                 token_type: 0,
             },
             subs: None,
+            def_id: None,
         }],
-        def_id: None,
         span: rumoca_core::Span::DUMMY,
     }));
     let mut ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();

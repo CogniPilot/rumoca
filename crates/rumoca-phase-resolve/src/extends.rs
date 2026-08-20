@@ -126,6 +126,28 @@ impl Resolver {
             self.resolve_extends(extend, class_scope, qualified_name, class_def_id);
         }
 
+        if class.is_redeclare {
+            let class_name = class.name.text.as_ref();
+            let class_extends_target = class.extends.iter().find_map(|extend| {
+                let extends_same_slot = extend
+                    .base_name
+                    .name
+                    .last()
+                    .is_some_and(|part| part.text.as_ref() == class_name);
+                extends_same_slot.then_some(extend.base_def_id).flatten()
+            });
+            // MLS §5.3.2 / §7.3: a `redeclare` element without an `extends`
+            // clause of its own replaces the same-named element inherited by
+            // the *enclosing* class. That enclosing class is the owner of the
+            // parent scope (SPEC_0002), addressed by its `DefId` (SPEC_0001).
+            let inherited_target = self
+                .enclosing_class_def_id(class_def_id)
+                .and_then(|container| self.lookup_inherited_member_of(container, class_name));
+            class.redeclare_target_def_id = class_extends_target
+                .or(inherited_target)
+                .filter(|target| *target != class_def_id);
+        }
+
         // Remove from resolving set after extends are processed
         self.resolving_extends.remove(&class_def_id);
     }
@@ -225,11 +247,9 @@ impl Resolver {
 
         // The containing class, found through the scope tree rather than by
         // re-parsing the qualified name.
-        let class_scope = *self.class_def_scopes.get(&current_class_def_id)?;
-        let enclosing_scope = self.scope_tree.parent(class_scope)?;
-        let container_name = self.enclosing_class_names_from(enclosing_scope).next()?;
+        let container = self.enclosing_class_def_id(current_class_def_id)?;
 
-        self.lookup_inherited_member(container_name, member_name)
+        self.lookup_inherited_member_of(container, member_name)
     }
 
     /// Record a successful extends resolution, checking for cycles.
@@ -298,18 +318,10 @@ impl Resolver {
     /// and adds it to the scope's imports list.
     /// Returns None if resolution fails.
     pub(crate) fn resolve_import(&mut self, import: &ast::Import, scope: ScopeId) -> Option<()> {
-        // Determine the starting scope for resolution
-        // For global scope imports (leading dot), start from global scope
-        let resolve_scope = if import.is_global_scope() {
-            ScopeId(0) // Global scope
-        } else {
-            scope
-        };
-
         let scope_import = match import {
             ast::Import::Qualified { path, .. } => {
                 // import A.B.C; -> makes C available as C
-                let Some((path_ids, def_id)) = self.resolve_import_path(path, resolve_scope) else {
+                let Some((path_ids, def_id)) = self.resolve_import_path(path) else {
                     self.emit_unresolved_import(import);
                     return None;
                 };
@@ -325,7 +337,7 @@ impl Resolver {
             }
             ast::Import::Renamed { alias, path, .. } => {
                 // import D = A.B.C; -> makes C available as D
-                let Some((path_ids, def_id)) = self.resolve_import_path(path, resolve_scope) else {
+                let Some((path_ids, def_id)) = self.resolve_import_path(path) else {
                     self.emit_unresolved_import(import);
                     return None;
                 };
@@ -341,8 +353,7 @@ impl Resolver {
             }
             ast::Import::Unqualified { path, .. } => {
                 // import A.B.*; -> imports all public names from A.B
-                let Some((path_ids, pkg_def_id)) = self.resolve_import_path(path, resolve_scope)
-                else {
+                let Some((path_ids, pkg_def_id)) = self.resolve_import_path(path) else {
                     self.emit_unresolved_import(import);
                     return None;
                 };
@@ -362,8 +373,7 @@ impl Resolver {
             }
             ast::Import::Selective { path, names, .. } => {
                 // import A.B.{C, D}; -> imports specific names from A.B
-                let Some((path_ids, pkg_def_id)) = self.resolve_import_path(path, resolve_scope)
-                else {
+                let Some((path_ids, pkg_def_id)) = self.resolve_import_path(path) else {
                     self.emit_unresolved_import(import);
                     return None;
                 };
@@ -393,14 +403,16 @@ impl Resolver {
         Some(())
     }
 
-    fn resolve_import_path(&self, path: &ast::Name, scope: ScopeId) -> Option<(Vec<DefId>, DefId)> {
+    fn resolve_import_path(&self, path: &ast::Name) -> Option<(Vec<DefId>, DefId)> {
         if path.name.is_empty() {
             return None;
         }
 
         let first_part = &path.name[0].text;
         let first_path = ComponentPath::from_flat_path(first_part);
-        let mut current_def_id = self.scope_tree.lookup_excluding(scope, &first_path, None)?;
+        // MLS §13.2.2: unlike ordinary lexical lookup, every import path
+        // starts by resolving its first segment in the top-level scope.
+        let mut current_def_id = self.scope_tree.lookup_local(ScopeId::GLOBAL, &first_path)?;
         let mut path_ids = vec![current_def_id];
 
         for part in path.name.iter().skip(1) {
