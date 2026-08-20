@@ -5,7 +5,7 @@
 //! independently — no standard text reproduced (GAL-023).
 //!
 //! The golden PID / array fixtures also pass `validate` — asserted next to
-//! their definitions in `tests/block_print.rs`.
+//! their definitions in the checked template golden fixtures.
 
 use rumoca_core::Span;
 use rumoca_ir_galec::ast::{
@@ -222,11 +222,9 @@ fn classify_fn(declared: bool, raises: bool) -> UserFunction {
     UserFunction {
         kind: FunctionKind::Stateless,
         name: n("classify"),
-        signals: if declared {
-            vec![id("probeFault")]
-        } else {
-            Vec::new()
-        },
+        signals: std::iter::once(id("NAN"))
+            .chain(declared.then(|| id("probeFault")))
+            .collect(),
         parameters: vec![in_real("v"), out_real("w")],
         locals: Vec::new(),
         statements: vec![Spanned::dummy(Statement::If(IfStatement {
@@ -288,7 +286,7 @@ fn estimator() -> Block {
             local("w"),
             Expression::Call(fcall("classify", vec![sref("u")])),
         ),
-        catch_stmt(&["probeFault"], vec![assign(local("w"), r(0.0))]),
+        catch_stmt(&["probeFault", "NAN"], vec![assign(local("w"), r(0.0))]),
         call_stmt("accumulate", vec![lref("w")]),
         assign(
             state("y"),
@@ -317,6 +315,64 @@ fn minimal_block_is_valid() {
 #[test]
 fn full_featured_block_is_valid() {
     expect_valid(&estimator());
+}
+
+#[test]
+fn malformed_structural_shapes_fail_at_checked_construction_boundary() {
+    let expect_statement = |statement, code| {
+        let mut block = minimal();
+        block.do_step.statements = vec![Spanned::dummy(statement)];
+        expect_codes(&block, &[code]);
+    };
+    expect_statement(Statement::Signal(vec![]), "EG004");
+    expect_statement(Statement::Limit(vec![]), "EG005");
+    expect_statement(
+        Statement::If(IfStatement {
+            branches: vec![],
+            else_body: None,
+        }),
+        "EG006",
+    );
+    expect_statement(
+        Statement::If(IfStatement {
+            branches: vec![IfBranch {
+                condition: Condition::SignalCheck(SignalCheck {
+                    closure: None,
+                    test: Some(SignalTest {
+                        negated: false,
+                        signals: vec![],
+                    }),
+                    fallback: None,
+                }),
+                body: vec![],
+                span: Span::DUMMY,
+            }],
+            else_body: None,
+        }),
+        "EG008",
+    );
+
+    for (expression, code) in [
+        (Expression::Array(vec![]), "EG007"),
+        (Expression::If(IfExpression::new(vec![], r(0.0))), "EG009"),
+    ] {
+        expect_statement(
+            Statement::Assignment {
+                target: state("y"),
+                value: expression,
+            },
+            code,
+        );
+    }
+}
+
+#[test]
+fn non_finite_reals_fail_with_stable_code_before_rendering() {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut block = minimal();
+        block.do_step.statements = vec![assign(state("y"), r(value))];
+        expect_codes(&block, &["EG001"]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -446,13 +502,14 @@ fn integer_division_rejected() {
 #[test]
 fn if_expression_branches_must_be_equally_typed() {
     let mut block = minimal();
+    block.do_step.signals = vec![PredefinedSignal::Nan];
     block.do_step.locals = vec![int_decl("k")];
     block.do_step.statements = vec![assign(
         local("k"),
-        Expression::If(IfExpression {
-            branches: vec![(bin(BinaryOp::Gt, sref("u"), r(0.0)), int(1))],
-            else_value: Box::new(r(2.0)),
-        }),
+        Expression::If(IfExpression::new(
+            vec![(bin(BinaryOp::Gt, sref("u"), r(0.0)), int(1))],
+            r(2.0),
+        )),
     )];
     expect_codes(&block, &["EG017"]);
 }
@@ -957,17 +1014,18 @@ fn stateful_call_must_be_isolated_in_its_expression() {
 #[test]
 fn stateful_calls_banned_inside_if_expressions() {
     let mut block = minimal();
+    block.do_step.signals = vec![PredefinedSignal::Nan];
     block.protected_functions = vec![bump_fn()];
     block.do_step.locals = vec![real_decl("w")];
     block.do_step.statements = vec![assign(
         local("w"),
-        Expression::If(IfExpression {
-            branches: vec![(
+        Expression::If(IfExpression::new(
+            vec![(
                 bin(BinaryOp::Gt, sref("u"), r(0.0)),
                 Expression::Call(fcall("bump", vec![])),
             )],
-            else_value: Box::new(r(0.0)),
-        }),
+            r(0.0),
+        )),
     )];
     expect_codes(&block, &["EG032"]);
 }
@@ -986,6 +1044,7 @@ fn control_inputs_are_read_only() {
 #[test]
 fn undeclared_escape_rejected() {
     let mut block = minimal();
+    block.do_step.signals = vec![PredefinedSignal::Nan];
     block.error_signals = vec![id("probeFault")];
     // Raises `probeFault` without declaring it in the signals clause.
     block.protected_functions = vec![classify_fn(false, true)];
@@ -1020,7 +1079,7 @@ fn testing_an_already_caught_signal_rejected() {
     block.do_step.statements[1] = Spanned::dummy(Statement::If(IfStatement {
         branches: vec![
             IfBranch {
-                condition: catch_cond(&["probeFault"]),
+                condition: catch_cond(&["probeFault", "NAN"]),
                 body: vec![assign(local("w"), r(0.0))],
                 span: Span::DUMMY,
             },
@@ -1033,6 +1092,41 @@ fn testing_an_already_caught_signal_rejected() {
         else_body: None,
     }));
     expect_codes(&block, &["EG038"]);
+}
+
+#[test]
+fn real_comparisons_require_nan_in_the_escape_clause() {
+    let mut block = minimal();
+    block.do_step.statements = vec![Spanned::dummy(Statement::If(IfStatement {
+        branches: vec![IfBranch {
+            condition: Condition::Expression(bin(BinaryOp::Eq, sref("u"), r(0.0))),
+            body: vec![],
+            span: Span::DUMMY,
+        }],
+        else_body: None,
+    }))];
+    expect_codes(&block, &["EG036"]);
+
+    block.do_step.signals = vec![PredefinedSignal::Nan];
+    expect_valid(&block);
+}
+
+#[test]
+fn integer_comparisons_do_not_spuriously_signal_nan() {
+    let mut block = minimal();
+    block.do_step.locals = vec![int_decl("k")];
+    block.do_step.statements = vec![Spanned::dummy(Statement::If(IfStatement {
+        branches: vec![IfBranch {
+            condition: Condition::Expression(bin(BinaryOp::Lt, lref("k"), int(4))),
+            body: vec![],
+            span: Span::DUMMY,
+        }],
+        else_body: None,
+    }))];
+    expect_valid(&block);
+
+    block.do_step.signals = vec![PredefinedSignal::Nan];
+    expect_codes(&block, &["EG037"]);
 }
 
 #[test]
