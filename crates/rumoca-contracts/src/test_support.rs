@@ -341,7 +341,7 @@ pub fn expect_parse_err_with_code(source: &str, expected_code: &str) {
 fn parse_error_code(error: &ParseError) -> &'static str {
     match error {
         ParseError::SyntaxError { .. } => "EP001",
-        ParseError::NoAstProduced => "EP002",
+        ParseError::NoAstProduced { .. } => "EP002",
         ParseError::IoError { .. } => "EP003",
     }
 }

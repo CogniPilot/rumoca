@@ -6,8 +6,6 @@
 
 use crate::BuiltinFunction;
 
-/// Synthetic source name used for compiler-owned MLS-shaped predefined declarations.
-
 /// Modelica-shaped source for the predefined type/class declarations.
 ///
 /// This is the single source of truth for the implicit predefined type shape
@@ -46,8 +44,6 @@ impl PredefinedComponentType {
         }
     }
 }
-
-/// Predefined enumeration type names supplied by the language.
 
 /// Literals declared by the MLS predefined enumeration types.
 pub const PREDEFINED_ENUM_LITERALS: &[(&str, &[&str])] = &[

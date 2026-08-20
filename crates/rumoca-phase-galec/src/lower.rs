@@ -732,12 +732,30 @@ fn dependent_assignment<'dae>(
             span: Some(classified.variable.declaration().span()),
         })?;
     let mut lowerer = ExpressionLowerer::new(view, by_id, pre_names);
-    let value = lowerer.lower(expression)?;
-    let value = coerce(
-        value,
-        classified.scalar_type,
-        expression_span(view, expression),
-    )?;
+    let node = view
+        .expression(expression)
+        .expect("checked dependent-parameter expression resolves");
+    let target_type = classified.variable.value_type();
+    if node.value_type() != target_type {
+        return Err(unsupported(
+            "array-projection",
+            format!(
+                "dependent parameter `{}` has shape {:?}, but its binding has shape {:?}",
+                classified.variable.name(),
+                target_type.dimensions(),
+                node.value_type().dimensions()
+            ),
+            node.provenance().span(),
+        ));
+    }
+    let value = if target_type.dimensions().is_empty() {
+        let scalar = lowerer.lower(expression)?;
+        coerce(scalar, classified.scalar_type, node.provenance().span())?
+    } else if let Some(reference) = lowerer.direct_whole_aggregate_reference(expression)? {
+        reference
+    } else {
+        lowerer.lower_aggregate_expression_as(expression, classified.scalar_type)?
+    };
     Ok(gast::Spanned::new(
         gast::Statement::Assignment {
             target: state_reference(

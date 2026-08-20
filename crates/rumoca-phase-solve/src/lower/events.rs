@@ -29,8 +29,9 @@ use messages::{MessageActionContext, push_message_action};
 use observation_refresh::derive_observation_refresh;
 
 use integrator_history::{
-    HistoryDependencySlot, collect_linear_op_dependencies, derive_integrator_history_effects,
-    history_dependency_slot,
+    HistoryDependencySlot, apply_integrator_history_effects, collect_linear_op_dependencies,
+    history_dependency_slot, integrator_history_effect_for_range,
+    integrator_history_sensitive_slots,
 };
 use structured::lower_discrete_value_owners;
 
@@ -75,13 +76,10 @@ pub(super) fn lower_discrete_and_events<'dae>(
         &roots.relation_memory_targets,
         &layout.solve_layout.relation_memory_parameter_indices,
         &clocks.partition.activation_parameter_indices,
-    )?;
-    discrete.event_iteration_plan = event_iteration_plan;
-    derive_integrator_history_effects(
-        &mut discrete,
         continuous,
         layout.solve_layout.state_scalar_count,
-    );
+    )?;
+    discrete.event_iteration_plan = event_iteration_plan;
     let root_relation_refresh_roles = solve::derive_root_relation_refresh_roles(
         &roots.programs,
         &discrete.runtime_assignment_rhs,
@@ -266,7 +264,7 @@ struct DiscreteRows<'dae> {
     clock_owners: Vec<Option<solve::PeriodicClockId>>,
     structured_rhs: solve::ComputeBlock,
     structured_updates: Vec<solve::StructuredDiscreteUpdate>,
-    guarded_assignments: Vec<solve::GuardedAssignmentProgram>,
+    guarded_assignments: Vec<PendingGuardedAssignment>,
     structured_output_cursor: usize,
     relation_memory_owners: RelationMemoryOwners<'dae>,
     event_iteration_owners: Vec<Option<EventIterationOwnerClaim>>,
@@ -281,6 +279,15 @@ struct DiscreteRows<'dae> {
     clock_partition_intermediates: ScalarRows,
     clock_partition_intermediate_targets: Vec<solve::ScalarSlot>,
     clock_partition_intermediate_clocks: Vec<Vec<solve::PeriodicClockId>>,
+}
+
+struct PendingGuardedAssignment {
+    program: Vec<solve::LinearOp>,
+    provenance: rumoca_core::ProvenanceSpan,
+    target_ranges: Vec<(solve::ScalarSlot, usize)>,
+    role: solve::DiscreteRowRole,
+    pre_mode: solve::DiscreteEventPreMode,
+    clock_owner: Option<solve::PeriodicClockId>,
 }
 
 #[derive(Clone, Copy)]
@@ -626,26 +633,26 @@ impl<'dae> DiscreteRows<'dae> {
             .first()
             .expect("guarded-target partition is always nonempty");
         let program_index = self.guarded_assignments.len();
-        let owner = solve::GuardedAssignmentProgram::checked(
+        let provenance = first
+            .span
+            .require_provenance("guarded assignment group")
+            .map_err(|_| {
+                LowerError::contract(
+                    "guarded assignment group has no source provenance",
+                    first.span,
+                )
+            })?;
+        let owner = PendingGuardedAssignment {
             program,
-            first
-                .span
-                .require_provenance("guarded assignment group")
-                .map_err(|_| {
-                    LowerError::contract(
-                        "guarded assignment group has no source provenance",
-                        first.span,
-                    )
-                })?,
-            targets
+            provenance,
+            target_ranges: targets
                 .iter()
-                .map(|target| (target.target_base, target.width)),
+                .map(|target| (target.target_base, target.width))
+                .collect(),
             role,
-            first.pre_mode,
-            false,
-            solve::IntegratorHistoryEffect::Restart,
-            first.clock.map(|(_, clock)| clock),
-        )?;
+            pre_mode: first.pre_mode,
+            clock_owner: first.clock.map(|(_, clock)| clock),
+        };
         if role == solve::DiscreteRowRole::Equation {
             for (target_range_index, target) in targets.iter().enumerate() {
                 self.claim_guarded_event_owner(
@@ -715,6 +722,8 @@ impl<'dae> DiscreteRows<'dae> {
         root_relation_targets: &[Option<solve::ScalarSlot>],
         relation_memory_parameter_indices: &[usize],
         clock_activation_parameter_indices: &[usize],
+        continuous: &solve::ContinuousSolveSystem,
+        state_scalar_count: usize,
     ) -> Result<solve::DiscreteSolveSystem, LowerError> {
         self.partition_root_relation_refresh(root_relation_targets);
         let runtime_assignment_rhs = self.runtime_rows.into_scalar_block()?;
@@ -723,6 +732,12 @@ impl<'dae> DiscreteRows<'dae> {
             &self.runtime_targets,
             relation_memory_parameter_indices,
         )?;
+        let history_sensitive = integrator_history_sensitive_slots(
+            continuous,
+            &runtime_assignment_rhs,
+            &self.runtime_targets,
+            state_scalar_count,
+        );
         let root_reachable = solve::derive_root_reachable_runtime_rows(
             &runtime_assignment_rhs,
             &self.runtime_targets,
@@ -757,6 +772,42 @@ impl<'dae> DiscreteRows<'dae> {
         let clock_partition_intermediates =
             self.clock_partition_intermediates.into_scalar_block()?;
         let rhs = self.rows.into_scalar_block()?;
+        let guarded_assignments = self
+            .guarded_assignments
+            .into_iter()
+            .map(|pending| {
+                let effect = history_sensitive.as_ref().map_or(
+                    solve::IntegratorHistoryEffect::Restart,
+                    |sensitive| {
+                        pending
+                            .target_ranges
+                            .iter()
+                            .map(|(base, count)| {
+                                integrator_history_effect_for_range(
+                                    *base,
+                                    *count,
+                                    sensitive,
+                                    state_scalar_count,
+                                )
+                            })
+                            .fold(
+                                solve::IntegratorHistoryEffect::Preserve,
+                                integrator_history::join_integrator_history_effect,
+                            )
+                    },
+                );
+                solve::GuardedAssignmentProgram::checked(
+                    pending.program,
+                    pending.provenance,
+                    pending.target_ranges,
+                    pending.role,
+                    pending.pre_mode,
+                    false,
+                    effect,
+                    pending.clock_owner,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut discrete = solve::DiscreteSolveSystem {
             event_iteration_plan: solve::EventIterationPlan::default(),
             runtime_assignment_rhs,
@@ -772,7 +823,7 @@ impl<'dae> DiscreteRows<'dae> {
             observation_refresh_reads_y: false,
             integrator_history_effects: vec![solve::IntegratorHistoryEffect::Restart; rhs.len()],
             clock_owners: self.clock_owners,
-            guarded_assignments: self.guarded_assignments,
+            guarded_assignments,
             event_transactions: Vec::new(),
             structured_rhs: self.structured_rhs,
             structured_updates: self.structured_updates,
@@ -782,6 +833,9 @@ impl<'dae> DiscreteRows<'dae> {
             clock_partition_intermediate_clocks: self.clock_partition_intermediate_clocks,
             rhs,
         };
+        if let Some(sensitive) = history_sensitive.as_ref() {
+            apply_integrator_history_effects(&mut discrete, sensitive, state_scalar_count);
+        }
         derive_observation_refresh(&mut discrete, clock_activation_parameter_indices)?;
         Ok(discrete)
     }
@@ -1971,6 +2025,22 @@ mod integrator_history_effect_tests {
             clock_owners: vec![None; row_count],
             ..solve::DiscreteSolveSystem::default()
         }
+    }
+
+    fn derive_integrator_history_effects(
+        discrete: &mut solve::DiscreteSolveSystem,
+        continuous: &solve::ContinuousSolveSystem,
+        state_scalar_count: usize,
+    ) {
+        let Some(sensitive) = integrator_history_sensitive_slots(
+            continuous,
+            &discrete.runtime_assignment_rhs,
+            &discrete.runtime_assignment_targets,
+            state_scalar_count,
+        ) else {
+            return;
+        };
+        apply_integrator_history_effects(discrete, &sensitive, state_scalar_count);
     }
 
     #[test]

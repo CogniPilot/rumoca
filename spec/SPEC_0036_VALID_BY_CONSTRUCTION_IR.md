@@ -226,8 +226,9 @@ change/receipt registries, generation tokens, and post-rewrite validation are pr
 
 ### Serialization
 
-Only DAE wire v13 exists; v12-and-earlier/pre-versioned payloads, adapters,
-migration readers, and dual writes are prohibited.
+Only the current wire identified by `rumoca_ir_dae::DAE_SCHEMA_VERSION` exists;
+older/pre-versioned payloads, adapters, migration readers, and dual writes are
+prohibited. The code constant is the single version authority.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|

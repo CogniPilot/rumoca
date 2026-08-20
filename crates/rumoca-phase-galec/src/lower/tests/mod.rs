@@ -96,6 +96,102 @@ fn binding_dependencies_issue_dependent_parameters_in_topological_order() {
 }
 
 #[test]
+fn rank_two_dependent_parameter_preserves_one_checked_whole_array_move() {
+    let mut sources = SourceMap::new();
+    let text = "parameter Real route[2,3]; parameter Real guidanceRoute[2,3] = route;";
+    let source = sources.add("whole-array-modifier.mo", text);
+    let span = Span::from_offsets(source, 0, text.len());
+    let at = dae::DaeProvenance::source(span).unwrap();
+    let model = dae::Dae::construct(sources, |model| {
+        let matrix_type = model.types(|types| {
+            types.derived(dae::ValueType::array(dae::ScalarType::Real, [2, 3]), at)
+        })?;
+        let ((route, route_reservation), (_, guidance_reservation)) =
+            model.variables(|variables| {
+                Ok((
+                    variables.reserve_parameter(VarName::new("route"), matrix_type, at)?,
+                    variables.reserve_parameter(VarName::new("guidanceRoute"), matrix_type, at)?,
+                ))
+            })?;
+        let (route_values, route_reference) = model.expressions(|expressions| {
+            let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+                .into_iter()
+                .map(|value| expressions.at(at).literal(dae::DaeLiteral::Real(value)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let first = expressions.at(at).array(values[..3].iter().copied())?;
+            let second = expressions.at(at).array(values[3..].iter().copied())?;
+            let matrix = expressions.at(at).array([first, second])?;
+            let reference = expressions
+                .at(at)
+                .coordinate(dae::CoordinateInput::Parameter(route))?;
+            Ok((matrix, reference))
+        })?;
+        model.variables(|variables| {
+            let attributes = |binding| dae::VariableAttributes {
+                binding: Some(binding),
+                is_tunable: true,
+                ..Default::default()
+            };
+            variables.define(route_reservation, attributes(route_values), at)?;
+            variables.define(guidance_reservation, attributes(route_reference), at)
+        })
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let classified = classify_variables(view).unwrap();
+        let by_id = classified
+            .iter()
+            .map(|variable| (variable.id.index(), variable.clone()))
+            .collect::<HashMap<_, _>>();
+        let guidance = classified
+            .iter()
+            .find(|variable| variable.variable.name().as_str() == "guidanceRoute")
+            .expect("dependent parameter is classified");
+        assert_eq!(guidance.class, VariableClass::DependentParameter);
+        assert_eq!(guidance.variable.value_type().dimensions(), [2, 3]);
+        let binding = guidance.variable.binding().unwrap();
+        assert_eq!(
+            NumericEvaluator::new(view).expression(binding).unwrap(),
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
+
+        let previous = HashMap::new();
+        let statement = dependent_assignment(view, guidance, &by_id, &previous).unwrap();
+        let gast::Statement::Assignment { target, value } = statement.node else {
+            panic!("dependent parameter must lower to one assignment")
+        };
+        assert!(matches!(
+            target,
+            gast::Reference::State(parts)
+                if parts.len() == 1
+                    && parts[0].name.lexeme() == "guidanceRoute"
+                    && parts[0].subscripts.is_empty()
+        ));
+        assert!(matches!(
+            value,
+            gast::Expression::Ref(gast::Reference::State(parts))
+                if parts.len() == 1
+                    && parts[0].name.lexeme() == "route"
+                    && parts[0].subscripts.is_empty()
+        ));
+
+        let mut lowerer = ExpressionLowerer::new(view, &by_id, &previous);
+        for indices in [
+            Vec::new(),
+            vec![gast::Expression::Integer(1)],
+            vec![gast::Expression::Integer(1); 3],
+        ] {
+            let error = lowerer
+                .lower_at(binding, &indices)
+                .err()
+                .expect("partial and over-indexed scalar projections stay rejected");
+            assert_eq!(error.code(), "EGT017");
+        }
+    });
+}
+
+#[test]
 fn vector_projection_preserves_the_unique_non_unit_dimension() {
     let index = gast::Expression::Integer(2);
     assert_eq!(
@@ -226,9 +322,7 @@ fn whole_array_function_arguments_preserve_checked_references() {
         let previous = HashMap::new();
         let lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
         let argument = view.expression_id(0).unwrap();
-        let direct = lowerer
-            .direct_aggregate_function_argument(argument)
-            .unwrap();
+        let direct = lowerer.direct_whole_aggregate_reference(argument).unwrap();
         assert!(matches!(
             direct,
             Some(gast::Expression::Ref(gast::Reference::State(parts)))
@@ -293,9 +387,7 @@ fn whole_array_function_value_arguments_preserve_the_proven_current_storage() {
         let previous = HashMap::new();
         let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
         lowerer.function_scope = Some(function.id());
-        let direct = lowerer
-            .direct_aggregate_function_argument(argument)
-            .unwrap();
+        let direct = lowerer.direct_whole_aggregate_reference(argument).unwrap();
         assert!(matches!(
             direct,
             Some(gast::Expression::Ref(gast::Reference::Local(part)))

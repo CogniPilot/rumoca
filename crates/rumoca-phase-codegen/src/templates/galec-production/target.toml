@@ -30,6 +30,9 @@ method; the co-emitted GALEC also round-trip parses ("GALEC language conformance
 Safety assurance: designed for the MISRA C:2023 profile in GAL-029/030;
 MISRA compliance and DO-178C compliance are not claimed."""
 
+# GAL-028: generated C evaluates Integer operations in the declared int32_t
+# domain. Construction-time range proof over every emitted operation is tracked
+# pre-cutover work (SPEC_0034 GAL-028/GAL-030); this target does not claim it.
 [integer]
 minimum = -2147483648
 maximum = 2147483647

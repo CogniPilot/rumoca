@@ -360,15 +360,13 @@ pub(super) fn own_clocked_algorithm_targets<'dae>(
         match statement {
             rumoca_core::Statement::Assignment { comp, value, span } => {
                 if let Some(plan) = function_calls.get(span) {
-                    for output in plan.outputs.iter().flatten() {
-                        own_clocked_function_output(
-                            construction,
-                            coordinates,
-                            clock,
-                            output,
-                            *span,
-                        )?;
-                    }
+                    own_clocked_function_outputs(
+                        construction,
+                        coordinates,
+                        clock,
+                        &plan.outputs,
+                        *span,
+                    )?;
                     continue;
                 }
                 let target = rumoca_core::component_ref_to_base_reference(comp)
@@ -387,9 +385,13 @@ pub(super) fn own_clocked_algorithm_targets<'dae>(
             rumoca_core::Statement::FunctionCall { outputs, span, .. } => {
                 let plan = &function_calls[span];
                 debug_assert_eq!(outputs.len(), plan.outputs.len());
-                for output in plan.outputs.iter().flatten() {
-                    own_clocked_function_output(construction, coordinates, clock, output, *span)?;
-                }
+                own_clocked_function_outputs(
+                    construction,
+                    coordinates,
+                    clock,
+                    &plan.outputs,
+                    *span,
+                )?;
             }
             rumoca_core::Statement::If {
                 cond_blocks,
@@ -437,6 +439,19 @@ pub(super) fn own_clocked_algorithm_targets<'dae>(
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn own_clocked_function_outputs<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    clock: dae::ClockId<'dae>,
+    outputs: &[Option<ModelEventFunctionOutputPlan>],
+    span: Span,
+) -> Result<(), dae::DaeConstructionError> {
+    for output in outputs.iter().flatten() {
+        own_clocked_function_output(construction, coordinates, clock, output, span)?;
     }
     Ok(())
 }

@@ -1303,7 +1303,9 @@ impl<'a> BlockShapes<'a> {
             Ok(())
         }
         let mut marks = HashMap::new();
-        for name in self.functions.keys() {
+        let mut roots = self.functions.keys().copied().collect::<Vec<_>>();
+        roots.sort_unstable();
+        for name in roots {
             walk(name, &self.functions, &mut marks)?;
         }
         Ok(())

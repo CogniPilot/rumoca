@@ -48,6 +48,7 @@ mod statement_rewriter;
 mod structured_domain;
 mod subscript;
 pub mod text_position;
+pub mod tool_config;
 pub use clock_lattice::{
     ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockPhaseAnchor, ClockRational,
     PeriodicClockSchedule,

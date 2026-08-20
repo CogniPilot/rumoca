@@ -428,10 +428,8 @@ pub struct ModificationValue {
     /// modification appears, which may differ from the modified component's scope.
     pub source_scope: Option<QualifiedName>,
     /// True if the modification has `each` prefix.
-    /// Note: `each` prefix handling is not yet implemented in the parser.
     pub each: bool,
     /// True if the modification has `final` prefix.
-    /// Note: `final` prefix handling is not yet implemented in the parser.
     pub final_: bool,
 }
 

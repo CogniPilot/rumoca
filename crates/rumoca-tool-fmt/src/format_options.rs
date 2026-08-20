@@ -2,36 +2,16 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use thiserror::Error;
 
 /// Configuration file names to search for.
 pub const CONFIG_FILE_NAMES: &[&str] = &[".rumoca_fmt.toml", "rumoca_fmt.toml"];
 
-/// Error that can occur when loading configuration.
-#[derive(Debug, Error)]
-pub enum ConfigError {
-    /// Failed to read the configuration file.
-    #[error("failed to read config file: {0}")]
-    ReadError(#[from] std::io::Error),
-    /// Failed to parse the configuration file.
-    #[error("failed to parse config file: {0}")]
-    ParseError(#[from] toml::de::Error),
-}
+/// Error that can occur when loading formatter configuration.
+pub type ConfigError = rumoca_core::tool_config::ToolConfigError<toml::de::Error>;
 
 /// Find a configuration file by searching the given directory and its parents.
 pub fn find_config(start_dir: &Path) -> Option<PathBuf> {
-    let mut current = start_dir.to_path_buf();
-    loop {
-        for name in CONFIG_FILE_NAMES {
-            let config_path = current.join(name);
-            if config_path.is_file() {
-                return Some(config_path);
-            }
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
+    rumoca_core::tool_config::find_nearest_named_config(start_dir, CONFIG_FILE_NAMES)
 }
 
 /// Load configuration from a specific file path.
@@ -43,7 +23,8 @@ pub fn load_config(path: &Path) -> Result<FormatOptions, ConfigError> {
 /// Load partial configuration overrides from a specific file path.
 pub fn load_config_overrides(path: &Path) -> Result<PartialFormatOptions, ConfigError> {
     let content = std::fs::read_to_string(path)?;
-    let options: PartialFormatOptions = toml::from_str(&content)?;
+    let options: PartialFormatOptions =
+        toml::from_str(&content).map_err(ConfigError::ParseError)?;
     Ok(options)
 }
 
@@ -88,51 +69,40 @@ pub enum LineEnding {
 }
 
 /// Formatting options.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FormatOptions {
     /// Formatter profile.
-    #[serde(default = "default_profile")]
     pub profile: FormatProfile,
 
     /// Number of spaces per indentation level.
-    #[serde(default = "default_indent_size")]
     pub indent_size: usize,
 
     /// Use tabs instead of spaces when normalizing indentation.
-    #[serde(default)]
     pub use_tabs: bool,
 
     /// Normalize structural indentation. Off by default because MSL/Dymola
     /// continuation indentation carries local alignment information.
-    #[serde(default)]
     pub normalize_indentation: bool,
 
     /// Add missing structural indentation only to unindented lines.
-    #[serde(default = "default_true")]
     pub repair_missing_indentation: bool,
 
     /// Normalize spaces around declaration bindings and equation/algorithm assignments.
-    #[serde(default)]
     pub normalize_equation_spacing: bool,
 
     /// Normalize spaces around binary expression operators.
-    #[serde(default)]
     pub normalize_operator_spacing: bool,
 
     /// Normalize named argument and modification assignments to compact `=`.
-    #[serde(default)]
     pub normalize_argument_assignment_spacing: bool,
 
     /// Insert newline at end of file.
-    #[serde(default = "default_true")]
     pub insert_final_newline: bool,
 
     /// Trim trailing horizontal whitespace outside strings and block comments.
-    #[serde(default = "default_true")]
     pub trim_trailing_whitespace: bool,
 
     /// Output line endings.
-    #[serde(default = "default_line_ending")]
     pub line_ending: LineEnding,
 }
 
@@ -142,10 +112,6 @@ fn default_profile() -> FormatProfile {
 
 fn default_indent_size() -> usize {
     2
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn default_line_ending() -> LineEnding {

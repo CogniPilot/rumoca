@@ -138,7 +138,67 @@ fn program_supports_directional(
                 .register_types()
                 .get(destination.index())
                 .is_some_and(|value_type| value_type.dimensions().is_empty()),
-            _ => true,
+            SolveOperation::Constant { .. }
+            | SolveOperation::Load { .. }
+            | SolveOperation::Store { .. }
+            | SolveOperation::Compare { .. }
+            | SolveOperation::Convert { .. }
+            | SolveOperation::Select { .. }
+            | SolveOperation::Scale { .. }
+            | SolveOperation::Transpose { .. }
+            | SolveOperation::MatrixMultiply { .. }
+            | SolveOperation::Cross { .. }
+            | SolveOperation::Identity { .. }
+            | SolveOperation::Diagonal { .. }
+            | SolveOperation::Concatenate { .. }
+            | SolveOperation::Fill { .. }
+            | SolveOperation::ConstructAggregate { .. }
+            | SolveOperation::ProjectElement { .. }
+            | SolveOperation::ProjectElementDynamic { .. }
+            | SolveOperation::ProjectSlice { .. }
+            | SolveOperation::ProjectView { .. }
+            | SolveOperation::SelectElement { .. }
+            | SolveOperation::UpdateElement { .. }
+            | SolveOperation::UpdateSlice { .. }
+            | SolveOperation::UpdateView { .. }
+            | SolveOperation::Unary {
+                operator:
+                    SolveUnaryOperator::Negate
+                    | SolveUnaryOperator::Not
+                    | SolveUnaryOperator::Sign
+                    | SolveUnaryOperator::Floor
+                    | SolveUnaryOperator::Ceiling
+                    | SolveUnaryOperator::Truncate
+                    | SolveUnaryOperator::Sin
+                    | SolveUnaryOperator::Cos
+                    | SolveUnaryOperator::Tan
+                    | SolveUnaryOperator::Atan
+                    | SolveUnaryOperator::Sinh
+                    | SolveUnaryOperator::Cosh
+                    | SolveUnaryOperator::Tanh
+                    | SolveUnaryOperator::Exp,
+                ..
+            }
+            | SolveOperation::Binary {
+                operator:
+                    SolveBinaryOperator::Add
+                    | SolveBinaryOperator::Subtract
+                    | SolveBinaryOperator::Multiply
+                    | SolveBinaryOperator::And
+                    | SolveBinaryOperator::Or,
+                ..
+            }
+            | SolveOperation::BroadcastBinary {
+                operator:
+                    SolveBinaryOperator::Add
+                    | SolveBinaryOperator::Subtract
+                    | SolveBinaryOperator::Multiply,
+                ..
+            }
+            | SolveOperation::Reduce {
+                operator: SolveReductionOperator::Sum | SolveReductionOperator::All,
+                ..
+            } => true,
         })
 }
 

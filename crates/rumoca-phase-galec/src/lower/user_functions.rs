@@ -166,7 +166,7 @@ fn lower_function<'dae>(
     if !is_directly_lowerable(view, id) {
         return Err(unsupported(
             "galec-user-function",
-            "reachable Modelica function does not have primitive results and a loop-free body"
+            "reachable Modelica function is external, has no result, or uses a nested record value type that the GALEC profile cannot represent"
                 .to_owned(),
             view.function(id)
                 .expect("checked function identity resolves")
@@ -1301,7 +1301,7 @@ fn lower_tensor_function_assignment<'a, 'dae>(
     }
     let direct = match assignment.record_field {
         Some(field) => lowerer.direct_aggregate_record_field(assignment.expression, field)?,
-        None => lowerer.direct_aggregate_function_argument(assignment.expression)?,
+        None => lowerer.direct_whole_aggregate_reference(assignment.expression)?,
     };
     if let Some(value) = direct {
         return Ok(Some(LoweredTensorAssignment {

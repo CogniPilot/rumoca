@@ -927,7 +927,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         if node.value_type().dimensions().is_empty() {
             return self.lower(argument).map(|value| value.expression);
         }
-        if let Some(reference) = self.direct_aggregate_function_argument(argument)? {
+        if let Some(reference) = self.direct_whole_aggregate_reference(argument)? {
             return Ok(reference);
         }
         let scalar_type = scalar_type(
@@ -953,18 +953,17 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         )
     }
 
-    /// Preserve a whole-array reference at a checked input-only function boundary.
+    /// Preserve a whole aggregate whose checked DAE operation already denotes
+    /// storage with the expression's exact type and shape.
     ///
-    /// Copying every tensor coordinate into a generated argument local is only
-    /// necessary for computed aggregate expressions. A materialized variable or
-    /// current function parameter already has the exact checked shape. A
-    /// function-local value read also carries its exact reaching-definition
-    /// proof in DAE; function-body validation accepts that read only at a
-    /// statement where the definition is current. GALEC construction proves
-    /// that input parameters are not written. Keeping those references intact
-    /// avoids both a redundant bounded copy and a second full-size stack
-    /// allocation in embedded C.
-    pub(super) fn direct_aggregate_function_argument(
+    /// The DAE node supplies the aggregate type and shape once; this method only
+    /// accepts operations whose checked identity denotes storage of that type.
+    /// Computed aggregates return `None` and retain their explicit aggregate
+    /// lowering. A function-local value also carries its exact reaching-
+    /// definition proof, while a coordinate carries its checked variable
+    /// identity. Keeping those references intact avoids a redundant bounded
+    /// copy and a second full-size stack allocation in embedded C.
+    pub(super) fn direct_whole_aggregate_reference(
         &self,
         argument: dae::ExprId<'dae>,
     ) -> Result<Option<gast::Expression>, GalecTargetError> {
@@ -972,6 +971,9 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .view
             .expression(argument)
             .expect("checked function argument resolves");
+        if node.value_type().dimensions().is_empty() {
+            return Ok(None);
+        }
         let span = node.provenance().span();
 
         if let dae::ExpressionOperation::Field { base, field } = node.operation() {
@@ -1207,7 +1209,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         let Some(field) = fields.get(field) else {
             return Ok(None);
         };
-        self.direct_aggregate_function_argument(field)
+        self.direct_whole_aggregate_reference(field)
     }
 
     fn materialize_aggregate_function_argument(

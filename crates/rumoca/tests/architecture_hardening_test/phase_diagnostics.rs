@@ -78,3 +78,30 @@ fn test_phase_typecheck_errors_go_through_phase_error_type() {
 instead of constructing CommonDiagnostic::error in helper modules: {offenders:?}"
     );
 }
+
+#[test]
+fn test_galec_target_errors_own_their_phase_diagnostics() {
+    let root = workspace_root();
+    let owner = fs::read_to_string(root.join("crates/rumoca-phase-galec/src/diagnostic.rs"))
+        .expect("read GALEC target diagnostics");
+    assert!(
+        owner.contains("impl PhaseError for GalecTargetError"),
+        "the GALEC projection phase must own its conversion to the common diagnostic contract"
+    );
+
+    let cli = fs::read_to_string(root.join("crates/rumoca/src/target_manifest.rs"))
+        .expect("read target manifest consumer");
+    assert!(
+        !cli.contains("fn galec_projection_diagnostic")
+            && !cli.contains("fn galec_projection_label"),
+        "frontends must consume GalecTargetError::to_diagnostic instead of rebuilding phase diagnostics"
+    );
+
+    let wasm = fs::read_to_string(root.join("crates/rumoca-bind-wasm-galec/src/lib.rs"))
+        .expect("read GALEC WASM consumer");
+    assert!(
+        wasm.contains("error.to_diagnostic()")
+            && wasm.contains("source_span_location(source_map, label.span)"),
+        "the GALEC WASM boundary must preserve the shared diagnostic code and source span"
+    );
+}

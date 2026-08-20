@@ -1,6 +1,9 @@
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
+use rustc_hash::{FxHashMap, FxHasher};
 use std::collections::BTreeSet;
+use std::hash::Hasher;
+use std::io::{self, Write};
 
 use crate::RuntimeSolveError;
 use rumoca_eval_solve::{EvalSolveError, PreparedComputeBlock, RowEvalContext};
@@ -76,6 +79,7 @@ pub(super) fn visible_value_plan(model: &solve::SolveModel) -> Option<VisibleVal
     let mut entries = Vec::with_capacity(rows.row_count());
     let mut expression_rows = Vec::new();
     let mut expression_groups = Vec::new();
+    let mut expression_groups_by_fingerprint = FxHashMap::<u64, Vec<usize>>::default();
     for (row_idx, row) in rows.programs().iter().enumerate() {
         let output_count = solve::ScalarProgramBlock::program_output_count(row);
         if output_count != 1 {
@@ -86,14 +90,27 @@ pub(super) fn visible_value_plan(model: &solve::SolveModel) -> Option<VisibleVal
             continue;
         }
         entries.push(VisibleValuePlanEntry::Expression);
-        match visible_expression_group_index(rows, &expression_groups, row) {
+        let fingerprint = visible_program_fingerprint(row)?;
+        match visible_expression_group_index(
+            rows,
+            &expression_groups,
+            expression_groups_by_fingerprint
+                .get(&fingerprint)
+                .map_or(&[], Vec::as_slice),
+            row,
+        ) {
             Some(group_idx) => expression_groups[group_idx].output_indices.push(row_idx),
             None => {
                 expression_rows.push(row_idx);
+                let group_index = expression_groups.len();
                 expression_groups.push(VisibleExpressionGroup {
                     row_index: row_idx,
                     output_indices: vec![row_idx],
                 });
+                expression_groups_by_fingerprint
+                    .entry(fingerprint)
+                    .or_default()
+                    .push(group_index);
             }
         }
     }
@@ -295,11 +312,37 @@ fn output_dependencies_are_empty(
 fn visible_expression_group_index(
     rows: &solve::ScalarProgramBlock,
     groups: &[VisibleExpressionGroup],
+    candidates: &[usize],
     row: &[solve::LinearOp],
 ) -> Option<usize> {
-    groups
+    candidates
         .iter()
-        .position(|group| rows.programs()[group.row_index].as_slice() == row)
+        .copied()
+        .find(|&group| rows.programs()[groups[group].row_index].as_slice() == row)
+}
+
+/// Hash a checked program without allocating a second encoded buffer.
+///
+/// The fingerprint is only a lookup accelerator: a bucket hit is always
+/// confirmed by exact `LinearOp` slice equality above, so neither a collision
+/// nor a future wire-format change can become semantic identity.
+fn visible_program_fingerprint(row: &[solve::LinearOp]) -> Option<u64> {
+    let mut hasher = FxHasher::default();
+    serde_json::to_writer(HasherWriter(&mut hasher), row).ok()?;
+    Some(hasher.finish())
+}
+
+struct HasherWriter<'a>(&'a mut FxHasher);
+
+impl Write for HasherWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn direct_visible_source(

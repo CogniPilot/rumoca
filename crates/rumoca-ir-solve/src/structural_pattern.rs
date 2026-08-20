@@ -301,6 +301,117 @@ impl std::fmt::Display for StructuralPatternError {
 
 impl std::error::Error for StructuralPatternError {}
 
+fn validate_affine_jvp_domain(
+    domain: &StructuredIndexDomain,
+    output_map: &TensorOutputMap,
+    rows: usize,
+    owner_span: Span,
+) -> Result<(), StructuralPatternError> {
+    if owner_span.is_dummy() {
+        return Err(dependency_error(
+            "affine Jacobian sparsity requires source-backed owner provenance",
+            None,
+        ));
+    }
+    let dense_output =
+        TensorOutputMap::dense_contiguous(output_map.start, domain).map_err(|error| {
+            dependency_error(
+                format!("invalid affine output domain: {error:?}"),
+                Some(owner_span),
+            )
+        })?;
+    if output_map != &dense_output {
+        return Err(dependency_error(
+            "affine Jacobian output map is not dense-contiguous",
+            Some(owner_span),
+        ));
+    }
+    let expected_rows = output_map.output_count(domain).map_err(|error| {
+        dependency_error(
+            format!("invalid affine output map: {error:?}"),
+            Some(owner_span),
+        )
+    })?;
+    if expected_rows != rows {
+        return Err(dependency_error(
+            format!(
+                "affine Jacobian row extent {rows} does not match output extent {expected_rows}"
+            ),
+            Some(owner_span),
+        ));
+    }
+    Ok(())
+}
+
+fn derive_affine_column_maps(
+    dependencies: &BTreeSet<usize>,
+    seed_positions: &[usize],
+    base_ops: &[LinearOp],
+    load_strides: &[AffineStencilLoadStride],
+    dimension_count: usize,
+    owner_span: Span,
+) -> Result<Vec<AffineColumnMap>, StructuralPatternError> {
+    dependencies
+        .iter()
+        .map(|&position| {
+            if !seed_positions.contains(&position) {
+                return Err(dependency_error(
+                    format!("affine dependency {position} is not a seed-load owner"),
+                    Some(owner_span),
+                ));
+            }
+            let Some(LinearOp::LoadSeed { index: start, .. }) = base_ops.get(position) else {
+                return Err(dependency_error(
+                    format!("affine dependency operation {position} is not LoadSeed"),
+                    Some(owner_span),
+                ));
+            };
+            Ok(AffineColumnMap {
+                start: checked_dimension(*start)?,
+                strides: derive_affine_strides(
+                    position,
+                    load_strides,
+                    dimension_count,
+                    owner_span,
+                )?
+                .into_boxed_slice(),
+            })
+        })
+        .collect()
+}
+
+fn derive_affine_strides(
+    position: usize,
+    load_strides: &[AffineStencilLoadStride],
+    dimension_count: usize,
+    owner_span: Span,
+) -> Result<Vec<isize>, StructuralPatternError> {
+    let mut strides = vec![0isize; dimension_count];
+    for descriptor in load_strides
+        .iter()
+        .filter(|descriptor| descriptor.op_position == position)
+    {
+        for term in &descriptor.terms {
+            let target = strides.get_mut(term.dimension).ok_or_else(|| {
+                dependency_error(
+                    format!(
+                        "affine seed stride dimension {} is outside 0..{dimension_count}",
+                        term.dimension
+                    ),
+                    Some(owner_span),
+                )
+            })?;
+            *target = target.checked_add(term.stride).ok_or_else(|| {
+                dependency_error(
+                    "affine seed stride accumulation overflowed",
+                    Some(owner_span),
+                )
+            })?;
+        }
+    }
+    Ok(strides)
+}
+
 impl StructuralPattern {
     fn empty(
         rows: usize,
@@ -392,39 +503,7 @@ impl StructuralPattern {
         columns: usize,
         owner_span: Span,
     ) -> Result<Self, StructuralPatternError> {
-        if owner_span.is_dummy() {
-            return Err(dependency_error(
-                "affine Jacobian sparsity requires source-backed owner provenance",
-                None,
-            ));
-        }
-        let dense_output =
-            TensorOutputMap::dense_contiguous(output_map.start, domain).map_err(|error| {
-                dependency_error(
-                    format!("invalid affine output domain: {error:?}"),
-                    Some(owner_span),
-                )
-            })?;
-        if output_map != &dense_output {
-            return Err(dependency_error(
-                "affine Jacobian output map is not dense-contiguous",
-                Some(owner_span),
-            ));
-        }
-        let expected_rows = output_map.output_count(domain).map_err(|error| {
-            dependency_error(
-                format!("invalid affine output map: {error:?}"),
-                Some(owner_span),
-            )
-        })?;
-        if expected_rows != rows {
-            return Err(dependency_error(
-                format!(
-                    "affine Jacobian row extent {rows} does not match output extent {expected_rows}"
-                ),
-                Some(owner_span),
-            ));
-        }
+        validate_affine_jvp_domain(domain, output_map, rows, owner_span)?;
 
         let mut symbolic_ops = base_ops.to_vec();
         let mut seed_positions = Vec::new();
@@ -449,49 +528,14 @@ impl StructuralPattern {
                 PatternProvenance::derived(PatternDerivation::ConservativeFull, owner_span)?;
             return Self::full(rows, columns, provenance);
         };
-        let mut column_maps = Vec::new();
-        for &position in dependencies {
-            if !seed_positions.contains(&position) {
-                return Err(dependency_error(
-                    format!("affine dependency {position} is not a seed-load owner"),
-                    Some(owner_span),
-                ));
-            }
-            let LinearOp::LoadSeed { index: start, .. } = &base_ops[position] else {
-                return Err(dependency_error(
-                    format!("affine dependency operation {position} is not LoadSeed"),
-                    Some(owner_span),
-                ));
-            };
-            let mut strides = vec![0isize; domain.binders.len()];
-            for stride in load_strides
-                .iter()
-                .filter(|stride| stride.op_position == position)
-            {
-                for term in &stride.terms {
-                    let dimension_count = strides.len();
-                    let target = strides.get_mut(term.dimension).ok_or_else(|| {
-                        dependency_error(
-                            format!(
-                                "affine seed stride dimension {} is outside 0..{dimension_count}",
-                                term.dimension
-                            ),
-                            Some(owner_span),
-                        )
-                    })?;
-                    *target = target.checked_add(term.stride).ok_or_else(|| {
-                        dependency_error(
-                            "affine seed stride accumulation overflowed",
-                            Some(owner_span),
-                        )
-                    })?;
-                }
-            }
-            column_maps.push(AffineColumnMap {
-                start: checked_dimension(*start)?,
-                strides: strides.into_boxed_slice(),
-            });
-        }
+        let mut column_maps = derive_affine_column_maps(
+            dependencies,
+            &seed_positions,
+            base_ops,
+            load_strides,
+            domain.binders.len(),
+            owner_span,
+        )?;
         column_maps.sort_by(|lhs, rhs| {
             (lhs.start, lhs.strides.as_ref()).cmp(&(rhs.start, rhs.strides.as_ref()))
         });
@@ -964,6 +1008,26 @@ impl StructuralPattern {
     }
 
     pub fn column_coloring(&self) -> ColumnColoring {
+        match &self.representation {
+            PatternRepresentation::Empty | PatternRepresentation::Diagonal => {
+                return coloring_for_nonconflicting_columns(self.columns);
+            }
+            PatternRepresentation::Full if self.rows == 0 => {
+                return coloring_for_nonconflicting_columns(self.columns);
+            }
+            PatternRepresentation::Full => return coloring_for_full_columns(self.columns),
+            PatternRepresentation::Banded {
+                lower_bandwidth,
+                upper_bandwidth,
+            } => {
+                return coloring_for_banded_columns(
+                    self.columns,
+                    *lower_bandwidth,
+                    *upper_bandwidth,
+                );
+            }
+            PatternRepresentation::Csr { .. } | PatternRepresentation::Affine { .. } => {}
+        }
         let column_rows = self.column_rows();
         let mut order: Vec<usize> = (0..column_rows.len()).collect();
         order.sort_by_key(|column| (Reverse(column_rows[*column].len()), *column));
@@ -996,6 +1060,49 @@ impl StructuralPattern {
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         }
+    }
+}
+
+fn coloring_for_nonconflicting_columns(columns: u32) -> ColumnColoring {
+    let groups = if columns == 0 {
+        Vec::new()
+    } else {
+        vec![(0..columns).collect::<Vec<_>>().into_boxed_slice()]
+    };
+    ColumnColoring {
+        column_count: columns,
+        groups: groups.into_boxed_slice(),
+    }
+}
+
+fn coloring_for_full_columns(columns: u32) -> ColumnColoring {
+    ColumnColoring {
+        column_count: columns,
+        groups: (0..columns)
+            .map(|column| Box::from([column]))
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    }
+}
+
+fn coloring_for_banded_columns(columns: u32, lower: u32, upper: u32) -> ColumnColoring {
+    let color_count = u64::from(lower)
+        .saturating_add(u64::from(upper))
+        .saturating_add(1)
+        .min(u64::from(columns)) as usize;
+    let groups = (0..color_count)
+        .map(|color| {
+            (color..columns as usize)
+                .step_by(color_count)
+                .map(|column| column as u32)
+                .collect::<Vec<_>>()
+                .into_boxed_slice()
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    ColumnColoring {
+        column_count: columns,
+        groups,
     }
 }
 
@@ -1468,7 +1575,7 @@ pub(crate) fn program_register_y_dependencies(
         conditional_captures: None,
         source: DependencySource::SolverY,
     };
-    for operation in program.iter().cloned() {
+    for operation in program {
         apply_dependency_op(&mut walk, operation)?;
     }
     Ok(walk
@@ -1498,7 +1605,7 @@ fn program_output_dependencies_with_fold(
         conditional_captures,
         source,
     };
-    for op in program.iter().cloned() {
+    for op in program {
         apply_dependency_op(&mut walk, op)?;
     }
     Ok(walk.outputs)
@@ -1534,66 +1641,68 @@ struct DependencyWalk<'a> {
 #[rustfmt::skip]
 fn apply_dependency_op(
     walk: &mut DependencyWalk<'_>,
-    op: LinearOp,
+    op: &LinearOp,
 ) -> Result<(), StructuralPatternError> {
     match op {
-        LinearOp::Const { dst, .. } => walk.set_empty(dst),
-        LinearOp::LoadP { dst, index } => walk.load_p(dst, index),
-        LinearOp::LoadTime { dst } => walk.load_time(dst),
-        LinearOp::LoadY { dst, index } => walk.load_y(dst, index),
-        LinearOp::LoadSeed { dst, index } => walk.load_seed(dst, index),
-        LinearOp::LoadFoldCarried { dst, index } => walk.load_fold_carried(dst, index)?,
-        LinearOp::LoadFoldIndex { dst, .. } => walk.set_empty(dst),
-        LinearOp::LoadFoldCapture { dst, index } => walk.load_fold_capture(dst, index)?,
+        LinearOp::Const { dst, .. } => walk.set_empty(*dst),
+        LinearOp::LoadP { dst, index } => walk.load_p(*dst, *index),
+        LinearOp::LoadTime { dst } => walk.load_time(*dst),
+        LinearOp::LoadY { dst, index } => walk.load_y(*dst, *index),
+        LinearOp::LoadSeed { dst, index } => walk.load_seed(*dst, *index),
+        LinearOp::LoadFoldCarried { dst, index } => walk.load_fold_carried(*dst, *index)?,
+        LinearOp::LoadFoldIndex { dst, .. } => walk.set_empty(*dst),
+        LinearOp::LoadFoldCapture { dst, index } => walk.load_fold_capture(*dst, *index)?,
         LinearOp::LoadFunctionConditionalCapture { dst, index } =>
-            walk.load_conditional_capture(dst, index)?,
+            walk.load_conditional_capture(*dst, *index)?,
         LinearOp::LoadFunctionConditionalCaptureRange { dst_start, index_start, count } =>
-            walk.load_conditional_capture_range(dst_start, index_start, count)?,
+            walk.load_conditional_capture_range(*dst_start, *index_start, *count)?,
         LinearOp::LoadIndexedP { dst, base, count, index } =>
-            walk.load_indexed_p(dst, base, count, index)?,
+            walk.load_indexed_p(*dst, *base, *count, *index)?,
         LinearOp::LoadIndexedRegister { dst, base, stride, dimensions, indices } =>
-            walk.load_indexed_register(dst, base, stride, &dimensions, &indices)?,
+            walk.load_indexed_register(*dst, *base, *stride, dimensions, indices)?,
         LinearOp::LoadIndexedFoldCarried { dst, base, stride, dimensions, indices } =>
-            walk.load_indexed_fold_carried(dst, base, stride, &dimensions, &indices)?,
+            walk.load_indexed_fold_carried(*dst, *base, *stride, dimensions, indices)?,
         LinearOp::LoadIndexedFoldCapture { dst, base, stride, dimensions, indices } =>
-            walk.load_indexed_fold_capture(dst, base, stride, &dimensions, &indices)?,
+            walk.load_indexed_fold_capture(*dst, *base, *stride, dimensions, indices)?,
         LinearOp::LoadIndexedSeed { dst, base, count, index } =>
-            walk.load_indexed_seed(dst, base, count, index)?,
-        LinearOp::Move { dst, src } | LinearOp::Unary { dst, arg: src, .. } => walk.copy(dst, src)?,
+            walk.load_indexed_seed(*dst, *base, *count, *index)?,
+        LinearOp::Move { dst, src } | LinearOp::Unary { dst, arg: src, .. } => walk.copy(*dst, *src)?,
         LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } =>
-            walk.union(dst, [lhs, rhs])?,
+            walk.union(*dst, [*lhs, *rhs])?,
         LinearOp::Select { dst, cond, if_true, if_false } =>
-            walk.union(dst, [cond, if_true, if_false])?,
+            walk.union(*dst, [*cond, *if_true, *if_false])?,
         LinearOp::LinearSolveComponent { dst, matrix_start, rhs_start, n, .. } =>
-            walk.linear_solve(dst, matrix_start, rhs_start, n)?,
+            walk.linear_solve(*dst, *matrix_start, *rhs_start, *n)?,
         LinearOp::DotProduct { dst, lhs_start, rhs_start, count, lhs_stride, rhs_stride } =>
-            walk.dot_product(dst, lhs_start, rhs_start, count, lhs_stride, rhs_stride)?,
+            walk.dot_product(*dst, *lhs_start, *rhs_start, *count, *lhs_stride, *rhs_stride)?,
         LinearOp::MatrixMultiply { dst_start, lhs_start, rhs_start, rows, inner, columns, lanes } =>
             walk.matrix_multiply(&MatrixMultiplyShape {
-                dst_start, lhs_start, rhs_start, rows, inner, columns, lanes,
+                dst_start: *dst_start, lhs_start: *lhs_start, rhs_start: *rhs_start,
+                rows: *rows, inner: *inner, columns: *columns, lanes: *lanes,
             })?,
         LinearOp::TensorBinary {
             dst_start, op, lhs_start, rhs_start, count, lhs_stride, rhs_stride, lanes,
         } => walk.tensor_binary(&TensorBinaryShape {
-            dst_start, op, lhs_start, rhs_start, count, lhs_stride, rhs_stride, lanes,
+            dst_start: *dst_start, op: *op, lhs_start: *lhs_start, rhs_start: *rhs_start,
+            count: *count, lhs_stride: *lhs_stride, rhs_stride: *rhs_stride, lanes: *lanes,
         })?,
         LinearOp::TensorCross { dst_start, lhs_start, rhs_start, lanes } =>
-            walk.tensor_cross(dst_start, lhs_start, rhs_start, lanes)?,
+            walk.tensor_cross(*dst_start, *lhs_start, *rhs_start, *lanes)?,
         LinearOp::TensorTranspose { dst_start, src_start, rows, columns, element_width, lanes } =>
-            walk.tensor_transpose(dst_start, src_start, rows, columns, element_width, lanes)?,
+            walk.tensor_transpose(*dst_start, *src_start, *rows, *columns, *element_width, *lanes)?,
         LinearOp::TensorConcatenate { dst_start, sources, dimensions, axis, lanes } =>
-            walk.tensor_concatenate(dst_start, &sources, &dimensions, axis, lanes)?,
+            walk.tensor_concatenate(*dst_start, sources, dimensions, *axis, *lanes)?,
         LinearOp::TensorUpdate {
             dst_start, base_start, value_start, dimensions, subscripts, lanes,
         } => walk.tensor_update(
-            dst_start, base_start, value_start, &dimensions, &subscripts, lanes,
+            *dst_start, *base_start, *value_start, dimensions, subscripts, *lanes,
         )?,
         LinearOp::TensorFill { dst_start, value_start, count, lanes } =>
-            walk.tensor_fill(dst_start, value_start, count, lanes)?,
+            walk.tensor_fill(*dst_start, *value_start, *count, *lanes)?,
         LinearOp::TensorIdentity { dst_start, size, lanes } =>
-            walk.tensor_identity(dst_start, size, lanes),
+            walk.tensor_identity(*dst_start, *size, *lanes),
         LinearOp::TensorLoad { dst_start, input, input_start, count, seed_start, lanes } =>
-            walk.tensor_load(dst_start, input, input_start, count, seed_start, lanes),
+            walk.tensor_load(*dst_start, *input, *input_start, *count, *seed_start, *lanes),
         op @ (LinearOp::TableBounds { .. } | LinearOp::TableLookup { .. }
         | LinearOp::TableLookupSlope { .. } | LinearOp::TableNextEvent { .. }
         | LinearOp::RandomInitialState { .. } | LinearOp::RandomResult { .. }
@@ -1601,31 +1710,31 @@ fn apply_dependency_op(
         | LinearOp::ImpureRandom { .. } | LinearOp::ImpureRandomInteger { .. }) =>
             walk.runtime(op)?,
         LinearOp::FunctionFold { dst_start, initial_start, capture_start, program } =>
-            walk.function_fold(dst_start, initial_start, capture_start, &program)?,
+            walk.function_fold(*dst_start, *initial_start, *capture_start, program)?,
         LinearOp::GuardedFunctionFold {
             dst_start, initial_start, capture_start, activation, program,
-        } => walk.guarded_fold(dst_start, initial_start, capture_start, activation, &program)?,
+        } => walk.guarded_fold(*dst_start, *initial_start, *capture_start, *activation, program)?,
         LinearOp::FunctionConditional { dst_start, capture_start, program } =>
-            walk.function_conditional(dst_start, capture_start, &program)?,
+            walk.function_conditional(*dst_start, *capture_start, program)?,
         LinearOp::PureCall { dst_start, input_starts, site } => walk.pure_call(
-            dst_start, &input_starts, site.inputs(), site.output_scalar_count(),
+            *dst_start, input_starts, site.inputs(), site.output_scalar_count(),
             "pure-call output width overflows",
         )?,
         LinearOp::PureCallDirectional { dst_start, input_starts, site } => walk.pure_call(
-            dst_start, &input_starts, site.inputs(), site.output_scalar_count(),
+            *dst_start, input_starts, site.inputs(), site.output_scalar_count(),
             "directional pure-call output width overflows",
         )?,
         LinearOp::StoreOutputFoldTensorUpdate {
             source_base, source_stride, dimensions, updates, nodes, lanes, ..
         } => walk.store_fold_tensor_update(
-            source_base, source_stride, &dimensions, &updates, &nodes, lanes,
+            *source_base, *source_stride, dimensions, updates, nodes, *lanes,
         )?,
         LinearOp::StoreOutputFunctionFold {
             initial, capture_start, program, result_base, count, condition, ..
-        } => walk.nested_fold(&initial, capture_start, &program, result_base, count, condition)?,
+        } => walk.nested_fold(initial, *capture_start, program, *result_base, *count, *condition)?,
         LinearOp::StoreOutputRange { start, count, stride } =>
-            walk.store_output_range(start, count, stride)?,
-        LinearOp::StoreOutput { src } => walk.store_output(src)?,
+            walk.store_output_range(*start, *count, *stride)?,
+        LinearOp::StoreOutput { src } => walk.store_output(*src)?,
     }
     Ok(())
 }
@@ -2260,7 +2369,7 @@ impl DependencyWalk<'_> {
         }
     }
 
-    fn runtime(&mut self, op: LinearOp) -> Result<(), StructuralPatternError> {
+    fn runtime(&mut self, op: &LinearOp) -> Result<(), StructuralPatternError> {
         if matches!(self.source, DependencySource::Effect) {
             let dst = op.dst_register().ok_or_else(|| {
                 dependency_error(
@@ -2685,12 +2794,12 @@ struct LinearSolveDependency {
 
 fn apply_runtime_dependency(
     registers: &mut Vec<Option<DependencyState>>,
-    operation: LinearOp,
+    operation: &LinearOp,
     span: Option<Span>,
 ) -> Result<(), StructuralPatternError> {
     match operation {
         LinearOp::TableBounds { dst, table_id, .. } => {
-            copy_dependency(registers, dst, table_id, span)
+            copy_dependency(registers, *dst, *table_id, span)
         }
         LinearOp::TableLookup {
             dst,
@@ -2703,18 +2812,18 @@ fn apply_runtime_dependency(
             table_id,
             column,
             input,
-        } => set_union_dependency(registers, dst, [table_id, column, input], span),
+        } => set_union_dependency(registers, *dst, [*table_id, *column, *input], span),
         LinearOp::TableNextEvent {
             dst,
             table_id,
             time,
-        } => set_union_dependency(registers, dst, [table_id, time], span),
+        } => set_union_dependency(registers, *dst, [*table_id, *time], span),
         LinearOp::RandomInitialState {
             dst,
             local_seed,
             global_seed,
             ..
-        } => set_union_dependency(registers, dst, [local_seed, global_seed], span),
+        } => set_union_dependency(registers, *dst, [*local_seed, *global_seed], span),
         LinearOp::RandomResult {
             dst,
             state_start,
@@ -2726,16 +2835,16 @@ fn apply_runtime_dependency(
             state_start,
             state_len,
             ..
-        } => set_range_dependency(registers, dst, state_start, state_len, span),
-        LinearOp::ImpureRandomInit { dst, seed } => copy_dependency(registers, dst, seed, span),
-        LinearOp::ImpureRandom { dst, id, .. } => copy_dependency(registers, dst, id, span),
+        } => set_range_dependency(registers, *dst, *state_start, *state_len, span),
+        LinearOp::ImpureRandomInit { dst, seed } => copy_dependency(registers, *dst, *seed, span),
+        LinearOp::ImpureRandom { dst, id, .. } => copy_dependency(registers, *dst, *id, span),
         LinearOp::ImpureRandomInteger {
             dst,
             id,
             imin,
             imax,
             ..
-        } => set_union_dependency(registers, dst, [id, imin, imax], span),
+        } => set_union_dependency(registers, *dst, [*id, *imin, *imax], span),
         _ => unreachable!("runtime dependency operation is classified by the exhaustive caller"),
     }
 }
@@ -3078,6 +3187,33 @@ mod tests {
         assert_eq!(decoded, pattern);
         assert!(decoded.contains(0, 3));
         assert!(!decoded.contains(2, 0));
+    }
+
+    #[test]
+    fn compact_patterns_color_without_dense_column_rows() {
+        let full = StructuralPattern::full(4, 5, provenance()).expect("full pattern");
+        assert_eq!(
+            full.column_coloring().groups(),
+            &[
+                Box::from([0]),
+                Box::from([1]),
+                Box::from([2]),
+                Box::from([3]),
+                Box::from([4]),
+            ]
+        );
+
+        let diagonal = StructuralPattern::diagonal(4, 5, provenance()).expect("diagonal pattern");
+        assert_eq!(
+            diagonal.column_coloring().groups(),
+            &[Box::from([0, 1, 2, 3, 4])]
+        );
+
+        let banded = StructuralPattern::banded(7, 7, 1, 1, provenance()).expect("banded pattern");
+        assert_eq!(
+            banded.column_coloring().groups(),
+            &[Box::from([0, 3, 6]), Box::from([1, 4]), Box::from([2, 5]),]
+        );
     }
 
     #[test]

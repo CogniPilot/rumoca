@@ -4322,6 +4322,7 @@ dependencies = [
  "console_error_panic_hook",
  "lsp-types",
  "rumoca-compile",
+ "rumoca-core",
  "rumoca-phase-codegen",
  "rumoca-phase-galec",
  "rumoca-phase-parse-galec",
@@ -4893,7 +4894,6 @@ dependencies = [
  "rumoca-core",
  "serde",
  "tempfile",
- "thiserror 2.0.18",
  "toml",
 ]
 
@@ -4905,7 +4905,6 @@ dependencies = [
  "rumoca-core",
  "serde",
  "tempfile",
- "thiserror 2.0.18",
  "toml",
 ]
 

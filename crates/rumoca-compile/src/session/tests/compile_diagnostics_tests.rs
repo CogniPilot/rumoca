@@ -227,9 +227,9 @@ fn test_synthesized_inner_warning_is_emitted() {
     let synth = diagnostics
         .diagnostics
         .iter()
-        .find(|d| d.code.as_deref() == Some("EI013"))
+        .find(|d| d.code.as_deref() == Some("WI013"))
         .unwrap_or_else(|| {
-            panic!("expected EI013 synthesized-inner warning, got: {diagnostics:?}")
+            panic!("expected WI013 synthesized-inner warning, got: {diagnostics:?}")
         });
 
     assert!(

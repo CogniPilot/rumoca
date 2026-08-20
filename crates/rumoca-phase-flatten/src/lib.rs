@@ -16,7 +16,7 @@
 //!
 //! Enable the `tracing` feature for detailed diagnostic output:
 //! ```bash
-//! cargo run -p rumoca --features tracing -- check model.mo --trace-filter rumoca_phase_flatten=debug
+//! cargo run -p rumoca --features tracing -- compile model.mo --model MyModel --trace=flatten
 //! ```
 //!
 //! # Example

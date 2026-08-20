@@ -1,4 +1,4 @@
-//! Phase 2b: Contents Resolution - resolve equations, statements, expressions.
+//! Phase 2c: Contents Resolution - resolve equations, statements, expressions.
 //!
 //! This phase resolves component references in equations, algorithms, and
 //! component start/modification expressions.
@@ -88,7 +88,7 @@ impl Resolver {
         }
     }
 
-    /// Resolve equations, statements, expressions in a StoredDefinition (Phase 2b).
+    /// Resolve equations, statements, expressions in a StoredDefinition (Phase 2c).
     pub(crate) fn resolve_contents_all(
         &mut self,
         def: &mut StoredDefinition,
@@ -105,7 +105,7 @@ impl Resolver {
         }
     }
 
-    /// Resolve equations, statements, expressions in a ClassDef (Phase 2b).
+    /// Resolve equations, statements, expressions in a ClassDef (Phase 2c).
     pub(crate) fn resolve_contents_class(
         &mut self,
         class: &mut ClassDef,

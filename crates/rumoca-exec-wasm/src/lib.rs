@@ -386,13 +386,13 @@ fn ptr_to_wasm_i32<T>(ptr: *const T) -> Result<u32, WasmCompileError> {
 
 #[cfg(test)]
 mod tests {
-    use rumoca_ir_solve::{BinaryOp, LinearOp, UnaryOp};
+    use rumoca_ir_solve::{BinaryOp, LinearOp, ScalarProgramBlock, UnaryOp, VarLayout};
     use wasmparser::FunctionBody;
     use wasmparser::Parser;
     use wasmparser::Payload;
     use wasmparser::Validator;
 
-    fn compile_fixture_model() -> super::CompiledResidualWasm {
+    fn fixture_program_block() -> (ScalarProgramBlock, VarLayout) {
         let rows = vec![
             vec![
                 LinearOp::LoadY { dst: 0, index: 0 },
@@ -434,8 +434,17 @@ mod tests {
                 LinearOp::StoreOutput { src: 5 },
             ],
         ];
-        let kernel = super::CompiledKernelWasm::from_rows(rows, 2, 1).expect("compile wasm rows");
-        super::CompiledResidualWasm { kernel }
+        let span = rumoca_ir_solve::source_span_from_offsets(1, 0, 1);
+        let block = ScalarProgramBlock::with_program_spans(rows, vec![span; 2])
+            .expect("fixture programs satisfy the Solve-IR contract");
+        let layout = VarLayout::from_parts(Default::default(), 2, 1);
+        (block, layout)
+    }
+
+    fn compile_fixture_model() -> super::CompiledResidualWasm {
+        let (block, layout) = fixture_program_block();
+        super::compile_residual_scalar_program_block_wasm(&block, &layout)
+            .expect("compile residual WASM through the public adapter")
     }
 
     #[derive(Default)]
@@ -502,6 +511,30 @@ mod tests {
         assert!(stats.saw_memory_export);
         assert_eq!(stats.function_bodies, 1);
         assert!(stats.op_count > 20);
+    }
+
+    #[test]
+    fn every_public_compile_surface_consumes_a_checked_solve_block() {
+        let (block, layout) = fixture_program_block();
+        let residual = super::compile_residual_scalar_program_block_wasm(&block, &layout)
+            .expect("compile residual adapter");
+        let jacobian = super::compile_jacobian_scalar_program_block_wasm(&block, &layout)
+            .expect("compile Jacobian adapter");
+        let expressions = super::compile_expression_scalar_program_block_wasm(&block, &layout)
+            .expect("compile expression adapter");
+
+        for bytes in [
+            residual.module_bytes(),
+            jacobian.module_bytes(),
+            expressions.module_bytes(),
+        ] {
+            Validator::new()
+                .validate_all(bytes)
+                .expect("public adapter emits a valid WASM module");
+        }
+        assert_eq!(residual.rows(), 2);
+        assert_eq!(jacobian.rows(), 2);
+        assert_eq!(expressions.rows(), 2);
     }
 
     #[test]

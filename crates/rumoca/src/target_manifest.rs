@@ -17,7 +17,7 @@ use rumoca_compile::codegen::targets::{
 };
 #[cfg(any(feature = "scheduled-sim", feature = "fmu-packaging"))]
 use rumoca_compile::codegen::targets::{TargetArchiveFormat, TargetArchiveRoot, safe_target_join};
-use rumoca_core::{Diagnostic as CommonDiagnostic, PrimaryLabel, SourceMap};
+use rumoca_core::{PhaseError, SourceMap};
 use rumoca_phase_galec::{GalecInput, GalecOptions, GalecTargetError};
 
 struct TargetModelIdentity<'a> {
@@ -301,10 +301,7 @@ fn galec_projection_error(
     {
         return CompilerError::SourceDiagnosticsError {
             summary: format!("GALEC projection rejected target '{target}'"),
-            diagnostics: diagnostics
-                .iter()
-                .map(galec_projection_diagnostic)
-                .collect(),
+            diagnostics: diagnostics.iter().map(PhaseError::to_diagnostic).collect(),
             source_map: Box::new(source_map(result)),
         }
         .into();
@@ -317,26 +314,6 @@ fn galec_projection_error(
             .collect::<Vec<_>>()
             .join("; ")
     )
-}
-
-fn galec_projection_diagnostic(error: &GalecTargetError) -> CommonDiagnostic {
-    let Some(span) = error.span() else {
-        return CommonDiagnostic::global_error(error.code(), error.to_string());
-    };
-    CommonDiagnostic::error(
-        error.code(),
-        error.to_string(),
-        PrimaryLabel::new(span).with_message(galec_projection_label(error)),
-    )
-}
-
-fn galec_projection_label(error: &GalecTargetError) -> String {
-    match error {
-        GalecTargetError::UnsupportedFeature { feature, .. } => {
-            format!("unsupported GALEC projection feature `{feature}`")
-        }
-        _ => "GALEC projection rejected this construct".to_owned(),
-    }
 }
 
 fn source_map(result: &CompilationResult) -> SourceMap {

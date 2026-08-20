@@ -651,12 +651,10 @@ fn synthesized_inner_diagnostics(
     synthesized_inners: &[String],
     model_span: Span,
 ) -> Vec<CommonDiagnostic> {
-    synthesized_inner_warning(
-        synthesized_inners,
-        PrimaryLabel::new(model_span).with_message("synthesized inner declaration"),
-    )
-    .into_iter()
-    .collect()
+    InstantiateWarning::synthesized_inner(synthesized_inners, model_span)
+        .map(|warning| warning.to_diagnostic())
+        .into_iter()
+        .collect()
 }
 
 pub(super) fn resolve_diagnostic_in_target_files(

@@ -415,8 +415,10 @@ fn first_parse_error_message(errors: &[ParseError]) -> String {
 fn parse_error_message(error: &ParseError) -> String {
     match error {
         ParseError::SyntaxError { message, .. } => message.clone(),
-        ParseError::NoAstProduced => "parsing succeeded but no AST was produced".to_string(),
-        ParseError::IoError { path, message } => format!("failed to read `{path}`: {message}"),
+        ParseError::NoAstProduced { .. } => "parsing succeeded but no AST was produced".to_string(),
+        ParseError::IoError { path, message, .. } => {
+            format!("failed to read `{path}`: {message}")
+        }
     }
 }
 
@@ -460,9 +462,6 @@ fn span_start_line_column(source: &str, span: Span) -> Result<Option<(u32, u32)>
 
 fn parse_error_line_column(source: &str, error: &ParseError) -> Result<(u32, u32), WasmError> {
     let ParseError::SyntaxError { span, .. } = error else {
-        return Ok((1, 1));
-    };
-    let Some(span) = span else {
         return Ok((1, 1));
     };
     Ok(span_start_line_column(source, *span)?.unwrap_or((1, 1)))

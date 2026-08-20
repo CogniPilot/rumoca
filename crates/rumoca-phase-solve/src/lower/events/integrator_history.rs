@@ -1,27 +1,16 @@
 use super::*;
 
-pub(super) fn derive_integrator_history_effects(
+pub(super) fn apply_integrator_history_effects(
     discrete: &mut solve::DiscreteSolveSystem,
-    continuous: &solve::ContinuousSolveSystem,
+    sensitive: &BTreeSet<HistoryDependencySlot>,
     state_scalar_count: usize,
 ) {
-    let Some(sensitive) = integrator_history_sensitive_slots(
-        continuous,
-        &discrete.runtime_assignment_rhs,
-        &discrete.runtime_assignment_targets,
-        state_scalar_count,
-    ) else {
-        // Rows are initialized fail-closed. An incomplete compact dependency
-        // proof cannot manufacture `Preserve`.
-        return;
-    };
-
     for (effect, target) in discrete
         .integrator_history_effects
         .iter_mut()
         .zip(discrete.update_targets.iter().copied())
     {
-        *effect = integrator_history_effect_for_target(target, &sensitive, state_scalar_count);
+        *effect = integrator_history_effect_for_target(target, sensitive, state_scalar_count);
     }
 
     for update_index in 0..discrete.structured_updates.len() {
@@ -29,7 +18,7 @@ pub(super) fn derive_integrator_history_effects(
             Ok(assignments) => assignments
                 .into_iter()
                 .map(|(target, _)| {
-                    integrator_history_effect_for_target(target, &sensitive, state_scalar_count)
+                    integrator_history_effect_for_target(target, sensitive, state_scalar_count)
                 })
                 .fold(
                     solve::IntegratorHistoryEffect::Preserve,
@@ -38,25 +27,6 @@ pub(super) fn derive_integrator_history_effects(
             Err(_) => solve::IntegratorHistoryEffect::Restart,
         };
         discrete.structured_updates[update_index].integrator_history_effect = effect;
-    }
-
-    for program in &mut discrete.guarded_assignments {
-        let effect = program
-            .target_ranges()
-            .iter()
-            .map(|range| {
-                integrator_history_effect_for_range(
-                    range.base(),
-                    range.count(),
-                    &sensitive,
-                    state_scalar_count,
-                )
-            })
-            .fold(
-                solve::IntegratorHistoryEffect::Preserve,
-                join_integrator_history_effect,
-            );
-        program.set_integrator_history_effect(effect);
     }
 }
 
@@ -87,7 +57,7 @@ fn integrator_history_effect_for_target(
     }
 }
 
-fn integrator_history_effect_for_range(
+pub(super) fn integrator_history_effect_for_range(
     base: solve::ScalarSlot,
     count: usize,
     sensitive: &BTreeSet<HistoryDependencySlot>,
@@ -126,7 +96,7 @@ fn integrator_history_effect_for_range(
     }
 }
 
-fn join_integrator_history_effect(
+pub(super) fn join_integrator_history_effect(
     left: solve::IntegratorHistoryEffect,
     right: solve::IntegratorHistoryEffect,
 ) -> solve::IntegratorHistoryEffect {
@@ -139,7 +109,7 @@ fn join_integrator_history_effect(
     }
 }
 
-fn integrator_history_sensitive_slots(
+pub(super) fn integrator_history_sensitive_slots(
     continuous: &solve::ContinuousSolveSystem,
     runtime_rhs: &solve::ScalarProgramBlock,
     runtime_targets: &[solve::ScalarSlot],

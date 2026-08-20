@@ -25,6 +25,28 @@ pub use dimension_inference::{
     infer_dimensions_from_binding, infer_dimensions_from_binding_with_scope,
 };
 
+/// Typed lookup contract consumed by AST dimension inference.
+///
+/// The inference walk owns syntax once and borrows phase-local semantic facts
+/// through this interface. Callers therefore do not need to clone their whole
+/// constant environment into [`TypeCheckEvalContext`] for each expression.
+pub trait DimensionInferenceContext {
+    fn lookup_dimensions(&self, name: &str, scope: &str) -> Option<Vec<usize>>;
+    fn scalar_value_known(&self, name: &str, scope: &str) -> bool;
+    fn eval_integer(&self, expression: &Expression, scope: &str) -> Option<i64>;
+    fn eval_real(&self, expression: &Expression, scope: &str) -> Option<f64>;
+    fn eval_boolean(&self, expression: &Expression, scope: &str) -> Option<bool>;
+
+    fn infer_user_function_dimensions(
+        &self,
+        _function: &str,
+        _arguments: &[Expression],
+        _scope: &str,
+    ) -> Option<Vec<usize>> {
+        None
+    }
+}
+
 /// Epsilon for compile-time real equality checks.
 const REAL_COMPARISON_EPSILON: f64 = 1e-15;
 
@@ -181,6 +203,41 @@ impl TypeCheckEvalContext {
 
     pub fn take_warnings(&self) -> Vec<CommonDiagnostic> {
         std::mem::take(&mut *self.warnings.borrow_mut())
+    }
+}
+
+impl DimensionInferenceContext for TypeCheckEvalContext {
+    fn lookup_dimensions(&self, name: &str, scope: &str) -> Option<Vec<usize>> {
+        lookup_structural_with_scope(name, scope, &self.dimensions).cloned()
+    }
+
+    fn scalar_value_known(&self, name: &str, scope: &str) -> bool {
+        lookup_with_scope(name, scope, &self.integers).is_some()
+            || lookup_with_scope(name, scope, &self.reals).is_some()
+            || lookup_with_scope(name, scope, &self.booleans).is_some()
+            || lookup_with_scope(name, scope, &self.enums).is_some()
+            || lookup_with_scope(name, scope, &self.enum_ordinals).is_some()
+    }
+
+    fn eval_integer(&self, expression: &Expression, scope: &str) -> Option<i64> {
+        eval_integer_with_scope(expression, self, scope)
+    }
+
+    fn eval_real(&self, expression: &Expression, scope: &str) -> Option<f64> {
+        eval_real_with_scope(expression, self, scope)
+    }
+
+    fn eval_boolean(&self, expression: &Expression, scope: &str) -> Option<bool> {
+        eval_boolean_with_scope(expression, self, scope)
+    }
+
+    fn infer_user_function_dimensions(
+        &self,
+        function: &str,
+        arguments: &[Expression],
+        scope: &str,
+    ) -> Option<Vec<usize>> {
+        infer_dims_from_user_func(function, arguments, self, scope)
     }
 }
 
@@ -1120,7 +1177,7 @@ pub fn eval_integer_with_scope(
 fn infer_array_dims(
     elements: &[Expression],
     is_matrix: bool,
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<Vec<usize>> {
     if elements.is_empty() {
@@ -1143,7 +1200,7 @@ fn infer_array_dims(
 
 fn infer_matrix_constructor_dims(
     elements: &[Expression],
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<Vec<usize>> {
     let has_nested_rows = matches!(elements.first(), Some(Expression::Array { .. }));
@@ -1175,7 +1232,7 @@ fn infer_matrix_constructor_dims(
 
 fn infer_matrix_row_dims(
     elements: &[Expression],
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<(usize, usize)> {
     let single_entry = elements.len() == 1;
@@ -1207,10 +1264,10 @@ fn matrix_entry_dims(dims: &[usize], single_entry: bool) -> Option<(usize, usize
 /// Infer dimensions for `cat(dim, A, B, ...)` concatenation.
 fn infer_cat_dims_with_scope(
     args: &[Expression],
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<Vec<usize>> {
-    let cat_dim = eval_integer_with_scope(&args[0], ctx, scope)? as usize;
+    let cat_dim = usize::try_from(ctx.eval_integer(&args[0], scope)?).ok()?;
     if cat_dim < 1 {
         return None;
     }
@@ -1235,21 +1292,27 @@ fn infer_cat_dims_with_scope(
 fn infer_dims_from_func_with_scope(
     func_name: &str,
     args: &[Expression],
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<Vec<usize>> {
     match func_name {
         "zeros" | "ones" => args
             .iter()
-            .map(|a| eval_integer_with_scope(a, ctx, scope).map(|i| i as usize))
+            .map(|a| {
+                ctx.eval_integer(a, scope)
+                    .and_then(|i| usize::try_from(i).ok())
+            })
             .collect(),
         "fill" if args.len() >= 2 => args[1..]
             .iter()
-            .map(|a| eval_integer_with_scope(a, ctx, scope).map(|i| i as usize))
+            .map(|a| {
+                ctx.eval_integer(a, scope)
+                    .and_then(|i| usize::try_from(i).ok())
+            })
             .collect(),
-        "identity" if args.len() == 1 => {
-            eval_integer_with_scope(&args[0], ctx, scope).map(|n| vec![n as usize, n as usize])
-        }
+        "identity" if args.len() == 1 => usize::try_from(ctx.eval_integer(&args[0], scope)?)
+            .ok()
+            .map(|n| vec![n, n]),
         "cat" if args.len() >= 2 => infer_cat_dims_with_scope(args, ctx, scope),
         // transpose(A) → swap dimensions
         "transpose" if args.len() == 1 => {
@@ -1274,9 +1337,9 @@ fn infer_dims_from_func_with_scope(
             infer_dimensions_from_binding_with_scope(&args[0], ctx, scope)
         }
         // linspace(a, b, n) → [n]
-        "linspace" if args.len() == 3 => {
-            eval_integer_with_scope(&args[2], ctx, scope).map(|n| vec![n as usize])
-        }
+        "linspace" if args.len() == 3 => usize::try_from(ctx.eval_integer(&args[2], scope)?)
+            .ok()
+            .map(|n| vec![n]),
         // scalar(A) → [] (scalar)
         "scalar" if args.len() == 1 => Some(vec![]),
         // vector(A) → [product(dims)]
@@ -1310,7 +1373,7 @@ fn infer_dims_from_func_with_scope(
             }
         }
         // Fallback: infer dimensions from user-defined function output type (MLS §12.4)
-        _ => infer_dims_from_user_func(func_name, args, ctx, scope),
+        _ => ctx.infer_user_function_dimensions(func_name, args, scope),
     }
 }
 
@@ -1430,25 +1493,21 @@ fn infer_range_len_numeric(
     start: &Expression,
     step: Option<&Expression>,
     end: &Expression,
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> Option<usize> {
-    let int_start = eval_integer_with_scope(start, ctx, scope);
-    let int_end = eval_integer_with_scope(end, ctx, scope);
-    let int_step = step
-        .map(|x| eval_integer_with_scope(x, ctx, scope))
-        .unwrap_or(Some(1));
+    let int_start = ctx.eval_integer(start, scope);
+    let int_end = ctx.eval_integer(end, scope);
+    let int_step = step.map(|x| ctx.eval_integer(x, scope)).unwrap_or(Some(1));
     if let (Some(s), Some(e), Some(st)) = (int_start, int_end, int_step)
         && st != 0
     {
         return Some(compute_range_len(s, st, e));
     }
 
-    let s = eval_real_with_scope(start, ctx, scope)?;
-    let e = eval_real_with_scope(end, ctx, scope)?;
-    let st = step
-        .map(|x| eval_real_with_scope(x, ctx, scope))
-        .unwrap_or(Some(1.0))?;
+    let s = ctx.eval_real(start, scope)?;
+    let e = ctx.eval_real(end, scope)?;
+    let st = step.map(|x| ctx.eval_real(x, scope)).unwrap_or(Some(1.0))?;
     Some(compute_range_len_real(s, st, e))
 }
 mod dimension_inference;

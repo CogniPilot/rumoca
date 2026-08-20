@@ -114,12 +114,12 @@ lowering. Anything absent from this catalog requires a SPEC_0007 update.
 | ID | Transformation | Owning module | Notes |
 |---|---|---|---|
 | STRUCT-T01 | Source pre-lowering (`pre(v)` → typed paired pre-coordinate) | `rumoca-phase-dae` | Runs before finalized DAE construction and applies to every Appendix-B partition. See `DAE-C01`/`DAE-C04`. |
-| STRUCT-T02 | Alias elimination | `rumoca-phase-dae` | Folds trivial equalities into the variable graph. |
+| STRUCT-T02 | Alias elimination | `rumoca-phase-structural` | **Pending (pre-implementation).** Fold trivial equalities into a newly finalized DAE through the SPEC_0007 structural-transform contract. |
 | STRUCT-T03 | Structural index reduction (Pantelides-style) | `rumoca-phase-structural` | For states without a `der(state)` equation, differentiate a non-ODE constraint referencing that state and substitute. Index-1 lift is supported; higher-index lifts are an explicit subset of Pantelides. |
 | STRUCT-T04 | State demotion | `rumoca-phase-structural` | Demote over-classified states whose derivative is structurally unreachable. |
 | STRUCT-T05 | BLT ordering | `rumoca-phase-structural` | Block-lower-triangular ordering of equations for sequential solve. |
 | STRUCT-T06 | Algebraic-loop tearing (Greedy Cellier) | `rumoca-phase-structural::tearing` | Identifies tear variables for cyclic algebraic blocks. |
-| STRUCT-T07 | State selection | `rumoca-phase-structural` | Pick a consistent state set. |
+| STRUCT-T07 | State selection | `rumoca-phase-structural` | **Pending (pre-implementation).** Pick a consistent state set and return a newly finalized DAE. |
 
 ## References
 

@@ -732,6 +732,30 @@ fn validate_event_transaction_interface(
     if *statement_count == 0 || targets.is_empty() {
         return Err(invalid("statement or target catalog is empty"));
     }
+    validate_event_transaction_clocks(targets, clock_owners, &invalid)?;
+    if producer_owners.len() != targets.len() {
+        return Err(invalid(
+            "producer projections do not cover the complete target tuple",
+        ));
+    }
+    validate_event_transaction_call(site, inputs, targets, assertions, &invalid)?;
+    validate_event_transaction_assertions(
+        assertions,
+        assertion_action_indices,
+        clock_owners,
+        &invalid,
+    )?;
+    for input in inputs {
+        validate_event_transaction_source(input, &invalid)?;
+    }
+    validate_event_transaction_targets(targets, &invalid)
+}
+
+fn validate_event_transaction_clocks(
+    targets: &[EventTransactionTarget],
+    clock_owners: &[PeriodicClockId],
+    invalid: &impl Fn(&'static str) -> SolveProblemShapeContractError,
+) -> Result<(), SolveProblemShapeContractError> {
     if clock_owners
         .windows(2)
         .any(|pair| pair[0].index() >= pair[1].index())
@@ -742,9 +766,10 @@ fn validate_event_transaction_interface(
         .iter()
         .filter_map(EventTransactionTarget::clock_owner)
         .collect::<std::collections::BTreeSet<_>>();
+    let clock_owned = !clock_owners.is_empty();
     if targets
         .iter()
-        .any(|target| target.clock_owner().is_some() != !clock_owners.is_empty())
+        .any(|target| target.clock_owner().is_some() != clock_owned)
         || target_clocks
             .iter()
             .copied()
@@ -754,11 +779,16 @@ fn validate_event_transaction_interface(
             "target clocks do not exactly cover the canonical activation-clock set",
         ));
     }
-    if producer_owners.len() != targets.len() {
-        return Err(invalid(
-            "producer projections do not cover the complete target tuple",
-        ));
-    }
+    Ok(())
+}
+
+fn validate_event_transaction_call(
+    site: &SolvePureCallSite,
+    inputs: &[EventTransactionInput],
+    targets: &[EventTransactionTarget],
+    assertions: &[SolveEventAction],
+    invalid: &impl Fn(&'static str) -> SolveProblemShapeContractError,
+) -> Result<(), SolveProblemShapeContractError> {
     if site.inputs().len() != inputs.len()
         || site
             .inputs()
@@ -792,6 +822,15 @@ fn validate_event_transaction_interface(
             "assertion actions do not cover the checked predicate suffix",
         ));
     }
+    Ok(())
+}
+
+fn validate_event_transaction_assertions(
+    assertions: &[SolveEventAction],
+    assertion_action_indices: &[Box<[usize]>],
+    clock_owners: &[PeriodicClockId],
+    invalid: &impl Fn(&'static str) -> SolveProblemShapeContractError,
+) -> Result<(), SolveProblemShapeContractError> {
     if assertion_action_indices.len() != assertions.len() {
         return Err(invalid(
             "event-action projections do not cover the predicate suffix",
@@ -805,9 +844,10 @@ fn validate_event_transaction_interface(
             "one assertion predicate has no event-action projection",
         ));
     }
+    let clock_owned = !clock_owners.is_empty();
     if assertions.iter().any(|action| {
         !matches!(action.kind, SolveEventActionKind::Assert)
-            || action.clock_owner.is_some() != !clock_owners.is_empty()
+            || action.clock_owner.is_some() != clock_owned
             || action
                 .clock_owner
                 .is_some_and(|clock| clock_owners.binary_search(&clock).is_err())
@@ -817,10 +857,7 @@ fn validate_event_transaction_interface(
             "assertion action kind, clock owner, or provenance is invalid",
         ));
     }
-    for input in inputs {
-        validate_event_transaction_source(input, &invalid)?;
-    }
-    validate_event_transaction_targets(targets, &invalid)
+    Ok(())
 }
 
 fn validate_event_transaction_source(
@@ -1047,10 +1084,6 @@ impl GuardedAssignmentProgram {
 
     pub const fn integrator_history_effect(&self) -> IntegratorHistoryEffect {
         self.integrator_history_effect
-    }
-
-    pub fn set_integrator_history_effect(&mut self, effect: IntegratorHistoryEffect) {
-        self.integrator_history_effect = effect;
     }
 
     pub const fn clock_owner(&self) -> Option<PeriodicClockId> {
@@ -1624,12 +1657,45 @@ pub struct SolveVariableStorageRun {
 }
 
 /// Immutable typed declaration replayed independently of storage projection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SolveVariableDeclaration {
     role: SolveVariableStorageRole,
     value_kind: SolveVariableValueKind,
     time_domain: SolveVariableTimeDomain,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SolveVariableDeclarationWire {
+    role: SolveVariableStorageRole,
+    value_kind: SolveVariableValueKind,
+    time_domain: SolveVariableTimeDomain,
+}
+
+impl<'de> Deserialize<'de> for SolveVariableDeclaration {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = SolveVariableDeclarationWire::deserialize(deserializer)?;
+        let declaration = if wire.time_domain == SolveVariableTimeDomain::EventDiscontinuous {
+            Self::event_discontinuous(wire.role, wire.value_kind)
+                .map_err(serde::de::Error::custom)?
+        } else {
+            Self::new(wire.role, wire.value_kind)
+        };
+        if declaration.time_domain() != wire.time_domain {
+            return Err(serde::de::Error::custom(format!(
+                "{:?} {:?} storage requires time domain `{}`, not `{}`",
+                wire.role,
+                wire.value_kind,
+                declaration.time_domain().as_str(),
+                wire.time_domain.as_str()
+            )));
+        }
+        Ok(declaration)
+    }
 }
 
 impl SolveVariableDeclaration {

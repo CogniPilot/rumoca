@@ -18,6 +18,7 @@
 //! | EI010 | ConflictingInheritance | §5.6 |
 //! | EI011 | ConflictingModifications | §5.6/§7.2 |
 //! | EI012 | PartialClassInstantiation | §4.7 |
+//! | WI013 | SynthesizedInner | §5.4 |
 //! | EI014 | RedeclareNonReplaceable | §7.3 |
 //! | EI027 | RedeclareConstraintViolation | §7.3.2 |
 //! | EI028 | RedeclareFinal | §7.2.6 |
@@ -41,6 +42,44 @@ use thiserror::Error;
 
 /// Type alias for instantiation results with boxed errors.
 pub type InstantiateResult<T> = BoxedResult<T, InstantiateError>;
+
+/// Non-fatal diagnostics owned by the instantiate phase.
+#[derive(Debug, Clone, Error, Diagnostic)]
+pub enum InstantiateWarning {
+    /// MLS §5.4 permits a root-level `inner` to be synthesized for unmatched
+    /// `outer` declarations. The successful construction remains visible to
+    /// users as a warning rather than being reconstructed by a frontend.
+    #[error(
+        "outer without matching inner detected ({synthesized_inners}); synthesizing root-level inner declaration(s)"
+    )]
+    #[diagnostic(
+        code(rumoca::instantiate::WI013),
+        severity(warning),
+        help("MLS §5.4 permits default inner synthesis when no matching inner is present.")
+    )]
+    SynthesizedInner {
+        synthesized_inners: String,
+        #[label("synthesized inner declaration")]
+        span: Span,
+    },
+}
+
+impl InstantiateWarning {
+    #[must_use]
+    pub fn synthesized_inner(names: &[String], span: Span) -> Option<Self> {
+        (!names.is_empty()).then(|| Self::SynthesizedInner {
+            synthesized_inners: names.join(", "),
+            span,
+        })
+    }
+}
+
+impl PhaseError for InstantiateWarning {
+    fn to_diagnostic(&self) -> CommonDiagnostic {
+        let Self::SynthesizedInner { span, .. } = self;
+        miette_phase_error_to_diagnostic(self, std::slice::from_ref(span))
+    }
+}
 
 /// Errors that can occur during instantiation.
 #[derive(Debug, Clone, Error, Diagnostic)]
@@ -610,5 +649,25 @@ mod tests {
                 .iter()
                 .any(|note| note.contains("MLS §7.3.2"))
         );
+    }
+
+    #[test]
+    fn synthesized_inner_warning_is_phase_owned_and_source_backed() {
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_instantiate_synthesized_inner.mo"),
+            3,
+            9,
+        );
+        let warning = InstantiateWarning::synthesized_inner(&["world".to_owned()], span)
+            .expect("non-empty synthesis set produces a warning");
+        let diagnostic = warning.to_diagnostic();
+
+        assert_eq!(diagnostic.code.as_deref(), Some("WI013"));
+        assert_eq!(diagnostic.labels[0].span, span);
+        assert_eq!(
+            diagnostic.severity,
+            rumoca_core::DiagnosticSeverity::Warning
+        );
+        assert!(InstantiateWarning::synthesized_inner(&[], span).is_none());
     }
 }

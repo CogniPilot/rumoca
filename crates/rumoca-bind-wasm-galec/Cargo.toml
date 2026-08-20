@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rumoca-compile = { workspace = true }
+rumoca-core = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-galec = { workspace = true }
 rumoca-phase-parse-galec = { workspace = true }

@@ -719,7 +719,16 @@ fn looks_like_rumoca_scenario_config(value: &toml::Value) -> bool {
 /// source roots, sim settings); use it when you have the scenario file path
 /// directly rather than discovering a workspace.
 pub fn parse_scenario_config_file(text: &str) -> Result<ScenarioConfigFile> {
-    toml::from_str::<ScenarioConfigFile>(text).context("failed to parse scenario config file")
+    let parsed =
+        toml::from_str::<toml::Value>(text).context("failed to parse scenario config file")?;
+    if !looks_like_rumoca_scenario_config(&parsed) {
+        return Err(anyhow!(
+            "not a Rumoca task file: missing required `[rumoca]` marker"
+        ));
+    }
+    parsed
+        .try_into::<ScenarioConfigFile>()
+        .context("failed to decode scenario config file")
 }
 
 pub fn load_simulation_snapshot_for_model(

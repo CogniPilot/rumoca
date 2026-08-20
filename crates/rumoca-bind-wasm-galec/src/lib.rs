@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use lsp_types::{Position, Url};
 use rumoca_compile::codegen::targets::{TargetBundle, TargetTemplateSource};
 use rumoca_compile::{Session, SessionConfig};
+use rumoca_core::{PhaseError, SourceMap};
 use rumoca_phase_parse_galec::parse as parse_galec;
 use rumoca_tool_lsp_galec::{compute_diagnostics, navigation};
 use serde_json::{Value, json};
@@ -198,7 +199,9 @@ fn render_galec_impl(
         return Err("no Modelica sources were provided".to_owned());
     }
     let mut session = Session::new(SessionConfig::default());
+    let mut source_map = SourceMap::new();
     for (path, content) in &documents {
+        source_map.add(path, content);
         session
             .add_document(path, content)
             .map_err(|error| format!("failed to load `{path}`: {error}"))?;
@@ -211,7 +214,7 @@ fn render_galec_impl(
     //    projects to GALEC, and renders the .alg + C with the target's
     //    conformance header). GALEC identifiers/C names cannot contain dots.
     let model_id = model_name.replace('.', "_");
-    let sources = render_checked_sources(&result.dae, &model_id, target)?;
+    let sources = render_checked_sources(&result.dae, &source_map, &model_id, target)?;
 
     Ok(json!({
         "ok": true,
@@ -263,10 +266,33 @@ fn unknown_target_error(target: &str) -> String {
 /// Render every projection diagnostic under one attributed heading, one per
 /// line, so the JSON `error` string states WHAT was refused (the projection)
 /// before listing the collected `EGT0xx` reasons.
-fn projection_rejected_error(diagnostics: &[rumoca_phase_galec::GalecTargetError]) -> String {
+fn projection_rejected_error(
+    diagnostics: &[rumoca_phase_galec::GalecTargetError],
+    source_map: &SourceMap,
+) -> String {
     let detail = diagnostics
         .iter()
-        .map(|diagnostic| format!("  - {diagnostic}"))
+        .map(|error| {
+            let diagnostic = error.to_diagnostic();
+            let code = diagnostic.code.as_deref().unwrap_or("EGT000");
+            let location = diagnostic
+                .labels
+                .iter()
+                .find(|label| label.primary)
+                .and_then(|label| {
+                    rumoca_compile::compile::source_span_location(source_map, label.span)
+                })
+                .map(|location| {
+                    format!(
+                        "{}:{}:{}: ",
+                        location.file_name,
+                        location.start.line.saturating_add(1),
+                        location.start.character.saturating_add(1)
+                    )
+                })
+                .unwrap_or_default();
+            format!("  - {location}[{code}] {}", diagnostic.message)
+        })
         .collect::<Vec<_>>()
         .join("\n");
     format!("GALEC projection rejected the model:\n{detail}")
@@ -274,6 +300,7 @@ fn projection_rejected_error(diagnostics: &[rumoca_phase_galec::GalecTargetError
 
 fn render_checked_sources(
     dae: &rumoca_compile::compile::Dae,
+    source_map: &SourceMap,
     model_id: &str,
     target: &str,
 ) -> Result<RenderedSources, String> {
@@ -287,7 +314,7 @@ fn render_checked_sources(
         &rumoca_phase_galec::GalecInput::new(dae, model_id),
         &rumoca_phase_galec::GalecOptions::default(),
     )
-    .map_err(|diagnostics| projection_rejected_error(&diagnostics))?;
+    .map_err(|diagnostics| projection_rejected_error(&diagnostics, source_map))?;
     let artifact = SourceArtifactFacts {
         generated_at: "1970-01-01T00:00:00Z",
         generation_tool: "rumoca wasm source preview",
@@ -599,5 +626,21 @@ end ContinuousDemo;
                 .is_some_and(|error| error.contains("projection rejected")),
             "{value}"
         );
+    }
+
+    #[test]
+    fn projection_diagnostic_keeps_code_and_source_location() {
+        let source = "model A\n  Real x;\nend A;\n";
+        let mut source_map = SourceMap::new();
+        let source_id = source_map.add("models/A.mo", source);
+        let error = rumoca_phase_galec::GalecTargetError::UnsupportedFeature {
+            feature: "test-feature".to_owned(),
+            detail: "test refusal".to_owned(),
+            span: Some(rumoca_core::Span::from_offsets(source_id, 10, 14)),
+        };
+
+        let rendered = projection_rejected_error(&[error], &source_map);
+        assert!(rendered.contains("[EGT017]"), "{rendered}");
+        assert!(rendered.contains("models/A.mo:2:3"), "{rendered}");
     }
 }

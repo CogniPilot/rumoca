@@ -32,8 +32,8 @@
 //! // Create a session
 //! let mut session = Session::new(SessionConfig::default());
 //!
-//! // Add source files
-//! session.add_file("Model.mo", source_code)?;
+//! // Add a source document
+//! session.add_document("Model.mo", source_code)?;
 //!
 //! // Compile a specific model
 //! let result = session.compile_model("MyPackage.MyModel")?;

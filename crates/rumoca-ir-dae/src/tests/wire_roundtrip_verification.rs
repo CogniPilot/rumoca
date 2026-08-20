@@ -731,44 +731,12 @@ fn all_wire_variants_round_trip_ordinal_stably() {
     );
 }
 
-/// Graduation path for the same property under bounded model checking.
+/// Property-test validation for the checked wire round trip.
 ///
-/// `mod tests` is `#[cfg(test)]`-gated in `lib.rs`, so this module compiles under
-/// no configuration today; it records the shape the proof takes and is left
-/// inert rather than restructuring production gating to reach it.
-#[cfg(kani)]
-mod proof {
-    use super::*;
-
-    /// # Property (wire round-trip, ordinal-stable)
-    ///
-    /// For a checked `Dae` carrying every condition and coordinate variant,
-    /// decoding an encoding reconstructs a value that re-encodes to identical
-    /// bytes, under both the ordinal-tagged codec (bincode) and the name-tagged
-    /// codec (JSON). SPEC_0037 phase-proof obligation "Wire — Decode
-    /// reconstructs only checked current IR; round trip preserves identity".
-    #[kani::proof]
-    fn wire_round_trip_is_ordinal_stable() {
-        let real_eighths: i32 = kani::any();
-        // See `FixturePlan::real_eighths`: the name-tagged codec is only
-        // value-preserving over the doubles it can spell exactly.
-        kani::assume((-REAL_EIGHTHS_BOUND..REAL_EIGHTHS_BOUND).contains(&real_eighths));
-        let plan = FixturePlan {
-            coordinate_order: (0..PERMUTED_COORDINATES).collect(),
-            real_eighths,
-            integer: kani::any(),
-            boolean: kani::any(),
-            swap_condition_operands: kani::any(),
-        };
-        check_all_variants_round_trip(&plan);
-    }
-}
-
-/// Fallback driver: the same property under proptest, because Kani is not yet in
-/// the dev shell. The generated variation is bounded and always constructible —
-/// it moves the encoded ordinal stream, never the validity of the model.
-#[cfg(not(kani))]
-mod fallback {
+/// This is deliberately ordinary randomized test evidence, not bounded-proof
+/// evidence. A future Kani proof must live in a package target compiled by the
+/// manifest-driven verifier and declare its assumptions and bound there.
+mod property_tests {
     use super::*;
 
     use proptest::prelude::*;

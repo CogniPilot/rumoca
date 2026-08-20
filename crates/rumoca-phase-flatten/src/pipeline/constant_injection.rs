@@ -1466,30 +1466,53 @@ fn infer_dims_via_eval_ast_i64(
     })
 }
 
+/// Borrowed semantic facts for the shared AST dimension walk.
+///
+/// Flatten owns these maps and updates them while constants stabilize. Keeping
+/// the adapter borrowed makes every inference observe the current facts without
+/// rebuilding a parallel evaluator or recovering structure from rendered text.
+struct FlattenDimensionContext<'a> {
+    context: &'a Context,
+}
+
+impl rumoca_eval_ast::eval::DimensionInferenceContext for FlattenDimensionContext<'_> {
+    fn lookup_dimensions(&self, name: &str, scope: &str) -> Option<Vec<usize>> {
+        lookup_size_array_dims_with_scope(name, scope, self.context)?
+            .into_iter()
+            .map(|dimension| usize::try_from(dimension).ok())
+            .collect()
+    }
+
+    fn scalar_value_known(&self, name: &str, scope: &str) -> bool {
+        lookup_with_scope(name, scope, &self.context.parameter_values).is_some()
+            || lookup_with_scope(name, scope, &self.context.real_parameter_values).is_some()
+            || lookup_with_scope(name, scope, &self.context.boolean_parameter_values).is_some()
+            || lookup_with_scope(name, scope, &self.context.enum_parameter_values).is_some()
+    }
+
+    fn eval_integer(&self, expression: &ast::Expression, scope: &str) -> Option<i64> {
+        try_eval_const_integer_with_scope(expression, self.context, scope)
+    }
+
+    fn eval_real(&self, expression: &ast::Expression, scope: &str) -> Option<f64> {
+        try_eval_const_real_with_scope(expression, self.context, scope)
+    }
+
+    fn eval_boolean(&self, expression: &ast::Expression, scope: &str) -> Option<bool> {
+        try_eval_const_boolean_with_scope(expression, self.context, scope)
+    }
+}
+
 fn infer_dims_via_eval_ast(
     expr: &ast::Expression,
     ctx: &Context,
     scope: &str,
 ) -> Option<Vec<usize>> {
-    let mut eval_ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();
-    for (name, value) in &ctx.parameter_values {
-        eval_ctx.add_integer(name, *value);
-    }
-    for (name, value) in &ctx.real_parameter_values {
-        eval_ctx.add_real(name, *value);
-    }
-    eval_ctx
-        .booleans
-        .extend(ctx.boolean_parameter_values.clone());
-    eval_ctx.enums.extend(ctx.enum_parameter_values.clone());
-    for (name, dims) in &ctx.array_dimensions {
-        let dims = dims
-            .iter()
-            .map(|dim| usize::try_from(*dim).ok())
-            .collect::<Option<Vec<_>>>()?;
-        eval_ctx.add_dimensions(name, dims);
-    }
-    rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(expr, &eval_ctx, scope)
+    rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
+        expr,
+        &FlattenDimensionContext { context: ctx },
+        scope,
+    )
 }
 
 /// Pre-evaluate structural equations (MLS §4.4.4).

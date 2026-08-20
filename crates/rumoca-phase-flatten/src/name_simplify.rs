@@ -20,13 +20,6 @@ use std::collections::{HashMap, HashSet};
 pub(crate) fn simplify_flat_names(
     flat: &mut flat::Model,
 ) -> Result<(), crate::errors::FlattenError> {
-    let mut working = flat.clone();
-    simplify_flat_names_in_place(&mut working)?;
-    *flat = working;
-    Ok(())
-}
-
-fn simplify_flat_names_in_place(flat: &mut flat::Model) -> Result<(), crate::errors::FlattenError> {
     let protected_prefixes = protected_semantic_prefixes(flat);
     let rename_map = build_rename_map(flat, &protected_prefixes);
     let ctx = RenameContext {
@@ -109,16 +102,15 @@ fn should_preserve_name(
 
     matches!(var.causality, rumoca_core::Causality::Input(_))
         || var.oc_record_path.is_some()
-        || protected_prefixes
-            .iter()
-            .any(|prefix| is_at_or_below_prefix(name, prefix))
+        || has_protected_segment_prefix(name, protected_prefixes)
 }
 
-fn is_at_or_below_prefix(name: &str, prefix: &str) -> bool {
-    name == prefix
+fn has_protected_segment_prefix(name: &str, protected_prefixes: &HashSet<String>) -> bool {
+    protected_prefixes.contains(name)
         || name
-            .strip_prefix(prefix)
-            .is_some_and(|tail| tail.starts_with('.') || tail.starts_with('['))
+            .char_indices()
+            .filter(|(_, character)| matches!(character, '.' | '['))
+            .any(|(boundary, _)| protected_prefixes.contains(&name[..boundary]))
 }
 
 fn candidate_counts(requests: &[(String, Vec<String>)]) -> HashMap<String, usize> {

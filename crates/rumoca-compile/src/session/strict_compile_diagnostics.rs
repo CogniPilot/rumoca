@@ -1,6 +1,6 @@
 use super::{DaePhaseResult, Document, FailedPhase, ModelFailureDiagnostic, PhaseResult};
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{Diagnostic as CommonDiagnostic, Label, PrimaryLabel, SourceMap};
+use rumoca_core::{Diagnostic as CommonDiagnostic, Label, PhaseError, PrimaryLabel, SourceMap};
 use rumoca_core::{SourceId, Span};
 use rumoca_ir_ast as ast;
 use std::collections::HashMap;
@@ -407,69 +407,20 @@ fn parse_error_to_common_diagnostic(
     doc: &Document,
     source_map: &SourceMap,
 ) -> CommonDiagnostic {
-    let missing_source_error = || {
-        CommonDiagnostic::global_error(
+    let span = error.span();
+    if source_map.name(span.source).is_none() {
+        return CommonDiagnostic::global_error(
             "EI000",
             format!(
-                "internal error: missing source-map entry for parse diagnostics document '{}'",
-                doc.uri
+                "internal error: parser diagnostic for '{}' references missing source {:?}",
+                doc.uri, span.source
             ),
         )
-        .with_note(format!("document: {}", doc.uri))
-    };
-    match error {
-        crate::parse::ParseError::SyntaxError {
-            message,
-            unexpected,
-            span,
-            ..
-        } => {
-            let Some(span) = span else {
-                return CommonDiagnostic::global_error("EP001", message.clone())
-                    .with_note("parse diagnostic has no source span");
-            };
-            let Some(remapped_span) = remap_parse_span(doc, source_map, *span) else {
-                return missing_source_error();
-            };
-            let label_message = unexpected
-                .as_ref()
-                .map(|unexpected| format!("unexpected `{unexpected}`"))
-                .unwrap_or_else(|| "error here".to_string());
-            CommonDiagnostic::error(
-                "EP001",
-                message.clone(),
-                PrimaryLabel::new(remapped_span).with_message(label_message),
-            )
-        }
-        crate::parse::ParseError::NoAstProduced => {
-            let Some(span) = doc_default_parse_span(doc, source_map) else {
-                return missing_source_error();
-            };
-            CommonDiagnostic::error(
-                "EP002",
-                "parsing succeeded but no AST was produced",
-                PrimaryLabel::new(span).with_message("at start of input"),
-            )
-        }
-        crate::parse::ParseError::IoError { path, message } => {
-            let Some(span) = doc_default_parse_span(doc, source_map) else {
-                return missing_source_error();
-            };
-            CommonDiagnostic::error(
-                "EP003",
-                format!("failed to read `{path}`: {message}"),
-                PrimaryLabel::new(span).with_message("while reading source input"),
-            )
-        }
+        .with_note(format!("document: {}", doc.uri));
     }
-    .with_note(format!("document: {}", doc.uri))
-}
-
-fn remap_parse_span(doc: &Document, source_map: &SourceMap, span: Span) -> Option<Span> {
-    let source_id = document_source_id(doc, source_map)?;
-    let start = span.start.0;
-    let end = span.end.0.max(start.saturating_add(1));
-    Some(Span::from_offsets(source_id, start, end))
+    error
+        .to_diagnostic()
+        .with_note(format!("document: {}", doc.uri))
 }
 
 fn doc_default_parse_span(doc: &Document, source_map: &SourceMap) -> Option<Span> {

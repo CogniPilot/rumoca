@@ -11,7 +11,7 @@
 //! say "not yet supported by the Rumoca GALEC projection" — never
 //! "unsupported by eFMI", because eFMI itself expects discretized models.
 
-use rumoca_core::Span;
+use rumoca_core::{Diagnostic, PhaseError, PrimaryLabel, Span};
 
 /// Errors produced by the DAE → GALEC projection, with stable `EGT0xx` codes.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -20,7 +20,7 @@ pub enum GalecTargetError {
     #[error(
         "model has continuous dynamics ({states} continuous state(s), \
          {equations} continuous equation(s)); continuous states are not yet \
-         supported by the Rumoca GALEC projection [EGT001]"
+         supported by the Rumoca GALEC projection"
     )]
     ContinuousDynamics { states: usize, equations: usize },
 
@@ -28,7 +28,7 @@ pub enum GalecTargetError {
     #[error(
         "function `{function}` is declared external (language `{language}`); \
          external functions are not yet supported by the Rumoca GALEC \
-         projection [EGT002]"
+         projection"
     )]
     ExternalFunction {
         function: String,
@@ -42,7 +42,7 @@ pub enum GalecTargetError {
     #[error(
         "model requires runtime event handling ({scheduled_time_events} \
          scheduled time event(s), {event_actions} event action(s)); runtime \
-         events are not yet supported by the Rumoca GALEC projection [EGT003]"
+         events are not yet supported by the Rumoca GALEC projection"
     )]
     RuntimeEvents {
         scheduled_time_events: usize,
@@ -55,14 +55,14 @@ pub enum GalecTargetError {
     #[error(
         "model has {count} runtime-triggered clock condition(s); dynamic \
          clocks are not yet supported by the Rumoca GALEC projection \
-         (GALEC blocks are driven by one fixed base period) [EGT004]"
+         (GALEC blocks are driven by one fixed base period)"
     )]
     DynamicClock { count: usize },
 
     /// GAL-016: at least one fixed-period clock schedule is required.
     #[error(
         "model declares no fixed-period clock schedule; a GALEC block requires \
-         at least one fixed clock to establish its base period [EGT005]"
+         at least one fixed clock to establish its base period"
     )]
     NoPeriodicClock,
 
@@ -70,18 +70,18 @@ pub enum GalecTargetError {
     /// period.
     #[error(
         "clock period {period_seconds} s is not a finite, strictly positive \
-         sample period [EGT006]"
+         sample period"
     )]
     InvalidClockPeriod { period_seconds: f64, span: Span },
 
     /// MLS §4.7: partial models are incomplete by declaration.
-    #[error("partial models cannot be projected to a GALEC block [EGT007]")]
+    #[error("partial models cannot be projected to a GALEC block")]
     PartialModel,
 
     /// Only complete simulation-model class types project to a block.
     #[error(
         "root class type `{class_type}` cannot be projected to a GALEC block \
-         (expected `model`, `block`, or `class`) [EGT008]"
+         (expected `model`, `block`, or `class`)"
     )]
     UnsupportedClassType { class_type: &'static str },
 
@@ -91,7 +91,7 @@ pub enum GalecTargetError {
     #[error(
         "variable `{variable}` dimension {dimension} has size {size}; GALEC \
          array dimensions must be literal integers >= 1 \
-         (structurally-parametric array sizes are rejected) [EGT009]"
+         (structurally-parametric array sizes are rejected)"
     )]
     NonPositiveDimension {
         variable: String,
@@ -105,7 +105,7 @@ pub enum GalecTargetError {
     #[error(
         "variable `{variable}` (causality `{causality}`, partition \
          `{partition}`, origin `{origin}`) does not match any GALEC variable \
-         class [EGT010]"
+         class"
     )]
     UnclassifiableVariable {
         variable: String,
@@ -122,7 +122,7 @@ pub enum GalecTargetError {
         "cannot determine the GALEC scalar type of `{variable}` (partition \
          `{partition}`): the DAE partition does not fix a scalar type and no \
          type provenance was supplied; types are never inferred from start \
-         values [EGT011]"
+         values"
     )]
     UnresolvedScalarType {
         variable: String,
@@ -131,7 +131,7 @@ pub enum GalecTargetError {
     },
 
     /// GAL-015: the name cannot be carried into GALEC (plain or quoted).
-    #[error("`{variable}` cannot be represented as a GALEC name: {reason} [EGT012]")]
+    #[error("`{variable}` cannot be represented as a GALEC name: {reason}")]
     UnrepresentableName {
         variable: String,
         reason: &'static str,
@@ -142,7 +142,7 @@ pub enum GalecTargetError {
     /// parameter/constant defaults).
     #[error(
         "`{attribute}` of `{variable}` is not evaluable to a constant: \
-         {reason} [EGT013]"
+         {reason}"
     )]
     AttributeNotEvaluable {
         variable: String,
@@ -155,7 +155,7 @@ pub enum GalecTargetError {
     /// scalar type (types come from the DAE, never from the value).
     #[error(
         "`{attribute}` of `{variable}` evaluates to a {found} value, but the \
-         variable's scalar type is {expected} [EGT014]"
+         variable's scalar type is {expected}"
     )]
     AttributeTypeMismatch {
         variable: String,
@@ -167,7 +167,7 @@ pub enum GalecTargetError {
 
     /// Default expressions of parameters/constants reference each other in a
     /// cycle.
-    #[error("start expressions form a dependency cycle through `{through}` [EGT015]")]
+    #[error("start expressions form a dependency cycle through `{through}`")]
     StartDependencyCycle { through: String },
 
     /// GAL-007: a DAE construct outside the currently lowerable subset.
@@ -176,7 +176,7 @@ pub enum GalecTargetError {
     /// wording in `detail`.
     #[error(
         "{detail}; not yet supported by the Rumoca GALEC projection \
-         [unsupported-feature:{feature}] [EGT017]"
+         [unsupported-feature:{feature}]"
     )]
     UnsupportedFeature {
         feature: String,
@@ -187,13 +187,13 @@ pub enum GalecTargetError {
     /// A bug in the projection itself: lowering produced output that fails
     /// GALEC/manifest post-validation (GAL-004), or a canonical-DAE
     /// invariant the projection relies on did not hold.
-    #[error("internal GALEC projection error (please report): {detail} [EGT018]")]
+    #[error("internal GALEC projection error (please report): {detail}")]
     LoweringInternal { detail: String },
 
     /// An expression references a variable that exists in no DAE partition.
     #[error(
         "expression references `{name}`, which is not a variable of any DAE \
-         partition [EGT019]"
+         partition"
     )]
     UnknownVariableReference { name: String, span: Option<Span> },
 
@@ -201,7 +201,7 @@ pub enum GalecTargetError {
     /// that cannot be reconciled with an explicit widening cast fail.
     #[error(
         "type mismatch in {context}: expected {expected}, found {found} \
-         (GALEC has no implicit conversions) [EGT020]"
+         (GALEC has no implicit conversions)"
     )]
     LoweringTypeMismatch {
         context: String,
@@ -218,7 +218,7 @@ pub enum GalecTargetError {
         "model has {equations} scalar initial equation(s) \
          ({structured_families} structured initial-equation famil(y/ies)); \
          initial equations are not yet supported by the Rumoca GALEC \
-         projection (Startup initializes from `start` values only) [EGT021]"
+         projection (Startup initializes from `start` values only)"
     )]
     InitialEquations {
         equations: usize,
@@ -231,7 +231,7 @@ pub enum GalecTargetError {
     /// so admitting one would silently start the block from the declared
     /// `start` instead of the determined value.
     #[error(
-        "model determines {definitions} discrete initial value(s) in an          initial section; algorithm-determined initial values are not yet          supported by the Rumoca GALEC projection (Startup initializes from          `start` values only) [EGT022]"
+        "model determines {definitions} discrete initial value(s) in an initial section; algorithm-determined initial values are not yet supported by the Rumoca GALEC projection (Startup initializes from `start` values only)"
     )]
     InitialDiscreteValues { definitions: usize },
 }
@@ -291,5 +291,64 @@ impl GalecTargetError {
             | Self::InitialEquations { .. }
             | Self::InitialDiscreteValues { .. } => None,
         }
+    }
+
+    fn primary_label(&self, span: Span) -> PrimaryLabel {
+        let message = match self {
+            Self::UnsupportedFeature { feature, .. } => {
+                format!("unsupported GALEC projection feature `{feature}`")
+            }
+            _ => "GALEC projection rejected this construct".to_owned(),
+        };
+        PrimaryLabel::new(span).with_message(message)
+    }
+}
+
+impl PhaseError for GalecTargetError {
+    fn to_diagnostic(&self) -> Diagnostic {
+        match self.span() {
+            Some(span) => {
+                Diagnostic::error(self.code(), self.to_string(), self.primary_label(span))
+            }
+            None => Diagnostic::global_error(self.code(), self.to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::SourceId;
+
+    #[test]
+    fn phase_diagnostic_preserves_code_and_source_span() {
+        let span = Span::from_offsets(SourceId::from_source_name("galec-target.mo"), 7, 11);
+        let diagnostic = GalecTargetError::UnsupportedFeature {
+            feature: "array-projection".to_owned(),
+            detail: "projection is not representable".to_owned(),
+            span: Some(span),
+        }
+        .to_diagnostic();
+
+        assert_eq!(diagnostic.code.as_deref(), Some("EGT017"));
+        assert_eq!(
+            diagnostic
+                .labels
+                .iter()
+                .find(|label| label.primary)
+                .map(|label| label.span),
+            Some(span)
+        );
+    }
+
+    #[test]
+    fn phase_diagnostic_supports_model_level_rejections() {
+        let diagnostic = GalecTargetError::ContinuousDynamics {
+            states: 1,
+            equations: 1,
+        }
+        .to_diagnostic();
+        assert_eq!(diagnostic.code.as_deref(), Some("EGT001"));
+        assert!(!diagnostic.labels.iter().any(|label| label.primary));
     }
 }

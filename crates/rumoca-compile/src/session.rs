@@ -17,7 +17,7 @@ use rumoca_ir_flat as flat;
 use rumoca_phase_dae::{ToDaeError, to_dae};
 use rumoca_phase_flatten::{FlattenError, FlattenOptions, flatten_ref_with_options};
 use rumoca_phase_instantiate::{
-    InstantiateError, InstantiateOptions, InstantiationOutcome,
+    InstantiateError, InstantiateOptions, InstantiateWarning, InstantiationOutcome,
     instantiate_model_with_outcome_options,
 };
 use rumoca_phase_resolve::{ResolvedTree, resolve_with_diagnostics};
@@ -127,7 +127,6 @@ use diagnostic_adapters::{diagnostic_message_with_primary_location, merge_error_
 mod model_diagnostics;
 use model_diagnostics::{
     global_resolution_failure_diagnostics, merge_model_diagnostics, model_diagnostics_for_tree,
-    synthesized_inner_warning,
 };
 mod reachability;
 use reachability::{ReachabilityPlanner, ReachableModelClosure};

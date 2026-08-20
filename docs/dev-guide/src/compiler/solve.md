@@ -40,7 +40,7 @@ rewrites, no template policy:
 |---|---|
 | `rumoca-exec-cranelift` | In-process JIT via Cranelift |
 | `rumoca-exec-mlir` | MLIR-based compilation path |
-| `rumoca-exec-wasm` | WASM execution backend |
+| `rumoca-exec-wasm` | Experimental Solve-row WASM adapter; its public compile surface is tested, but no compiler or simulation pipeline selects it yet |
 
 The generated-code targets (`rust-ode`, `c-ode`, `cuda-ode`,
 `cuda-ode`, `wgsl-ode`, and the symbolic ODE RHS targets)

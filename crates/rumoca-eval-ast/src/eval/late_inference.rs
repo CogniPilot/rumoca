@@ -4,7 +4,7 @@ use super::*;
 pub(crate) fn all_branches_consistent_with_scope(
     branches: &[(Expression, Expression)],
     expected: &[usize],
-    ctx: &TypeCheckEvalContext,
+    ctx: &(impl DimensionInferenceContext + ?Sized),
     scope: &str,
 ) -> bool {
     for (_, then_expr) in branches {

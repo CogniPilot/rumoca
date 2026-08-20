@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 const MANIFEST_REL: &str = "infra/verification/mls-formalization-coverage.json";
 const ASSOCIATION_GAPS_REL: &str = "infra/verification/modelica-association-gaps.json";
+const FORMAL_STATEMENTS_REL: &str = "crates/rumoca-contracts/data/formal_statements.toml";
 const ALLOWED_STATUSES: &[&str] = &["unformalized", "formalized_unproved", "machine_proved"];
 
 fn workspace_root() -> PathBuf {
@@ -126,6 +127,7 @@ fn modelica_association_gap_records_are_traceable_to_the_catalog() {
     );
     let allowed_states = ["discovered", "proposal_drafted", "submitted", "resolved"];
     let mut issue_ids = BTreeSet::new();
+    let mut mapped_statements = BTreeSet::new();
     for issue in payload["issues"].as_array().expect("issues array") {
         let issue_id = issue["id"].as_str().expect("gap id");
         assert!(issue_ids.insert(issue_id), "duplicate gap `{issue_id}`");
@@ -146,6 +148,16 @@ fn modelica_association_gap_records_are_traceable_to_the_catalog() {
                 "gap `{issue_id}` names `{contract}`"
             );
         }
+        for statement in issue["formal_statement_ids"]
+            .as_array()
+            .expect("formal_statement_ids array")
+        {
+            let statement = statement.as_str().expect("formal statement ID string");
+            assert!(
+                mapped_statements.insert(statement.to_string()),
+                "formal statement `{statement}` maps to multiple gap records"
+            );
+        }
         for field in ["mls_clauses", "counterexample", "proposed_clarification"] {
             assert!(
                 issue[field]
@@ -155,4 +167,24 @@ fn modelica_association_gap_records_are_traceable_to_the_catalog() {
             );
         }
     }
+    let statements: toml::Value = toml::from_str(
+        &fs::read_to_string(root.join(FORMAL_STATEMENTS_REL)).expect("read formal statements"),
+    )
+    .expect("parse formal statements");
+    let spec_silent = statements["statements"]
+        .as_array()
+        .expect("formal statements array")
+        .iter()
+        .filter(|statement| statement["tier"].as_str() == Some("SpecSilent"))
+        .map(|statement| {
+            statement["id"]
+                .as_str()
+                .expect("formal statement ID")
+                .to_string()
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        mapped_statements, spec_silent,
+        "every SpecSilent formal statement must map exactly once to an upstream gap record"
+    );
 }

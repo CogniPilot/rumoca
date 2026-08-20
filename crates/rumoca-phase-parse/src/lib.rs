@@ -28,7 +28,7 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub use errors::{ParseError, convert_parol_error, format_parse_error};
+pub use errors::{ParseError, format_parse_error};
 pub use recovery::parse_to_recovered_ast;
 
 // Re-export at crate root for parol-generated code expectations
@@ -207,11 +207,28 @@ fn parser_source_id(path: &Arc<PathBuf>) -> rumoca_core::SourceId {
     })
 }
 
-/// Drop the per-file `SourceId` memo so the next parse recomputes it.
-fn reset_parser_source_id() {
-    PARSE_SOURCE_ID.with(|cell| {
-        *cell.borrow_mut() = None;
-    });
+/// Typed identity established once at the parser boundary for one parse.
+struct ParserSourceContext {
+    source_id: rumoca_core::SourceId,
+}
+
+impl ParserSourceContext {
+    fn new(file_name: &str) -> Self {
+        let path = Arc::new(PathBuf::from(file_name));
+        let source_id = rumoca_core::source_id_for_name(file_name);
+        PARSE_SOURCE_ID.with(|cell| {
+            *cell.borrow_mut() = Some((path, source_id));
+        });
+        Self { source_id }
+    }
+}
+
+impl Drop for ParserSourceContext {
+    fn drop(&mut self) {
+        PARSE_SOURCE_ID.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+    }
 }
 
 impl TryFrom<&parol_runtime::Token<'_>> for ParserToken {
@@ -376,18 +393,21 @@ fn parse_once_to_ast(
     source: &str,
     file_name: &str,
 ) -> std::result::Result<ast::StoredDefinition, Vec<ParseError>> {
+    let parse_source = ParserSourceContext::new(file_name);
     let mut grammar = ModelicaGrammar::new();
-    // The per-file `SourceId` memo is scoped to one parse; clear it so a reused
-    // thread never stamps tokens with a stale file identity.
-    reset_parser_source_id();
     let parse_result = generated::modelica_parser::parse(source, file_name, &mut grammar);
-    reset_parser_source_id();
     if let Err(parol_err) = parse_result {
-        return Err(convert_parol_error(parol_err, source));
+        return Err(errors::convert_parol_error(
+            parol_err,
+            source,
+            parse_source.source_id,
+        ));
     }
     match grammar.modelica {
         Some(ast) => Ok(ast),
-        None => Err(vec![ParseError::NoAstProduced]),
+        None => Err(vec![ParseError::NoAstProduced {
+            span: errors::default_parse_span(parse_source.source_id),
+        }]),
     }
 }
 
@@ -456,12 +476,17 @@ fn map_parse_error_to_original(error: &ParseError, inserted_positions: &[usize])
             message: message.clone(),
             expected: expected.clone(),
             unexpected: unexpected.clone(),
-            span: span.map(|span| map_span_to_original(span, inserted_positions)),
+            span: map_span_to_original(*span, inserted_positions),
         },
-        ParseError::NoAstProduced => ParseError::NoAstProduced,
-        ParseError::IoError { path, message } => ParseError::IoError {
+        ParseError::NoAstProduced { span } => ParseError::NoAstProduced { span: *span },
+        ParseError::IoError {
+            path,
+            message,
+            span,
+        } => ParseError::IoError {
             path: path.clone(),
             message: message.clone(),
+            span: *span,
         },
     }
 }
@@ -505,8 +530,6 @@ fn semicolon_insertion_pos(error: &ParseError) -> Option<usize> {
     if !expected.iter().any(|e| e == ";") {
         return None;
     }
-    let span = (*span)?;
-
     let unexpected_lower = unexpected.as_ref().map(|u| u.to_ascii_lowercase());
     let insert_before_unexpected = unexpected_lower.as_deref().is_some_and(|u| {
         matches!(
@@ -574,14 +597,14 @@ fn parse_error_key(error: &ParseError) -> String {
             span,
         } => format!(
             "syntax:{}:{}:{}:{:?}:{:?}",
-            span.map(|span| span.start.0).unwrap_or(0),
-            span.map(|span| span.end.0).unwrap_or(0),
-            message,
-            expected,
-            unexpected
+            span.start.0, span.end.0, message, expected, unexpected
         ),
-        ParseError::NoAstProduced => "no-ast".to_string(),
-        ParseError::IoError { path, message } => format!("io:{}:{}", path, message),
+        ParseError::NoAstProduced { span } => format!("no-ast:{}", span.source.0),
+        ParseError::IoError {
+            path,
+            message,
+            span,
+        } => format!("io:{}:{}:{}", span.source.0, path, message),
     }
 }
 
@@ -1605,7 +1628,6 @@ end Ball;
                 (message.contains("`end`") || message.contains("'end'")).then_some(*span)
             })
             .expect("expected reserved/end parse error");
-        let end_error = end_error.expect("expected spanned parse error");
         assert!(
             end_error.start.0 > 0 || end_error.end.0 > 1,
             "expected non-dummy span for missing semicolon before `end`, got {:?}",
@@ -1636,7 +1658,6 @@ end Ball;
                 (message.contains("`der`") || message.contains("'der'")).then_some(*span)
             })
             .expect("expected der-related parse error");
-        let der_error = der_error.expect("expected spanned parse error");
         assert!(
             der_error.start.0 > 1 || der_error.end.0 > 2,
             "expected non-origin span for missing semicolon before `der`, got {:?}",
@@ -1669,7 +1690,6 @@ end Ball;
                     .then_some(*span)
             })
             .expect("expected duplicate declaration error");
-        let duplicate_span = duplicate_span.expect("expected spanned duplicate declaration error");
         assert!(
             duplicate_span.start.0 > 0 && duplicate_span.end.0 > duplicate_span.start.0,
             "expected non-dummy duplicate declaration span, got {:?}",
@@ -1706,8 +1726,6 @@ end Real;
                     .then_some(*span)
             })
             .expect("expected predefined-type redeclaration error");
-        let redeclare_span =
-            redeclare_span.expect("expected spanned predefined-type redeclaration error");
         assert!(
             redeclare_span.start.0 > 0 && redeclare_span.end.0 > redeclare_span.start.0,
             "expected non-dummy redeclaration span, got {:?}",

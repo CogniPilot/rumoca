@@ -135,6 +135,7 @@ Error codes use mnemonic prefixes for readability:
 | ER0xx | resolve | **R**esolve | Name resolution errors |
 | ET0xx | typecheck | **T**ype | Type errors |
 | EI0xx | instantiate | **I**nstantiate | Modification errors |
+| WI0xx | instantiate | **I**nstantiate | Non-fatal instantiation diagnostics |
 | EF0xx | flatten | **F**latten | Connection errors |
 | ED0xx | todae | **D**AE | Equation errors |
 | EC0xx | codegen | **C**odegen | Code generation errors |
@@ -158,6 +159,10 @@ retire it rather than renumber or reuse.
 The former GALEC-target meanings of `ET001`–`ET023` are retired because they
 collided with typecheck. GALEC target projection now emits `EGT001`–`EGT023`;
 the typecheck meanings of `ET0xx` are unchanged.
+
+`EI013` is retired. Older builds used it for the non-fatal synthesized-inner
+notice; the phase-owned diagnostic is `WI013`, whose prefix records its warning
+severity.
 
 **Known drift**, tracked separately: `rumoca-phase-structural` emits
 `ES001`/`ES002` at warning severity. For these, severity MUST be read from the

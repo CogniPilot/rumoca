@@ -48,6 +48,10 @@ const REMOVED_DECLARATION_ONLY_SURFACES: &[(&str, &str)] = &[
     ("crates/rumoca-ir-flat/src/connections.rs", "add_set"),
     ("crates/rumoca-ir-flat/src/connections.rs", "num_nodes"),
     (
+        "crates/rumoca-ir-solve/src/model.rs",
+        "set_integrator_history_effect",
+    ),
+    (
         "crates/rumoca-phase-resolve/src/lib.rs",
         "resolve_with_stats",
     ),

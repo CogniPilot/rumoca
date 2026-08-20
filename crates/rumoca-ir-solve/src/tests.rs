@@ -843,6 +843,33 @@ fn guarded_assignment_wire_replays_output_width_proof() {
     );
 }
 
+#[test]
+fn solve_variable_declaration_wire_replays_time_domain_proof() {
+    let forged = serde_json::json!({
+        "role": "State",
+        "value_kind": "Real",
+        "time_domain": "event_discontinuous"
+    });
+    let error = serde_json::from_value::<SolveVariableDeclaration>(forged)
+        .expect_err("wire replay cannot forge an event-discontinuous state");
+    assert!(
+        error
+            .to_string()
+            .contains("State Real storage cannot be event-discontinuous")
+    );
+
+    let valid = SolveVariableDeclaration::event_discontinuous(
+        SolveVariableStorageRole::Output,
+        SolveVariableValueKind::Real,
+    )
+    .expect("real output admits the proved domain");
+    let replayed = serde_json::from_value::<SolveVariableDeclaration>(
+        serde_json::to_value(valid).expect("serialize declaration"),
+    )
+    .expect("valid declaration replays through its constructor");
+    assert_eq!(replayed, valid);
+}
+
 fn event_transaction_fixture_with_table() -> (EventTransactionProgram, SolvePureCallTable) {
     let arithmetic = SolveArithmeticProfile::construct(
         SolveRealFormat::Binary64,

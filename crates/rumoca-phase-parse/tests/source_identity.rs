@@ -3,7 +3,7 @@
 
 use rumoca_core::{SourceId, Token, placeholder_source_name};
 use rumoca_ir_ast::{ClassDef, StoredDefinition};
-use rumoca_phase_parse::{parse_to_ast, parse_to_recovered_ast};
+use rumoca_phase_parse::{parse_to_ast, parse_to_ast_with_errors, parse_to_recovered_ast};
 
 const SOURCE: &str = r#"
 package Pkg
@@ -140,6 +140,21 @@ fn recovery_after_syntax_error_still_stamps_the_file_source_id() {
     assert!(!tokens.is_empty());
     for token in &tokens {
         assert_eq!(token.location.source, expected);
+    }
+}
+
+#[test]
+fn parse_errors_retain_the_parser_assigned_source_id() {
+    let source = "model Broken\n  Real x\nend Broken;\n";
+    for file_name in ["one/Broken.mo", "two/Broken.mo"] {
+        let expected = SourceId::from_source_name(file_name);
+        let errors = parse_to_ast_with_errors(source, file_name)
+            .expect_err("missing semicolon should produce structured parse errors");
+        assert!(!errors.is_empty());
+        for error in errors {
+            assert_eq!(error.span().source, expected);
+            assert_ne!(error.span().source, SourceId::DUMMY);
+        }
     }
 }
 

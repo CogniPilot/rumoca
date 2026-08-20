@@ -126,7 +126,7 @@ use type_overrides::{
 };
 
 pub use connections::{ConnectionParams, extract_connections, filter_out_connections};
-pub use errors::{InstantiateError, InstantiateResult, InstantiationOutcome};
+pub use errors::{InstantiateError, InstantiateResult, InstantiateWarning, InstantiationOutcome};
 pub use inheritance::resolve_effective_components_for_eval;
 pub use inheritance::{
     InheritanceCache, InheritedContent, SubtypeCache, class_extends, class_extends_cached,

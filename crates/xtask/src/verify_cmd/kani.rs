@@ -2,19 +2,18 @@
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
+use syn::visit::Visit;
 
 const MANIFEST_PATH: &str = "infra/verification/kani-proofs.json";
 /// Bumped 2 -> 3 when `assumptions` became a mandatory per-proof field: a
 /// version-2 manifest omits it and is no longer admissible.
 const MANIFEST_SCHEMA_VERSION: u32 = 3;
 const REQUIRED_KANI_VERSION: &str = "0.67.0";
-const SOLVER_PACKAGE: &str = "rumoca-solver";
-const SOLVER_SOURCE_ROOT: &str = "crates/rumoca-solver/src";
 const SUMMARY_PATH: &str = "target/verification/kani-summary.json";
 const KNOWN_CLAIM_IDS: &[&str] = &[
     "FS-EQN-001",
@@ -55,6 +54,12 @@ struct KaniProof {
     covers: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiscoveredProof {
+    source: PathBuf,
+    unwind: Option<u32>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProofSelection {
@@ -89,7 +94,7 @@ pub(super) fn run(root: &Path, args: &VerifyKaniArgs) -> Result<()> {
     for proof in &selected.proofs {
         println!("  {} [{}]", proof.harness, proof.claims.join(", "));
     }
-    run_solver_proofs(root, &selected, manifest.proofs.len(), shard)
+    run_workspace_proofs(root, &selected, manifest.proofs.len(), shard)
 }
 
 fn select_manifest_shard(
@@ -140,11 +145,13 @@ fn validate_manifest(root: &Path, manifest: &KaniProofManifest) -> Result<()> {
         manifest.kani_version
     );
     ensure!(!manifest.proofs.is_empty(), "Kani proof manifest is empty");
+    let packages = workspace_packages(root)?;
+    let discovered = discover_workspace_proofs(root, &packages)?;
     let mut selectors = BTreeSet::new();
     for proof in &manifest.proofs {
         ensure!(
-            proof.package == SOLVER_PACKAGE,
-            "Kani proof package must be {SOLVER_PACKAGE}, found {}",
+            packages.contains_key(&proof.package),
+            "Kani proof names non-workspace package {}",
             proof.package
         );
         ensure!(!proof.harness.is_empty(), "Kani proof harness is empty");
@@ -184,38 +191,85 @@ fn validate_manifest(root: &Path, manifest: &KaniProofManifest) -> Result<()> {
             "Kani proof source does not exist: {}",
             proof.source
         );
-        let source_text = fs::read_to_string(root.join(source))
-            .with_context(|| format!("failed to read Kani proof source {}", proof.source))?;
-        let marker = format!("fn {}(", proof.harness);
-        let harness_offset = source_text.find(&marker).with_context(|| {
+        let package_root = packages
+            .get(&proof.package)
+            .expect("workspace membership checked above");
+        ensure!(
+            source.starts_with(package_root),
+            "Kani proof source {} is outside package {} at {}",
+            proof.source,
+            proof.package,
+            package_root.display()
+        );
+        let key = (proof.package.clone(), proof.harness.clone());
+        let declared = discovered.get(&key).with_context(|| {
             format!(
-                "Kani harness {} was not found in {}",
-                proof.harness, proof.source
+                "Kani harness {}::{} was not found by the Rust parser",
+                proof.package, proof.harness
             )
         })?;
-        let proof_offset = source_text[..harness_offset]
-            .rfind("#[kani::proof]")
-            .with_context(|| format!("{} is not a Kani proof harness", proof.harness))?;
         ensure!(
-            harness_offset - proof_offset < 256,
-            "{} is not the harness annotated by the preceding #[kani::proof]",
-            proof.harness
+            declared.source == source,
+            "Kani harness {}::{} is declared in {}, not {}",
+            proof.package,
+            proof.harness,
+            declared.source.display(),
+            proof.source
         );
-        validate_declared_bound(proof, &source_text[proof_offset..harness_offset])?;
+        validate_declared_bound(proof, declared.unwind)?;
     }
     let listed: BTreeSet<_> = manifest
         .proofs
         .iter()
-        .map(|proof| proof.harness.clone())
+        .map(|proof| (proof.package.clone(), proof.harness.clone()))
         .collect();
-    let discovered = discover_solver_proofs(root)?;
-    let missing: Vec<_> = discovered.difference(&listed).cloned().collect();
-    let extra: Vec<_> = listed.difference(&discovered).cloned().collect();
+    let discovered_keys = discovered.keys().cloned().collect::<BTreeSet<_>>();
+    let missing: Vec<_> = discovered_keys.difference(&listed).cloned().collect();
+    let extra: Vec<_> = listed.difference(&discovered_keys).cloned().collect();
     ensure!(
         missing.is_empty() && extra.is_empty(),
-        "Kani manifest inventory differs from {SOLVER_SOURCE_ROOT}: missing={missing:?}, extra={extra:?}"
+        "Kani manifest inventory differs from the workspace: missing={missing:?}, extra={extra:?}"
     );
     Ok(())
+}
+
+fn workspace_packages(root: &Path) -> Result<BTreeMap<String, std::path::PathBuf>> {
+    let workspace_manifest = fs::read_to_string(root.join("Cargo.toml"))
+        .context("failed to read workspace Cargo.toml for Kani discovery")?;
+    let workspace: toml::Value = toml::from_str(&workspace_manifest)
+        .context("failed to parse workspace Cargo.toml for Kani discovery")?;
+    let members = workspace
+        .get("workspace")
+        .and_then(|value| value.get("members"))
+        .and_then(toml::Value::as_array)
+        .context("workspace.members is missing from Cargo.toml")?;
+    let mut packages = BTreeMap::new();
+    for member in members {
+        let member = member
+            .as_str()
+            .context("workspace member must be a literal path")?;
+        ensure!(
+            !member.contains('*'),
+            "Kani discovery requires explicit workspace members, found glob `{member}`"
+        );
+        let manifest_path = root.join(member).join("Cargo.toml");
+        let manifest_text = fs::read_to_string(&manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+        let manifest: toml::Value = toml::from_str(&manifest_text)
+            .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+        let name = manifest
+            .get("package")
+            .and_then(|value| value.get("name"))
+            .and_then(toml::Value::as_str)
+            .with_context(|| format!("{} has no package.name", manifest_path.display()))?;
+        ensure!(
+            packages
+                .insert(name.to_string(), Path::new(member).to_path_buf())
+                .is_none(),
+            "duplicate workspace package `{name}`"
+        );
+    }
+    Ok(packages)
 }
 
 fn validate_selection(proof: &KaniProof) -> Result<()> {
@@ -260,7 +314,7 @@ fn validate_assumptions(proof: &KaniProof) -> Result<()> {
     Ok(())
 }
 
-fn validate_declared_bound(proof: &KaniProof, harness_attributes: &str) -> Result<()> {
+fn validate_declared_bound(proof: &KaniProof, declared_unwind: Option<u32>) -> Result<()> {
     match &proof.bound {
         ProofBound::Unwind { value, domain } => {
             ensure!(*value > 0, "{} has a zero unwind bound", proof.harness);
@@ -270,7 +324,7 @@ fn validate_declared_bound(proof: &KaniProof, harness_attributes: &str) -> Resul
                 proof.harness
             );
             ensure!(
-                harness_attributes.contains(&format!("#[kani::unwind({value})]")),
+                declared_unwind == Some(*value),
                 "{} manifest unwind {value} differs from its source attribute",
                 proof.harness
             );
@@ -282,7 +336,7 @@ fn validate_declared_bound(proof: &KaniProof, harness_attributes: &str) -> Resul
                 proof.harness
             );
             ensure!(
-                !harness_attributes.contains("#[kani::unwind("),
+                declared_unwind.is_none(),
                 "{} declares a finite domain but has an unwind attribute",
                 proof.harness
             );
@@ -291,49 +345,115 @@ fn validate_declared_bound(proof: &KaniProof, harness_attributes: &str) -> Resul
     Ok(())
 }
 
-fn discover_solver_proofs(root: &Path) -> Result<BTreeSet<String>> {
-    let mut harnesses = BTreeSet::new();
-    for entry in walkdir::WalkDir::new(root.join(SOLVER_SOURCE_ROOT)) {
-        let entry = entry.context("failed to walk solver sources for Kani proofs")?;
-        if !entry.file_type().is_file() || entry.path().extension().is_none_or(|ext| ext != "rs") {
-            continue;
-        }
-        let source = fs::read_to_string(entry.path())
-            .with_context(|| format!("failed to read {}", entry.path().display()))?;
-        for harness in discover_file_proofs(&source, entry.path())? {
-            ensure!(
-                harnesses.insert(harness.clone()),
-                "duplicate Kani harness name `{harness}` in {SOLVER_SOURCE_ROOT}"
+fn discover_workspace_proofs(
+    root: &Path,
+    packages: &BTreeMap<String, PathBuf>,
+) -> Result<BTreeMap<(String, String), DiscoveredProof>> {
+    let mut harnesses = BTreeMap::new();
+    for (package, package_root) in packages {
+        for entry in walkdir::WalkDir::new(root.join(package_root))
+            .into_iter()
+            .filter_entry(|entry| entry.file_name() != "target")
+        {
+            let entry = entry.with_context(|| {
+                format!("failed to walk {} for Kani proofs", package_root.display())
+            })?;
+            if !entry.file_type().is_file()
+                || entry.path().extension().is_none_or(|ext| ext != "rs")
+            {
+                continue;
+            }
+            let source = fs::read_to_string(entry.path())
+                .with_context(|| format!("failed to read {}", entry.path().display()))?;
+            let syntax = syn::parse_file(&source)
+                .with_context(|| format!("failed to parse {} as Rust", entry.path().display()))?;
+            let relative_source = package_root.join(
+                entry
+                    .path()
+                    .strip_prefix(root.join(package_root))
+                    .with_context(|| {
+                        format!("{} is outside its package root", entry.path().display())
+                    })?,
             );
+            for (harness, unwind) in discover_file_proofs(&syntax, entry.path())? {
+                ensure!(
+                    harnesses
+                        .insert(
+                            (package.clone(), harness.clone()),
+                            DiscoveredProof {
+                                source: relative_source.clone(),
+                                unwind,
+                            },
+                        )
+                        .is_none(),
+                    "duplicate Kani harness `{package}::{harness}`"
+                );
+            }
         }
     }
     Ok(harnesses)
 }
 
-fn discover_file_proofs(source: &str, path: &Path) -> Result<Vec<String>> {
-    let mut harnesses = Vec::new();
-    let mut proof_pending = false;
-    for line in source.lines().map(str::trim) {
-        if line == "#[kani::proof]" {
-            proof_pending = true;
-            continue;
-        }
-        if !proof_pending {
-            continue;
-        }
-        let Some(signature) = line.strip_prefix("fn ") else {
-            continue;
-        };
-        let harness = signature
-            .split_once('(')
-            .with_context(|| format!("malformed Kani harness in {}", path.display()))?
-            .0
-            .trim()
-            .to_string();
-        harnesses.push(harness);
-        proof_pending = false;
+fn discover_file_proofs(syntax: &syn::File, path: &Path) -> Result<Vec<(String, Option<u32>)>> {
+    let mut visitor = KaniProofVisitor::default();
+    visitor.visit_file(syntax);
+    if let Some(error) = visitor.error {
+        return Err(error).with_context(|| format!("invalid Kani attribute in {}", path.display()));
     }
-    Ok(harnesses)
+    Ok(visitor.proofs)
+}
+
+#[derive(Default)]
+struct KaniProofVisitor {
+    proofs: Vec<(String, Option<u32>)>,
+    error: Option<anyhow::Error>,
+}
+
+impl<'ast> Visit<'ast> for KaniProofVisitor {
+    fn visit_item_fn(&mut self, function: &'ast syn::ItemFn) {
+        if self.error.is_some() {
+            return;
+        }
+        let is_proof = function
+            .attrs
+            .iter()
+            .any(|attribute| is_kani_attribute(attribute, "proof"));
+        if is_proof {
+            match kani_unwind(&function.attrs) {
+                Ok(unwind) => self.proofs.push((function.sig.ident.to_string(), unwind)),
+                Err(error) => self.error = Some(error),
+            }
+        }
+        syn::visit::visit_item_fn(self, function);
+    }
+}
+
+fn kani_unwind(attributes: &[syn::Attribute]) -> Result<Option<u32>> {
+    let mut unwind = None;
+    for attribute in attributes {
+        if !is_kani_attribute(attribute, "unwind") {
+            continue;
+        }
+        let value = attribute
+            .parse_args::<syn::LitInt>()
+            .context("kani::unwind requires one integer literal")?
+            .base10_parse::<u32>()
+            .context("kani::unwind value is outside u32")?;
+        ensure!(
+            unwind.replace(value).is_none(),
+            "duplicate kani::unwind attribute"
+        );
+    }
+    Ok(unwind)
+}
+
+fn is_kani_attribute(attribute: &syn::Attribute, name: &str) -> bool {
+    let mut segments = attribute.path().segments.iter();
+    segments
+        .next()
+        .is_some_and(|segment| segment.ident == "kani")
+        && segments.next().is_some_and(|segment| segment.ident == name)
+        && segments.next().is_none()
 }
 
 #[derive(Clone, Copy, Default)]
@@ -347,19 +467,122 @@ struct ParsedHarnessResult {
 struct KaniRunSummary<'a> {
     parsed: &'a [ParsedHarnessResult],
     kani_summary: &'a [String],
-    package_elapsed_seconds: f64,
+    package_elapsed_seconds: &'a BTreeMap<String, f64>,
     command_success: bool,
     cover_obligations_satisfied: bool,
     manifest_proof_count: usize,
     shard: Option<(usize, usize)>,
 }
 
-fn run_solver_proofs(
+struct KaniPackageOutput {
+    combined: String,
+    elapsed_seconds: f64,
+    success: bool,
+}
+
+fn run_workspace_proofs(
     root: &Path,
     manifest: &KaniProofManifest,
     manifest_proof_count: usize,
     shard: Option<(usize, usize)>,
 ) -> Result<()> {
+    let packages = manifest
+        .proofs
+        .iter()
+        .map(|proof| proof.package.clone())
+        .collect::<BTreeSet<_>>();
+    let mut parsed = vec![ParsedHarnessResult::default(); manifest.proofs.len()];
+    let mut package_elapsed_seconds = BTreeMap::new();
+    let mut command_success = true;
+    let mut kani_summary = Vec::new();
+    for package in packages {
+        let package_manifest = KaniProofManifest {
+            schema_version: manifest.schema_version,
+            kani_version: manifest.kani_version.clone(),
+            proofs: manifest
+                .proofs
+                .iter()
+                .filter(|proof| proof.package == package)
+                .cloned()
+                .collect(),
+        };
+        let output = run_kani_package(root, &package, &package_manifest, shard.is_some())?;
+        let package_results = parse_kani_results(&output.combined, &package_manifest);
+        merge_package_results(manifest, &package_manifest, package_results, &mut parsed);
+        kani_summary.extend(
+            output
+                .combined
+                .lines()
+                .filter(|line| {
+                    line.contains("SUMMARY")
+                        || line.contains("VERIFICATION")
+                        || line.contains("Verification Time:")
+                })
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(|line| format!("[{package}] {line}")),
+        );
+        command_success &= output.success;
+        package_elapsed_seconds.insert(package, output.elapsed_seconds);
+    }
+    let cover_obligations_satisfied = manifest
+        .proofs
+        .iter()
+        .zip(&parsed)
+        .all(|(proof, result)| covers_match(proof.covers, *result));
+    write_summary(
+        root,
+        manifest,
+        KaniRunSummary {
+            parsed: &parsed,
+            kani_summary: &kani_summary,
+            package_elapsed_seconds: &package_elapsed_seconds,
+            command_success,
+            cover_obligations_satisfied,
+            manifest_proof_count,
+            shard,
+        },
+    )?;
+    ensure!(command_success, "one or more Kani proof packages failed");
+    for (proof, result) in manifest.proofs.iter().zip(&parsed) {
+        ensure!(
+            result.success == Some(true) && result.elapsed_seconds.is_some(),
+            "successful Kani output lacked a complete result for {}::{}",
+            proof.package,
+            proof.harness
+        );
+    }
+    ensure!(
+        cover_obligations_satisfied,
+        "one or more Kani reachability-cover obligations were not satisfied"
+    );
+    Ok(())
+}
+
+fn merge_package_results(
+    selected: &KaniProofManifest,
+    package: &KaniProofManifest,
+    results: Vec<ParsedHarnessResult>,
+    merged: &mut [ParsedHarnessResult],
+) {
+    for (proof, result) in package.proofs.iter().zip(results) {
+        let index = selected
+            .proofs
+            .iter()
+            .position(|candidate| {
+                candidate.package == proof.package && candidate.harness == proof.harness
+            })
+            .expect("package manifest is a subset of the selected manifest");
+        merged[index] = result;
+    }
+}
+
+fn run_kani_package(
+    root: &Path,
+    package: &str,
+    manifest: &KaniProofManifest,
+    select_harnesses: bool,
+) -> Result<KaniPackageOutput> {
     let mut command = Command::new("cargo");
     command
         // Kani 0.67's parallel text output does not identify the harness on
@@ -369,13 +592,13 @@ fn run_solver_proofs(
         .args([
             "kani",
             "--package",
-            SOLVER_PACKAGE,
+            package,
             "--no-default-features",
             "--jobs",
             "1",
         ])
         .current_dir(root);
-    if shard.is_some() {
+    if select_harnesses {
         for proof in &manifest.proofs {
             command.args(["--harness", &proof.harness]);
         }
@@ -384,8 +607,8 @@ fn run_solver_proofs(
     let started = Instant::now();
     let output = command
         .output()
-        .context("failed to execute the Kani proof package")?;
-    let package_elapsed_seconds = started.elapsed().as_secs_f64();
+        .with_context(|| format!("failed to execute Kani proof package {package}"))?;
+    let elapsed_seconds = started.elapsed().as_secs_f64();
     print!("{}", String::from_utf8_lossy(&output.stdout));
     eprint!("{}", String::from_utf8_lossy(&output.stderr));
     let combined = format!(
@@ -393,53 +616,11 @@ fn run_solver_proofs(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let parsed = parse_kani_results(&combined, manifest);
-    let cover_obligations_satisfied = manifest
-        .proofs
-        .iter()
-        .zip(&parsed)
-        .all(|(proof, result)| covers_match(proof.covers, *result));
-    let kani_summary: Vec<_> = combined
-        .lines()
-        .filter(|line| {
-            line.contains("SUMMARY")
-                || line.contains("VERIFICATION")
-                || line.contains("Verification Time:")
-        })
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect();
-    write_summary(
-        root,
-        manifest,
-        KaniRunSummary {
-            parsed: &parsed,
-            kani_summary: &kani_summary,
-            package_elapsed_seconds,
-            command_success: output.status.success(),
-            cover_obligations_satisfied,
-            manifest_proof_count,
-            shard,
-        },
-    )?;
-    ensure!(
-        output.status.success(),
-        "Kani proof package failed with status {}",
-        output.status
-    );
-    for (proof, result) in manifest.proofs.iter().zip(&parsed) {
-        ensure!(
-            result.success == Some(true) && result.elapsed_seconds.is_some(),
-            "successful Kani output lacked a complete result for {}",
-            proof.harness
-        );
-    }
-    ensure!(
-        cover_obligations_satisfied,
-        "one or more Kani reachability-cover obligations were not satisfied"
-    );
-    Ok(())
+    Ok(KaniPackageOutput {
+        combined,
+        elapsed_seconds,
+        success: output.status.success(),
+    })
 }
 
 fn parse_kani_results(output: &str, manifest: &KaniProofManifest) -> Vec<ParsedHarnessResult> {
@@ -501,13 +682,15 @@ fn write_summary(root: &Path, manifest: &KaniProofManifest, run: KaniRunSummary<
         .map(|(proof, result)| {
             let elapsed_seconds = result
                 .elapsed_seconds
-                .unwrap_or(run.package_elapsed_seconds);
+                .or_else(|| run.package_elapsed_seconds.get(&proof.package).copied())
+                .unwrap_or_default();
             let elapsed_source = if result.elapsed_seconds.is_some() {
                 "kani_harness"
             } else {
                 "package_total_fallback"
             };
             serde_json::json!({
+                "package": proof.package,
                 "harness": proof.harness,
                 "claims": proof.claims,
                 "selection": proof.selection,
@@ -531,10 +714,10 @@ fn write_summary(root: &Path, manifest: &KaniProofManifest, run: KaniRunSummary<
             .iter()
             .all(|result| result.success == Some(true) && result.elapsed_seconds.is_some());
     let summary = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "verifier": "kani",
         "kani_version": manifest.kani_version,
-        "package": SOLVER_PACKAGE,
+        "packages": run.package_elapsed_seconds.keys().collect::<Vec<_>>(),
         "manifest_proof_count": run.manifest_proof_count,
         "proof_count": proofs.len(),
         "shard": run.shard.map(|(index, count)| serde_json::json!({
@@ -581,14 +764,16 @@ fn verify_installed_version(root: &Path, expected: &str) -> Result<()> {
 mod tests {
     use super::{
         KaniProof, MANIFEST_SCHEMA_VERSION, ParsedHarnessResult, REQUIRED_KANI_VERSION,
-        covers_match, discover_solver_proofs, load_manifest, parse_kani_results,
-        select_manifest_shard, validate_assumptions, validate_manifest,
+        covers_match, discover_file_proofs, discover_workspace_proofs, load_manifest,
+        parse_kani_results, select_manifest_shard, validate_assumptions, validate_manifest,
+        workspace_packages,
     };
     use std::collections::BTreeSet;
+    use std::fs;
     use std::path::Path;
 
     #[test]
-    fn checked_in_manifest_names_the_required_solver_proofs() {
+    fn checked_in_manifest_names_every_workspace_proof() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let manifest = load_manifest(&root).expect("checked-in Kani manifest should be valid");
         assert_eq!(manifest.kani_version, REQUIRED_KANI_VERSION);
@@ -597,12 +782,69 @@ mod tests {
             .iter()
             .map(|proof| (proof.package.clone(), proof.harness.clone()))
             .collect();
-        let discovered = discover_solver_proofs(&root)
-            .expect("discover solver proofs")
-            .into_iter()
-            .map(|harness| ("rumoca-solver".to_string(), harness))
+        let packages = workspace_packages(&root).expect("discover workspace packages");
+        let discovered = discover_workspace_proofs(&root, &packages)
+            .expect("discover workspace proofs")
+            .into_keys()
             .collect::<BTreeSet<_>>();
-        assert_eq!(listed, discovered, "manifest must list every solver proof");
+        assert_eq!(
+            listed, discovered,
+            "manifest must list every workspace proof"
+        );
+    }
+
+    #[test]
+    fn workspace_discovery_keys_equal_harness_names_by_package() {
+        let temp = tempfile::tempdir().expect("temporary workspace");
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = ['alpha', 'beta']\nresolver = '2'\n",
+        )
+        .expect("write workspace manifest");
+        for (directory, package) in [("alpha", "proof-alpha"), ("beta", "proof-beta")] {
+            let root = temp.path().join(directory);
+            fs::create_dir_all(root.join("src")).expect("create package source");
+            fs::write(
+                root.join("Cargo.toml"),
+                format!("[package]\nname = '{package}'\nversion = '0.0.0'\nedition = '2024'\n"),
+            )
+            .expect("write package manifest");
+            fs::write(
+                root.join("src/lib.rs"),
+                "#[kani::proof]\nfn same_name() {}\n",
+            )
+            .expect("write proof source");
+        }
+        let packages = workspace_packages(temp.path()).expect("discover packages");
+        assert_eq!(packages.len(), 2);
+        assert_eq!(
+            discover_workspace_proofs(temp.path(), &packages)
+                .expect("discover proofs")
+                .into_keys()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                ("proof-alpha".to_string(), "same_name".to_string()),
+                ("proof-beta".to_string(), "same_name".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn rust_parser_discovers_attributes_independent_of_formatting() {
+        let source = r##"
+            const MISLEADING: &str = "#[kani::proof] fn not_a_proof() {}";
+            // #[kani::proof]
+            // fn commented_out() {}
+            #[kani :: proof]
+            #[kani :: unwind(7)]
+            fn actual_proof() {}
+        "##;
+        let syntax = syn::parse_file(source).expect("parse planted Rust source");
+        assert_eq!(
+            discover_file_proofs(&syntax, Path::new("planted.rs"))
+                .expect("discover syntax-owned proof inventory"),
+            vec![("actual_proof".to_string(), Some(7))]
+        );
     }
 
     #[test]

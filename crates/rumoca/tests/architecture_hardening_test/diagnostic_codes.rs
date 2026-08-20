@@ -36,7 +36,7 @@ const MANDATED_PHASE_ERROR_IMPLS: &[(&str, &[&str])] = &[
     ),
     (
         "crates/rumoca-phase-instantiate/src/errors.rs",
-        &["InstantiateError"],
+        &["InstantiateError", "InstantiateWarning"],
     ),
     (
         "crates/rumoca-phase-flatten/src/errors.rs",
@@ -48,6 +48,10 @@ const MANDATED_PHASE_ERROR_IMPLS: &[(&str, &[&str])] = &[
         &["StructuralError"],
     ),
     ("crates/rumoca-phase-solve/src/error.rs", &["LowerError"]),
+    (
+        "crates/rumoca-phase-galec/src/diagnostic.rs",
+        &["GalecTargetError"],
+    ),
 ];
 
 #[test]

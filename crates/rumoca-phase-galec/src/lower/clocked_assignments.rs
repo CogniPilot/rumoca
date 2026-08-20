@@ -716,7 +716,7 @@ fn whole_array_definition_source<'dae>(
     // qualifies. Everything computed — a negation, a sum, a conditional, an
     // array constructor, an inlined causal local — answers `None` here and
     // keeps its coordinate projection.
-    lowerer.direct_aggregate_function_argument(value)
+    lowerer.direct_whole_aggregate_reference(value)
 }
 
 fn merge_discrete_real_assignment<'dae>(

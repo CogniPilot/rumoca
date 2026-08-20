@@ -69,16 +69,23 @@ fn visible_values_mixed_plan_keeps_expression_rows() {
 
 #[test]
 fn visible_value_plan_deduplicates_equal_expression_rows() {
+    let mut different_sum = positive_sum_residual_row();
+    let solve::LinearOp::LoadY { index, .. } = &mut different_sum[0] else {
+        unreachable!("sum fixture begins with a state load")
+    };
+    *index = 2;
     let model = solve::SolveModel {
         visible_names: vec![
             "y2".to_string(),
             "computed_a".to_string(),
+            "computed_different".to_string(),
             "computed_b".to_string(),
         ],
         visible_value_rows: spanned_block(
             vec![
                 direct_y_visible_value_row(1),
                 positive_sum_residual_row(),
+                different_sum,
                 positive_sum_residual_row(),
             ],
             "visible_duplicate_expressions.mo",
@@ -91,16 +98,18 @@ fn visible_value_plan_deduplicates_equal_expression_rows() {
         .as_ref()
         .expect("visible value plan should build");
 
-    assert_eq!(plan.expression_rows, vec![1]);
-    assert_eq!(plan.expression_groups.len(), 1);
+    assert_eq!(plan.expression_rows, vec![1, 2]);
+    assert_eq!(plan.expression_groups.len(), 2);
     assert_eq!(plan.expression_groups[0].row_index, 1);
-    assert_eq!(plan.expression_groups[0].output_indices, vec![1, 2]);
+    assert_eq!(plan.expression_groups[0].output_indices, vec![1, 3]);
+    assert_eq!(plan.expression_groups[1].row_index, 2);
+    assert_eq!(plan.expression_groups[1].output_indices, vec![2]);
 
     let values = runtime
-        .visible_values(&[10.0, 20.0], &[], 0.0)
+        .visible_values(&[10.0, 20.0, 40.0], &[], 0.0)
         .expect("deduplicated visible values should evaluate");
 
-    assert_eq!(values, vec![20.0, 30.0, 30.0]);
+    assert_eq!(values, vec![20.0, 30.0, 60.0, 30.0]);
 }
 
 #[test]
