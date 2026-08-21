@@ -239,7 +239,7 @@
             inherit src;
             cargoRoot = ".";
             name = "rumoca-${rumocaVersion}-cargo-vendor";
-            hash = "sha256-tS1YJQiDgGITMPLDj7d560HNZfLDyWwgFcYLNjVWy1k=";
+            hash = "sha256-6IrOS6ihidQlejnWKFSWUN84NKamLRGgkrGEFY4q9hI=";
           };
           nativeBuildInputs = [
             rustToolchain
