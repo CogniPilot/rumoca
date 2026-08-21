@@ -239,7 +239,7 @@ fn declaration_only_public_surfaces(root: &Path) -> BTreeSet<(PathBuf, String)> 
 
     let mut declarations = PublicDeclarations::default();
     for path in &crate_rust_files {
-        let source = fs::read_to_string(&path).expect("read Rust source for public API inventory");
+        let source = fs::read_to_string(path).expect("read Rust source for public API inventory");
         let file = syn::parse_file(&source).unwrap_or_else(|error| {
             panic!("parse {} for public API inventory: {error}", path.display())
         });
