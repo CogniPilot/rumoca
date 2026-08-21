@@ -2005,7 +2005,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         }
     }
 
-    fn integer_expression_bounds(&self, expression: &gast::Expression) -> Option<(i64, i64)> {
+    pub(super) fn integer_expression_bounds(&self, expression: &gast::Expression) -> Option<(i64, i64)> {
         match expression {
             gast::Expression::Integer(value) => Some((*value, *value)),
             gast::Expression::Paren(value) => self.integer_expression_bounds(value),
@@ -2028,6 +2028,11 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                     .rev()
                     .find(|bound| bound.name.lexeme() == part.name.lexeme())
                     .map(|bound| (bound.minimum, bound.maximum))
+                    .or_else(|| {
+                        self.local_integer_bounds
+                            .get(part.name.lexeme())
+                            .copied()
+                    })
             }
             gast::Expression::Ref(gast::Reference::State(parts)) if parts.len() == 1 => {
                 let part = &parts[0];

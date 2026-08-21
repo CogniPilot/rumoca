@@ -403,6 +403,58 @@ fn primitive_declaration(
     })
 }
 
+/// Names of the function locals a statement list may assign, including inside
+/// nested loops and conditional groups.
+///
+/// Structural only: it reads targets, never expressions, so it is cheap enough
+/// to run at each block boundary and cannot depend on lowering having happened.
+fn assigned_local_names<'dae>(
+    view: dae::DaeView<'dae>,
+    statements: dae::FunctionStatements<'dae>,
+) -> HashSet<String> {
+    let mut assigned = HashSet::new();
+    collect_assigned_local_names(view, statements, &mut assigned);
+    assigned
+}
+
+fn collect_assigned_local_names<'dae>(
+    view: dae::DaeView<'dae>,
+    statements: dae::FunctionStatements<'dae>,
+    assigned: &mut HashSet<String>,
+) {
+    for statement in statements {
+        match statement {
+            dae::FunctionStatementView::Assignment { definition } => {
+                insert_definition_target(view, definition, assigned);
+            }
+            dae::FunctionStatementView::AssignmentGroup { definitions, .. } => {
+                for definition in definitions.iter() {
+                    insert_definition_target(view, definition, assigned);
+                }
+            }
+            dae::FunctionStatementView::For {
+                statements: body, ..
+            } => collect_assigned_local_names(view, body, assigned),
+            dae::FunctionStatementView::Assertion { .. } => {}
+        }
+    }
+}
+
+fn insert_definition_target<'dae>(
+    view: dae::DaeView<'dae>,
+    definition: dae::FunctionDefinitionView<'dae>,
+    assigned: &mut HashSet<String>,
+) {
+    if let Some(target) = view
+        .function(definition.id().function())
+        .expect("checked function identity resolves")
+        .values()
+        .find(|value| value.id() == definition.target())
+    {
+        assigned.insert(target.name().as_str().to_owned());
+    }
+}
+
 fn lower_function_statement<'a, 'dae>(
     view: dae::DaeView<'dae>,
     statement: dae::FunctionStatementView<'dae>,
@@ -426,6 +478,9 @@ fn lower_function_statement<'a, 'dae>(
                     lowerer,
                     statements,
                 )?;
+                // Same reason as a conditional value assignment: the group may
+                // not run, so nothing it writes is proven afterwards.
+                lowerer.forget_local_integer_bounds();
             } else {
                 for definition in definitions.iter() {
                     lower_function_assignment(view, definition, lowerer, statements)?;
@@ -446,7 +501,13 @@ fn lower_function_statement<'a, 'dae>(
             statements: body,
             provenance,
         } => {
+            // A range proven before the loop does not hold inside it, and one
+            // proven inside does not survive a loop that may not run, but only
+            // for the locals the body actually writes.
+            let assigned = assigned_local_names(view, body.clone());
+            lowerer.forget_assigned_local_integer_bounds(&assigned);
             lower_function_for(view, fold, body, provenance.span(), lowerer, statements)?;
+            lowerer.forget_assigned_local_integer_bounds(&assigned);
             lowerer.finish_statement_group();
         }
     }
@@ -653,6 +714,9 @@ fn lower_function_value_assignment<'a, 'dae>(
         lower_conditional_function_value_assignment(
             view, target, operands, span, lowerer, statements,
         )?;
+        // A conditional assignment may leave the previous value in place, so
+        // neither the new range nor the old one is proven after it.
+        lowerer.forget_local_integer_bounds();
         if !target_type.is_record() {
             lowerer.remember_primitive_assignment(expression.index(), value_name(target)?);
         }
@@ -1081,6 +1145,15 @@ fn lower_primitive_function_assignment<'a, 'dae>(
     let target_scalar = scalar_type(target_type.scalar_type(), target.name().as_str(), span)?;
     let value = lowerer.lower_aggregate_expression_as(expression, target_scalar)?;
     statements.extend(lowerer.drain_prefix_statements());
+    // Carry the assigned range forward so a later subscript by this local can
+    // be proven in bounds. `pivotRow := n - reverseIndex + 1` is the shape that
+    // matters: an index derived from a loop binder, then used to subscript in
+    // the same body. Only straight-line assignments record anything, and the
+    // record is dropped at every block boundary, so what is remembered is
+    // always an assignment that re-executes before each of its readers.
+    if target_scalar == gast::ScalarType::Integer && target_type.dimensions().is_empty() {
+        lowerer.remember_local_integer_bounds(target_name.clone(), &value);
+    }
     statements.push(gast::Spanned::new(
         gast::Statement::Assignment {
             target: gast::Reference::local(target_name),
