@@ -33,6 +33,7 @@ tests, and templates already do.
 | D9 | Embedded-C sequencing | GAL-024: non-eFMI C export after checked projection; PC container after AC packaging. |
 | D10 | XSD vendoring | Asset trees owned and named by the eFMI target directories; builtin discovery embeds arbitrary declared target assets recursively, while external targets resolve them relative to their own directory (GAL-008/GAL-023). |
 | D11 | GALEC AST source spans | GALEC AST nodes carry `rumoca_core::Span` (the *foundation* crate, not an IR stage — GAL-001/GAL-010 intent holds). Parsed nodes span `.alg` bytes; generated nodes require typed source/generated provenance and the nearest responsible Modelica span. Production `Span::DUMMY` is prohibited. Spans are provenance, not identity (round-trip equality is span-insensitive). |
+| D12 | C working-memory ownership | The generated header reports the checked slot-storage budget and exposes the concrete instance/scratch types for `sizeof`-based target accounting. Working slots are execution storage, not GALEC LogicalData, so Production Code manifests do not map them as block variables (GAL-039). |
 
 ### 2. Language Traps (T1–T14)
 
@@ -57,6 +58,17 @@ governing rules.
 | T12 | `not` requires parenthesized argument; if-expressions self-parenthesized, mandatory `else`, no stateful calls inside; a stateful call has no sibling calls/state-refs in its expression | Checked construction + template rules |
 | T13 | ASCII-letter-first identifiers, not keywords/reserved, no `__` prefix, no builtin/Appendix C collisions; quoted identifiers `'a.b[2].c'` (literal positive indices, no whitespace) are the traceability device | Prefer quoted identifiers (GAL-015) |
 | T14 | Division by zero / Real overflow silently IEEE-754 (±inf); only `integer()` and the three linear-solver builtins signal | Don't invent error checks; don't omit the four that signal |
+
+### 3. Rule Rationale (SPEC_0034 GAL-016, GAL-024)
+
+**GAL-016.** GALEC has no `previous()`/`sample()` (T2); `pre(x)` becomes
+protected state `'previous(x)'` committed at end of DoStep; the sample period is a
+`constant` (seconds) named by the XSD-strict manifest `<Clock>` (§3.1.2).
+
+**GAL-024.** The manifest LogicalData mapping (every interface variable and
+BlockMethod), not C naming, is the conformance surface (ch. 5); PC-only is
+non-conformant (§2.2).
+
 
 ## References
 

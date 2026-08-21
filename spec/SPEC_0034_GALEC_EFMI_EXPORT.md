@@ -83,15 +83,10 @@ rumoca -> generic artifact/checksum/container graph + vendored schemas
 | GAL-036 | One aggregate source call becomes one action with exact result cardinality and semantic identities. | GALEC → Solve refinement | Preserve readable dataflow. |
 | GAL-037 | C renders checked aggregate operations without constructing, scalarizing, fusing, or rescheduling them. | Solve view + templates | Bound source growth. |
 | GAL-038 | Independent GALEC, Solve, and C execution are compared over all lifecycle-visible effects. | evaluator/codegen tests | Avoid self-confirming defects. |
-| GAL-039 | Generated C working memory is owned by the caller-allocated block instance: distinct state objects have disjoint working storage, and no mutable file-scope scratch arena exists. The generated header reports the checked slot-storage budget and exposes the concrete instance/scratch types for `sizeof`-based target accounting. Working slots are execution storage, not GALEC LogicalData, so Production Code manifests do not map them as block variables. | checked view + C templates | Reentrancy and RAM admission must be construction properties, not deployment assumptions. |
+| GAL-039 | Generated C working memory is owned by the caller-allocated block instance: distinct state objects have disjoint working storage, and no mutable file-scope scratch arena exists. Header reporting and manifest treatment follow [SPEC_0042](SPEC_0042_GALEC_LANGUAGE_CATALOG.md) §1 D12. | checked view + C templates | Reentrancy and RAM admission must be construction properties, not deployment assumptions. |
 
-**Why (GAL-016):** GALEC has no `previous()`/`sample()` (T2); `pre(x)` becomes
-protected state `'previous(x)'` committed at end of DoStep; the sample period is a
-`constant` (seconds) named by the XSD-strict manifest `<Clock>` (§3.1.2).
-
-**Why (GAL-024):** The manifest LogicalData mapping (every interface variable and
-BlockMethod), not C naming, is the conformance surface (ch. 5); PC-only is
-non-conformant (§2.2).
+Rationale for GAL-016 and GAL-024 is recorded in
+[SPEC_0042](SPEC_0042_GALEC_LANGUAGE_CATALOG.md) §3.
 
 ### Resolved Decisions (Phase 1 gates)
 
