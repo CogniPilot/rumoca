@@ -425,7 +425,10 @@ Author reminder: route formatting/lint through tool crates, compile context thro
         );
     }
 
-    for banned in ["rumoca-phase-parse", "rumoca-ir-ast", "rumoca-core"] {
+    // rumoca-core is deliberately absent from this list. It is the Tier 1 owner of
+    // Span/SourceId/diagnostics, and SPEC_0029 §8 requires downstream crates to import
+    // the owning crate directly rather than route through an intermediate.
+    for banned in ["rumoca-phase-parse", "rumoca-ir-ast"] {
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
             "rumoca-tool-lsp must not depend directly on {banned}; \
@@ -1589,12 +1592,10 @@ Author reminder: compile/session and runtime ownership should be explicit."
         );
     }
 
-    for banned in [
-        "rumoca",
-        "rumoca-ir-dae",
-        "rumoca-phase-solve",
-        "rumoca-core",
-    ] {
+    // rumoca-core is deliberately absent from this list. It is the Tier 1 owner of
+    // Span/SourceId/diagnostics, and SPEC_0029 §8 requires downstream crates to import
+    // the owning crate directly rather than route through an intermediate.
+    for banned in ["rumoca", "rumoca-ir-dae", "rumoca-phase-solve"] {
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
             "rumoca-test-msl must not depend directly on {banned} in [dependencies]; \
@@ -1605,11 +1606,6 @@ Author reminder: use rumoca-compile::compile plus explicit runtime crates."
         !section_contains_dependency(&content, "dev-dependencies", "rumoca"),
         "rumoca-test-msl must not depend directly on rumoca in [dev-dependencies]; \
 Author reminder: use rumoca-compile facade APIs."
-    );
-    assert!(
-        !section_contains_dependency(&content, "dev-dependencies", "rumoca-core"),
-        "rumoca-test-msl must not depend directly on rumoca-core in [dev-dependencies]; \
-Author reminder: use rumoca-compile::compile::core facade APIs."
     );
     assert!(
         !section_contains_dependency(&content, "dev-dependencies", "rumoca-phase-codegen"),

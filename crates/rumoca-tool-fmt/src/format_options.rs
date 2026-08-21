@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 pub const CONFIG_FILE_NAMES: &[&str] = &[".rumoca_fmt.toml", "rumoca_fmt.toml"];
 
 /// Error that can occur when loading formatter configuration.
-pub type ConfigError = rumoca_core::tool_config::ToolConfigError<toml::de::Error>;
+///
+/// Local alias only: SPEC_0029 §8 keeps `ToolConfigError` reachable solely from
+/// its owner, so callers that inspect the error import `rumoca_core` directly.
+type ConfigError = rumoca_core::tool_config::ToolConfigError<toml::de::Error>;
 
 /// Find a configuration file by searching the given directory and its parents.
 pub fn find_config(start_dir: &Path) -> Option<PathBuf> {
