@@ -126,6 +126,16 @@ fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Get the build identity shared with the `rumoca build-info` CLI subcommand.
+///
+/// Returns `None` when the build could not determine it. A caller comparing
+/// this wheel against a CLI binary must treat `None` as "cannot verify": two
+/// `None`s are not evidence that the two artifacts agree.
+#[pyfunction]
+fn build_identity() -> Option<String> {
+    rumoca_core::build_identity().map(str::to_owned)
+}
+
 /// Format Modelica source code.
 #[pyfunction(name = "format")]
 #[pyo3(signature = (source, *, filename=None))]
@@ -572,6 +582,7 @@ pub(crate) fn render_target_files(
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // module-level functions
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(build_identity, m)?)?;
     m.add_function(wrap_pyfunction!(format_source, m)?)?;
     m.add_function(wrap_pyfunction!(targets_fn, m)?)?;
     m.add_function(wrap_pyfunction!(solvers_fn, m)?)?;

@@ -37,6 +37,20 @@ use std::path::PathBuf;
 // IR vocabulary and foundation primitives (DefId, Span, Expression, ...).
 // Previously lived in `rumoca-ir-core`; merged here per SPEC_0029 §3a.
 mod clock_lattice;
+/// The identity of the source state this crate was built from.
+///
+/// `None` when the build could not determine it. Callers comparing two
+/// artifacts MUST treat `None` as "cannot verify" and skip the comparison; two
+/// `None`s are not evidence that the builds agree.
+///
+/// Pairs with the package version: the version says which release, this says
+/// which build of it. Two artifacts reporting the same version and different
+/// identities were built from different source states.
+#[must_use]
+pub fn build_identity() -> Option<&'static str> {
+    option_env!("RUMOCA_BUILD_IDENTITY")
+}
+
 pub mod dependency_graph;
 mod effective_type;
 mod expression_rewriter;

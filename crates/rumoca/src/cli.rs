@@ -162,6 +162,11 @@ pub enum Commands {
     Targets(TargetsArgs),
     /// Inspect or prune the shared Rumoca cache
     Cache(CacheArgs),
+    /// Print the build identity shared with the Python binding
+    ///
+    /// Exits non-zero when the identity is unavailable, so a caller comparing
+    /// two artifacts skips the check rather than comparing placeholders.
+    BuildInfo,
 }
 
 #[derive(Args, Debug)]
@@ -684,6 +689,7 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Commands::Targets(args) => targets_cmd::run(args.json),
         Commands::Cache(args) => cache_cmd::run_cache(args),
+        Commands::BuildInfo => run_build_info(),
     }
 }
 
@@ -1501,6 +1507,22 @@ fn run_lint(args: LintArgs) -> Result<()> {
     if error_count > 0 {
         std::process::exit(1);
     }
+    Ok(())
+}
+
+/// Print the build identity this binary and the Python binding share.
+///
+/// The identity is deliberately absent rather than a placeholder when the build
+/// could not determine it, so a consumer comparing the two artifacts skips the
+/// check instead of comparing two equal placeholders and concluding they match.
+fn run_build_info() -> Result<()> {
+    let Some(identity) = rumoca_core::build_identity() else {
+        anyhow::bail!(
+            "build identity unavailable: this binary was built without commit \
+             information, so it cannot be compared against another artifact"
+        );
+    };
+    println!("{identity}");
     Ok(())
 }
 
