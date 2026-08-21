@@ -128,15 +128,21 @@ fn inline_loop_local_prefixes_in_scope(
 /// *later* reader of the value. A scalar that is read on such a path before it
 /// is written again is loop-carried, and deleting its definition would silently
 /// feed every iteration the value the loop was entered with.
+///
+/// Every re-entry point is its own path out of the definition, so each one is
+/// asked separately. Chaining them into a single sequential walk would let the
+/// nearest body's write settle the value that an *enclosing* body reads: an
+/// enclosing loop re-enters after this loop has been left, without re-running
+/// this body's prefix, so that write never happens on the path in question.
+/// Only within one body does an earlier write kill the incoming value.
 fn definition_escapes_back_edge(
     body_prefix: &[rumoca_core::Statement],
     back_edges: &[&[rumoca_core::Statement]],
     target: &VarName,
 ) -> bool {
-    let mut segments = Vec::with_capacity(back_edges.len() + 1);
-    segments.push(body_prefix);
-    segments.extend_from_slice(back_edges);
-    super::statement_segments_read_incoming_name(&segments, target)
+    std::iter::once(body_prefix)
+        .chain(back_edges.iter().copied())
+        .any(|segment| super::statements_read_incoming_name(segment, target))
 }
 
 fn inline_one_loop_local_prefix(

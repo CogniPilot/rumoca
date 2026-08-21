@@ -1,5 +1,7 @@
 mod accumulator_reductions;
 mod dependent_domains;
+#[cfg(test)]
+mod loop_carry_tests;
 mod loop_local_substitution;
 
 use accumulator_reductions::compact_accumulator_loops;
@@ -866,9 +868,22 @@ fn inline_dead_scalars_in_statement(
                 loop_local_substitution::independent_loop_domain(indices, enclosing_binders);
             let mut body_binders = enclosing_binders.clone();
             body_binders.extend(indices.iter().map(|index| VarName::new(&index.ident)));
+            // The back edge makes the body its own follower: a value the body
+            // reads before writing is live out of the last statement, so it
+            // must not be treated as a dead straight-line scratch definition.
+            //
+            // It enters the follower chain as the loop, never as a bare
+            // statement list. The back edge and the loop-exit edge are
+            // alternative successors of the body's last statement, so a name
+            // is live there when *either* observes it. Splicing the raw body
+            // in would compose the two in sequence instead, and the body's own
+            // write would then hide every read after the loop, deleting the
+            // final store of an overwritten loop carry. Entering as the loop
+            // keeps that read visible: a compact domain may run zero times, so
+            // a loop never settles a value for its own successor.
             let mut body_following: Vec<&[rumoca_core::Statement]> =
                 Vec::with_capacity(following.len() + 1);
-            body_following.push(equations.as_slice());
+            body_following.push(std::slice::from_ref(statement));
             body_following.extend_from_slice(following);
             let equations = inline_dead_loop_locals_followed_by(
                 equations,
@@ -878,15 +893,16 @@ fn inline_dead_scalars_in_statement(
                 preserve_shared,
                 &body_binders,
             );
-            // The back edge makes the body its own follower: a value the body
-            // reads before writing is live out of the last statement, so it
-            // must not be treated as a dead straight-line scratch definition.
+            let carried = statement_with_equations(indices, equations, *span);
+            let rumoca_core::Statement::For { equations, .. } = &carried else {
+                unreachable!("a loop rebuilt from its own indices is still a loop")
+            };
             let mut carried_following: Vec<&[rumoca_core::Statement]> =
                 Vec::with_capacity(following.len() + 1);
-            carried_following.push(equations.as_slice());
+            carried_following.push(std::slice::from_ref(&carried));
             carried_following.extend_from_slice(following);
             let inlined = inline_straight_line_scalar_definitions(
-                &equations,
+                equations,
                 &carried_following,
                 scalar_locals,
                 preserve_shared,
