@@ -83,6 +83,11 @@ struct ProjectionParts {
     protected: Vec<gast::ProtectedEntity>,
     startup: Vec<gast::Spanned<gast::Statement>>,
     recalibrate: Vec<gast::Spanned<gast::Statement>>,
+    /// Locals of the dependent-parameter statements, which Startup and
+    /// Recalibrate both run and therefore both declare.
+    startup_locals: Vec<gast::VariableDeclaration>,
+    /// User functions reached from dependent-parameter bindings.
+    startup_called_user_functions: HashSet<u32>,
     do_step_locals: Vec<gast::VariableDeclaration>,
 }
 
@@ -152,6 +157,7 @@ fn lower_view<'dae>(
     parts.do_step_locals.extend(clocked.locals);
     let mut do_step = clocked.statements;
     let mut called_user_functions = clocked.called_user_functions;
+    called_user_functions.extend(parts.startup_called_user_functions.iter().copied());
     called_user_functions.extend(
         causal_outputs::append_causal_assignments(
             view,
@@ -177,7 +183,11 @@ fn lower_view<'dae>(
         .chain(parts.interface_parameters)
         .collect();
     block.protected = parts.protected;
+    // Startup and Recalibrate run the same dependent-parameter statements, so
+    // they declare the same locals.
+    block.startup.locals = parts.startup_locals.clone();
     block.startup.statements = parts.startup;
+    block.recalibrate.locals = parts.startup_locals;
     block.recalibrate.statements = parts.recalibrate;
     block.protected_functions =
         user_functions::lower_reachable(view, definitions, called_user_functions)
@@ -208,6 +218,8 @@ fn build_variable_parts<'dae>(
         protected: Vec::new(),
         startup: Vec::new(),
         recalibrate: Vec::new(),
+        startup_locals: Vec::new(),
+        startup_called_user_functions: HashSet::new(),
         do_step_locals: Vec::new(),
     };
     for variable in classified.as_slice() {
@@ -219,10 +231,14 @@ fn build_variable_parts<'dae>(
                 detail: format!("dependent parameter variable #{id} is absent from classification"),
             }]
         })?;
-        let assignment =
+        let lowered =
             dependent_assignment(view, definitions, variable, by_id, pre_names).map_err(single)?;
-        parts.startup.push(assignment.clone());
-        parts.recalibrate.push(assignment);
+        parts.startup.extend(lowered.statements.iter().cloned());
+        parts.recalibrate.extend(lowered.statements);
+        parts.startup_locals.extend(lowered.locals);
+        parts
+            .startup_called_user_functions
+            .extend(lowered.called_user_functions);
     }
     append_previous_states(
         view,
@@ -729,13 +745,22 @@ fn initial_assignment(
     )
 }
 
+/// Lower one dependent parameter binding into the statements that establish it.
+///
+/// A dependent parameter may be bound by a call to a function that asserts on
+/// its arguments, which is how a model states a precondition on geometry or
+/// tuning that only holds for admissible parameter values. Those assertions are
+/// captured here and emitted ahead of the assignment, so an inadmissible
+/// parameter raises the eFMI error signal from `Startup`/`Recalibrate` instead
+/// of being rejected at projection time. The returned vector is therefore the
+/// assertion guards followed by the assignment itself.
 fn dependent_assignment<'dae>(
     view: dae::DaeView<'dae>,
     definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     classified: &ClassifiedVariable<'dae>,
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
-) -> Result<gast::Spanned<gast::Statement>, GalecTargetError> {
+) -> Result<DependentParameterLowering, GalecTargetError> {
     let expression = classified
         .variable
         .binding()
@@ -746,7 +771,15 @@ fn dependent_assignment<'dae>(
             reason: "dependent parameter has no defining expression".to_owned(),
             span: Some(classified.variable.declaration().span()),
         })?;
-    let mut lowerer = ExpressionLowerer::new(view, definitions, by_id, pre_names);
+    // Materialize calls instead of inlining them. A dependent parameter may be
+    // bound by a real algorithm: the rotor allocation matrix of a multirotor is
+    // a dense solve of the rotor effectiveness tensor. Inlining unrolls that
+    // solve into one expression, and because each array update names the array
+    // the previous update produced, the expression grows multiplicatively with
+    // the number of updates rather than additively. Emitting a call keeps
+    // Startup proportional to the function, and keeps the function's own
+    // locals, which is also what makes the generated C worth embedding.
+    let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names);
     let node = view
         .expression(expression)
         .expect("checked dependent-parameter expression resolves");
@@ -771,7 +804,8 @@ fn dependent_assignment<'dae>(
     } else {
         lowerer.lower_aggregate_expression_as(expression, classified.scalar_type)?
     };
-    Ok(gast::Spanned::new(
+    let mut statements = lowerer.take_prefix_statements();
+    statements.push(gast::Spanned::new(
         gast::Statement::Assignment {
             target: state_reference(
                 classified.name.clone(),
@@ -780,7 +814,19 @@ fn dependent_assignment<'dae>(
             value,
         },
         expression_span(view, expression),
-    ))
+    ));
+    Ok(DependentParameterLowering {
+        statements,
+        locals: lowerer.take_temporary_locals(),
+        called_user_functions: lowerer.take_called_user_functions(),
+    })
+}
+
+/// One dependent parameter's contribution to `Startup` and `Recalibrate`.
+struct DependentParameterLowering {
+    statements: Vec<gast::Spanned<gast::Statement>>,
+    locals: Vec<gast::VariableDeclaration>,
+    called_user_functions: HashSet<u32>,
 }
 
 fn build_pre_names<'dae>(
@@ -1039,6 +1085,11 @@ struct ExpressionLowerer<'a, 'dae> {
     materialized_function_values: HashMap<MaterializedFunctionValueKey, gast::Name>,
     materialized_function_calls: HashMap<MaterializedFunctionCallKey, Vec<gast::Name>>,
     materialized_shared_record_fields: HashMap<(u32, usize), gast::Expression>,
+    /// Index-list entries of an array-update target already bound to a local.
+    ///
+    /// Keyed by the entry expression so every coordinate of the same update,
+    /// and every update reading the array it produces, shares one evaluation.
+    array_update_index_locals: HashMap<u32, gast::Name>,
     /// Primitive expression values already committed to a function local.
     ///
     /// Function construction returns the current RHS expression for a later
@@ -1259,6 +1310,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             materialized_function_values: HashMap::new(),
             materialized_function_calls: HashMap::new(),
             materialized_shared_record_fields: HashMap::new(),
+            array_update_index_locals: HashMap::new(),
             assigned_primitive_expressions: HashMap::new(),
             called_user_functions: HashSet::new(),
             function_scope: None,
@@ -1355,6 +1407,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         self.materialized_function_values.clear();
         self.materialized_function_calls.clear();
         self.materialized_shared_record_fields.clear();
+        self.array_update_index_locals.clear();
         self.function_fold_output_cache.clear();
         self.scalar_projection_cache.clear();
         self.seen_assertion_calls.clear();

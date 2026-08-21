@@ -159,8 +159,18 @@ fn rank_two_dependent_parameter_preserves_one_checked_whole_array_move() {
         );
 
         let previous = HashMap::new();
-        let statement =
+        let mut lowered =
             dependent_assignment(view, &definitions, guidance, &by_id, &previous).unwrap();
+        assert!(
+            lowered.locals.is_empty(),
+            "a whole-array copy needs no local of its own"
+        );
+        assert_eq!(
+            lowered.statements.len(),
+            1,
+            "dependent parameter without assertions or materialized calls is one assignment"
+        );
+        let statement = lowered.statements.pop().expect("one statement");
         let gast::Statement::Assignment { target, value } = statement.node else {
             panic!("dependent parameter must lower to one assignment")
         };
