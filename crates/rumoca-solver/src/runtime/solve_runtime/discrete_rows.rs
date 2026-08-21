@@ -807,6 +807,16 @@ impl SolveRuntime {
 
 /// The periodic clocks the issued clock-partition order carries, in issued
 /// order and deduplicated.
+/// Append `clock` to `clocks` if it is not already present.
+///
+/// The partition order is small and already deterministic, so a linear check
+/// keeps first-seen order without a second index.
+fn push_unique_clock(clocks: &mut Vec<solve::PeriodicClockId>, clock: solve::PeriodicClockId) {
+    if !clocks.contains(&clock) {
+        clocks.push(clock);
+    }
+}
+
 pub(super) fn clock_partition_clocks(
     discrete: &solve::DiscreteSolveSystem,
 ) -> Vec<solve::PeriodicClockId> {
@@ -836,9 +846,7 @@ pub(super) fn clock_partition_clocks(
             && let Some(transaction) = discrete.event_transactions.get(program_index)
         {
             for &clock in transaction.clock_owners() {
-                if !clocks.contains(&clock) {
-                    clocks.push(clock);
-                }
+                push_unique_clock(&mut clocks, clock);
             }
         }
     }

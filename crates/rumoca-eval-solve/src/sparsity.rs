@@ -35,8 +35,8 @@ pub fn derive_jacobian_pattern_from_jvp(
     columns: usize,
     owner_span: Span,
 ) -> Result<StructuralPattern, EvalSolveError> {
-    if let [node] = block.nodes.as_slice() {
-        if let ComputeNode::Map {
+    if let [node] = block.nodes.as_slice()
+        && let ComputeNode::Map {
             domain,
             output_map,
             base_ops,
@@ -50,18 +50,17 @@ pub fn derive_jacobian_pattern_from_jvp(
             load_strides,
             ..
         } = node
-        {
-            return StructuralPattern::derive_from_affine_jvp(
-                domain,
-                output_map,
-                base_ops,
-                load_strides,
-                rows,
-                columns,
-                owner_span,
-            )
-            .map_err(|error| from_pattern_error(error, Some(owner_span)));
-        }
+    {
+        return StructuralPattern::derive_from_affine_jvp(
+            domain,
+            output_map,
+            base_ops,
+            load_strides,
+            rows,
+            columns,
+            owner_span,
+        )
+        .map_err(|error| from_pattern_error(error, Some(owner_span)));
     }
     if block.nodes.iter().any(|node| {
         matches!(

@@ -719,21 +719,41 @@ impl TypeChecker {
 
         const MAX_PASSES: usize = 5;
         for _ in 0..MAX_PASSES {
-            let previous_count =
-                ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len() + ctx.booleans.len();
-            for type_name in &type_names {
-                for enclosing_name in tree.enclosing_class_names_of(type_name) {
-                    let Some(enclosing) = tree.get_class_by_qualified_name(enclosing_name) else {
-                        continue;
-                    };
-                    Self::extract_class_constants(enclosing_name, enclosing, ctx);
-                }
-            }
-            let current_count =
-                ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len() + ctx.booleans.len();
-            if current_count == previous_count {
+            let previous_count = Self::collected_constant_count(ctx);
+            Self::extract_enclosing_constants(tree, &type_names, ctx);
+            if Self::collected_constant_count(ctx) == previous_count {
                 break;
             }
+        }
+    }
+
+    /// Total constants collected so far, used to detect the fixpoint.
+    fn collected_constant_count(ctx: &rumoca_eval_ast::eval::TypeCheckEvalContext) -> usize {
+        ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len() + ctx.booleans.len()
+    }
+
+    /// Extract constants from every class enclosing any of `type_names`.
+    fn extract_enclosing_constants(
+        tree: &ClassTree,
+        type_names: &[String],
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        for type_name in type_names {
+            Self::extract_constants_enclosing(tree, type_name, ctx);
+        }
+    }
+
+    /// Extract constants from the classes that lexically enclose `type_name`.
+    fn extract_constants_enclosing(
+        tree: &ClassTree,
+        type_name: &str,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        for enclosing_name in tree.enclosing_class_names_of(type_name) {
+            let Some(enclosing) = tree.get_class_by_qualified_name(enclosing_name) else {
+                continue;
+            };
+            Self::extract_class_constants(enclosing_name, enclosing, ctx);
         }
     }
 

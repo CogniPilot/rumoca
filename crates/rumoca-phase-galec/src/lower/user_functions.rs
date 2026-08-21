@@ -521,6 +521,38 @@ struct LoweredFunctionConditionalBranch {
     span: Span,
 }
 
+/// Lower the fallback branch of a function conditional.
+///
+/// Uses the same definition order as the guarded branches so the atomic commit
+/// sees one consistent projection order.
+fn lower_function_conditional_fallback<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    definitions: &[(usize, dae::FunctionDefinitionView<'dae>)],
+    conditional: dae::FunctionConditionalView<'dae>,
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
+) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
+    let mut fallback = Vec::new();
+    let fallback_values = conditional.fallback().collect::<Vec<_>>();
+    for (definition_ordinal, definition) in definitions.iter().copied() {
+        let value = fallback_values[definition_ordinal];
+        let target = view
+            .function(definition.id().function())
+            .expect("checked function identity resolves")
+            .values()
+            .find(|candidate| candidate.id() == definition.target())
+            .expect("checked function conditional target resolves");
+        lower_function_value_assignment(
+            view,
+            target,
+            value,
+            definition.provenance().span(),
+            lowerer,
+            &mut fallback,
+        )?;
+    }
+    Ok(fallback)
+}
+
 fn lower_function_conditional_group<'a, 'dae>(
     view: dae::DaeView<'dae>,
     definitions: dae::FunctionDefinitionValues<'dae>,
@@ -615,25 +647,7 @@ fn lower_function_conditional_group<'a, 'dae>(
                 }
             })?,
         });
-    let mut fallback = Vec::new();
-    let fallback_values = conditional.fallback().collect::<Vec<_>>();
-    for (definition_ordinal, definition) in definitions.iter().copied() {
-        let value = fallback_values[definition_ordinal];
-        let target = view
-            .function(definition.id().function())
-            .expect("checked function identity resolves")
-            .values()
-            .find(|candidate| candidate.id() == definition.target())
-            .expect("checked function conditional target resolves");
-        lower_function_value_assignment(
-            view,
-            target,
-            value,
-            definition.provenance().span(),
-            lowerer,
-            &mut fallback,
-        )?;
-    }
+    let fallback = lower_function_conditional_fallback(view, &definitions, conditional, lowerer)?;
     lowerer.conditional_activation_path.pop();
     lowerer.restore_conditional_materialization(&entry_materialization);
     statements.extend(nest_function_conditional_branches(branches, fallback));
@@ -1536,6 +1550,29 @@ fn flatten_total_guard(statement: &gast::Spanned<gast::Statement>) -> Option<Tot
     Some(TotalGuard { branches, fallback })
 }
 
+/// Merge `statement` into the newest earlier guard it can legally join.
+///
+/// A merge is legal only when the guards are equivalent and every statement
+/// between them commutes with `statement`, so the move cannot change order of
+/// effects. Returns whether `statement` was consumed.
+fn merge_into_equivalent_guard(
+    merged: &mut [gast::Spanned<gast::Statement>],
+    statement: &gast::Spanned<gast::Statement>,
+) -> bool {
+    for destination in (0..merged.len()).rev() {
+        if !equivalent_total_guards(&merged[destination], statement)
+            || !merged[destination + 1..]
+                .iter()
+                .all(|middle| statements_commute(statement, middle))
+        {
+            continue;
+        }
+        merge_total_guard(&mut merged[destination], statement);
+        return true;
+    }
+    false
+}
+
 fn guarded_tensor_branch(
     mut before: Vec<gast::Spanned<gast::Statement>>,
     mut body: Vec<gast::Spanned<gast::Statement>>,
@@ -1601,21 +1638,8 @@ pub(super) fn coalesce_correlated_guards(
         .collect::<Vec<_>>();
     let mut merged: Vec<gast::Spanned<gast::Statement>> = Vec::new();
     for statement in statements {
-        let mut consumed = false;
-        if reorderable_guard(&statement) {
-            for destination in (0..merged.len()).rev() {
-                if !equivalent_total_guards(&merged[destination], &statement)
-                    || !merged[destination + 1..]
-                        .iter()
-                        .all(|middle| statements_commute(&statement, middle))
-                {
-                    continue;
-                }
-                merge_total_guard(&mut merged[destination], &statement);
-                consumed = true;
-                break;
-            }
-        }
+        let consumed =
+            reorderable_guard(&statement) && merge_into_equivalent_guard(&mut merged, &statement);
         if !consumed {
             merged.push(statement);
         }

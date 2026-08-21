@@ -1543,10 +1543,7 @@ pub(crate) fn program_register_y_dependencies(
     Ok(walk
         .registers
         .into_iter()
-        .map(|dependencies| match dependencies {
-            Some(DependencyState::Known(indices)) => Some(indices),
-            None => None,
-        })
+        .map(|dependencies| dependencies.map(|DependencyState::Known(indices)| indices))
         .collect())
 }
 

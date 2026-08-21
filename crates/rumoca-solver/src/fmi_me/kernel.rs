@@ -711,14 +711,11 @@ impl SolveMeKernel {
                 ));
             }
             *value = match reference.backing {
-                MeFloat64Backing::InputParameter(index) => {
-                    self.params.get(index).copied().ok_or_else(|| {
-                        contract(format!(
-                            "Float64 input value reference {index} is outside {} parameters",
-                            self.params.len()
-                        ))
-                    })?
-                }
+                MeFloat64Backing::InputParameter(index) => self
+                    .params
+                    .get(index)
+                    .copied()
+                    .ok_or_else(|| float64_param_out_of_range(index, self.params.len()))?,
                 MeFloat64Backing::MaxStepDuration(value_reference)
                     if self.max_step_duration_value_reference == Some(value_reference) =>
                 {
@@ -1043,6 +1040,13 @@ fn termination_bit_eq(left: Option<&SimTermination>, right: Option<&SimTerminati
         (None, None) => true,
         _ => false,
     }
+}
+
+/// Error for a Float64 input value reference outside the parameter vector.
+fn float64_param_out_of_range(index: usize, len: usize) -> MeError {
+    contract(format!(
+        "Float64 input value reference {index} is outside {len} parameters"
+    ))
 }
 
 fn contract(reason: impl Into<String>) -> MeError {

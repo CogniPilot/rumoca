@@ -115,9 +115,11 @@ impl SolveMeKernel {
                     .copied()
                     .ok_or_else(|| contract("FMI root indicator source is out of range"))?,
                 solve::fmi::FmiEventIndicatorSource::DynamicTimeEvent { index } => {
-                    dynamic_deadlines.get(index).copied().ok_or_else(|| {
-                        contract("FMI dynamic-time indicator source is out of range")
-                    })? - time
+                    dynamic_deadlines
+                        .get(index)
+                        .copied()
+                        .ok_or_else(|| contract("FMI dynamic-time indicator source is out of range"))?
+                        - time
                 }
                 solve::fmi::FmiEventIndicatorSource::DelayDiscontinuity { index } => full_roots
                     .get(model_root_count + index)

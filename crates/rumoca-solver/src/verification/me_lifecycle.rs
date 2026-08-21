@@ -140,6 +140,16 @@ fn property_stage_resolution_is_idempotent_and_innermost_wins(
 
 #[cfg(test)]
 mod tests {
+    /// Check the transition relation over every state and command for one
+    /// structural-configuration capability.
+    fn assert_transition_relation_for(capability: super::MeConfigurationCapability) {
+        for state in super::MeState::ALL {
+            for command in super::MeLifecycleCommand::ALL {
+                super::property_transition_relation_is_exact(capability, state, command);
+            }
+        }
+    }
+
     #[test]
     fn transition_relation_is_exact_and_rejection_preserves_state() {
         assert_eq!(super::MeState::ALL.len(), 7, "SPEC_0044 lifecycle states");
@@ -154,11 +164,7 @@ mod tests {
             "absent, fixed, and tunable structural capability"
         );
         for capability in super::MeConfigurationCapability::ALL {
-            for state in super::MeState::ALL {
-                for command in super::MeLifecycleCommand::ALL {
-                    super::property_transition_relation_is_exact(capability, state, command);
-                }
-            }
+            assert_transition_relation_for(capability);
         }
     }
 

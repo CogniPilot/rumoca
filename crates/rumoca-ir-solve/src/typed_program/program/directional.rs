@@ -75,6 +75,9 @@ fn expand_outputs(outputs: &[SolvePureCallOutput]) -> Vec<SolvePureCallOutput> {
         .collect()
 }
 
+// The arms are a differentiability dispatch table; splitting them hides the total.
+// SPEC_0021: Exception - exhaustive match over SolveOperation variants.
+#[allow(clippy::too_many_lines)]
 fn program_supports_directional(
     program: &TypedProgram,
     available: &[Option<SolvePureCallDirectionalInterface>],

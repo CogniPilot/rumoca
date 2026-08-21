@@ -251,8 +251,9 @@ fn record_type_rejects_unknown_provenance_before_insertion() {
     assert_eq!(dae.inspect(|view| view.value_type_count()), 1);
 }
 
-#[test]
-fn exact_expression_provenance_resolves_through_the_source_map() {
+/// One DAE holding every checked expression form, so provenance can be
+/// resolved back to source text for each of them.
+fn every_expression_form_dae() -> Dae {
     let source =
         TestSource::new("Real x; equation x + 2; {x, 2}; 1:3; x[1]; [x for i in 1:3]; abs(x);");
     let declaration = source.source("Real x", 0);
@@ -268,7 +269,7 @@ fn exact_expression_provenance_resolves_through_the_source_map() {
     let comprehension = source.source("[x for i in 1:3]", 0);
     let builtin = source.source("abs(x)", 0);
 
-    let dae = Dae::construct(source.map, |dae| {
+    Dae::construct(source.map, |dae| {
         let real = dae.types(|types| {
             types.intern(
                 TypeId::new(0),
@@ -319,7 +320,12 @@ fn exact_expression_provenance_resolves_through_the_source_map() {
             Ok(())
         })
     })
-    .expect("all expression forms are checked at insertion");
+    .expect("all expression forms are checked at insertion")
+}
+
+#[test]
+fn exact_expression_provenance_resolves_through_the_source_map() {
+    let dae = every_expression_form_dae();
 
     let expected = [
         "x",

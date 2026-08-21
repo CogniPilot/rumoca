@@ -261,26 +261,12 @@ impl<'dae> PureCallRegistry<'dae> {
                 .map(|definition| (definition.value, definition.clock)),
         )?;
         let predicate_count = assertions.len();
-        let coordinate_inputs = coordinate_types
-            .iter()
-            .map(|(_, value_type)| lower_primitive_type(view, *value_type, arithmetic_profile()))
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut inputs = coordinate_inputs.clone();
-        inputs.extend(std::iter::repeat_n(
-            solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
-            transaction.clock_owners.len(),
-        ));
-        let mut outputs = definitions
-            .iter()
-            .map(|definition| {
-                lower_primitive_type(view, definition.value_type, arithmetic_profile())
-                    .map(solve::SolvePureCallOutput::result)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        outputs.extend(
-            std::iter::repeat_with(solve::SolvePureCallOutput::assertion_predicate)
-                .take(predicate_count),
-        );
+        let (coordinate_inputs, inputs, outputs) = event_transaction_interface(
+            view,
+            transaction,
+            coordinate_types,
+            predicate_count,
+        )?;
         let identity = self.identities.issue(provenance)?;
         let owner = self.table.add_owner(
             identity,
@@ -326,24 +312,14 @@ impl<'dae> PureCallRegistry<'dae> {
                 };
                 let mut values = vec![None; definitions.len()];
                 for clock in &transaction.clock_owners {
-                    let members = definitions
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, definition)| {
-                            (definition.clock == *clock).then_some(index)
-                        })
-                        .collect::<Vec<_>>();
-                    let activation = activations[clock];
-                    let lowered = activated_assignment_group(
+                    lower_clock_member_group(
                         &mut lowerer,
                         definitions,
-                        &members,
-                        activation,
+                        *clock,
+                        activations[clock],
                         provenance,
+                        &mut values,
                     )?;
-                    for (index, value) in members.into_iter().zip(lowered) {
-                        values[index] = Some(value);
-                    }
                 }
                 for (value, output) in values.into_iter().zip(outputs) {
                     let register = value
@@ -456,6 +432,122 @@ impl<'dae> PureCallRegistry<'dae> {
 /// call-scoped assertion predicate, so an inactive clock cannot execute work
 /// or fail an assertion. The outer transaction later commits the complete
 /// tuple atomically.
+/// Lower the definitions owned by one clock and place each result at its
+/// original definition index.
+///
+/// The transaction commits atomically, so per-clock grouping only decides which
+/// activation guards a definition, never the order results are stored in.
+fn lower_clock_member_group<'program, 'dae>(
+    lowerer: &mut ExpressionLowerer<'_, 'program, 'dae>,
+    definitions: &[EligibleEventDefinition<'dae>],
+    clock: dae::ClockId<'dae>,
+    activation: solve::ProgramRegister<'program>,
+    provenance: rumoca_core::Span,
+    values: &mut [Option<LoweredValue<'program, 'dae>>],
+) -> Result<(), solve::SolveProgramConstructionError> {
+    let members = definitions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, definition)| (definition.clock == clock).then_some(index))
+        .collect::<Vec<_>>();
+    let lowered = activated_assignment_group(lowerer, definitions, &members, activation, provenance)?;
+    for (index, value) in members.into_iter().zip(lowered) {
+        values[index] = Some(value);
+    }
+    Ok(())
+}
+
+/// Append each member's fallback coordinate leaves to `captures`, returning the
+/// capture range that belongs to each member.
+///
+/// The fallback is the value the target keeps when its activation is false, so
+/// every member contributes one contiguous range even when its type is compound.
+fn extend_with_fallback_captures<'program, 'dae>(
+    lowerer: &ExpressionLowerer<'_, 'program, 'dae>,
+    definitions: &[EligibleEventDefinition<'dae>],
+    members: &[usize],
+    captures: &mut Vec<solve::ProgramRegister<'program>>,
+    provenance: rumoca_core::Span,
+) -> Result<Vec<std::ops::Range<usize>>, solve::SolveProgramConstructionError> {
+    let mut fallback_ranges = Vec::with_capacity(members.len());
+    for &index in members {
+        let definition = definitions[index];
+        let fallback = lowerer
+            .model_coordinates
+            .get(&model_event_target_key(definition.target))
+            .cloned()
+            .ok_or(solve::SolveProgramConstructionError::InvalidCallInterface { provenance })?;
+        let start = captures.len();
+        captures.extend(fallback.leaves);
+        fallback_ranges.push(start..captures.len());
+    }
+    Ok(fallback_ranges)
+}
+
+/// Flatten each value type into its scalar leaves, returning the leaf types and
+/// the output range that belongs to each value.
+fn lower_value_type_outputs<'dae>(
+    lowerer: &ExpressionLowerer<'_, '_, 'dae>,
+    value_types: &[dae::ValueTypeId<'dae>],
+) -> Result<
+    (Vec<solve::SolveValueType>, Vec<std::ops::Range<usize>>),
+    solve::SolveProgramConstructionError,
+> {
+    let mut output_types = Vec::new();
+    let mut output_ranges = Vec::with_capacity(value_types.len());
+    for &value_type in value_types {
+        let start = output_types.len();
+        output_types.extend(lower_value_type_leaves(
+            lowerer.view,
+            value_type,
+            arithmetic_profile(),
+        )?);
+        output_ranges.push(start..output_types.len());
+    }
+    Ok((output_types, output_ranges))
+}
+
+/// The call interface of an event transaction: coordinate inputs, the full
+/// input list, and the output list.
+type EventTransactionInterface = (
+    Vec<solve::SolveValueType>,
+    Vec<solve::SolveValueType>,
+    Vec<solve::SolvePureCallOutput>,
+);
+
+/// Build the call interface of an event transaction: the coordinate inputs, the
+/// full input list (coordinates then one activation per clock), and the outputs
+/// (one result per definition then one predicate per assertion).
+fn event_transaction_interface<'dae>(
+    view: dae::DaeView<'dae>,
+    transaction: &EligibleEventTransaction<'dae>,
+    coordinate_types: &[(ModelCoordinateKey<'dae>, dae::ValueTypeId<'dae>)],
+    predicate_count: usize,
+) -> Result<EventTransactionInterface, solve::SolveProgramConstructionError> {
+    let coordinate_inputs = coordinate_types
+        .iter()
+        .map(|(_, value_type)| lower_primitive_type(view, *value_type, arithmetic_profile()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut inputs = coordinate_inputs.clone();
+    inputs.extend(std::iter::repeat_n(
+        solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
+        transaction.clock_owners.len(),
+    ));
+    let mut outputs = transaction
+        .definitions
+        .iter()
+        .map(|definition| {
+            lower_primitive_type(view, definition.value_type, arithmetic_profile())
+                .map(solve::SolvePureCallOutput::result)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    outputs.extend(
+        std::iter::repeat_with(solve::SolvePureCallOutput::assertion_predicate)
+            .take(predicate_count),
+    );
+    Ok((coordinate_inputs, inputs, outputs))
+}
+
 fn activated_assignment_group<'program, 'dae>(
     lowerer: &mut ExpressionLowerer<'_, 'program, 'dae>,
     definitions: &[EligibleEventDefinition<'dae>],
@@ -470,33 +562,13 @@ fn activated_assignment_group<'program, 'dae>(
     let pending = lowerer.pending_predicates(expressions.iter().copied());
     let (mut captures, environment) =
         lowerer.capture_environment_for(expressions.iter().copied())?;
-    let mut fallback_ranges = Vec::with_capacity(members.len());
-    for &index in members {
-        let definition = definitions[index];
-        let fallback = lowerer
-            .model_coordinates
-            .get(&model_event_target_key(definition.target))
-            .cloned()
-            .ok_or(solve::SolveProgramConstructionError::InvalidCallInterface { provenance })?;
-        let start = captures.len();
-        captures.extend(fallback.leaves);
-        fallback_ranges.push(start..captures.len());
-    }
+    let fallback_ranges =
+        extend_with_fallback_captures(lowerer, definitions, members, &mut captures, provenance)?;
     let value_types = members
         .iter()
         .map(|&index| definitions[index].value_type)
         .collect::<Vec<_>>();
-    let mut output_types = Vec::new();
-    let mut output_ranges = Vec::with_capacity(value_types.len());
-    for &value_type in &value_types {
-        let start = output_types.len();
-        output_types.extend(lower_value_type_leaves(
-            lowerer.view,
-            value_type,
-            arithmetic_profile(),
-        )?);
-        output_ranges.push(start..output_types.len());
-    }
+    let (mut output_types, output_ranges) = lower_value_type_outputs(lowerer, &value_types)?;
     let value_output_count = output_types.len();
     output_types.extend(std::iter::repeat_n(
         solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),

@@ -290,6 +290,29 @@ struct PendingGuardedAssignment {
     clock_owner: Option<solve::PeriodicClockId>,
 }
 
+/// Join the integrator-history effect across every target range of one pending
+/// guarded assignment.
+///
+/// Absent sensitivity information is not evidence, so it yields `Restart`.
+fn pending_integrator_history_effect(
+    target_ranges: &[(solve::ScalarSlot, usize)],
+    history_sensitive: Option<&BTreeSet<integrator_history::HistoryDependencySlot>>,
+    state_scalar_count: usize,
+) -> solve::IntegratorHistoryEffect {
+    let Some(sensitive) = history_sensitive else {
+        return solve::IntegratorHistoryEffect::Restart;
+    };
+    target_ranges
+        .iter()
+        .map(|(base, count)| {
+            integrator_history_effect_for_range(*base, *count, sensitive, state_scalar_count)
+        })
+        .fold(
+            solve::IntegratorHistoryEffect::Preserve,
+            integrator_history::join_integrator_history_effect,
+        )
+}
+
 #[derive(Clone, Copy)]
 enum EventIterationOwnerClaim {
     ScalarRows {
@@ -772,29 +795,18 @@ impl<'dae> DiscreteRows<'dae> {
         let clock_partition_intermediates =
             self.clock_partition_intermediates.into_scalar_block()?;
         let rhs = self.rows.into_scalar_block()?;
+        // `SolveProblemShapeContractError` is a construction-time contract report,
+        // not a hot-path value: boxing it would add an allocation to every
+        // rejection to save moving 128 bytes on a path that then aborts.
+        #[allow(clippy::result_large_err)]
         let guarded_assignments = self
             .guarded_assignments
             .into_iter()
             .map(|pending| {
-                let effect = history_sensitive.as_ref().map_or(
-                    solve::IntegratorHistoryEffect::Restart,
-                    |sensitive| {
-                        pending
-                            .target_ranges
-                            .iter()
-                            .map(|(base, count)| {
-                                integrator_history_effect_for_range(
-                                    *base,
-                                    *count,
-                                    sensitive,
-                                    state_scalar_count,
-                                )
-                            })
-                            .fold(
-                                solve::IntegratorHistoryEffect::Preserve,
-                                integrator_history::join_integrator_history_effect,
-                            )
-                    },
+                let effect = pending_integrator_history_effect(
+                    &pending.target_ranges,
+                    history_sensitive.as_ref(),
+                    state_scalar_count,
                 );
                 solve::GuardedAssignmentProgram::checked(
                     pending.program,

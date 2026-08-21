@@ -139,8 +139,9 @@ fn mixed_event_transaction_retains_aggregate_inputs_and_atomic_targets() {
     });
 }
 
-#[test]
-fn disjoint_periodic_regions_form_one_lazy_atomic_transaction() {
+/// Two disjoint periodic regions on different clock lattices, used to check
+/// they still form one lazily-evaluated atomic transaction.
+fn disjoint_periodic_regions_fixture() -> dae::Dae {
     let mut sources = SourceMap::new();
     let source = sources.add(
         "mixed_clock_transaction.mo",
@@ -149,7 +150,7 @@ fn disjoint_periodic_regions_form_one_lazy_atomic_transaction() {
     let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 66)).unwrap();
     let fast_lattice = rumoca_core::ClockLattice::from_interval_counter(1, 100).unwrap();
     let slow_lattice = rumoca_core::ClockLattice::from_interval_counter(1, 20).unwrap();
-    let model = dae::Dae::construct(sources, |model| {
+    dae::Dae::construct(sources, |model| {
         let real = model.types(|types| {
             types.intern(
                 rumoca_core::TypeId::new(0),
@@ -239,7 +240,12 @@ fn disjoint_periodic_regions_form_one_lazy_atomic_transaction() {
         })?;
         Ok(())
     })
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn disjoint_periodic_regions_form_one_lazy_atomic_transaction() {
+    let model = disjoint_periodic_regions_fixture();
 
     model.inspect(|view| {
         let layout = crate::layout::lower_layout(view).unwrap();

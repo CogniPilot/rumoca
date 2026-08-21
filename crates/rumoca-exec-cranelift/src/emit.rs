@@ -8079,6 +8079,9 @@ fn to_backend_err<E: std::fmt::Display>(err: E) -> CompileError {
     CompileError::Backend(err.to_string())
 }
 
+// The closure returns cranelift-module's `ModuleError`, whose size this crate
+// does not control; boxing it here would only move the allocation.
+#[allow(clippy::result_large_err)]
 pub(super) fn finalize_jit_module(module: &mut JITModule) -> Result<(), CompileError> {
     catch_cranelift_unwind("finalization", || module.finalize_definitions())?
         .map_err(to_backend_err)

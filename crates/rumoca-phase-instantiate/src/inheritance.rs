@@ -797,6 +797,22 @@ pub fn class_extends(tree: &ast::ClassTree, class: &ast::ClassDef, base_name: &s
 /// Check if a class extends a base class (by resolved name) directly or transitively, with caching.
 ///
 /// This cached version avoids recomputation for deeply nested inheritance hierarchies.
+/// Record `result` under `cache_key` when the caller had both identities, and
+/// return it.
+///
+/// The key is absent only when a class or its queried base has no `DefId`; the
+/// answer is still correct, it just cannot be memoized.
+fn remember_subtype(
+    cache: &mut SubtypeCache,
+    cache_key: Option<(DefId, DefId)>,
+    result: bool,
+) -> bool {
+    if let Some(key) = cache_key {
+        cache.insert(key, result);
+    }
+    result
+}
+
 pub fn class_extends_cached(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
@@ -822,17 +838,11 @@ pub fn class_extends_cached(
         if let Some(target_id) = target_base_def_id
             && extend.base_def_id == Some(target_id)
         {
-            if let Some(key) = cache_key {
-                cache.insert(key, true);
-            }
-            return true;
+            return remember_subtype(cache, cache_key, true);
         }
         // Direct extension - use type_names_match for short vs qualified name handling
         if type_names_match(tree, &extend_name, base_name) {
-            if let Some(key) = cache_key {
-                cache.insert(key, true);
-            }
-            return true;
+            return remember_subtype(cache, cache_key, true);
         }
         // Transitive extension - use def_id for O(1) lookup when available
         let base_class = if let Some(def_id) = extend.base_def_id {
@@ -844,24 +854,15 @@ pub fn class_extends_cached(
             if let Some(target_id) = target_base_def_id
                 && base_class.def_id == Some(target_id)
             {
-                if let Some(key) = cache_key {
-                    cache.insert(key, true);
-                }
-                return true;
+                return remember_subtype(cache, cache_key, true);
             }
             if class_extends_cached(tree, base_class, base_name, cache) {
-                if let Some(key) = cache_key {
-                    cache.insert(key, true);
-                }
-                return true;
+                return remember_subtype(cache, cache_key, true);
             }
         }
     }
 
-    if let Some(key) = cache_key {
-        cache.insert(key, false);
-    }
-    false
+    remember_subtype(cache, cache_key, false)
 }
 
 /// Process extends clauses and collect inherited content.

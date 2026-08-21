@@ -112,6 +112,16 @@ enum MeModelSourceInner<'a> {
     },
 }
 
+/// The checked pieces an [`MeModelSource`] resolves to: the Solve model, the
+/// ordered event-indicator inventory, the optional max-step value reference,
+/// and the structural-configuration capability.
+type MeModelParts<'a> = (
+    &'a rumoca_ir_solve::SolveModel,
+    Vec<rumoca_ir_solve::fmi::FmiEventIndicatorSource>,
+    Option<u32>,
+    lifecycle::MeConfigurationCapability,
+);
+
 impl<'a> MeModelSource<'a> {
     #[must_use]
     pub fn new(component: &'a rumoca_ir_solve::fmi::FmiComponent) -> Self {
@@ -158,17 +168,7 @@ impl<'a> MeModelSource<'a> {
         })
     }
 
-    pub(crate) fn into_parts(
-        self,
-    ) -> Result<
-        (
-            &'a rumoca_ir_solve::SolveModel,
-            Vec<rumoca_ir_solve::fmi::FmiEventIndicatorSource>,
-            Option<u32>,
-            lifecycle::MeConfigurationCapability,
-        ),
-        rumoca_ir_solve::fmi::FmiComponentError,
-    > {
+    pub(crate) fn into_parts(self) -> Result<MeModelParts<'a>, rumoca_ir_solve::fmi::FmiComponentError> {
         match self.0 {
             MeModelSourceInner::Correlated(view) => {
                 let configuration = match view.configuration_capability() {

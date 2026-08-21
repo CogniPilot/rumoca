@@ -283,10 +283,8 @@ fn validate_algorithm_statements(
                             | PlannedRole::DiscreteReal
                             | PlannedRole::DiscreteValue
                     )
-                ) {
-                    validate_expression(value, roles, states)?;
-                } else if matches!(target_role, Some(PlannedRole::Aggregate))
-                    && is_direct_record_call_assignment(comp, value)
+                ) || (matches!(target_role, Some(PlannedRole::Aggregate))
+                    && is_direct_record_call_assignment(comp, value))
                 {
                     validate_expression(value, roles, states)?;
                 } else if structured_assignment_pairs(&target, value, roles).is_none() {

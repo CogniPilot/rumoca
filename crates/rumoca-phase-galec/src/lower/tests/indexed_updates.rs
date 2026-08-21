@@ -525,15 +525,28 @@ fn guarded_calls(statements: &[gast::Spanned<gast::Statement>]) -> usize {
     count_calls(statements, false, true)
 }
 
-#[test]
-fn aggregate_call_is_materialized_once_before_scalar_projection() {
+/// Project one element out of `call` at the already-lowered `expression` ordinal.
+fn index_element<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    call: dae::ExprId<'dae>,
+    expression: dae::ExprId<'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    expressions
+        .at(provenance)
+        .index(call, [dae::Subscript::Index { expression, provenance }])
+}
+
+/// One vector-valued call feeding three scalar projections, used to check the
+/// call is materialized once rather than per projection.
+fn aggregate_call_fixture() -> dae::Dae {
     let mut sources = SourceMap::new();
     let source = sources.add(
         "aggregate-call.mo",
         "one vector call feeds three projections",
     );
     let provenance = dae::DaeProvenance::source(Span::from_offsets(source, 0, 38)).unwrap();
-    let model = dae::Dae::construct(sources, |dae| {
+    dae::Dae::construct(sources, |dae| {
         let (vector3, vector5) = dae.types(|types| {
             Ok((
                 types.derived(
@@ -557,11 +570,7 @@ fn aggregate_call_is_materialized_once_before_scalar_projection() {
                 let values = dae.expressions(|expressions| {
                     [1.0, 2.0, 3.0]
                         .into_iter()
-                        .map(|value| {
-                            expressions
-                                .at(provenance)
-                                .literal(dae::DaeLiteral::Real(value))
-                        })
+                        .map(|value| expressions.at(provenance).literal(dae::DaeLiteral::Real(value)))
                         .collect::<Result<Vec<_>, _>>()
                 })?;
                 let value =
@@ -580,20 +589,15 @@ fn aggregate_call_is_materialized_once_before_scalar_projection() {
                     dae.functions(|functions| functions.begin(reservation, provenance))?;
                 let call = dae
                     .expressions(|expressions| expressions.at(provenance).call(producer, 0, []))?;
-                let projected = dae.expressions(|expressions| {
+                let ordinals = dae.expressions(|expressions| {
                     (1..=3)
-                        .map(|index| {
-                            let index = expressions
-                                .at(provenance)
-                                .literal(dae::DaeLiteral::Integer(index))?;
-                            expressions.at(provenance).index(
-                                call,
-                                [dae::Subscript::Index {
-                                    expression: index,
-                                    provenance,
-                                }],
-                            )
-                        })
+                        .map(|index| expressions.at(provenance).literal(dae::DaeLiteral::Integer(index)))
+                        .collect::<Result<Vec<_>, _>>()
+                })?;
+                let projected = dae.expressions(|expressions| {
+                    ordinals
+                        .into_iter()
+                        .map(|expression| index_element(expressions, call, expression, provenance))
                         .collect::<Result<Vec<_>, _>>()
                 })?;
                 let zero = dae.expressions(|expressions| {
@@ -615,7 +619,12 @@ fn aggregate_call_is_materialized_once_before_scalar_projection() {
         )?;
         Ok(())
     })
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn aggregate_call_is_materialized_once_before_scalar_projection() {
+    let model = aggregate_call_fixture();
 
     model.inspect(|view| {
         let consumer = view.function(view.function_id(1).unwrap()).unwrap();

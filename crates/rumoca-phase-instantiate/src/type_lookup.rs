@@ -162,73 +162,44 @@ pub(super) fn find_member_type_in_class<'a>(
     None
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rumoca_core::{Location, Token};
 
-    fn class(name: &str, def_id: u32) -> ast::ClassDef {
-        ast::ClassDef {
-            def_id: Some(DefId::new(def_id)),
-            name: Token {
-                text: name.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        }
+/// Check if inner and outer types are compatible using resolved identity.
+///
+/// MLS §5.4: The inner declaration's type must be a subtype of the outer's type.
+/// DefIds are preferred because relative and qualified spellings should already
+/// have been resolved before compatibility checking reaches this path.
+pub(super) fn is_type_compatible_with_def_id(
+    tree: &ast::ClassTree,
+    outer_type: &str,
+    outer_def_id: Option<DefId>,
+    inner_type: &str,
+    inner_def_id: Option<DefId>,
+) -> bool {
+    // Fast path: If both have DefIds and they match, types are the same
+    if let (Some(outer_id), Some(inner_id)) = (outer_def_id, inner_def_id)
+        && outer_id == inner_id
+    {
+        return true;
     }
 
-    fn extends(name: &str, def_id: u32) -> ast::Extend {
-        ast::Extend {
-            base_name: ast::Name::from_string(name),
-            base_def_id: Some(DefId::new(def_id)),
-            location: Location::default(),
-            modifications: Vec::new(),
-            break_names: Vec::new(),
-            is_protected: false,
-            annotation: Vec::new(),
-        }
+    if type_names_match(tree, outer_type, inner_type) {
+        return true;
     }
 
-    #[test]
-    fn member_lookup_distinguishes_same_named_base_classes_by_def_id() {
-        let first_foo = class("Foo", 2);
-        let mut second_foo = class("Foo", 4);
-        second_foo
-            .classes
-            .insert("Wanted".to_string(), class("Wanted", 5));
-
-        let mut package_a = class("A", 1);
-        package_a.classes.insert("Foo".to_string(), first_foo);
-        let mut package_b = class("B", 3);
-        package_b.classes.insert("Foo".to_string(), second_foo);
-
-        let mut root = class("Root", 6);
-        root.extends.push(extends("A.Foo", 2));
-        root.extends.push(extends("B.Foo", 4));
-
-        let mut tree = ast::ClassTree::new();
-        tree.definitions.classes.insert("A".to_string(), package_a);
-        tree.definitions.classes.insert("B".to_string(), package_b);
-        tree.definitions.classes.insert("Root".to_string(), root);
-        for (id, name) in [
-            (1, "A"),
-            (2, "A.Foo"),
-            (3, "B"),
-            (4, "B.Foo"),
-            (5, "B.Foo.Wanted"),
-            (6, "Root"),
-        ] {
-            tree.def_map.insert(DefId::new(id), name.to_string());
-        }
-
-        let root = tree.get_class_by_def_id(DefId::new(6)).expect("root class");
-        let found = find_member_type_in_class(&tree, root, "Wanted")
-            .expect("the second same-named base remains searchable");
-
-        assert_eq!(found.def_id, Some(DefId::new(5)));
-    }
+    is_type_subtype(tree, inner_type, outer_type)
 }
+
+/// Check if inner type is compatible with outer type (for tests and simple cases).
+/// Inner must be a subtype of outer for compatibility.
+#[cfg(test)]
+pub(super) fn is_type_compatible(
+    tree: &ast::ClassTree,
+    outer_type: &str,
+    inner_type: &str,
+) -> bool {
+    is_type_subtype(tree, inner_type, outer_type)
+}
+
 
 fn find_extends_redeclared_member_type<'a>(
     tree: &'a ast::ClassTree,
@@ -316,39 +287,70 @@ pub(super) fn lookup_type_info<'a>(
     })
 }
 
-/// Check if inner and outer types are compatible using resolved identity.
-///
-/// MLS §5.4: The inner declaration's type must be a subtype of the outer's type.
-/// DefIds are preferred because relative and qualified spellings should already
-/// have been resolved before compatibility checking reaches this path.
-pub(super) fn is_type_compatible_with_def_id(
-    tree: &ast::ClassTree,
-    outer_type: &str,
-    outer_def_id: Option<DefId>,
-    inner_type: &str,
-    inner_def_id: Option<DefId>,
-) -> bool {
-    // Fast path: If both have DefIds and they match, types are the same
-    if let (Some(outer_id), Some(inner_id)) = (outer_def_id, inner_def_id)
-        && outer_id == inner_id
-    {
-        return true;
-    }
-
-    if type_names_match(tree, outer_type, inner_type) {
-        return true;
-    }
-
-    is_type_subtype(tree, inner_type, outer_type)
-}
-
-/// Check if inner type is compatible with outer type (for tests and simple cases).
-/// Inner must be a subtype of outer for compatibility.
 #[cfg(test)]
-pub(super) fn is_type_compatible(
-    tree: &ast::ClassTree,
-    outer_type: &str,
-    inner_type: &str,
-) -> bool {
-    is_type_subtype(tree, inner_type, outer_type)
+mod tests {
+    use super::*;
+    use rumoca_core::{Location, Token};
+
+    fn class(name: &str, def_id: u32) -> ast::ClassDef {
+        ast::ClassDef {
+            def_id: Some(DefId::new(def_id)),
+            name: Token {
+                text: name.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn extends(name: &str, def_id: u32) -> ast::Extend {
+        ast::Extend {
+            base_name: ast::Name::from_string(name),
+            base_def_id: Some(DefId::new(def_id)),
+            location: Location::default(),
+            modifications: Vec::new(),
+            break_names: Vec::new(),
+            is_protected: false,
+            annotation: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn member_lookup_distinguishes_same_named_base_classes_by_def_id() {
+        let first_foo = class("Foo", 2);
+        let mut second_foo = class("Foo", 4);
+        second_foo
+            .classes
+            .insert("Wanted".to_string(), class("Wanted", 5));
+
+        let mut package_a = class("A", 1);
+        package_a.classes.insert("Foo".to_string(), first_foo);
+        let mut package_b = class("B", 3);
+        package_b.classes.insert("Foo".to_string(), second_foo);
+
+        let mut root = class("Root", 6);
+        root.extends.push(extends("A.Foo", 2));
+        root.extends.push(extends("B.Foo", 4));
+
+        let mut tree = ast::ClassTree::new();
+        tree.definitions.classes.insert("A".to_string(), package_a);
+        tree.definitions.classes.insert("B".to_string(), package_b);
+        tree.definitions.classes.insert("Root".to_string(), root);
+        for (id, name) in [
+            (1, "A"),
+            (2, "A.Foo"),
+            (3, "B"),
+            (4, "B.Foo"),
+            (5, "B.Foo.Wanted"),
+            (6, "Root"),
+        ] {
+            tree.def_map.insert(DefId::new(id), name.to_string());
+        }
+
+        let root = tree.get_class_by_def_id(DefId::new(6)).expect("root class");
+        let found = find_member_type_in_class(&tree, root, "Wanted")
+            .expect("the second same-named base remains searchable");
+
+        assert_eq!(found.def_id, Some(DefId::new(5)));
+    }
 }

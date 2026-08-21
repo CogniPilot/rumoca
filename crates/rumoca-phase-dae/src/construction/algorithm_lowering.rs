@@ -309,38 +309,18 @@ fn lower_algorithm_statement<'dae>(
     let context = algorithm_statement_context(environment, owner, values);
     match statement {
         rumoca_core::Statement::Assignment { comp, value, span } => {
-            if let Some(plan) = environment.function_calls.and_then(|plans| plans.get(span)) {
-                let Expression::FunctionCall { name, args, .. } = value else {
-                    unreachable!("event call proof is issued only for direct call assignments")
-                };
-                let updates = lower_algorithm_call_statement(
-                    construction,
-                    discrete_values,
-                    owner,
-                    context,
-                    AlgorithmFunctionCall {
-                        component: name,
-                        arguments: args,
-                        span: *span,
-                        plan,
-                    },
-                )?;
-                record_model_event_step(environment, owner, &updates, *span)?;
-                values.extend(updates);
-                return Ok(());
-            }
-            let updates = lower_algorithm_assignment(
+            lower_algorithm_assignment_statement(
                 construction,
                 discrete_values,
-                owner.discrete_owner,
-                context,
-                comp,
-                value,
-                *span,
-            )?;
-            record_model_event_step(environment, owner, &updates, *span)?;
-            values.extend(updates);
-            Ok(())
+                environment,
+                owner,
+                values,
+                AlgorithmAssignment {
+                    comp,
+                    value,
+                    span: *span,
+                },
+            )
         }
         rumoca_core::Statement::If {
             cond_blocks,
@@ -423,6 +403,59 @@ fn lower_algorithm_statement<'dae>(
         ),
         _ => unreachable!("algorithm analysis restricts the checked statement grammar"),
     }
+}
+
+/// One algorithm assignment, as written in source.
+struct AlgorithmAssignment<'a> {
+    comp: &'a rumoca_core::ComponentReference,
+    value: &'a Expression,
+    span: rumoca_core::Span,
+}
+
+/// Lower one algorithm assignment, routing a direct call assignment through the
+/// event-call path when construction issued a call plan for it.
+fn lower_algorithm_assignment_statement<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    owner: AlgorithmOwner<'dae>,
+    values: &mut HashMap<VarName, dae::ExprId<'dae>>,
+    assignment: AlgorithmAssignment<'_>,
+) -> Result<(), dae::DaeConstructionError> {
+    let AlgorithmAssignment { comp, value, span } = assignment;
+    let context = algorithm_statement_context(environment, owner, values);
+    if let Some(plan) = environment.function_calls.and_then(|plans| plans.get(&span)) {
+        let Expression::FunctionCall { name, args, .. } = value else {
+            unreachable!("event call proof is issued only for direct call assignments")
+        };
+        let updates = lower_algorithm_call_statement(
+            construction,
+            discrete_values,
+            owner,
+            context,
+            AlgorithmFunctionCall {
+                component: name,
+                arguments: args,
+                span,
+                plan,
+            },
+        )?;
+        record_model_event_step(environment, owner, &updates, span)?;
+        values.extend(updates);
+        return Ok(());
+    }
+    let updates = lower_algorithm_assignment(
+        construction,
+        discrete_values,
+        owner.discrete_owner,
+        context,
+        comp,
+        value,
+        span,
+    )?;
+    record_model_event_step(environment, owner, &updates, span)?;
+    values.extend(updates);
+    Ok(())
 }
 
 fn model_event_target(coordinate: Coordinate<'_>) -> dae::ModelEventTarget<'_> {
