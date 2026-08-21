@@ -553,6 +553,15 @@ pub(super) fn lower_builtin<'dae>(
     lower_builtin_arguments(builtin, lowered, span)
 }
 
+/// True when every argument is already an Integer, selecting the `imin`/`imax`
+/// spelling over the Real-only `min`/`max` (SPEC_0042 T8).
+fn all_integer(arguments: &[TypedExpression]) -> bool {
+    !arguments.is_empty()
+        && arguments
+            .iter()
+            .all(|argument| matches!(argument.scalar_type, gast::ScalarType::Integer))
+}
+
 pub(super) fn lower_builtin_arguments(
     builtin: dae::PureBuiltin,
     arguments: Vec<TypedExpression>,
@@ -611,6 +620,11 @@ pub(super) fn lower_builtin_arguments(
         dae::PureBuiltin::Smooth => unreachable!("smooth is lowered as its value"),
         dae::PureBuiltin::NoEvent => unreachable!("noEvent is lowered as its value"),
         dae::PureBuiltin::Homotopy => unreachable!("homotopy is lowered as its actual value"),
+        // SPEC_0042 T8: GALEC scalar `min`/`max` are Real-only; Integer operands
+        // use the distinct `imin`/`imax` builtins. Coercing them to Real instead
+        // would return a Real where the checked view requires an Integer.
+        dae::PureBuiltin::Min if all_integer(&arguments) => "imin",
+        dae::PureBuiltin::Max if all_integer(&arguments) => "imax",
         dae::PureBuiltin::Min => "min",
         dae::PureBuiltin::Max => "max",
         dae::PureBuiltin::Sum
@@ -639,7 +653,9 @@ pub(super) fn lower_builtin_arguments(
     let lowered = arguments
         .into_iter()
         .map(|argument| match builtin {
-            dae::PureBuiltin::Min | dae::PureBuiltin::Max => {
+            dae::PureBuiltin::Min | dae::PureBuiltin::Max
+                if !matches!(argument.scalar_type, gast::ScalarType::Integer) =>
+            {
                 coerce(argument, gast::ScalarType::Real, span)
             }
             _ => Ok(argument.expression),
@@ -670,4 +686,62 @@ pub(super) fn coerce(
         value.scalar_type.keyword(),
         span,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn typed(scalar_type: gast::ScalarType) -> TypedExpression {
+        TypedExpression {
+            expression: gast::Expression::Integer(1),
+            scalar_type,
+        }
+    }
+
+    fn called_name(expression: &gast::Expression) -> String {
+        match expression {
+            gast::Expression::Call(call) => call.function.lexeme().to_string(),
+            other => panic!("builtin lowering produced {other:?} instead of a call"),
+        }
+    }
+
+    /// SPEC_0042 T8: GALEC `min`/`max` are Real-only, so Integer operands must
+    /// select `imin`/`imax` rather than being coerced to Real.
+    #[test]
+    fn integer_min_max_select_the_integer_builtins() {
+        let span = Span::DUMMY;
+        for (builtin, expected) in [
+            (dae::PureBuiltin::Min, "imin"),
+            (dae::PureBuiltin::Max, "imax"),
+        ] {
+            let lowered = lower_builtin_arguments(
+                builtin,
+                vec![
+                    typed(gast::ScalarType::Integer),
+                    typed(gast::ScalarType::Integer),
+                ],
+                span,
+            )
+            .expect("integer min/max lowers to the integer builtin");
+            assert_eq!(called_name(&lowered), expected);
+        }
+    }
+
+    #[test]
+    fn real_min_max_keep_the_real_builtins() {
+        let span = Span::DUMMY;
+        for (builtin, expected) in [
+            (dae::PureBuiltin::Min, "min"),
+            (dae::PureBuiltin::Max, "max"),
+        ] {
+            let lowered = lower_builtin_arguments(
+                builtin,
+                vec![typed(gast::ScalarType::Real), typed(gast::ScalarType::Real)],
+                span,
+            )
+            .expect("real min/max lowers to the real builtin");
+            assert_eq!(called_name(&lowered), expected);
+        }
+    }
 }

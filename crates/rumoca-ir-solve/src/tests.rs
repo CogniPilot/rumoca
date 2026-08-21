@@ -181,7 +181,7 @@ fn variable_declaration_wire_rejects_forged_time_domain() {
     let error = serde_json::from_value::<SolveProblem>(wire)
         .expect_err("wire replay must reject a domain incompatible with discrete storage");
     assert!(
-        error.to_string().contains("effective time domain"),
+        error.to_string().contains("requires time domain"),
         "{error}"
     );
 }

@@ -6,7 +6,7 @@
 {%- endmacro -%}
 {%- macro start(value) -%}
 {%- if value.scalar -%}{{ scalar(value.kind, value.values[0]) }}
-{%- else -%}{% raw %}{{% endraw %}{% for item in value.values %}{{ scalar(value.kind, item) }}{% if not loop.last %}, {% endif %}{% endfor %}{% raw %}}{% endraw %}
+{%- else -%}{% for item in value.values %}{{ scalar(value.kind, item) }}{% if not loop.last %} {% endif %}{% endfor %}
 {%- endif -%}
 {%- endmacro -%}
 {%- macro method(id, kind, signals) %}

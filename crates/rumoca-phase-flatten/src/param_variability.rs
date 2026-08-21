@@ -256,7 +256,7 @@ fn candidate_family_parts(
     equations: &[ast::Equation],
 ) -> Option<FamilyRefs> {
     let mut lhs = FxHashSet::default();
-    let mut references = ReferenceIds::default();
+    let mut references = ReferenceIds::complete();
     let mut binders = FxHashSet::default();
     if !gather_family(indices, equations, &mut binders, &mut lhs, &mut references) {
         return None;
@@ -327,7 +327,11 @@ fn indexed_lhs_declaration(lhs: &ast::Expression) -> Option<DefId> {
     indexed.then_some(part.def_id).flatten()
 }
 
-#[derive(Default)]
+/// Accumulator for the identities a family reads.
+///
+/// Deliberately has no `Default`: `all_resolved` is an all-of accumulator that
+/// [`ReferenceIds::merge`] only ever clears, so a `false` seed silently makes
+/// every family unresolved. Start from [`ReferenceIds::complete`].
 struct ReferenceIds {
     resolved: FxHashSet<DefId>,
     all_resolved: bool,

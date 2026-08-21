@@ -253,28 +253,86 @@ fn collect_compute_block_dependencies(
     Some(())
 }
 
+/// Collect the Y/P slots `ops` reads, or `None` when the program contains an
+/// opcode whose dependencies this analysis cannot prove.
+///
+/// `None` is the conservative answer: the caller falls back to `Restart`, which
+/// is always sound. Returning `Some` with an incomplete set is not, because the
+/// result is positive evidence that a discrete update cannot reach continuous
+/// dynamics. Every opcode that reads storage is therefore either classified
+/// here or fails closed; only register-to-register work may be ignored.
 pub(super) fn collect_linear_op_dependencies(
     ops: &[solve::LinearOp],
     dependencies: &mut BTreeSet<HistoryDependencySlot>,
 ) -> Option<()> {
     for op in ops {
-        match *op {
+        match op {
             solve::LinearOp::LoadY { index, .. } => {
-                dependencies.insert(HistoryDependencySlot::Y(index));
+                dependencies.insert(HistoryDependencySlot::Y(*index));
             }
             solve::LinearOp::LoadP { index, .. } => {
-                dependencies.insert(HistoryDependencySlot::P(index));
+                dependencies.insert(HistoryDependencySlot::P(*index));
             }
             solve::LinearOp::LoadIndexedP { base, count, .. } => {
-                let end = base.checked_add(count)?;
-                dependencies.extend((base..end).map(HistoryDependencySlot::P));
+                let end = base.checked_add(*count)?;
+                dependencies.extend((*base..end).map(HistoryDependencySlot::P));
             }
-            solve::LinearOp::LoadSeed { .. } | solve::LinearOp::LoadIndexedSeed { .. } => {
-                // Seed programs are derived artifacts and cannot prove a base
-                // continuous/discrete dependency contract.
-                return None;
+            solve::LinearOp::TensorLoad {
+                input,
+                input_start,
+                count,
+                ..
+            } => {
+                let end = input_start.checked_add(*count)?;
+                match input {
+                    solve::TensorInputKind::Y => {
+                        dependencies.extend((*input_start..end).map(HistoryDependencySlot::Y));
+                    }
+                    solve::TensorInputKind::P => {
+                        dependencies.extend((*input_start..end).map(HistoryDependencySlot::P));
+                    }
+                }
             }
-            _ => {}
+            solve::LinearOp::FunctionFold { program, .. }
+            | solve::LinearOp::GuardedFunctionFold { program, .. }
+            | solve::LinearOp::StoreOutputFunctionFold { program, .. } => {
+                collect_linear_op_dependencies(&program.update, dependencies)?;
+            }
+            solve::LinearOp::FunctionConditional { program, .. } => {
+                for arm in &program.arms {
+                    collect_linear_op_dependencies(&arm.condition, dependencies)?;
+                    collect_linear_op_dependencies(&arm.result, dependencies)?;
+                }
+                collect_linear_op_dependencies(&program.fallback, dependencies)?;
+            }
+            // Register-to-register work reads nothing outside the program, so it
+            // introduces no new dependency. `LoadTime` reads the independent
+            // variable, which is neither a Y nor a P slot.
+            solve::LinearOp::Const { .. }
+            | solve::LinearOp::LoadTime { .. }
+            | solve::LinearOp::LoadIndexedRegister { .. }
+            | solve::LinearOp::Move { .. }
+            | solve::LinearOp::Unary { .. }
+            | solve::LinearOp::Binary { .. }
+            | solve::LinearOp::Compare { .. }
+            | solve::LinearOp::Select { .. }
+            | solve::LinearOp::DotProduct { .. }
+            | solve::LinearOp::MatrixMultiply { .. }
+            | solve::LinearOp::LinearSolveComponent { .. }
+            | solve::LinearOp::TensorBinary { .. }
+            | solve::LinearOp::TensorCross { .. }
+            | solve::LinearOp::TensorTranspose { .. }
+            | solve::LinearOp::TensorConcatenate { .. }
+            | solve::LinearOp::TensorUpdate { .. }
+            | solve::LinearOp::TensorFill { .. }
+            | solve::LinearOp::TensorIdentity { .. }
+            | solve::LinearOp::StoreOutput { .. }
+            | solve::LinearOp::StoreOutputRange { .. }
+            | solve::LinearOp::StoreOutputFoldTensorUpdate { .. } => {}
+            // Everything else reads storage this analysis does not model:
+            // seeds (derived artifacts), fold/capture state, tables, random
+            // state, and pure calls. Fail closed rather than under-report.
+            _ => return None,
         }
     }
     Some(())

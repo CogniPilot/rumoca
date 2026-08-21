@@ -556,7 +556,9 @@ impl ProgramLowerer<'_, '_> {
     ) -> Result<(), CompileError> {
         let destination = self.register(destination)?.clone();
         let axis = axis as usize;
-        let destination_dimensions = promoted_dimensions(&destination.value_type);
+        let rank = destination.value_type.dimensions().len().max(2);
+        let destination_dimensions =
+            solve::promoted_concatenate_dimensions(&destination.value_type, rank);
         let destination_axis = *destination_dimensions.get(axis).ok_or_else(|| {
             CompileError::Backend("checked concatenate axis is out of range".into())
         })?;
@@ -569,7 +571,7 @@ impl ProgramLowerer<'_, '_> {
         let mut axis_prefix = 0u32;
         for operand in operands {
             let operand = self.register(*operand)?.clone();
-            let dimensions = promoted_dimensions(&operand.value_type);
+            let dimensions = solve::promoted_concatenate_dimensions(&operand.value_type, rank);
             let source_axis = dimensions[axis];
             let source_block = source_axis.checked_mul(inner).ok_or_else(|| {
                 CompileError::Backend("typed concatenate source width overflows".into())
@@ -767,14 +769,6 @@ fn reduction_binary(operator: solve::SolveReductionOperator) -> solve::SolveBina
         solve::SolveReductionOperator::Minimum => solve::SolveBinaryOperator::Min,
         solve::SolveReductionOperator::Maximum => solve::SolveBinaryOperator::Max,
         solve::SolveReductionOperator::All => solve::SolveBinaryOperator::And,
-    }
-}
-
-fn promoted_dimensions(value_type: &solve::SolveValueType) -> Vec<u32> {
-    match value_type.dimensions() {
-        [] => vec![1, 1],
-        [extent] => vec![1, *extent],
-        dimensions => dimensions.to_vec(),
     }
 }
 

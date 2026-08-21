@@ -1,5 +1,7 @@
 mod directional;
 mod tensor;
+
+pub use tensor::promoted_concatenate_dimensions;
 pub(in crate::typed_program) mod wire;
 
 use std::marker::PhantomData;

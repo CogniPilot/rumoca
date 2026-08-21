@@ -16,6 +16,24 @@ struct FlattenScalarAdapter<'a> {
     structural_only: bool,
 }
 
+impl FlattenScalarAdapter<'_> {
+    /// True when any operand names a parameter this fold must not read.
+    fn refuses_non_structural(
+        &self,
+        operands: [&ast::Expression; 2],
+        prefix: &ast::QualifiedName,
+    ) -> bool {
+        let Some(ctx) = self.ctx else {
+            return false;
+        };
+        operands.into_iter().any(|operand| {
+            ast::expression_component_path(operand).is_some_and(|path| {
+                scoped_set_contains(&ctx.non_structural_params, &path.to_flat_string(), prefix)
+            })
+        })
+    }
+}
+
 impl rumoca_eval_ast::ast_scalar::AstScalarContext for FlattenScalarAdapter<'_> {
     fn lookup_integer(&self, expr: &ast::Expression, scope: &str, _depth: usize) -> Option<i64> {
         let ctx = self.ctx?;
@@ -104,6 +122,12 @@ impl rumoca_eval_ast::ast_scalar::AstScalarContext for FlattenScalarAdapter<'_> 
         _depth: usize,
     ) -> Option<bool> {
         let prefix = ast::QualifiedName::from_dotted(scope);
+        // Same refusal as the scalar lookups: under `structural_only` a
+        // non-structural parameter must not decide a structural fold, or a
+        // conditional that has to survive to runtime is eliminated here.
+        if self.structural_only && self.refuses_non_structural([lhs, rhs], &prefix) {
+            return None;
+        }
         let lhs = try_resolve_enum_value(self.ctx, lhs, &prefix)?;
         let rhs = try_resolve_enum_value(self.ctx, rhs, &prefix)?;
         Some(rumoca_core::enum_values_equal(&lhs, &rhs))

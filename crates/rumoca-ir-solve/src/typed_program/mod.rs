@@ -11,6 +11,7 @@ pub use call::{
 };
 pub use program::{
     ProgramRegister, ProgramSlot, ProgramTensorViewAxis, SolveBinaryOperator, SolveCompareOperator,
+    promoted_concatenate_dimensions,
     SolveConversionOperator, SolveOperation, SolveProgramConstructionError, SolveProgramRegion,
     SolveReductionOperator, SolveRegisterId, SolveSlot, SolveSlotAccess, SolveSlotId,
     SolveSpannedOperation, SolveStorageClass, SolveTensorViewAxis, SolveUnaryOperator,

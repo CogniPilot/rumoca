@@ -401,7 +401,15 @@ fn encode_view_axes(axes: &[ProgramTensorViewAxis<'_>]) -> Box<[SolveTensorViewA
         .into_boxed_slice()
 }
 
-fn promoted_concatenate_dimensions(value_type: &SolveValueType, rank: usize) -> Vec<u32> {
+/// Promote `value_type` to `rank` axes the way MLS 10.4.2.1 `promote` does, by
+/// appending trailing unit extents.
+///
+/// Single owner of the concatenate promotion rule (SPEC_0041 §1). Backends and
+/// evaluators that need the promoted shape of a `Concatenate` operand or result
+/// MUST call this rather than re-deriving it; a second copy silently disagrees
+/// about element order.
+#[must_use]
+pub fn promoted_concatenate_dimensions(value_type: &SolveValueType, rank: usize) -> Vec<u32> {
     value_type
         .dimensions()
         .iter()
