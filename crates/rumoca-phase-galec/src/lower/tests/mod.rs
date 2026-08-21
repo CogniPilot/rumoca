@@ -2,6 +2,7 @@ use rumoca_core::{SourceMap, Span, VarName};
 
 use super::*;
 
+mod conditional_records;
 mod indexed_updates;
 
 #[test]
@@ -96,14 +97,15 @@ fn binding_dependencies_issue_dependent_parameters_in_topological_order() {
     });
 }
 
-#[test]
-fn rank_two_dependent_parameter_preserves_one_checked_whole_array_move() {
+/// Rank-2 dependent parameter over a rank-2 parameter, used to check that the
+/// dependent binding lowers to a single checked whole-array move.
+fn rank_two_dependent_parameter_fixture() -> dae::Dae {
     let mut sources = SourceMap::new();
     let text = "parameter Real route[2,3]; parameter Real guidanceRoute[2,3] = route;";
     let source = sources.add("whole-array-modifier.mo", text);
     let span = Span::from_offsets(source, 0, text.len());
     let at = dae::DaeProvenance::source(span).unwrap();
-    let model = dae::Dae::construct(sources, |model| {
+    dae::Dae::construct(sources, |model| {
         let matrix_type = model.types(|types| {
             types.derived(dae::ValueType::array(dae::ScalarType::Real, [2, 3]), at)
         })?;
@@ -137,7 +139,12 @@ fn rank_two_dependent_parameter_preserves_one_checked_whole_array_move() {
             variables.define(guidance_reservation, attributes(route_reference), at)
         })
     })
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn rank_two_dependent_parameter_preserves_one_checked_whole_array_move() {
+    let model = rank_two_dependent_parameter_fixture();
 
     model.inspect(|view| {
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
@@ -1201,14 +1208,15 @@ fn lazy_tensor_selection_guards_hoisted_calls_and_indexed_contractions() {
     });
 }
 
-#[test]
-fn scalar_conditional_branches_do_not_share_materialized_calls() {
+/// Two scalar calls to the same function on opposite branches of one
+/// conditional, used to check the branches do not share a materialized call.
+fn scalar_conditional_branches_fixture() -> dae::Dae {
     let mut sources = SourceMap::new();
     let text = "function f input Real u; output Real y; algorithm y := u; end f; if true then f(1.0) else f(1.0)";
     let source = sources.add("conditional-scalar-call.mo", text);
     let span = Span::from_offsets(source, 0, text.len());
     let provenance = dae::DaeProvenance::source(span).unwrap();
-    let model = dae::Dae::construct(sources, |dae| {
+    dae::Dae::construct(sources, |dae| {
         let real = dae.types(|types| {
             types.derived(dae::ValueType::scalar(dae::ScalarType::Real), provenance)
         })?;
@@ -1250,7 +1258,12 @@ fn scalar_conditional_branches_do_not_share_materialized_calls() {
         })?;
         Ok(())
     })
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn scalar_conditional_branches_do_not_share_materialized_calls() {
+    let model = scalar_conditional_branches_fixture();
 
     model.inspect(|view| {
         let calls = (0..view.expression_count())
@@ -1609,199 +1622,6 @@ fn function_identity_assignments_are_not_emitted() {
                 } if target == value
             )
         }));
-    });
-}
-
-fn conditional_record_fixture() -> dae::Dae {
-    let mut sources = SourceMap::new();
-    let text = "record Pair Real left; Real right; end Pair; function makePair input Real u; output Pair p; algorithm p := Pair(u, u); end makePair; (if true then makePair(2.0) else Pair(0.0, 0.0)).right";
-    let source = sources.add("conditional-record-call.mo", text);
-    let span = Span::from_offsets(source, 0, text.len());
-    let provenance = dae::DaeProvenance::source(span).unwrap();
-    dae::Dae::construct(sources, |dae| {
-        let real = dae.types(|types| {
-            types.derived(dae::ValueType::scalar(dae::ScalarType::Real), provenance)
-        })?;
-        let pair = dae.types(|types| {
-            types.record(
-                VarName::new("Pair"),
-                [(VarName::new("left"), real), (VarName::new("right"), real)],
-                provenance,
-            )
-        })?;
-        let signature =
-            dae::FunctionSignature::new(VarName::new("makePair"), [real], [pair], provenance);
-        let (function, ()) = dae.function(signature, |dae, reservation| {
-            let parameter = dae.functions(|functions| {
-                functions.parameter(&reservation, VarName::new("u"), 0, provenance)
-            })?;
-            let output = dae.functions(|functions| {
-                functions.output(&reservation, VarName::new("p"), 0, provenance)
-            })?;
-            let mut body = dae.functions(|functions| functions.begin(reservation, provenance))?;
-            let fields = dae.expressions(|expressions| {
-                Ok([
-                    expressions.at(provenance).function_parameter(parameter)?,
-                    expressions.at(provenance).function_parameter(parameter)?,
-                ])
-            })?;
-            let value =
-                dae.expressions(|expressions| expressions.at(provenance).record(pair, fields))?;
-            dae.functions(|functions| functions.assign(&mut body, output, value, provenance))?;
-            dae.functions(|functions| functions.define(body, provenance))
-        })?;
-        let (condition, argument, zero) = dae.expressions(|expressions| {
-            Ok((
-                expressions
-                    .at(provenance)
-                    .literal(dae::DaeLiteral::Boolean(true))?,
-                expressions
-                    .at(provenance)
-                    .literal(dae::DaeLiteral::Real(2.0))?,
-                expressions
-                    .at(provenance)
-                    .literal(dae::DaeLiteral::Real(0.0))?,
-            ))
-        })?;
-        let call = dae
-            .expressions(|expressions| expressions.at(provenance).call(function, 0, [argument]))?;
-        let fallback =
-            dae.expressions(|expressions| expressions.at(provenance).record(pair, [zero, zero]))?;
-        let selection = dae.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .conditional([(condition, call)], fallback)
-        })?;
-        dae.expressions(|expressions| expressions.at(provenance).field(selection, 1))?;
-        let shared_call_selection = dae.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .conditional([(condition, call)], call)
-        })?;
-        dae.expressions(|expressions| expressions.at(provenance).field(shared_call_selection, 0))?;
-        let shared_call_field =
-            dae.expressions(|expressions| expressions.at(provenance).field(call, 0))?;
-        dae.expressions(|expressions| {
-            expressions.at(provenance).array([
-                shared_call_field,
-                shared_call_field,
-                shared_call_field,
-            ])
-        })?;
-        Ok(())
-    })
-    .unwrap()
-}
-
-fn assert_dynamic_array_record_calls_are_lazy(view: dae::DaeView<'_>) {
-    let array = (0..view.expression_count())
-        .filter_map(|index| view.expression_id(index))
-        .find(|id| {
-            matches!(
-                view.expression(*id).unwrap().operation(),
-                dae::ExpressionOperation::Array(_)
-            )
-        })
-        .unwrap();
-    let index_name = gast::Name::ident("i");
-    let dynamic_index = gast::Expression::Ref(gast::Reference::local(index_name.clone()));
-    let variables = HashMap::new();
-    let previous = HashMap::new();
-    let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-    let mut lowerer =
-        ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
-    lowerer.loop_index_bounds.push(LoopIndexBound {
-        name: index_name,
-        minimum: 1,
-        maximum: 3,
-    });
-    lowerer.lower_at(array, &[dynamic_index]).unwrap();
-    let prefix = lowerer.take_prefix_statements();
-    let gast::Statement::If(first) = &prefix[0].node else {
-        panic!("the array selection must dominate its first call")
-    };
-    assert!(matches!(
-        first.branches[0].body[0].node,
-        gast::Statement::MultiAssignment { .. }
-    ));
-    let first_else = first.else_body.as_ref().unwrap();
-    let gast::Statement::If(second) = &first_else[0].node else {
-        panic!("the array selection must dominate its second call")
-    };
-    assert!(matches!(
-        second.branches[0].body[0].node,
-        gast::Statement::MultiAssignment { .. }
-    ));
-    assert!(matches!(
-        second.else_body.as_ref().unwrap()[0].node,
-        gast::Statement::MultiAssignment { .. }
-    ));
-}
-
-#[test]
-fn conditional_record_call_is_materialized_only_in_its_selected_branch() {
-    let model = conditional_record_fixture();
-    model.inspect(|view| {
-        let field = (0..view.expression_count())
-            .filter_map(|index| view.expression_id(index))
-            .find(|id| {
-                matches!(
-                    view.expression(*id).unwrap().operation(),
-                    dae::ExpressionOperation::Field { field: 1, .. }
-                )
-            })
-            .unwrap();
-        let variables = HashMap::new();
-        let previous = HashMap::new();
-        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let mut lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
-        let selected = lowerer.lower(field).unwrap();
-        let prefix = lowerer.take_prefix_statements();
-
-        assert_eq!(selected.scalar_type, gast::ScalarType::Real);
-        assert_eq!(prefix.len(), 1);
-        let gast::Statement::If(selection) = &prefix[0].node else {
-            panic!("the conditional must dominate its record call")
-        };
-        assert!(matches!(
-            selection.branches[0].body[0].node,
-            gast::Statement::MultiAssignment { .. }
-        ));
-        assert!(
-            prefix.iter().all(|statement| !matches!(
-                statement.node,
-                gast::Statement::MultiAssignment { .. }
-            ))
-        );
-
-        let shared_call_field = (0..view.expression_count())
-            .filter_map(|index| view.expression_id(index))
-            .find(|id| {
-                matches!(
-                    view.expression(*id).unwrap().operation(),
-                    dae::ExpressionOperation::Field { field: 0, .. }
-                )
-            })
-            .unwrap();
-        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let mut lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
-        lowerer.lower(shared_call_field).unwrap();
-        let prefix = lowerer.take_prefix_statements();
-        let gast::Statement::If(selection) = &prefix[0].node else {
-            panic!("the conditional must dominate both uses of its shared call")
-        };
-        assert!(matches!(
-            selection.branches[0].body[0].node,
-            gast::Statement::MultiAssignment { .. }
-        ));
-        assert!(matches!(
-            selection.else_body.as_ref().unwrap()[0].node,
-            gast::Statement::MultiAssignment { .. }
-        ));
-
-        assert_dynamic_array_record_calls_are_lazy(view);
     });
 }
 

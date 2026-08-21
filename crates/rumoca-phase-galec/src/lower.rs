@@ -7,7 +7,10 @@
 
 mod causal_outputs;
 mod clock_schedule;
+mod conditionals;
 mod clocked_assignments;
+mod expression_function_folds;
+mod expression_array_update;
 mod expression_functions;
 mod expression_helpers;
 mod expression_projection;
@@ -483,71 +486,128 @@ impl ParameterDependencyProof {
             .filter(|(_, variable)| variable.role() == dae::VariableRole::Parameter)
             .map(|(id, _)| id.index())
             .collect();
+        let (dependent, dependencies) = Self::collect_dependencies(view, &parameter_ids);
+        let order = Self::topological_order(view, &dependent, &dependencies)?;
+        Ok(Self { dependent, order })
+    }
+
+    /// Map each dependent parameter to the parameters its definition reads.
+    ///
+    /// A parameter is dependent when it is a calculated parameter or when its
+    /// binding reads another parameter; those are the two forms that must be
+    /// recomputed in Recalibrate rather than frozen at Startup.
+    fn collect_dependencies<'dae>(
+        view: dae::DaeView<'dae>,
+        parameter_ids: &HashSet<u32>,
+    ) -> (HashSet<u32>, HashMap<u32, HashSet<u32>>) {
         let mut dependencies: HashMap<u32, HashSet<u32>> = HashMap::new();
         let mut dependent = HashSet::new();
-
         for (id, variable) in view.variables() {
             if variable.role() != dae::VariableRole::Parameter {
                 continue;
             }
-            let definition = if variable.causality() == dae::VariableCausality::CalculatedParameter
-            {
+            let calculated = variable.causality() == dae::VariableCausality::CalculatedParameter;
+            let definition = if calculated {
                 variable.binding().or(variable.start())
             } else {
                 variable.binding()
             };
-            let mut direct = HashSet::new();
-            if let Some(definition) = definition {
-                dae::for_each_expression(view, definition, |_, expression| {
-                    if let Some(reference) = expression.variable_coordinate()
-                        && parameter_ids.contains(&reference.index())
-                    {
-                        direct.insert(reference.index());
-                    }
-                });
-            }
-            if variable.causality() == dae::VariableCausality::CalculatedParameter
-                || !direct.is_empty()
-            {
+            let direct = definition.map_or_else(HashSet::new, |definition| {
+                Self::direct_parameter_references(view, definition, parameter_ids)
+            });
+            if calculated || !direct.is_empty() {
                 dependent.insert(id.index());
                 dependencies.insert(id.index(), direct);
             }
         }
+        (dependent, dependencies)
+    }
 
+    /// Collect the parameters that `definition` reads directly.
+    fn direct_parameter_references<'dae>(
+        view: dae::DaeView<'dae>,
+        definition: dae::ExprId<'dae>,
+        parameter_ids: &HashSet<u32>,
+    ) -> HashSet<u32> {
+        let mut direct = HashSet::new();
+        dae::for_each_expression(view, definition, |_, expression| {
+            if let Some(reference) = expression.variable_coordinate()
+                && parameter_ids.contains(&reference.index())
+            {
+                direct.insert(reference.index());
+            }
+        });
+        direct
+    }
+
+    /// Order dependent parameters so each definition follows everything it
+    /// reads, rejecting a cycle by naming one parameter on it.
+    fn topological_order(
+        view: dae::DaeView<'_>,
+        dependent: &HashSet<u32>,
+        dependencies: &HashMap<u32, HashSet<u32>>,
+    ) -> Result<Vec<u32>, GalecTargetError> {
         let mut order = Vec::with_capacity(dependent.len());
         let mut emitted = HashSet::new();
         while order.len() < dependent.len() {
             let before = order.len();
-            for (id, _) in view.variables() {
-                let raw = id.index();
-                if !dependent.contains(&raw) || emitted.contains(&raw) {
-                    continue;
-                }
-                let ready = dependencies.get(&raw).is_none_or(|direct| {
-                    direct.iter().all(|dependency| {
-                        !dependent.contains(dependency) || emitted.contains(dependency)
-                    })
-                });
-                if ready {
-                    emitted.insert(raw);
-                    order.push(raw);
-                }
-            }
+            Self::emit_ready_pass(view, dependent, dependencies, &mut emitted, &mut order);
             if order.len() == before {
-                let through = view
-                    .variables()
-                    .find(|(id, _)| {
-                        dependent.contains(&id.index()) && !emitted.contains(&id.index())
-                    })
-                    .map_or_else(
-                        || "<unknown>".to_owned(),
-                        |(_, variable)| variable.name().to_string(),
-                    );
-                return Err(GalecTargetError::StartDependencyCycle { through });
+                return Err(GalecTargetError::StartDependencyCycle {
+                    through: Self::cycle_witness(view, dependent, &emitted),
+                });
             }
         }
+        Ok(order)
+    }
 
-        Ok(Self { dependent, order })
+    /// Append every dependent parameter whose reads are already ordered.
+    fn emit_ready_pass(
+        view: dae::DaeView<'_>,
+        dependent: &HashSet<u32>,
+        dependencies: &HashMap<u32, HashSet<u32>>,
+        emitted: &mut HashSet<u32>,
+        order: &mut Vec<u32>,
+    ) {
+        for (id, _) in view.variables() {
+            let raw = id.index();
+            if dependent.contains(&raw)
+                && !emitted.contains(&raw)
+                && Self::is_ready(raw, dependent, dependencies, emitted)
+            {
+                emitted.insert(raw);
+                order.push(raw);
+            }
+        }
+    }
+
+    /// True when every dependent parameter `raw` reads has already been ordered.
+    fn is_ready(
+        raw: u32,
+        dependent: &HashSet<u32>,
+        dependencies: &HashMap<u32, HashSet<u32>>,
+        emitted: &HashSet<u32>,
+    ) -> bool {
+        let Some(direct) = dependencies.get(&raw) else {
+            return true;
+        };
+        direct
+            .iter()
+            .all(|dependency| !dependent.contains(dependency) || emitted.contains(dependency))
+    }
+
+    /// Name one still-unordered dependent parameter, for the cycle diagnostic.
+    fn cycle_witness(
+        view: dae::DaeView<'_>,
+        dependent: &HashSet<u32>,
+        emitted: &HashSet<u32>,
+    ) -> String {
+        view.variables()
+            .find(|(id, _)| dependent.contains(&id.index()) && !emitted.contains(&id.index()))
+            .map_or_else(
+                || "<unknown>".to_owned(),
+                |(_, variable)| variable.name().to_string(),
+            )
     }
 }
 
@@ -1901,173 +1961,6 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         }
     }
 
-    fn lower_conditional_at(
-        &mut self,
-        operands: dae::ExpressionOperands<'dae>,
-        indices: &[gast::Expression],
-        scalar_type: gast::ScalarType,
-        span: Span,
-    ) -> Result<gast::Expression, GalecTargetError> {
-        if self.materialize_function_values {
-            self.conditional_depth += 1;
-            let result = self.lower_materialized_conditional(operands, indices, scalar_type, span);
-            self.conditional_depth -= 1;
-            return result;
-        }
-        self.lower_conditional_branches(operands, indices, scalar_type, span)
-    }
-
-    fn lower_materialized_conditional(
-        &mut self,
-        operands: dae::ExpressionOperands<'dae>,
-        indices: &[gast::Expression],
-        scalar_type: gast::ScalarType,
-        span: Span,
-    ) -> Result<gast::Expression, GalecTargetError> {
-        let name = gast::Name::ident(format!(
-            "rumoca_{}_conditional_{}",
-            self.temporary_namespace, self.temporary_counter
-        ));
-        self.temporary_counter += 1;
-        self.temporary_locals.push(gast::VariableDeclaration {
-            ty: gast::TypeRef::Primitive(scalar_type),
-            name: name.clone(),
-            dimensions: Vec::new(),
-            range: gast::RangeAttributes::default(),
-            span,
-        });
-        let conditional = MaterializedConditional {
-            operands,
-            indices,
-            scalar_type,
-            target: &name,
-            activation_operands: conditional_activation_operands(operands),
-            span,
-        };
-        let statements = self.lower_materialized_conditional_branch(&conditional, 0)?;
-        self.pending_prefix_statements.extend(statements);
-        Ok(gast::Expression::Ref(gast::Reference::local(name)))
-    }
-
-    fn lower_materialized_conditional_branch(
-        &mut self,
-        conditional: &MaterializedConditional<'_, 'dae>,
-        ordinal: usize,
-    ) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
-        self.conditional_activation_path
-            .push(ConditionalActivationKey {
-                kind: ConditionalActivationKind::ConditionalScalar,
-                operands: conditional.activation_operands.clone(),
-                branch: u32::try_from(ordinal / 2).map_err(|_| {
-                    GalecTargetError::LoweringInternal {
-                        detail: "conditional branch exceeds the activation-key capacity".to_owned(),
-                    }
-                })?,
-            });
-        if ordinal + 1 == conditional.operands.len() {
-            let start = self.pending_prefix_statements.len();
-            let value = self.lower_at(
-                conditional
-                    .operands
-                    .get(ordinal)
-                    .expect("checked conditional fallback"),
-                conditional.indices,
-            );
-            self.conditional_activation_path.pop();
-            let value = value?;
-            let mut body = self.pending_prefix_statements.split_off(start);
-            body.push(gast::Spanned::new(
-                gast::Statement::Assignment {
-                    target: gast::Reference::local(conditional.target.clone()),
-                    value: coerce(value, conditional.scalar_type, conditional.span)?,
-                },
-                conditional.span,
-            ));
-            return Ok(body);
-        }
-
-        let condition_start = self.pending_prefix_statements.len();
-        let condition = self.lower(
-            conditional
-                .operands
-                .get(ordinal)
-                .expect("checked conditional branch condition"),
-        );
-        let condition = match condition {
-            Ok(condition) => condition,
-            Err(error) => {
-                self.conditional_activation_path.pop();
-                return Err(error);
-            }
-        };
-        if let Err(error) = require_boolean(&condition, conditional.span) {
-            self.conditional_activation_path.pop();
-            return Err(error);
-        }
-        let mut statements = self.pending_prefix_statements.split_off(condition_start);
-
-        let value_start = self.pending_prefix_statements.len();
-        let value = self.lower_at(
-            conditional
-                .operands
-                .get(ordinal + 1)
-                .expect("checked conditional branch value"),
-            conditional.indices,
-        );
-        self.conditional_activation_path.pop();
-        let value = value?;
-        let mut body = self.pending_prefix_statements.split_off(value_start);
-        body.push(gast::Spanned::new(
-            gast::Statement::Assignment {
-                target: gast::Reference::local(conditional.target.clone()),
-                value: coerce(value, conditional.scalar_type, conditional.span)?,
-            },
-            conditional.span,
-        ));
-        let else_body = self.lower_materialized_conditional_branch(conditional, ordinal + 2)?;
-        statements.push(gast::Spanned::new(
-            gast::Statement::If(gast::IfStatement {
-                branches: vec![gast::IfBranch {
-                    condition: gast::Condition::Expression(condition.expression),
-                    body,
-                    span: conditional.span,
-                }],
-                else_body: Some(else_body),
-            }),
-            conditional.span,
-        ));
-        Ok(statements)
-    }
-
-    fn lower_conditional_branches(
-        &mut self,
-        operands: dae::ExpressionOperands<'dae>,
-        indices: &[gast::Expression],
-        scalar_type: gast::ScalarType,
-        span: Span,
-    ) -> Result<gast::Expression, GalecTargetError> {
-        let mut branches = Vec::new();
-        for ordinal in (0..operands.len() - 1).step_by(2) {
-            let condition =
-                self.lower(operands.get(ordinal).expect("checked condition operand"))?;
-            require_boolean(&condition, span)?;
-            let value = self.lower_at(
-                operands.get(ordinal + 1).expect("checked value operand"),
-                indices,
-            )?;
-            branches.push((condition.expression, coerce(value, scalar_type, span)?));
-        }
-        let fallback = self.lower_at(
-            operands
-                .get(operands.len() - 1)
-                .expect("checked conditional fallback"),
-            indices,
-        )?;
-        Ok(gast::Expression::If(gast::IfExpression::new(
-            branches,
-            coerce(fallback, scalar_type, span)?,
-        )))
-    }
 }
 
 fn conditional_activation_operands(operands: dae::ExpressionOperands<'_>) -> Vec<u32> {
