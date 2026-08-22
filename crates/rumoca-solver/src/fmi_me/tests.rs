@@ -1532,3 +1532,194 @@ fn refresh_owned(mut model: solve::SolveModel) -> solve::SolveModel {
         .collect();
     model
 }
+
+// -- the indicator inventory is built once (SPEC_0044 ME-EVENT-001) ---------
+
+/// Sources the indicator step path is drawn from, so the properties below are
+/// checked against the code that actually runs.
+const COMPONENT_SOURCE: &str = include_str!("kernel/component.rs");
+const KERNEL_SOURCE: &str = include_str!("kernel.rs");
+const INDICATOR_PLAN_SOURCE: &str = include_str!("kernel/indicator_plan.rs");
+const SOLVE_OPS_SOURCE: &str = include_str!("../runtime/solve_ops.rs");
+const SOLVE_RUNTIME_SOURCE: &str = include_str!("../runtime/solve_runtime.rs");
+const SOLVE_RUNTIME_PLANS_SOURCE: &str = include_str!("../runtime/solve_runtime/plans.rs");
+
+/// The body of one method declared at `impl` indentation.
+fn method_body<'source>(source: &'source str, signature: &str) -> &'source str {
+    let start = source
+        .find(signature)
+        .unwrap_or_else(|| panic!("{signature} must exist"));
+    let body = &source[start..];
+    let end = body
+        .find("\n    }\n")
+        .unwrap_or_else(|| panic!("{signature} must be a method at impl indentation"));
+    &body[..end]
+}
+
+/// The name of the method one occurrence sits in.
+fn enclosing_method<'source>(source: &'source str, needle: &str) -> &'source str {
+    let position = source
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle} must exist"));
+    let header = source[..position]
+        .rfind("\n    fn ")
+        .into_iter()
+        .chain(source[..position].rfind("\n    pub(super) fn "))
+        .chain(source[..position].rfind("\n    pub(crate) fn "))
+        .max()
+        .expect("an occurrence sits inside a method");
+    let name = source[header..position]
+        .split("fn ")
+        .nth(1)
+        .expect("a method header names its function");
+    name.split(['(', '<', ' ']).next().unwrap_or_default()
+}
+
+#[test]
+fn the_indicator_inventory_has_one_constructor_the_step_path_cannot_reach() {
+    assert_eq!(
+        COMPONENT_SOURCE
+            .matches("FmiIndicatorPlan::derive(")
+            .count(),
+        1,
+        "the resolved indicator table is constructed exactly once"
+    );
+    assert_eq!(
+        KERNEL_SOURCE.matches("FmiIndicatorPlan::derive").count(),
+        0,
+        "no operation outside the constructor may build an indicator table"
+    );
+    assert_eq!(
+        enclosing_method(COMPONENT_SOURCE, "FmiIndicatorPlan::derive("),
+        "instantiate_inner",
+        "the only indicator table is the instantiated component's own"
+    );
+    for source in [COMPONENT_SOURCE, KERNEL_SOURCE] {
+        assert_eq!(
+            source.matches(".indicator_plan =").count(),
+            0,
+            "the resolved indicator table is never reassigned"
+        );
+    }
+    assert_eq!(
+        INDICATOR_PLAN_SOURCE.matches("&mut self").count(),
+        0,
+        "the resolved indicator table exposes no operation that could mutate it"
+    );
+}
+
+#[test]
+fn the_step_path_neither_masks_nor_reprojects_the_root_vector() {
+    for name in [
+        "filter_scheduled_root_crossings",
+        "root_condition_is_search_active",
+        "root_search_is_uniformly_inactive",
+    ] {
+        for source in [
+            COMPONENT_SOURCE,
+            KERNEL_SOURCE,
+            SOLVE_OPS_SOURCE,
+            SOLVE_RUNTIME_SOURCE,
+            SOLVE_RUNTIME_PLANS_SOURCE,
+        ] {
+            assert_eq!(
+                source.matches(name).count(),
+                0,
+                "{name} compensated for an unfiltered inventory and has no successor"
+            );
+        }
+    }
+    let evaluation = method_body(COMPONENT_SOURCE, "fn evaluate_inventory_indicators(");
+    assert_eq!(
+        evaluation.matches("full_solver_y").count(),
+        1,
+        "an indicator read settles the full algebraic coordinate at most once"
+    );
+    assert!(
+        evaluation
+            .contains("if self.indicator_plan.reads_deadlines() && settled_guess.is_none() {"),
+        "only a dynamic-time deadline needs a settled algebraic coordinate of its own; \
+         a root-only inventory keeps the root search's own restricted refresh"
+    );
+    for signature in [
+        "fn evaluate_inventory_indicators(",
+        "fn apply_indicator_zero_sides(",
+    ] {
+        let body = method_body(COMPONENT_SOURCE, signature);
+        for reconstruction in [
+            "vec![",
+            "Vec::new()",
+            ".to_vec()",
+            "collect::<Vec<",
+            "FmiEventIndicatorSource",
+        ] {
+            assert!(
+                !body.contains(reconstruction),
+                "{signature} must read the resolved table, not rebuild one with {reconstruction}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_indicator_step_path_never_rebuilds_or_regrows_its_storage() {
+    let mut model = strict_root_relation_memory();
+    model.initial_y = vec![-0.5];
+    model
+        .validate()
+        .expect("stepping fixture must satisfy the finalized Solve contract");
+    let mut kernel = instantiate(&model);
+    kernel
+        .enter_initialization_mode()
+        .expect("stepping fixture initialization should start");
+    kernel
+        .exit_initialization_mode()
+        .expect("stepping fixture initialization should settle");
+    kernel
+        .update_discrete_states()
+        .expect("stepping fixture initial event should run");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("stepping fixture should enter continuous time");
+
+    let mut indicators = Vec::new();
+    kernel
+        .get_event_indicators(&mut indicators)
+        .expect("the stepping fixture publishes its root distance");
+    assert_eq!(
+        indicators.len(),
+        1,
+        "the fixture must exercise a non-empty inventory"
+    );
+    let identity = kernel.verification_indicator_storage();
+
+    // The sweep crosses the root, so the completed-step callback exercises both
+    // the unchanged domains of an ordinary step and the armed crossing of an
+    // accepted event point.
+    let mut crossed = false;
+    for step in 1..=16u32 {
+        let time = f64::from(step) * 0.05;
+        kernel
+            .set_time(MeTime::at(time))
+            .expect("the integrator advances component time");
+        kernel
+            .set_continuous_states(&[-0.5 + time])
+            .expect("the integrator advances the continuous state");
+        kernel
+            .get_event_indicators(&mut indicators)
+            .expect("the host reads indicators at every trial point");
+        crossed |= kernel
+            .completed_integrator_step(true)
+            .expect("the host completes every accepted step")
+            .enter_event_mode;
+        assert_eq!(
+            kernel.verification_indicator_storage(),
+            identity,
+            "step {step} rebuilt or regrew the FMI event-indicator storage"
+        );
+    }
+    assert!(
+        crossed,
+        "the sweep must cross the indicator so the armed-crossing path runs"
+    );
+}

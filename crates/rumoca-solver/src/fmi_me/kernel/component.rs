@@ -1,6 +1,7 @@
-use rumoca_ir_solve::{self as solve, ScalarSlot};
+use rumoca_ir_solve::ScalarSlot;
 
 use super::event_boundary::event_boundary_horizon;
+use super::indicator_plan::{IndicatorPlanInputs, IndicatorReading, IndicatorZeroSide};
 use super::*;
 
 impl SolveMeKernel {
@@ -31,7 +32,7 @@ impl SolveMeKernel {
     }
 
     pub(crate) fn event_indicators_into(&self, indicators: &mut [f64]) -> Result<(), MeError> {
-        let indicator_count = self.event_indicator_sources.len();
+        let indicator_count = self.indicator_plan.len();
         if indicators.len() != indicator_count {
             return Err(contract(format!(
                 "event-indicator buffer has {} entries for {} indicators",
@@ -53,12 +54,18 @@ impl SolveMeKernel {
         })
         .map_err(|error| error.at_stage(MeStage::Integration))?
         .map_err(|error| error.at_stage(MeStage::Integration))?;
-        self.orient_inventory_root_zeros(indicators);
-        self.restore_frozen_zero_domains(indicators);
+        self.apply_indicator_zero_sides(indicators);
         self.cache_root_conditions(time, &self.states, indicators);
         Ok(())
     }
 
+    /// Read every FMI indicator position through the resolved plan.
+    ///
+    /// The plan already decides which runtime vectors this model reads, so the
+    /// only per-read cost is the evaluation each declared position needs. A
+    /// dynamic-time deadline is the one source that needs a settled algebraic
+    /// coordinate of its own; a root-only inventory keeps the root search's
+    /// own restricted refresh.
     fn evaluate_inventory_indicators(
         &self,
         time: f64,
@@ -66,7 +73,9 @@ impl SolveMeKernel {
         settled_guess: &mut Option<Vec<f64>>,
         indicators: &mut [f64],
     ) -> Result<(), MeError> {
-        if settled_guess.is_none() {
+        let mut root_values = self.indicator_root_scratch.borrow_mut();
+        let mut deadlines = self.indicator_deadline_scratch.borrow_mut();
+        if self.indicator_plan.reads_deadlines() && settled_guess.is_none() {
             *settled_guess = Some(self.runtime.full_solver_y(
                 time,
                 &self.states,
@@ -75,81 +84,52 @@ impl SolveMeKernel {
                 UPDATE_MAX_ITERS,
             )?);
         }
-        let needs_full_roots = self.event_indicator_sources.iter().any(|source| {
-            matches!(
-                source,
-                solve::fmi::FmiEventIndicatorSource::RootCondition { .. }
-                    | solve::fmi::FmiEventIndicatorSource::DelayDiscontinuity { .. }
-            )
-        });
-        let mut full_roots = vec![0.0; self.runtime.root_condition_count()];
-        if needs_full_roots {
-            self.evaluate_root_conditions(time, params, settled_guess, &mut full_roots)?;
+        if self.indicator_plan.reads_root_values() {
+            root_values.fill(0.0);
+            self.evaluate_root_conditions(time, params, settled_guess, &mut root_values)?;
         }
-        let needs_dynamic_deadlines = self.event_indicator_sources.iter().any(|source| {
-            matches!(
-                source,
-                solve::fmi::FmiEventIndicatorSource::DynamicTimeEvent { .. }
-            )
-        });
-        let dynamic_deadlines = if needs_dynamic_deadlines {
-            self.runtime.eval_dynamic_time_event_rows(
-                time,
-                settled_guess.as_deref().unwrap_or(&[]),
-                params,
-            )?
-        } else {
-            Vec::new()
-        };
-        let model_root_count = self
-            .runtime
-            .model
-            .problem
-            .events
-            .root_conditions
-            .output_count();
-        for (indicator, source) in indicators.iter_mut().zip(&self.event_indicator_sources) {
-            *indicator = match *source {
-                solve::fmi::FmiEventIndicatorSource::RootCondition { index } => full_roots
-                    .get(index)
-                    .copied()
-                    .ok_or_else(|| contract("FMI root indicator source is out of range"))?,
-                solve::fmi::FmiEventIndicatorSource::DynamicTimeEvent { index } => {
-                    dynamic_deadlines
-                        .get(index)
-                        .copied()
-                        .ok_or_else(|| contract("FMI dynamic-time indicator source is out of range"))?
-                        - time
-                }
-                solve::fmi::FmiEventIndicatorSource::DelayDiscontinuity { index } => full_roots
-                    .get(model_root_count + index)
-                    .copied()
-                    .ok_or_else(|| contract("FMI delay indicator source is out of range"))?,
-            };
+        if self.indicator_plan.reads_deadlines() {
+            let guess = settled_guess.as_deref().ok_or_else(|| {
+                contract("FMI dynamic-time indicators need a settled algebraic coordinate")
+            })?;
+            self.runtime
+                .eval_dynamic_time_event_rows_into(time, guess, params, &mut deadlines)?;
+        }
+        for (indicator, entry) in indicators.iter_mut().zip(self.indicator_plan.entries()) {
+            *indicator = indicator_reading_value(entry.reading(), time, &root_values, &deadlines)?;
         }
         Ok(())
     }
 
-    fn orient_inventory_root_zeros(&self, indicators: &mut [f64]) {
-        for (indicator, source) in indicators.iter_mut().zip(&self.event_indicator_sources) {
+    /// Report an exact zero on the side the plan assigned that position.
+    fn apply_indicator_zero_sides(&self, indicators: &mut [f64]) {
+        for (position, (indicator, entry)) in indicators
+            .iter_mut()
+            .zip(self.indicator_plan.entries())
+            .enumerate()
+        {
             if *indicator != 0.0 {
                 continue;
             }
-            let solve::fmi::FmiEventIndicatorSource::RootCondition { index } = *source else {
-                continue;
+            *indicator = match entry.zero_side() {
+                IndicatorZeroSide::Positive => f64::EPSILON,
+                IndicatorZeroSide::NonPositive => -f64::EPSILON,
+                IndicatorZeroSide::Frozen => self.frozen_indicator_zero(position),
             };
-            *indicator = match self
-                .runtime
-                .model
-                .problem
-                .events
-                .root_zero_domains
-                .get(index)
-            {
-                Some(solve::RootZeroDomain::Positive) => f64::EPSILON,
-                Some(solve::RootZeroDomain::NonPositive) => -f64::EPSILON,
-                Some(solve::RootZeroDomain::Previous) | None => 0.0,
-            };
+        }
+    }
+
+    /// The side the previous completed point froze one indicator on.
+    fn frozen_indicator_zero(&self, position: usize) -> f64 {
+        if self
+            .frozen_indicator_positive
+            .get(position)
+            .copied()
+            .unwrap_or(false)
+        {
+            f64::EPSILON
+        } else {
+            -f64::EPSILON
         }
     }
 
@@ -214,40 +194,6 @@ impl SolveMeKernel {
         }
     }
 
-    fn restore_frozen_zero_domains(&self, indicators: &mut [f64]) {
-        for (index, (indicator, source)) in indicators
-            .iter_mut()
-            .zip(&self.event_indicator_sources)
-            .enumerate()
-        {
-            let previous_domain = match *source {
-                solve::fmi::FmiEventIndicatorSource::RootCondition { index } => self
-                    .runtime
-                    .model
-                    .problem
-                    .events
-                    .root_zero_domains
-                    .get(index)
-                    .is_none_or(|domain| matches!(domain, solve::RootZeroDomain::Previous)),
-                solve::fmi::FmiEventIndicatorSource::DynamicTimeEvent { .. }
-                | solve::fmi::FmiEventIndicatorSource::DelayDiscontinuity { .. } => true,
-            };
-            if *indicator != 0.0 || !previous_domain {
-                continue;
-            }
-            let was_positive = self
-                .frozen_indicator_positive
-                .get(index)
-                .copied()
-                .unwrap_or(false);
-            *indicator = if was_positive {
-                f64::EPSILON
-            } else {
-                -f64::EPSILON
-            };
-        }
-    }
-
     /// Freeze the standard indicator domains at one completed point and retain
     /// any domain changes for the next argument-free Event Mode transition.
     ///
@@ -255,67 +201,60 @@ impl SolveMeKernel {
     /// while the component independently observes the standard callback at its
     /// own accepted coordinate. No crossing vector crosses the FMI boundary.
     pub(super) fn complete_indicator_domains(&mut self) -> Result<bool, MeError> {
-        let count = self.event_indicator_sources.len();
+        let count = self.indicator_plan.len();
         if count == 0 {
             self.frozen_indicator_positive.clear();
             self.pending_root_crossings.clear();
             return Ok(false);
         }
-        let mut indicators = Vec::new();
-        indicators
-            .try_reserve_exact(count)
-            .map_err(|_| MeError::Allocation {
-                context: "completed event-indicator domains",
-                entries: count,
-            })?;
-        indicators.resize(count, 0.0);
-        self.event_indicators_into(&mut indicators)?;
-        let current = indicators
-            .iter()
-            .map(|indicator| *indicator > 0.0)
-            .collect::<Vec<_>>();
+        let mut indicators = std::mem::take(&mut self.indicator_value_scratch);
+        let read = self.event_indicators_into(&mut indicators);
+        self.indicator_value_scratch = indicators;
+        read?;
+        let mut current = std::mem::take(&mut self.indicator_domain_scratch);
+        current.clear();
+        current.extend(
+            self.indicator_value_scratch
+                .iter()
+                .map(|indicator| *indicator > 0.0),
+        );
         if self.frozen_indicator_positive.len() != count {
-            self.frozen_indicator_positive = current;
+            std::mem::swap(&mut self.frozen_indicator_positive, &mut current);
+            self.indicator_domain_scratch = current;
             self.pending_root_crossings.clear();
             return Ok(false);
         }
 
-        let changed = self
+        let domain_changed = self
             .frozen_indicator_positive
             .iter()
             .zip(&current)
-            .enumerate()
-            .filter_map(|(index, (before, after))| (before != after).then_some((index, *after)))
-            .collect::<Vec<_>>();
-        let model_root_count = self
-            .runtime
-            .model
-            .problem
-            .events
-            .root_conditions
-            .output_count();
-        let crossings = changed
-            .iter()
-            .filter_map(|(position, after)| {
-                let index = match self.event_indicator_sources[*position] {
-                    solve::fmi::FmiEventIndicatorSource::RootCondition { index } => index,
-                    solve::fmi::FmiEventIndicatorSource::DelayDiscontinuity { index } => {
-                        model_root_count + index
-                    }
-                    solve::fmi::FmiEventIndicatorSource::DynamicTimeEvent { .. } => return None,
-                };
-                Some(RootCrossing {
-                    index,
-                    post_relation_memory_value: if *after { 0.0 } else { 1.0 },
-                })
-            })
-            .collect::<Vec<_>>();
-        if !changed.is_empty() {
-            self.capture_event_entry()?;
+            .any(|(before, after)| before != after);
+        if !domain_changed {
+            self.indicator_domain_scratch = current;
+            self.pending_root_crossings.clear();
+            return Ok(false);
         }
+        self.capture_event_entry()?;
+        let mut crossings = std::mem::take(&mut self.pending_root_crossings);
+        crossings.clear();
+        crossings.extend(
+            self.frozen_indicator_positive
+                .iter()
+                .zip(&current)
+                .enumerate()
+                .filter(|(_, (before, after))| before != after)
+                .filter_map(|(position, (_, after))| {
+                    Some(RootCrossing {
+                        index: self.indicator_plan.crossing_root_index(position)?,
+                        post_relation_memory_value: if *after { 0.0 } else { 1.0 },
+                    })
+                }),
+        );
         self.pending_root_crossings = crossings;
-        self.frozen_indicator_positive = current;
-        Ok(!changed.is_empty())
+        std::mem::swap(&mut self.frozen_indicator_positive, &mut current);
+        self.indicator_domain_scratch = current;
+        Ok(true)
     }
 
     /// Seed the domain cache after Event Mode from the settled component state.
@@ -325,44 +264,29 @@ impl SolveMeKernel {
     /// froze. Static strict/non-strict roots were already oriented by their
     /// checked `RootZeroDomain`.
     pub(super) fn seed_settled_indicator_domains(&mut self) -> Result<(), MeError> {
-        let count = self.event_indicator_sources.len();
+        let count = self.indicator_plan.len();
         if count == 0 {
             self.frozen_indicator_positive.clear();
             return Ok(());
         }
         let previous = self.frozen_indicator_positive.clone();
-        let mut indicators = Vec::new();
-        indicators
-            .try_reserve_exact(count)
-            .map_err(|_| MeError::Allocation {
-                context: "settled event-indicator domains",
-                entries: count,
-            })?;
-        indicators.resize(count, 0.0);
-        self.event_indicators_into(&mut indicators)?;
-        let targets = &self
-            .runtime
-            .model
-            .problem
-            .events
-            .root_relation_memory_targets;
-        let settled = indicators
+        let mut indicators = std::mem::take(&mut self.indicator_value_scratch);
+        let read = self.event_indicators_into(&mut indicators);
+        self.indicator_value_scratch = indicators;
+        read?;
+        let settled = self
+            .indicator_value_scratch
             .iter()
             .enumerate()
-            .map(|(index, indicator)| {
-                let root_index = match self.event_indicator_sources[index] {
-                    solve::fmi::FmiEventIndicatorSource::RootCondition { index } => Some(index),
-                    solve::fmi::FmiEventIndicatorSource::DynamicTimeEvent { .. }
-                    | solve::fmi::FmiEventIndicatorSource::DelayDiscontinuity { .. } => None,
-                };
-                match root_index.and_then(|index| targets.get(index).copied().flatten()) {
+            .map(|(position, indicator)| {
+                match self.indicator_plan.relation_memory_target(position) {
                     Some(ScalarSlot::P {
                         index: parameter, ..
                     }) => self
                         .params
                         .get(parameter)
                         .is_none_or(|memory| *memory <= 0.5),
-                    _ => previous.get(index).copied().unwrap_or(*indicator > 0.0),
+                    _ => previous.get(position).copied().unwrap_or(*indicator > 0.0),
                 }
             })
             .collect();
@@ -383,6 +307,41 @@ impl SolveMeKernel {
         self.pending_event_pre_y = Some(pre_y);
         self.pending_event_pre_p = Some(self.params.clone());
         Ok(())
+    }
+
+    /// The identity of the resolved indicator table and of the storage every
+    /// indicator read uses.
+    ///
+    /// The plan shape comes from the constructor and the buffer addresses are
+    /// the ones reserved with it, so a step that rebuilt or regrew either would
+    /// change this value.
+    #[cfg(test)]
+    pub(crate) fn verification_indicator_storage(&self) -> IndicatorStorageIdentity {
+        let mut domain_buffers = [
+            self.frozen_indicator_positive.as_ptr() as usize,
+            self.indicator_domain_scratch.as_ptr() as usize,
+        ];
+        domain_buffers.sort_unstable();
+        IndicatorStorageIdentity {
+            entries: self
+                .indicator_plan
+                .entries()
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.reading(),
+                        entry.zero_side(),
+                        entry.crossing_root_index(),
+                    )
+                })
+                .collect(),
+            root_value_len: self.indicator_plan.root_value_len(),
+            deadline_len: self.indicator_plan.deadline_len(),
+            root_buffer: self.indicator_root_scratch.borrow().as_ptr() as usize,
+            deadline_buffer: self.indicator_deadline_scratch.borrow().as_ptr() as usize,
+            value_buffer: self.indicator_value_scratch.as_ptr() as usize,
+            domain_buffers,
+        }
     }
 
     #[cfg(test)]
@@ -582,12 +541,38 @@ impl SolveMeKernel {
         let stop_schedule =
             SolveStopSchedule::new(&runtime.model.problem, config.start_time, config.stop_time);
         let output_meta = convert_variable_meta(&runtime.model.variable_meta);
+        let events = &runtime.model.problem.events;
+        let indicator_plan = FmiIndicatorPlan::derive(
+            &event_indicator_sources,
+            IndicatorPlanInputs {
+                root_value_count: runtime.root_condition_count(),
+                model_root_count: events.root_conditions.output_count(),
+                deadline_count: events.dynamic_time_event_rhs.output_count(),
+                root_zero_domains: &events.root_zero_domains,
+                root_relation_memory_targets: &events.root_relation_memory_targets,
+            },
+        )
+        .map_err(|error| contract(error.to_string()))?;
+        let indicator_value_scratch =
+            reserved_indicator_values(indicator_plan.len(), "event-indicator values")?;
+        let indicator_root_scratch =
+            reserved_indicator_values(indicator_plan.root_value_len(), "event-indicator roots")?;
+        let indicator_deadline_scratch = reserved_indicator_values(
+            indicator_plan.deadline_len(),
+            "event-indicator dynamic-time deadlines",
+        )?;
+        let indicator_domain_scratch = reserved_indicator_domains(indicator_plan.len())?;
+        let frozen_indicator_positive = reserved_indicator_domains(indicator_plan.len())?;
         Ok(Self {
             solver_y_guess: RefCell::new(runtime.model.initial_y.clone()),
+            indicator_root_scratch: RefCell::new(indicator_root_scratch),
+            indicator_deadline_scratch: RefCell::new(indicator_deadline_scratch),
+            indicator_value_scratch,
+            indicator_domain_scratch,
             delay_params_scratch: RefCell::new(params.clone()),
             delay_solver_y_scratch: RefCell::new(runtime.model.initial_y.clone()),
             runtime,
-            event_indicator_sources,
+            indicator_plan,
             instance_brand: Rc::new(()),
             instance_name: config.instance_name,
             lifecycle: MeLifecycle::instantiated(configuration),
@@ -608,7 +593,7 @@ impl SolveMeKernel {
             state_time_coincidence: StateTimeCoincidence::None,
             initial_event_pending: false,
             pending_root_crossings: Vec::new(),
-            frozen_indicator_positive: Vec::new(),
+            frozen_indicator_positive,
             pending_event_pre_y: None,
             pending_event_pre_p: None,
             boundary_event_pre_y: None,
@@ -1679,6 +1664,72 @@ impl SolveMeKernel {
             next_event_time,
         })
     }
+}
+
+/// The scalar value one resolved indicator position reports.
+fn indicator_reading_value(
+    reading: IndicatorReading,
+    time: f64,
+    root_values: &[f64],
+    deadlines: &[f64],
+) -> Result<f64, MeError> {
+    match reading {
+        IndicatorReading::RootValue { index } => root_values
+            .get(index)
+            .copied()
+            .ok_or_else(|| contract("FMI root indicator source is out of range")),
+        IndicatorReading::DeadlineDistance { index } => deadlines
+            .get(index)
+            .copied()
+            .map(|deadline| deadline - time)
+            .ok_or_else(|| contract("FMI dynamic-time indicator source is out of range")),
+    }
+}
+
+/// The resolved indicator table together with the addresses of the buffers
+/// every indicator read uses.
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct IndicatorStorageIdentity {
+    entries: Vec<(IndicatorReading, IndicatorZeroSide, Option<usize>)>,
+    root_value_len: usize,
+    deadline_len: usize,
+    root_buffer: usize,
+    deadline_buffer: usize,
+    value_buffer: usize,
+    /// The frozen-domain buffer and its working buffer, which the completed-step
+    /// callback swaps, so the pair is compared as a set.
+    domain_buffers: [usize; 2],
+}
+
+/// Reserve one indicator working buffer at instantiation.
+///
+/// Every FMI event-indicator buffer this component reads is sized here, so a
+/// reservation failure is an instantiation refusal rather than a per-step
+/// abort, and the step path never grows a buffer.
+fn reserved_indicator_values(entries: usize, context: &'static str) -> Result<Vec<f64>, MeError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(entries)
+        .map_err(|_| MeError::Allocation { context, entries })?;
+    values.resize(entries, 0.0);
+    Ok(values)
+}
+
+/// Reserve one indicator-domain buffer at instantiation.
+///
+/// The completed-step callback swaps the frozen domains with their working
+/// buffer, so both start with the whole inventory reserved and neither grows
+/// afterward.
+fn reserved_indicator_domains(entries: usize) -> Result<Vec<bool>, MeError> {
+    let mut domains = Vec::new();
+    domains
+        .try_reserve_exact(entries)
+        .map_err(|_| MeError::Allocation {
+            context: "event-indicator domains",
+            entries,
+        })?;
+    Ok(domains)
 }
 
 fn merge_coincident_event_stops(

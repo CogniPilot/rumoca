@@ -42,17 +42,28 @@ impl SolveRuntime {
         self.update_root_relation_memory_from_values(&roots, params, root_relation_overrides)
     }
 
-    pub fn eval_dynamic_time_event_rows(
+    /// Evaluate the dynamic-time deadline rows into a caller-owned buffer.
+    pub fn eval_dynamic_time_event_rows_into(
         &self,
         t: f64,
         solver_y: &[f64],
         params: &[f64],
-    ) -> Result<Vec<f64>, RuntimeSolveError> {
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
         let block = &self.model.problem.events.dynamic_time_event_rhs;
+        validate_runtime_output_len("dynamic-time deadline output", block.len(), out.len())?;
         if block.is_empty() {
-            return Ok(Vec::new());
+            return Ok(());
         }
-        self.eval_scalar_program_block(block, solver_y, params, t)
+        solve_eval::eval_scalar_program_block_with_context(
+            block,
+            solver_y,
+            params,
+            t,
+            self.row_eval_context(),
+            out,
+        )?;
+        Ok(())
     }
 
     pub fn current_dynamic_time_event_stop(

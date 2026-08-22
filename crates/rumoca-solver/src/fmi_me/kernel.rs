@@ -2,6 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 mod component;
 mod event_boundary;
+mod indicator_plan;
 
 use super::lifecycle::{MeLifecycle, MeLifecycleCommand, MeLifecycleViolation, MeState};
 use super::{
@@ -28,6 +29,7 @@ use crate::runtime::solve_runtime::{
 use crate::runtime::time::time_match_with_tol;
 use crate::solver::{SimTermination, SimVariableMeta};
 use crate::timeline;
+use indicator_plan::FmiIndicatorPlan;
 
 /// Residual tolerance for the component's internal algebraic refresh.
 const ALGEBRAIC_REFRESH_TOL: f64 = 1.0e-10;
@@ -93,7 +95,8 @@ impl StateTimeCoincidence {
 /// events, or runtime objects: the only way in is [`SolveMeKernel`].
 pub struct SolveMeKernel {
     runtime: Rc<SolveRuntime>,
-    event_indicator_sources: Vec<rumoca_ir_solve::fmi::FmiEventIndicatorSource>,
+    /// The FMI event-indicator table, resolved once at instantiation.
+    indicator_plan: FmiIndicatorPlan,
     instance_brand: Rc<()>,
     instance_name: &'static str,
     lifecycle: MeLifecycle,
@@ -132,6 +135,12 @@ pub struct SolveMeKernel {
     boundary_event_pre_p: Option<Vec<f64>>,
 
     solver_y_guess: RefCell<Vec<f64>>,
+    /// Indicator working storage sized once from [`FmiIndicatorPlan`], so an
+    /// indicator read reserves nothing proportional to the model.
+    indicator_root_scratch: RefCell<Vec<f64>>,
+    indicator_deadline_scratch: RefCell<Vec<f64>>,
+    indicator_value_scratch: Vec<f64>,
+    indicator_domain_scratch: Vec<bool>,
     delay_params_scratch: RefCell<Vec<f64>>,
     delay_solver_y_scratch: RefCell<Vec<f64>>,
     derivative_cache: RefCell<Option<CachedDerivative>>,
@@ -214,7 +223,7 @@ impl SolveMeKernel {
     pub(crate) fn model_description(&self) -> MeModelDescription<'_> {
         MeModelDescription {
             continuous_state_count: self.state_count,
-            event_indicator_count: self.event_indicator_sources.len(),
+            event_indicator_count: self.indicator_plan.len(),
             // The linked kernel commits accepted-point history and invalidates
             // component caches here. Discrete-delay models need this even when
             // they have no continuous delay channel, so the current component
@@ -440,7 +449,7 @@ impl SolveMeKernel {
     }
 
     pub(crate) fn get_event_indicators(&self, indicators: &mut Vec<f64>) -> Result<(), MeError> {
-        indicators.resize(self.event_indicator_sources.len(), 0.0);
+        indicators.resize(self.indicator_plan.len(), 0.0);
         self.event_indicators_into(indicators)
     }
 
@@ -497,7 +506,7 @@ impl SolveMeKernel {
         crossings: &mut Vec<MeIndicatorCrossing>,
     ) -> Result<(), MeError> {
         self.require_active_lifecycle("event_indicator_crossings")?;
-        let expected = self.event_indicator_sources.len();
+        let expected = self.indicator_plan.len();
         if before.len() != expected || after.len() != expected {
             return Err(contract(format!(
                 "event-indicator crossing buffers have {}/{} entries for {expected} indicators",
@@ -510,28 +519,11 @@ impl SolveMeKernel {
                 "event-indicator crossing buffers must contain finite values",
             ));
         }
-        let relation_targets = self
-            .event_indicator_sources
-            .iter()
-            .map(|source| match *source {
-                rumoca_ir_solve::fmi::FmiEventIndicatorSource::RootCondition { index } => self
-                    .runtime
-                    .model
-                    .problem
-                    .events
-                    .root_relation_memory_targets
-                    .get(index)
-                    .copied()
-                    .flatten(),
-                rumoca_ir_solve::fmi::FmiEventIndicatorSource::DynamicTimeEvent { .. }
-                | rumoca_ir_solve::fmi::FmiEventIndicatorSource::DelayDiscontinuity { .. } => None,
-            })
-            .collect::<Vec<_>>();
         let located = root_crossings_with_relation_memory(
             before,
             after,
             self.tolerance,
-            &relation_targets,
+            self.indicator_plan.relation_memory_targets(),
             &self.params,
         );
         crossings.clear();
@@ -554,7 +546,7 @@ impl SolveMeKernel {
         crossings: &[MeIndicatorCrossing],
     ) -> Result<(), MeError> {
         self.require_active_lifecycle("arm_state_event")?;
-        let indicator_count = self.event_indicator_sources.len();
+        let indicator_count = self.indicator_plan.len();
         if let Some(crossing) = crossings.iter().find(|crossing| {
             crossing.index >= indicator_count
                 || !crossing.post_indicator_value.is_finite()
@@ -568,21 +560,7 @@ impl SolveMeKernel {
         self.pending_root_crossings.clear();
         self.pending_root_crossings
             .extend(crossings.iter().filter_map(|crossing| {
-                let index = match self.event_indicator_sources[crossing.index] {
-                    rumoca_ir_solve::fmi::FmiEventIndicatorSource::RootCondition { index } => index,
-                    rumoca_ir_solve::fmi::FmiEventIndicatorSource::DelayDiscontinuity { index } => {
-                        self.runtime
-                            .model
-                            .problem
-                            .events
-                            .root_conditions
-                            .output_count()
-                            + index
-                    }
-                    rumoca_ir_solve::fmi::FmiEventIndicatorSource::DynamicTimeEvent { .. } => {
-                        return None;
-                    }
-                };
+                let index = self.indicator_plan.crossing_root_index(crossing.index)?;
                 Some(RootCrossing {
                     index,
                     post_relation_memory_value: crossing.post_indicator_value,
