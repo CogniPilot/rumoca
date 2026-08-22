@@ -1,8 +1,10 @@
 //! Target-neutral expression shape evidence for checked Algorithm Code.
 // SPEC_0021 file-size exception: this view currently co-locates checked typed
-// expression projection, semantic-use analysis, and scratch-layout ownership.
-// split plan: move semantic-use and scratch-layout construction into sibling
-// modules while keeping this file as the typed template-view facade.
+// expression projection, semantic-use analysis, and scratch-layout accounting.
+// The overlay relation and the placement policy already live in
+// `algorithm_code_overlay`; split plan: move semantic-use analysis and the
+// remaining scratch-layout accounting into sibling modules while keeping this
+// file as the typed template-view facade.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -10,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use rumoca_ir_galec::ast;
 use serde::Serialize;
 
+use super::algorithm_code_overlay::{self as overlay, CallGraph, Owner};
 use super::algorithm_code_scopes::{LocalPlacements, ScopePath, ScopeStep};
 use super::source_trace::{SourceTrace, SourceTraceResolver, TraceLegend};
 
@@ -48,6 +51,12 @@ pub(super) struct TypedBlockView<'a> {
 /// working-memory slots by construction (SPEC_0034 GAL-039).
 #[derive(Debug, Clone, Serialize)]
 struct ScratchRegionView<'a> {
+    /// Who owns this region. The overlay prover reasons about owners, not about
+    /// the two projections below it: the distinction between a method and a
+    /// function is load-bearing for the relation, and a user function is free to
+    /// be named `dostep`.
+    #[serde(skip)]
+    owner: Owner<'a>,
     /// Nonempty exactly when the owner needs a region at all.
     used: bool,
     /// Source name of the owning user function. `None` for a block method.
@@ -69,17 +78,19 @@ struct ScratchRegionView<'a> {
 }
 
 impl<'a> ScratchRegionView<'a> {
-    fn new(
-        function: Option<&'a str>,
-        method: Option<&'static str>,
-        slots: Vec<&'a ast::VariableDeclaration>,
-    ) -> Self {
+    fn new(owner: Owner<'a>, slots: Vec<&'a ast::VariableDeclaration>) -> Self {
+        let (function, method) = match owner {
+            Owner::Function(name) => (Some(name), None),
+            Owner::Method(spelling) => (None, Some(spelling)),
+        };
         Self {
+            owner,
             used: !slots.is_empty(),
             function,
             method,
-            // Both are resolved from the block's call graph once every owner is
-            // projected; a method's group is always 0 and keeps this value.
+            // Resolved from the block's call graph once every owner is
+            // projected: the overlay is decided from region SIZES as well as
+            // from the graph, so it cannot be taken before the regions exist.
             group: 0,
             bytes: region_bytes(&slots),
             slots,
@@ -89,7 +100,7 @@ impl<'a> ScratchRegionView<'a> {
     /// How this region is named in a diagnostic and in the generated summary:
     /// the *source* spelling, never a target's allocated C identifier.
     fn owner(&self) -> &'a str {
-        self.function.or(self.method).unwrap_or("")
+        self.owner.name()
     }
 }
 
@@ -100,38 +111,36 @@ impl<'a> ScratchRegionView<'a> {
 ///
 /// Working memory is a sequence of **groups**. A group is a set of regions that
 /// share one piece of storage; a target realizes it as a union. Every region is
-/// in exactly one group, and a region's group is **its owner's call depth** —
-/// the length of the longest call chain from a block method down to it.
+/// in exactly one group, and a group is a set of owners the call-graph prover
+/// in `algorithm_code_overlay` certified pairwise **never concurrent**: on an
+/// acyclic call graph two owners are live at the same moment exactly when one
+/// reaches the other, so two owners neither of which reaches the other lie on no
+/// common call chain and their regions may be one piece of storage.
 ///
-/// That is the whole rule, and its soundness is one sentence:
+/// The soundness of that is not re-argued here and is not re-checked by a
+/// target. A group's membership is built out of permission values the prover
+/// alone can mint, so a group whose members are not pairwise never-concurrent
+/// cannot be constructed; see `algorithm_code_overlay` for the induction. What
+/// this view adds is *accounting*: it orders the groups, sizes them, and prints
+/// what the decision cost.
 ///
-/// > Two regions may share storage only if neither owner can be active while
-/// > the other is; on every call edge the callee's depth is strictly greater
-/// > than the caller's, so two owners at equal depth lie on no common call
-/// > chain and are never caller and callee of each other, transitively or
-/// > otherwise.
+/// Which groups exist is a policy, and the policy is largest-region-first: the
+/// heaviest region founds a group and every later region that may share it
+/// rides along for nothing. It is a heuristic, so the floor it is measured
+/// against is published beside it: the heaviest call chain, whose members are
+/// pairwise caller and callee and so may never share.
 ///
-/// Taking the *longest* chain rather than any chain is what makes that true of
-/// **transitive** callers and not merely direct ones. A finite longest chain
-/// needs an acyclic call graph, which is the precondition
-/// `BlockShapes::require_acyclic_calls` establishes before this is computed —
-/// [`call_depths`] re-detects a cycle and fails closed rather than trusting it.
-///
-/// Group 0 is the three block methods and every user function starts at group 1,
-/// including one no method reaches. The methods are the block's only entry
-/// points, so this costs one method's worth of storage and removes the need to
-/// argue any function region against a method region at all.
-///
-/// This is deliberately NOT an interference analysis. A cleverer overlay — one
-/// that observed that two callees of one caller are live at disjoint moments
-/// *within* that caller — would need a liveness proof checked statement by
-/// statement, and a wrong overlay is a silent wrong-code defect.
+/// This is deliberately NOT an interference analysis over *slots*. A cleverer
+/// overlay (one that observed that two array temporaries inside one function
+/// are live at disjoint moments) would need a liveness proof checked statement
+/// by statement, and a wrong overlay is a silent wrong-code defect. The unit
+/// here is the region, and the relation is a property of the call graph.
 #[derive(Debug, Clone, Serialize)]
 struct ScratchLayoutView<'a> {
     /// The groups, in declaration order; empty exactly when the block declares
     /// no working memory at all. A group is never empty, and each carries its
     /// own `ordinal` — a target loops over this and needs no emptiness test and
-    /// no counter of its own, so a skipped ordinal costs it nothing.
+    /// no counter of its own.
     groups: Vec<ScratchGroupView<'a>>,
     /// The overlay group of every user function that owns a region, keyed by
     /// its **source** name. A call site knows only the name it calls, so this
@@ -142,9 +151,17 @@ struct ScratchLayoutView<'a> {
     /// the target's own layout rules add, so it is a faithful account of the
     /// decision taken here and not a prediction of `sizeof`.
     bytes: Option<usize>,
+    /// The least slot storage any never-concurrent overlay of these regions
+    /// could use, from `CallGraph::least_overlay_bytes`. `bytes` equal to this
+    /// says the placement policy left nothing on the table; `bytes` above it is
+    /// the exact amount a cleverer policy could still win. `None` when a region
+    /// cannot be sized, exactly as `bytes` is.
+    least_bytes: Option<usize>,
     /// The heaviest root-to-leaf call chain and its total region bytes: the
-    /// floor this rule could ever reach, and the answer to "why is it this
-    /// big". Chain members are source names, outermost first.
+    /// most legible part of the floor above, and the answer to "why is it this
+    /// big". Every member of a chain is a caller of every member after it, so no
+    /// two of them may share storage. Chain members are source names, outermost
+    /// first.
     chain: Vec<&'a str>,
     chain_bytes: Option<usize>,
     /// One line of prose stating the two facts above, for a target to print
@@ -157,7 +174,7 @@ struct ScratchLayoutView<'a> {
 #[derive(Debug, Clone, Serialize)]
 struct ScratchGroupView<'a> {
     /// Position in [`ScratchLayoutView::groups`], and the group's identity in
-    /// a generated identifier. Equal to the call depth its members share.
+    /// a generated identifier.
     ordinal: usize,
     /// Slot storage the group needs: the largest of its members.
     bytes: Option<usize>,
@@ -216,27 +233,31 @@ fn bytes_text(bytes: Option<usize>) -> String {
 }
 
 impl<'a> ScratchLayoutView<'a> {
-    /// Group the block's regions by their owners' call depths and account for
-    /// the result.
-    fn resolve(regions: Vec<ScratchRegionView<'a>>, chain: Vec<&'a str>) -> Self {
-        // A group's ordinal IS the call depth its members share. The sequence
-        // may therefore skip an ordinal — a block whose methods keep everything
-        // in the frame declares no group 0 — and that is deliberate: the
-        // ordinal travels with the group, so a target loops over whatever is
-        // here and needs neither an emptiness test nor a running counter.
-        let mut depths: Vec<usize> = regions.iter().map(|region| region.group).collect();
-        depths.sort_unstable();
-        depths.dedup();
-        let groups: Vec<ScratchGroupView<'a>> = depths
+    /// Collect the block's regions into the groups the prover placed them in and
+    /// account for the result.
+    fn resolve(
+        regions: Vec<ScratchRegionView<'a>>,
+        chain: Vec<&'a str>,
+        least_bytes: Option<usize>,
+    ) -> Self {
+        // Regions carry their group; this reads that back rather than deciding
+        // anything. Ordinals are contiguous from zero because every group the
+        // placement built has at least the member that founded it, but nothing
+        // here depends on that: the ordinal travels with the group, so a target
+        // loops over whatever is here and needs no counter of its own.
+        let mut ordinals: Vec<usize> = regions.iter().map(|region| region.group).collect();
+        ordinals.sort_unstable();
+        ordinals.dedup();
+        let groups: Vec<ScratchGroupView<'a>> = ordinals
             .into_iter()
-            .map(|depth| {
+            .map(|ordinal| {
                 let members: Vec<_> = regions
                     .iter()
-                    .filter(|region| region.group == depth)
+                    .filter(|region| region.group == ordinal)
                     .cloned()
                     .collect();
                 ScratchGroupView {
-                    ordinal: depth,
+                    ordinal,
                     bytes: members
                         .iter()
                         .map(|region| region.bytes)
@@ -262,9 +283,10 @@ impl<'a> ScratchLayoutView<'a> {
             "no working memory: every intermediate fits in a frame".to_owned()
         } else {
             format!(
-                "{} overlay group(s), {} of slot storage; heaviest call chain {} at {}",
+                "{} overlay group(s), {} of slot storage{}; heaviest call chain {} at {}",
                 groups.len(),
                 bytes_text(bytes),
+                minimality_text(bytes, least_bytes),
                 if chain.is_empty() {
                     "(none)".to_owned()
                 } else {
@@ -277,10 +299,26 @@ impl<'a> ScratchLayoutView<'a> {
             groups,
             region_groups,
             bytes,
+            least_bytes,
             chain,
             chain_bytes,
             summary,
         }
+    }
+}
+
+/// How the achieved total compares with the floor, for the generated summary.
+///
+/// Says nothing when either number is missing: a block with an unsizable region
+/// has no total to compare, and a reviewer must never read a comparison that was
+/// made against a guess.
+fn minimality_text(bytes: Option<usize>, least_bytes: Option<usize>) -> String {
+    match (bytes, least_bytes) {
+        (Some(achieved), Some(least)) if achieved == least => {
+            ", the least a never-concurrent overlay of these regions can use".to_owned()
+        }
+        (Some(_), Some(least)) => format!(", against a floor of {least} bytes"),
+        _ => String::new(),
     }
 }
 
@@ -762,30 +800,37 @@ pub(super) fn block<'a>(
     // The overlay below is only sound on an acyclic call graph, so this runs
     // first and the layout is derived from the same `shapes.functions` map it
     // just certified. A cycle fails the whole projection rather than producing
-    // a layout whose depths are meaningless.
+    // a layout that proves nothing.
     shapes.require_acyclic_calls()?;
-    let depths = call_depths(&shapes.functions)?;
     let mut protected_functions = block
         .protected_functions
         .iter()
         .map(|function| shapes.function(function))
         .collect::<Result<Vec<_>, _>>()?;
-    let startup = shapes.method(&block.startup, "startup")?;
-    let recalibrate = shapes.method(&block.recalibrate, "recalibrate")?;
-    let do_step = shapes.method(&block.do_step, "dostep")?;
+    let mut startup = shapes.method(&block.startup, "startup")?;
+    let mut recalibrate = shapes.method(&block.recalibrate, "recalibrate")?;
+    let mut do_step = shapes.method(&block.do_step, "dostep")?;
     let mut public_functions = block
         .public_functions
         .iter()
         .map(|function| shapes.function(function))
         .collect::<Result<Vec<_>, _>>()?;
-    for function in protected_functions.iter_mut().chain(&mut public_functions) {
-        function.scratch.group = *depths.get(function.name.lexeme()).ok_or_else(|| {
-            format!(
-                "checked Algorithm Code function `{}` has no call depth",
-                function.name.lexeme()
-            )
-        })?;
-    }
+    let graph = CallGraph::prove(call_edges(block, &shapes.functions))?;
+    place_regions(
+        &graph,
+        [
+            &mut startup.scratch,
+            &mut recalibrate.scratch,
+            &mut do_step.scratch,
+        ]
+        .into_iter()
+        .chain(
+            protected_functions
+                .iter_mut()
+                .chain(&mut public_functions)
+                .map(|function| &mut function.scratch),
+        ),
+    );
     let semantic_uses = shapes.semantic_uses.borrow().clone();
     let regions: Vec<_> = protected_functions
         .iter()
@@ -798,8 +843,23 @@ pub(super) fn block<'a>(
         .chain(public_functions.iter().map(|f| f.scratch.clone()))
         .filter(|region| region.used)
         .collect();
-    let chain = heaviest_chain(block, &shapes.functions, &regions);
-    let scratch_layout = ScratchLayoutView::resolve(regions, chain);
+    let weights = regions
+        .iter()
+        .map(|region| (region.owner, region.bytes.unwrap_or(0)))
+        .collect();
+    let chain = graph
+        .heaviest_chain(&weights)
+        .into_iter()
+        .map(Owner::name)
+        .collect();
+    // The floor is only meaningful when every region has a size: one unsizable
+    // extent and there is no total to compare it against.
+    let least_bytes = regions
+        .iter()
+        .map(|region| region.bytes.map(|bytes| (region.owner, bytes)))
+        .collect::<Option<BTreeMap<_, _>>>()
+        .map(|sizes| graph.least_overlay_bytes(&sizes));
+    let scratch_layout = ScratchLayoutView::resolve(regions, chain, least_bytes);
     // Read the legend after every method and function has been projected: the
     // resolver only knows a source once a statement in it has been anchored.
     let traces = shapes.traces.legend();
@@ -822,173 +882,67 @@ pub(super) fn block<'a>(
     ))
 }
 
-/// The overlay group of every user function: its **call depth**, the length of
-/// the longest call chain from a block method down to it, floored at 1.
+/// The block's call graph, as the overlay prover wants it: one entry per owner,
+/// including an owner that calls nothing, holding only the callees the block
+/// declares.
 ///
-/// This is the whole of the working-memory layout decision, and it is
-/// deliberately the crudest rule that is still sound. Two regions may share
-/// storage only if their owners are never simultaneously active. Under a
-/// call-depth argument that means a callee's storage must be disjoint from
-/// every one of its *transitive* callers' storage, and taking the LONGEST chain
-/// gives exactly that: on every call edge `depth(callee) >= depth(caller) + 1`,
-/// so along any chain the depths strictly increase and no two members of a
-/// chain land in the same group. Two functions in one group therefore lie on
-/// no common chain — neither can be executing when the other is.
-///
-/// It is not an interference analysis and does not try to be. A cleverer
-/// overlay (say, one that observes that two callees of the same caller are
-/// live at disjoint *times* within that caller) would need a liveness proof
-/// that a reviewer has to check statement by statement; this needs one
-/// property of the call graph, which the caller has already certified.
-///
-/// **Precondition: an acyclic call graph.** A cycle has no longest path, and a
-/// recursive function would have to share a group with itself. The caller
-/// establishes this with `require_acyclic_calls` before calling here; the
-/// in-progress marking below re-detects a cycle and fails closed rather than
-/// looping or silently returning a depth that proves nothing.
-fn call_depths<'a>(
-    functions: &HashMap<&'a str, &'a ast::UserFunction>,
-) -> Result<BTreeMap<&'a str, usize>, String> {
-    // Reverse edges. Depth is defined over a function's *callers*, so the
-    // walk needs the graph the other way round from `collect_called_functions`.
-    let mut callers: HashMap<&'a str, BTreeSet<&'a str>> = functions
-        .keys()
-        .map(|name| (*name, BTreeSet::new()))
-        .collect();
-    for (name, function) in functions {
-        let mut callees = BTreeSet::new();
-        collect_called_functions(&function.statements, &mut callees);
-        for callee in callees {
-            // A name the block does not declare is a builtin, not an edge.
-            if let Some(entry) = callers.get_mut(callee) {
-                entry.insert(name);
-            }
-        }
-    }
-    // The three methods are the block's only entry points and share group 0,
-    // so every function they reach starts at 1 — which is also the floor for a
-    // function nothing reaches. Method-called and unreachable functions are
-    // therefore indistinguishable here, on purpose: the floor is what keeps a
-    // public function that some future caller invokes directly from sharing
-    // storage with a method.
-    let mut depths = BTreeMap::new();
-    let mut memo = HashMap::new();
-    for name in functions.keys() {
-        let depth = function_depth(name, &callers, &mut memo)?;
-        depths.insert(*name, depth);
-    }
-    Ok(depths)
-}
-
-/// The heaviest root-to-leaf call chain: the block method and the sequence of
-/// functions whose region sizes sum to the most.
-///
-/// This is reporting, not layout. It is the floor the overlay rule could reach
-/// if every group held exactly one chain member, so publishing it beside the
-/// achieved total is what makes the achieved total explainable: a reader can
-/// see which call path is responsible rather than being handed a number.
-///
-/// Region sizes come from the projected regions, so a chain member that owns no
-/// region contributes nothing and a chain that cannot be sized reports its
-/// members anyway.
-fn heaviest_chain<'a>(
+/// A name the block does not declare is a builtin, not a call edge. Everything
+/// else comes straight from [`collect_called_functions`], which is the overlay's
+/// single soundness input: a call edge that walk does not see is a caller and a
+/// callee the overlay does not separate.
+fn call_edges<'a>(
     block: &'a ast::Block,
     functions: &HashMap<&'a str, &'a ast::UserFunction>,
-    regions: &[ScratchRegionView<'a>],
-) -> Vec<&'a str> {
-    let weight = |name: &str| -> usize {
-        regions
-            .iter()
-            .find(|region| region.owner() == name)
-            .and_then(|region| region.bytes)
-            .unwrap_or(0)
+) -> BTreeMap<Owner<'a>, BTreeSet<Owner<'a>>> {
+    let declared = |called: BTreeSet<&'a str>| -> BTreeSet<Owner<'a>> {
+        called
+            .into_iter()
+            .filter_map(|callee| functions.get_key_value(callee))
+            .map(|(name, _)| Owner::Function(name))
+            .collect()
     };
-    // Heaviest chain that STARTS at `name`, memoized on the callee side. The
-    // graph is acyclic (the caller established that), so this terminates.
-    fn descend<'a>(
-        name: &'a str,
-        functions: &HashMap<&'a str, &'a ast::UserFunction>,
-        weight: &dyn Fn(&str) -> usize,
-        memo: &mut HashMap<&'a str, (usize, Vec<&'a str>)>,
-    ) -> (usize, Vec<&'a str>) {
-        if let Some(found) = memo.get(name) {
-            return found.clone();
-        }
-        let mut callees = BTreeSet::new();
-        if let Some(function) = functions.get(name) {
-            collect_called_functions(&function.statements, &mut callees);
-        }
-        let mut best = (0usize, Vec::new());
-        for callee in callees {
-            let Some((declared, _)) = functions.get_key_value(callee) else {
-                continue;
-            };
-            let found = descend(declared, functions, weight, memo);
-            if found.0 > best.0 {
-                best = found;
-            }
-        }
-        let mut chain = vec![name];
-        chain.extend(best.1);
-        let result = (weight(name) + best.0, chain);
-        memo.insert(name, result.clone());
-        result
-    }
-    let mut memo = HashMap::new();
-    let mut best = (0usize, Vec::new());
+    let mut edges = BTreeMap::new();
     for (spelling, method) in [
         ("startup", &block.startup),
         ("recalibrate", &block.recalibrate),
         ("dostep", &block.do_step),
     ] {
-        let mut callees = BTreeSet::new();
-        collect_called_functions(&method.statements, &mut callees);
-        let mut below = (0usize, Vec::new());
-        for callee in callees {
-            let Some((declared, _)) = functions.get_key_value(callee) else {
-                continue;
-            };
-            let found = descend(declared, functions, &weight, &mut memo);
-            if found.0 > below.0 {
-                below = found;
-            }
-        }
-        let mut chain = vec![spelling];
-        chain.extend(below.1);
-        let total = weight(spelling) + below.0;
-        if total > best.0 {
-            best = (total, chain);
-        }
+        let mut called = BTreeSet::new();
+        collect_called_functions(&method.statements, &mut called);
+        edges.insert(Owner::Method(spelling), declared(called));
     }
-    best.1
+    for (name, function) in functions {
+        let mut called = BTreeSet::new();
+        collect_called_functions(&function.statements, &mut called);
+        edges.insert(Owner::Function(name), declared(called));
+    }
+    edges
 }
 
-/// Longest caller chain ending at `name`, memoized. `None` in the memo marks a
-/// function whose depth is still being computed, i.e. a cycle.
-fn function_depth<'a>(
-    name: &'a str,
-    callers: &HashMap<&'a str, BTreeSet<&'a str>>,
-    memo: &mut HashMap<&'a str, Option<usize>>,
-) -> Result<usize, String> {
-    match memo.get(name) {
-        Some(Some(depth)) => return Ok(*depth),
-        Some(None) => {
-            return Err(format!(
-                "checked Algorithm Code function `{name}` is reachable from itself; \
-                 overlaid working memory requires an acyclic call graph"
-            ));
-        }
-        None => {}
+/// Decide which regions share storage and record each region's group.
+///
+/// Only a region that exists is placed: an owner whose intermediates all fit in
+/// a frame owns nothing to overlay, and leaving it out keeps it from occupying
+/// a group and inflating the account. Such a region is never printed either, so
+/// the group it keeps is never read.
+fn place_regions<'a, 'view>(
+    graph: &CallGraph<'a>,
+    regions: impl Iterator<Item = &'view mut ScratchRegionView<'a>>,
+) where
+    'a: 'view,
+{
+    let mut regions: Vec<&'view mut ScratchRegionView<'a>> =
+        regions.filter(|region| region.used).collect();
+    let sized: Vec<(Owner<'a>, Option<usize>)> = regions
+        .iter()
+        .map(|region| (region.owner, region.bytes))
+        .collect();
+    let plan = overlay::plan(graph, &sized);
+    for region in &mut regions {
+        // Every placed region has a group: `plan` places every owner it is
+        // given, founding a group where none admits it.
+        region.group = plan.class_of(region.owner).unwrap_or_default();
     }
-    memo.insert(name, None);
-    let mut depth = 1;
-    if let Some(entries) = callers.get(name) {
-        for caller in entries {
-            depth = depth.max(function_depth(caller, callers, memo)? + 1);
-        }
-    }
-    memo.insert(name, Some(depth));
-    Ok(depth)
 }
 
 /// Whether a declaration is delivered through the owner's context region
@@ -1359,7 +1313,7 @@ impl<'a> BlockShapes<'a> {
             signals: &method.signals,
             locals: &method.locals,
             c_locals: surviving_locals(frame, &absorbed),
-            scratch: ScratchRegionView::new(None, Some(spelling), slots),
+            scratch: ScratchRegionView::new(Owner::Method(spelling), slots),
             uses_scratch,
             definite_state_writes: definite_state_writes(&method.statements)
                 .into_iter()
@@ -1398,7 +1352,7 @@ impl<'a> BlockShapes<'a> {
             input_parameters: input_parameters(function),
             locals: &function.locals,
             c_locals: surviving_locals(frame, &absorbed),
-            scratch: ScratchRegionView::new(Some(function.name.lexeme()), None, slots),
+            scratch: ScratchRegionView::new(Owner::Function(function.name.lexeme()), slots),
             uses_scratch,
             statements,
         })
@@ -3772,14 +3726,15 @@ mod layout_tests {
         pairs
     }
 
-    /// THE soundness property. Two regions may share storage only when their
-    /// owners can never be active together; under the call-depth rule that is
-    /// exactly "no caller shares a group with any of its transitive callees".
+    /// THE soundness property, checked end to end through the projection: two
+    /// regions share a group only when their owners can never be active
+    /// together, which is exactly "no caller shares a group with any of its
+    /// transitive callees".
     ///
     /// A layout violating this is a silent miscompile: the callee overwrites
-    /// the caller's live intermediates. Mutating `function_depth` to stop
-    /// increasing with depth — `+ 0` instead of `+ 1`, or a constant group —
-    /// fails here on the fixture below.
+    /// the caller's live intermediates. The prover's own unit tests in
+    /// `algorithm_code_overlay` pin the relation; this pins that the projection
+    /// hands the prover the whole call graph, over an awkward one.
     #[test]
     fn no_caller_shares_a_group_with_a_transitive_callee() {
         // A deliberately awkward graph: a diamond, a three-deep chain, a leaf
@@ -3807,13 +3762,15 @@ mod layout_tests {
                 "`{caller}` and its transitive callee `{callee}` share overlay group {above}"
             );
         }
-        // `shared` is reached at depth 2 (top->left->shared) and at depth 4
-        // (top->right->deep->shared). The LONGEST chain has to win, or it would
-        // land in the same group as `deep`, which calls it.
-        assert!(
-            groups["shared"] > groups["deep"],
-            "the longest chain must place a region, not the first one found: {groups:?}"
-        );
+        // `shared` is reached through `left` and through `right -> deep`. Every
+        // one of those callers has to be separated from it, not merely the
+        // first path found.
+        assert_ne!(groups["shared"], groups["deep"], "{groups:?}");
+        assert_ne!(groups["shared"], groups["left"], "{groups:?}");
+        // And what the rule buys: `left` sits one call above `deep` and neither
+        // reaches the other, so they share. Grouping by call depth could not
+        // say that.
+        assert_eq!(groups["left"], groups["deep"], "{groups:?}");
     }
 
     /// The read-back hazard, stated as a layout property.
@@ -3856,12 +3813,12 @@ mod layout_tests {
         );
     }
 
-    /// Group 0 is the methods and nothing else, even for a function no method
-    /// reaches: the methods are the block's only entry points, so a function
-    /// region is never argued against a method region, and a public function a
-    /// future caller invokes directly cannot land on top of one.
+    /// A method's group holds methods and nothing else, even against a function
+    /// no method reaches: a public function is callable directly by the same
+    /// consumer that calls the methods, in an order this compiler does not see,
+    /// so a function region is never argued against a method region.
     #[test]
-    fn an_unreachable_function_still_sits_below_the_methods() {
+    fn a_method_never_shares_storage_with_a_function() {
         let block = block_of(
             vec![function("reached", 8, &[]), function("orphan", 8, &[])],
             &["reached"],
@@ -3869,14 +3826,18 @@ mod layout_tests {
         let sources = rumoca_core::SourceMap::new();
         let resolved = layout(&block, &sources);
         let groups = groups_by_owner(&resolved);
-        assert_eq!(groups["dostep"], 0);
-        assert_eq!(groups["orphan"], 1);
-        assert_eq!(groups["reached"], 1);
+        assert_ne!(groups["dostep"], groups["orphan"], "{groups:?}");
+        assert_ne!(groups["dostep"], groups["reached"], "{groups:?}");
+        // The gain the reachability rule has over grouping by call depth: an
+        // orphan reaches nothing and nothing reaches it, so it rides along with
+        // whatever function region is largest instead of founding its own.
+        assert_eq!(groups["orphan"], groups["reached"], "{groups:?}");
     }
 
     /// The accounting a reviewer reads: the achieved total is at least the
-    /// heaviest chain — that chain is the floor this rule could ever reach —
-    /// and the chain named is a real one.
+    /// heaviest chain, and that chain is the floor ANY sound overlay could reach,
+    /// its members being pairwise caller and callee. The chain named is a
+    /// real one. On this fixture the two meet, so the placement is optimal.
     #[test]
     fn the_reported_total_is_explained_by_the_reported_chain() {
         let block = block_of(
@@ -3896,8 +3857,11 @@ mod layout_tests {
             resolved.bytes,
             resolved.chain_bytes
         );
-        // Groups: {dostep} + {top, light} + {heavy}; `light` overlays `top`.
+        // Groups: {heavy, light} + {top} + {dostep}. `light` rides along with
+        // the heaviest region it may share, so it costs nothing at all and the
+        // total lands exactly on the chain floor.
         assert_eq!(resolved.groups.len(), 3);
+        assert_eq!(resolved.bytes, resolved.chain_bytes);
         assert!(resolved.summary.contains("dostep -> top -> heavy"));
     }
 
@@ -3915,13 +3879,14 @@ mod layout_tests {
         let error = super::block(&block, &sources).expect_err("a cycle must not project");
         assert!(error.contains("reachable from itself"), "{error}");
 
-        // And the layout walk on its own, without the projection's guard.
+        // And the overlay prover on its own, without the projection's guard.
         let functions: HashMap<&str, &ast::UserFunction> = block
             .protected_functions
             .iter()
             .map(|function| (function.name.lexeme(), function))
             .collect();
-        let error = call_depths(&functions).expect_err("the layout must fail closed too");
+        let error = CallGraph::prove(call_edges(&block, &functions))
+            .expect_err("the overlay must fail closed too");
         assert!(error.contains("acyclic"), "{error}");
     }
 

@@ -687,14 +687,14 @@ fn multi_output_user_calls_compile_and_copy_every_result() {
     assert!(
         source.contains(
             "rumoca_galec_copy_real(INT32_C(2), self->values, \
-             self->rumoca_galec_scratch.rumoca_galec_g1.make_pair.pair);"
+             self->rumoca_galec_scratch.rumoca_galec_g0.make_pair.pair);"
         ),
         "{source}"
     );
     assert_model_unit_defines_no_kernels(&source);
     assert!(
         source
-            .contains("self->accepted = self->rumoca_galec_scratch.rumoca_galec_g1.make_pair.ok;"),
+            .contains("self->accepted = self->rumoca_galec_scratch.rumoca_galec_g0.make_pair.ok;"),
         "{source}"
     );
     // The output buffers are declared once, in the instance-owned working

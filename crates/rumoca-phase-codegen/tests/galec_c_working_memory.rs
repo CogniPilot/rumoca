@@ -365,6 +365,17 @@ fn the_overlay_and_its_cost_are_stated_in_the_generated_source() {
         source.contains("overlay group(s)"),
         "the achieved total must be reported:\n{source}"
     );
+    // The achieved total is stated against the floor, not on its own: a RAM
+    // admission argument needs to know whether 80 bytes is the best available
+    // or merely what today's placement policy managed. On this block the two
+    // meet, and the emitted text says so.
+    assert!(
+        source.contains(
+            "80 bytes of slot storage, the least a never-concurrent overlay of these \
+             regions can use"
+        ),
+        "the achieved total must be stated against the floor:\n{source}"
+    );
 }
 
 /// Unused-entity suppression is emitted only where the entity is unused.

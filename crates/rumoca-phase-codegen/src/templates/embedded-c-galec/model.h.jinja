@@ -41,7 +41,8 @@
 #define RUMOCA_{{ c_model | upper }}_AUXILIARY_SCRATCH_BYTES UINT32_C(0)
 {% if scratch_layout.groups|length > 0 %}
 /* Instance-owned working memory. Regions are overlaid only where the checked
- * call-depth proof says their owners cannot be active together. These slots
+ * call-graph proof says their owners cannot be active together: neither owner
+ * reaches the other through the block's calls. These slots
  * are execution storage, not GALEC LogicalData; no manifest consumer binds to
  * them. Distinct State objects therefore have disjoint mutable storage and may
  * execute concurrently. Calls on the same State still require ordinary

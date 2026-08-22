@@ -341,10 +341,11 @@ self->{{ symbol(c_state_symbols, variable.name) }}{% for index in indices %}[{{ 
 
     The read-back is also where an overlay could go wrong, so note what makes it
     safe. It reads the CALLEE's region and writes the CALLER's, and those are in
-    different overlay groups by construction — a callee's call depth is strictly
-    greater than its caller's. It is emitted here, immediately after the call and
-    inside the same macro, so no sibling call can be sequenced between the
-    callee's return and the copy that reads its results. -#}
+    different overlay groups by construction: the caller reaches the callee, so
+    the projection's prover refuses to let them share. It is emitted here,
+    immediately after the call and inside the same macro, so no sibling call can
+    be sequenced between the callee's return and the copy that reads its
+    results. -#}
 {%- macro region_of(call) -%}{{ region_path(scratch_groups[name_text(call.function)], symbol(c_symbols, name_text(call.function))) }}{%- endmacro -%}
 {#- The GALEC-level names of a reference, `.`-joined, subscripts dropped —
     comment text, never code. -#}
@@ -1099,11 +1100,11 @@ static void rumoca_galec_limit_startup({{ c_model }}State *self) {
  *
  * Regions are OVERLAID. Each union below is one group, and two regions share a
  * group only where the checked projection has established that their owners can
- * never be active at the same time: a caller's call depth is strictly below its
- * callee's, so equal-depth owners lie on no common call chain, transitively or
- * otherwise. That decision is taken in the projection — this file prints it.
- * Nothing keeps a pointer into another owner's region across a call: `ctx` is
- * declared once per body and names that body's own region.
+ * never be active at the same time: the block's calls form one stack and
+ * neither owner reaches the other through it, so no activation of either is
+ * ever inside the other. That decision is taken in the projection; this file
+ * prints it. Nothing keeps a pointer into another owner's region across a call:
+ * `ctx` is declared once per body and names that body's own region.
  *
  * {{ scratch_layout.summary }} */
 {%- endif %}

@@ -30,11 +30,16 @@ application needs plain C rather than an eFMU container.
   passed by accident on the old one may fail on this one.
 - Working memory is **overlaid**: the regions of two owners share storage only
   where the checked projection has established that the owners can never be
-  active at the same time — a caller's call depth is strictly below its
-  callee's, so equal-depth owners lie on no common call chain. The decision is
-  taken in `views/algorithm_code_typed.rs` (`ScratchLayoutView`) and this
-  target prints it; the generated source reports the achieved total and the
-  call chain that determines it.
+  active at the same time. The block's calls form one stack, so that holds
+  exactly when neither owner reaches the other through it: two callees of one
+  caller qualify, a caller and its own callee never do, and a method is never
+  argued against a user function at all. The relation is proven in
+  `views/algorithm_code_overlay.rs`, which is also where a group's membership is
+  built, out of permission values only that prover can mint; the accounting is
+  in `views/algorithm_code_typed.rs` (`ScratchLayoutView`) and this target
+  prints it. The generated source reports the achieved total and the heaviest
+  call chain, whose members are pairwise caller and callee and so give the floor
+  no sound overlay can go below.
 - GALEC Real values use C99 `float` storage and arithmetic for embedded
   deployment.
 - Tensor assignments preserve checked extents and deterministic row-major
@@ -106,8 +111,10 @@ external calls, random operations, and runtime event iteration fail closed.
 - `galec_c_working_memory` executes a block whose value depends on three pieces
   of working memory surviving a call, so an overlay that put a caller and its
   callee on one piece of storage fails with a wrong *number*, not a wrong line
-  of text. The layout rule itself is tested as a property of the call graph in
-  `views::algorithm_code_typed::layout_tests`.
+  of text. The relation itself is tested in
+  `views::algorithm_code_overlay::tests`, including the negative control, that
+  a caller and its own callee are refused, and the projection is tested against
+  an awkward call graph in `views::algorithm_code_typed::layout_tests`.
 
 ## Example
 
