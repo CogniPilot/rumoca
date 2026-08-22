@@ -378,7 +378,7 @@ Author reminder: bind-wasm should route through session/tool crates."
 
     for feature in ["sim-diffsol", "sim-rk45", "full-web"] {
         assert!(
-            section_contains_dependency(&content, "features", feature),
+            manifest_declares_feature(&content, feature),
             "rumoca-bind-wasm must expose a `{feature}` feature so optional runtime surfaces are explicit"
         );
     }

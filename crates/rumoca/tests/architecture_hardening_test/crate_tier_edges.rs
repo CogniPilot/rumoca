@@ -124,32 +124,85 @@ rumoca_solver::driver. Offenders: {offenders:#?}"
     );
 }
 
+/// Crates the runtime-contract crate may not name in `[dependencies]`.
+///
+/// DAE and phase preparation stay upstream of the contract; concrete backends
+/// stay downstream of it.
+const SOLVER_CONTRACT_BANNED_DEPENDENCIES: &[&str] = &[
+    "rumoca-ir-dae",
+    "rumoca-eval-dae",
+    "rumoca-phase-dae",
+    "rumoca-phase-structural",
+    "rumoca-phase-solve",
+    "diffsol",
+    "rumoca-solver-diffsol",
+    "rumoca-solver-rk45",
+];
+
+/// Every way `manifest` breaks the runtime-contract crate's dependency rule.
+///
+/// Reads the manifest through [`section_dependency_names`], so a banned edge is
+/// found under every spelling cargo resolves rather than only the inline one.
+fn solver_contract_offences(manifest: &str) -> Vec<String> {
+    let declared = section_dependency_names(manifest, "dependencies");
+    let mut offences = Vec::new();
+
+    if !declared.iter().any(|name| name == "rumoca-eval-solve") {
+        offences.push(
+            "does not depend on `rumoca-eval-solve`: the runtime state machine evaluates \
+prepared Solve-IR rows through the Tier 3 evaluator"
+                .to_string(),
+        );
+    }
+
+    offences.extend(
+        SOLVER_CONTRACT_BANNED_DEPENDENCIES
+            .iter()
+            .filter(|banned| declared.iter().any(|name| name == *banned))
+            .map(|banned| format!("depends on `{banned}`")),
+    );
+
+    offences
+}
+
 #[test]
 fn test_solver_contract_crate_consumes_row_evaluator_only() {
     let content = read_manifest("rumoca-solver");
+    let offences = solver_contract_offences(&content);
 
     assert!(
-        section_contains_dependency(&content, "dependencies", "rumoca-eval-solve"),
-        "rumoca-solver must depend on rumoca-eval-solve: its runtime state \
-machine evaluates prepared Solve-IR rows through the Tier 3 evaluator"
+        offences.is_empty(),
+        "rumoca-solver is the runtime-contract crate: DAE/phase preparation stays upstream \
+and concrete backends stay downstream (SPEC_0029 Dependency Tiers). Found: {offences:#?}"
     );
+}
 
-    for banned in [
-        "rumoca-ir-dae",
-        "rumoca-eval-dae",
-        "rumoca-phase-dae",
-        "rumoca-phase-structural",
-        "rumoca-phase-solve",
-        "diffsol",
-        "rumoca-solver-diffsol",
-        "rumoca-solver-rk45",
-    ] {
-        assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
-            "rumoca-solver must not depend on {banned}: DAE/phase preparation \
-stays upstream and concrete backends stay downstream of the runtime-contract crate"
-        );
-    }
+/// A banned edge spelled `[dependencies.dep]` is the edge cargo resolves, so
+/// the gate must refuse it exactly as it refuses `dep = { workspace = true }`.
+///
+/// A scan that reads only inline entries reports this manifest as clean, which
+/// is why the two spellings are pinned against each other here.
+#[test]
+fn test_solver_contract_gate_reads_the_dependency_subtable_spelling() {
+    const SUBTABLE_BANNED_EDGE: &str = "[package]\nname = \"rumoca-solver\"\n\n\
+[dependencies]\nrumoca-eval-solve = { workspace = true }\n\n\
+[dependencies.rumoca-ir-dae]\nworkspace = true\n\n[lints]\nworkspace = true\n";
+    const SUBTABLE_REQUIRED_EDGE: &str = "[package]\nname = \"rumoca-solver\"\n\n\
+[dependencies.rumoca-eval-solve]\nworkspace = true\n\n[lints]\nworkspace = true\n";
+
+    assert!(
+        solver_contract_offences(SUBTABLE_BANNED_EDGE)
+            .iter()
+            .any(|offence| offence.contains("rumoca-ir-dae")),
+        "a banned dependency declared as `[dependencies.dep]` must be named in the refusal: \
+cargo resolves it like any other production edge"
+    );
+    assert_eq!(
+        solver_contract_offences(SUBTABLE_REQUIRED_EDGE),
+        Vec::<String>::new(),
+        "the same spelling must satisfy the required edge, so the gate reads one manifest \
+model rather than two"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -488,5 +541,27 @@ manifest reads as a failure rather than as a clean one"
         reference_keeps_compiler_dev_dependency(COMPILER_DEPENDENCY).is_err(),
         "moving the compiler dependency out of [dev-dependencies] must refuse, so the pinned \
 production set cannot be satisfied by a manifest whose harness no longer runs"
+    );
+}
+
+/// An array-of-tables root such as `[[bin]]` parses to an array, not a table,
+/// and it carries production surface the `[dependencies]` allowlist never sees.
+///
+/// The section scan must therefore classify every top-level key by name. A scan
+/// narrowed to the table-valued keys passes this manifest in silence, which is
+/// the one shape the surrounding rejection cases cannot reach: every other
+/// manifest they carry declares its surface in a table.
+#[test]
+fn test_reference_gate_classifies_array_of_tables_sections() {
+    const ARRAY_OF_TABLES_SECTION: &str = "[package]\nname = \"rumoca-reference\"\n\n\
+[[bin]]\nname = \"reference-cli\"\npath = \"src/main.rs\"\n\n\
+[dev-dependencies]\nrumoca-compile = { workspace = true }\n\n[lints]\nworkspace = true\n";
+
+    assert!(
+        reference_trusted_base_offences(ARRAY_OF_TABLES_SECTION)
+            .iter()
+            .any(|offence| offence.contains("[bin]")),
+        "a `[[bin]]` section must be refused by name, so the gate cannot regress to \
+classifying only the table-valued sections"
     );
 }

@@ -599,23 +599,25 @@ fn lower_element_write(
         .filter(|(_, index)| !lowerer.is_loop_index_expression(index))
         .map(|(axis, _)| axis)
         .collect::<Vec<_>>();
-    if dynamic.is_empty() {
+    let [first_axis, rest_axes @ ..] = dynamic.as_slice() else {
         return Ok(vec![element_assignment(
             &write,
             write.subscripts.to_vec(),
             write.value.clone(),
         )]);
-    }
-    let candidates = write_candidates(&dynamic, write.dimensions, write.span)?;
-    let Some((residual, guarded)) = candidates.split_last() else {
-        unreachable!("a dynamic axis contributes at least one candidate coordinate")
     };
+    let axes = DynamicAxes {
+        first: *first_axis,
+        rest: rest_axes,
+    };
+    let WriteCandidates { guarded, residual } =
+        write_candidates(&axes, write.dimensions, write.span)?;
     if guarded.is_empty() {
         // A single candidate names the element outright, so the selection is
         // the literal subscript list and needs neither a branch nor a binding.
         return Ok(vec![element_assignment(
             &write,
-            candidate_subscripts(&write, &dynamic, residual),
+            candidate_subscripts(&write, &axes, &residual),
             write.value.clone(),
         )]);
     }
@@ -623,12 +625,10 @@ fn lower_element_write(
     let branches = guarded
         .iter()
         .map(|candidate| gast::IfBranch {
-            condition: gast::Condition::Expression(candidate_condition(
-                &write, &dynamic, candidate,
-            )),
+            condition: gast::Condition::Expression(candidate_condition(&write, &axes, candidate)),
             body: vec![element_assignment(
                 &write,
-                candidate_subscripts(&write, &dynamic, candidate),
+                candidate_subscripts(&write, &axes, candidate),
                 value.clone(),
             )],
             span: write.span,
@@ -641,13 +641,37 @@ fn lower_element_write(
                 branches,
                 else_body: Some(vec![element_assignment(
                     &write,
-                    candidate_subscripts(&write, &dynamic, residual),
+                    candidate_subscripts(&write, &axes, &residual),
                     value,
                 )]),
             }),
             write.span,
         ),
     ])
+}
+
+/// The dynamic axes of one element write. At least one exists by construction:
+/// a write with none is fully static and was emitted before this type is
+/// built, which is what lets every consumer seed itself from `first` instead
+/// of asserting non-emptiness at run time.
+struct DynamicAxes<'a> {
+    first: usize,
+    rest: &'a [usize],
+}
+
+impl DynamicAxes<'_> {
+    fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        std::iter::once(self.first).chain(self.rest.iter().copied())
+    }
+}
+
+/// Every candidate coordinate tuple of one write's dynamic axes, split so the
+/// enumeration's non-emptiness is carried by the type: `residual` is the
+/// all-maximum tuple the else branch stores through, and `guarded` holds the
+/// others in the row-major order the branches test.
+struct WriteCandidates {
+    guarded: Vec<Vec<i64>>,
+    residual: Vec<i64>,
 }
 
 impl ExpressionLowerer<'_, '_> {
@@ -705,17 +729,17 @@ fn element_assignment(
 
 /// Every coordinate the dynamic axes of one write can name, in row-major order.
 fn write_candidates(
-    dynamic: &[usize],
+    axes: &DynamicAxes<'_>,
     dimensions: &[u32],
     span: Span,
-) -> Result<Vec<Vec<i64>>, GalecTargetError> {
-    let extents = dynamic
+) -> Result<WriteCandidates, GalecTargetError> {
+    let extents = axes
         .iter()
-        .map(|axis| dimensions[*axis])
+        .map(|axis| dimensions[axis] as usize)
         .collect::<Vec<_>>();
     let count = extents
         .iter()
-        .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
+        .try_fold(1usize, |count, extent| count.checked_mul(*extent))
         .filter(|count| *count > 0 && *count <= MAX_WRITE_CANDIDATES)
         .ok_or_else(|| {
             unsupported(
@@ -726,31 +750,35 @@ fn write_candidates(
                 span,
             )
         })?;
-    let mut candidates = Vec::with_capacity(count);
-    let mut current = vec![1i64; extents.len()];
-    loop {
-        candidates.push(current.clone());
-        let Some(axis) = (0..extents.len())
-            .rev()
-            .find(|axis| current[*axis] < i64::from(extents[*axis]))
-        else {
-            return Ok(candidates);
-        };
-        current[axis] += 1;
-        current[axis + 1..].fill(1);
-    }
+    // Row-major enumeration by mixed-radix decoding: the last axis is the
+    // least significant digit, ordinal `count - 1` is the all-maximum tuple,
+    // and every ordinal below it decodes to exactly one guarded candidate, so
+    // the residual exists whenever the count check passed.
+    let decode = |ordinal: usize| {
+        let mut remaining = ordinal;
+        let mut coordinate = vec![0i64; extents.len()];
+        for (slot, extent) in coordinate.iter_mut().zip(&extents).rev() {
+            *slot = (remaining % extent) as i64 + 1;
+            remaining /= extent;
+        }
+        coordinate
+    };
+    Ok(WriteCandidates {
+        guarded: (0..count - 1).map(decode).collect(),
+        residual: decode(count - 1),
+    })
 }
 
 /// The subscript list one candidate names: literals on the dynamic axes, the
 /// written subscript everywhere else.
 fn candidate_subscripts(
     write: &ElementWrite<'_>,
-    dynamic: &[usize],
+    axes: &DynamicAxes<'_>,
     candidate: &[i64],
 ) -> Vec<gast::Expression> {
     let mut subscripts = write.subscripts.to_vec();
-    for (axis, coordinate) in dynamic.iter().zip(candidate) {
-        subscripts[*axis] = gast::Expression::Integer(*coordinate);
+    for (axis, coordinate) in axes.iter().zip(candidate) {
+        subscripts[axis] = gast::Expression::Integer(*coordinate);
     }
     subscripts
 }
@@ -759,19 +787,22 @@ fn candidate_subscripts(
 /// coordinate the candidate names on its axis.
 fn candidate_condition(
     write: &ElementWrite<'_>,
-    dynamic: &[usize],
+    axes: &DynamicAxes<'_>,
     candidate: &[i64],
 ) -> gast::Expression {
-    dynamic
-        .iter()
-        .zip(candidate)
-        .map(|(axis, coordinate)| {
-            gast::Expression::binary(
-                gast::BinaryOp::Eq,
-                write.subscripts[*axis].clone(),
-                gast::Expression::Integer(*coordinate),
-            )
-        })
-        .reduce(|lhs, rhs| gast::Expression::binary(gast::BinaryOp::And, lhs, rhs))
-        .expect("an expanded element write has at least one dynamic axis")
+    let equality = |axis: usize, coordinate: i64| {
+        gast::Expression::binary(
+            gast::BinaryOp::Eq,
+            write.subscripts[axis].clone(),
+            gast::Expression::Integer(coordinate),
+        )
+    };
+    // Seeded from the first axis the type guarantees, so the conjunction needs
+    // no empty-case fallback.
+    let mut condition = equality(axes.first, candidate[0]);
+    for (axis, coordinate) in axes.rest.iter().zip(&candidate[1..]) {
+        condition =
+            gast::Expression::binary(gast::BinaryOp::And, condition, equality(*axis, *coordinate));
+    }
+    condition
 }

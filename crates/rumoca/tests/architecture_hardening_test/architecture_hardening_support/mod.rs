@@ -92,26 +92,15 @@ pub(super) fn collect_direct_import_offenders(path: &Path) -> Vec<String> {
         .map(|(line_idx, _)| format!("{}:{}", path.display(), line_idx + 1))
         .collect()
 }
-pub(super) fn section_contains_dependency(content: &str, section: &str, dependency: &str) -> bool {
-    let header = format!("[{section}]");
-    let mut in_section = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            in_section = trimmed == header;
-            continue;
-        }
-        if !in_section || trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some((name, _)) = trimmed.split_once('=')
-            && name.trim() == dependency
-        {
-            return true;
-        }
-    }
-    false
-}
+/// The manifest text of one `name = ...` entry, for the checks that judge the
+/// declaration itself rather than the name it declares.
+///
+/// Deliberately line-oriented: a caller asserting on `optional = true`, or on a
+/// feature's expansion list, needs the source text, which a parsed value no
+/// longer carries. Every check about *which* crates a table declares reads
+/// [`section_dependency_names`] instead, because only the parse sees the
+/// subtable and target-cfg spellings. An entry this scan cannot find reads as
+/// `None`, so a caller that requires one refuses rather than passing.
 pub(super) fn section_dependency_line<'a>(
     content: &'a str,
     section: &str,
@@ -198,9 +187,54 @@ pub(super) fn all_manifest_dependency_names(content: &str) -> Vec<(String, Strin
     names
 }
 
-/// Negative pins for [`all_manifest_dependency_names`]: each Cargo dependency
-/// spelling hiding a forbidden crate must be caught. These four forms are the
-/// complete set of shapes a dependency declaration can take in a manifest.
+/// Every dependency the manifest table `section` declares.
+///
+/// `section` is a table path as [`all_manifest_dependency_names`] reports it,
+/// so `"dependencies"` covers the inline entry `dep = { workspace = true }` and
+/// the subtable `[dependencies.dep]` alike: TOML merges a dependency subtable
+/// into the same top-level table, and cargo resolves the two spellings to one
+/// production edge. A line scan sees only the inline form, so it would report a
+/// manifest as free of an edge cargo resolves.
+///
+/// Target-gated tables keep their own `target.cfg(...).dependencies` path, so
+/// naming one scope never silently claims another. A gate that means every
+/// table reads [`all_manifest_dependency_names`] directly.
+pub(super) fn section_dependency_names(content: &str, section: &str) -> Vec<String> {
+    all_manifest_dependency_names(content)
+        .into_iter()
+        .filter(|(table_path, _)| table_path == section)
+        .map(|(_, dependency)| dependency)
+        .collect()
+}
+
+/// Whether the manifest table `section` declares `dependency`, under any
+/// spelling [`section_dependency_names`] covers.
+pub(super) fn section_contains_dependency(content: &str, section: &str, dependency: &str) -> bool {
+    section_dependency_names(content, section)
+        .iter()
+        .any(|name| name == dependency)
+}
+
+/// Whether the manifest declares `feature` in its `[features]` table.
+///
+/// Read from the parse for the same reason the dependency scan is: a feature
+/// spelling the gate cannot see reads as absent, which turns "this crate must
+/// expose feature X" into a silent pass.
+pub(super) fn manifest_declares_feature(content: &str, feature: &str) -> bool {
+    let manifest: toml::Value = content
+        .parse()
+        .expect("Cargo manifest must parse as TOML for the feature gates to be meaningful");
+    manifest
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|features| features.contains_key(feature))
+}
+
+/// Negative pins for [`all_manifest_dependency_names`] and for the section scan
+/// built on it: each Cargo dependency spelling hiding a forbidden crate must be
+/// caught, and caught under the table path a caller names. The four forms below
+/// are the complete set of shapes a dependency declaration can take in a
+/// manifest.
 mod manifest_scan_tests {
     use super::all_manifest_dependency_names;
 
@@ -294,6 +328,43 @@ mod manifest_scan_tests {
         );
     }
 
+    /// `[dependencies.dep]` is a real production edge, so the section scan the
+    /// tier gates call must report it exactly as it reports `dep = ...`.
+    #[test]
+    fn section_scan_reads_the_dependency_subtable_spelling() {
+        let manifest = format!("[dependencies.{FORBIDDEN}]\nworkspace = true\n");
+        assert!(
+            super::section_contains_dependency(&manifest, "dependencies", FORBIDDEN),
+            "the subtable spelling declares the same edge as the inline one, so a section \
+scan must report it under `dependencies`"
+        );
+        assert!(
+            !super::section_contains_dependency(&manifest, "dependencies", "workspace"),
+            "a subtable's keys are spec fields, not dependency names"
+        );
+    }
+
+    /// The section scan answers about one table path. Target-gated tables are a
+    /// scope of their own, and a gate that means every table asks
+    /// [`all_manifest_dependency_names`].
+    #[test]
+    fn section_scan_keeps_target_gated_tables_in_their_own_scope() {
+        let manifest =
+            format!("[target.'cfg(unix)'.dependencies]\n{FORBIDDEN} = {{ workspace = true }}\n");
+        assert!(
+            !super::section_contains_dependency(&manifest, "dependencies", FORBIDDEN),
+            "a target-gated entry is not declared by the plain `[dependencies]` table"
+        );
+        assert!(
+            super::section_contains_dependency(
+                &manifest,
+                "target.cfg(unix).dependencies",
+                FORBIDDEN
+            ),
+            "the target-gated scope must stay reachable under its own table path"
+        );
+    }
+
     #[test]
     fn manifest_scan_reports_renamed_package_targets() {
         let names = scan_names(
@@ -304,28 +375,6 @@ mod manifest_scan_tests {
             "a rename must not smuggle a banned crate: {names:?}"
         );
     }
-}
-
-pub(super) fn section_dependency_names(content: &str, section: &str) -> Vec<String> {
-    let header = format!("[{section}]");
-    let mut in_section = false;
-    let mut names = Vec::new();
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            in_section = trimmed == header;
-            continue;
-        }
-        if !in_section || trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some((name, _)) = trimmed.split_once('=') {
-            names.push(name.trim().to_string());
-        }
-    }
-
-    names
 }
 
 pub(super) fn workspace_crate_dirs(root: &Path) -> Vec<PathBuf> {
