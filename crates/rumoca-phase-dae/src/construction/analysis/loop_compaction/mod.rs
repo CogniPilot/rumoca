@@ -1,5 +1,16 @@
 mod accumulator_reductions;
 mod dependent_domains;
+/// Dataflow liveness over the function statement tree.
+///
+/// The store-deletion proofs in this module still ask their own syntactic
+/// questions; this states the same question once as a dataflow answer, and
+/// [`liveness_differential_tests`] measures where the two diverge.
+#[cfg(test)]
+mod liveness;
+#[cfg(test)]
+mod liveness_corpus;
+#[cfg(test)]
+mod liveness_differential_tests;
 #[cfg(test)]
 mod loop_carry_tests;
 mod loop_local_substitution;
