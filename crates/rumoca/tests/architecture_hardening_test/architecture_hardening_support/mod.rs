@@ -215,6 +215,29 @@ pub(super) fn section_contains_dependency(content: &str, section: &str, dependen
         .any(|name| name == dependency)
 }
 
+/// Every dependency any production scope declares: the plain `[dependencies]`
+/// table and every target-gated `[target.'cfg(..)'.dependencies]` table. A
+/// target-gated entry ships in the artifact built for that target, so a gate
+/// banning a production edge must read this rather than one scope. Dev and
+/// build scopes stay out; they are not edges a shipped artifact carries.
+pub(super) fn production_dependency_names(content: &str) -> Vec<String> {
+    all_manifest_dependency_names(content)
+        .into_iter()
+        .filter(|(table_path, _)| {
+            table_path == "dependencies"
+                || (table_path.starts_with("target.") && table_path.ends_with(".dependencies"))
+        })
+        .map(|(_, dependency)| dependency)
+        .collect()
+}
+
+/// Whether any production scope declares `dependency`.
+pub(super) fn manifest_declares_production_dependency(content: &str, dependency: &str) -> bool {
+    production_dependency_names(content)
+        .iter()
+        .any(|name| name == dependency)
+}
+
 /// Whether the manifest declares `feature` in its `[features]` table.
 ///
 /// Read from the parse for the same reason the dependency scan is: a feature
@@ -344,24 +367,30 @@ scan must report it under `dependencies`"
         );
     }
 
-    /// The section scan answers about one table path. Target-gated tables are a
-    /// scope of their own, and a gate that means every table asks
-    /// [`all_manifest_dependency_names`].
+    /// A target-gated dependency is a production edge on matching targets. The
+    /// section scan keeps answering about one table path, but a gate that bans
+    /// an edge must see it through the production-scope reading, or the
+    /// spelling `[target.'cfg(unix)'.dependencies]` smuggles the edge past a
+    /// gate that reads only `[dependencies]`.
     #[test]
-    fn section_scan_keeps_target_gated_tables_in_their_own_scope() {
+    fn a_target_gated_dependency_is_a_production_edge() {
         let manifest =
             format!("[target.'cfg(unix)'.dependencies]\n{FORBIDDEN} = {{ workspace = true }}\n");
         assert!(
             !super::section_contains_dependency(&manifest, "dependencies", FORBIDDEN),
-            "a target-gated entry is not declared by the plain `[dependencies]` table"
+            "the plain `[dependencies]` scope keeps its own path"
         );
         assert!(
-            super::section_contains_dependency(
-                &manifest,
-                "target.cfg(unix).dependencies",
+            super::manifest_declares_production_dependency(&manifest, FORBIDDEN),
+            "a target-gated edge ships in the artifact built for that target, so the \
+production reading must report it"
+        );
+        assert!(
+            !super::manifest_declares_production_dependency(
+                &format!("[dev-dependencies]\n{FORBIDDEN} = {{ workspace = true }}\n"),
                 FORBIDDEN
             ),
-            "the target-gated scope must stay reachable under its own table path"
+            "a dev-only edge is not a production edge"
         );
     }
 

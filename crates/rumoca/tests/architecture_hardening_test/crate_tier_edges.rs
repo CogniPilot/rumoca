@@ -35,7 +35,7 @@ fn read_manifest(crate_name: &str) -> String {
 #[test]
 fn test_eval_solve_dependency_set_is_pinned() {
     let content = read_manifest("rumoca-eval-solve");
-    let mut names = section_dependency_names(&content, "dependencies");
+    let mut names = production_dependency_names(&content);
     names.sort();
 
     let expected: Vec<String> = EVAL_SOLVE_DEPENDENCIES
@@ -141,10 +141,12 @@ const SOLVER_CONTRACT_BANNED_DEPENDENCIES: &[&str] = &[
 
 /// Every way `manifest` breaks the runtime-contract crate's dependency rule.
 ///
-/// Reads the manifest through [`section_dependency_names`], so a banned edge is
-/// found under every spelling cargo resolves rather than only the inline one.
+/// Reads the manifest through [`production_dependency_names`], so a banned
+/// edge is found under every spelling and every production scope cargo
+/// resolves, target-gated tables included, not only the inline plain-table
+/// form.
 fn solver_contract_offences(manifest: &str) -> Vec<String> {
-    let declared = section_dependency_names(manifest, "dependencies");
+    let declared = production_dependency_names(manifest);
     let mut offences = Vec::new();
 
     if !declared.iter().any(|name| name == "rumoca-eval-solve") {
@@ -264,7 +266,7 @@ fn test_phase_crates_depend_on_each_other_only_by_recorded_exception() {
         let Ok(content) = fs::read_to_string(dir.join("Cargo.toml")) else {
             continue;
         };
-        for dependency in section_dependency_names(&content, "dependencies") {
+        for dependency in production_dependency_names(&content) {
             if dependency.starts_with("rumoca-phase-") && dependency != crate_name {
                 observed.insert((crate_name.to_string(), dependency));
             }
