@@ -30,6 +30,30 @@ fn indexed_real_update<'dae>(
     })
 }
 
+fn real_literal<'dae>(
+    dae: &mut dae::DaeConstruction<'dae>,
+    value: f64,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    dae.expressions(|expressions| {
+        expressions
+            .at(provenance)
+            .literal(dae::DaeLiteral::Real(value))
+    })
+}
+
+fn integer_literal<'dae>(
+    dae: &mut dae::DaeConstruction<'dae>,
+    value: i64,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    dae.expressions(|expressions| {
+        expressions
+            .at(provenance)
+            .literal(dae::DaeLiteral::Integer(value))
+    })
+}
+
 fn assign_function_value<'dae>(
     dae: &mut dae::DaeConstruction<'dae>,
     body: &mut dae::FunctionBody<'dae>,
@@ -571,16 +595,10 @@ fn aggregate_call_fixture() -> dae::Dae {
                 })?;
                 let mut body =
                     dae.functions(|functions| functions.begin(reservation, provenance))?;
-                let values = dae.expressions(|expressions| {
-                    [1.0, 2.0, 3.0]
-                        .into_iter()
-                        .map(|value| {
-                            expressions
-                                .at(provenance)
-                                .literal(dae::DaeLiteral::Real(value))
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })?;
+                let mut values = Vec::new();
+                for value in [1.0, 2.0, 3.0] {
+                    values.push(real_literal(dae, value, provenance)?);
+                }
                 let value =
                     dae.expressions(|expressions| expressions.at(provenance).array(values))?;
                 assign_function_value(dae, &mut body, output, value, provenance)?;
@@ -597,15 +615,10 @@ fn aggregate_call_fixture() -> dae::Dae {
                     dae.functions(|functions| functions.begin(reservation, provenance))?;
                 let call = dae
                     .expressions(|expressions| expressions.at(provenance).call(producer, 0, []))?;
-                let ordinals = dae.expressions(|expressions| {
-                    (1..=3)
-                        .map(|index| {
-                            expressions
-                                .at(provenance)
-                                .literal(dae::DaeLiteral::Integer(index))
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })?;
+                let mut ordinals = Vec::new();
+                for index in 1..=3 {
+                    ordinals.push(integer_literal(dae, index, provenance)?);
+                }
                 let projected = dae.expressions(|expressions| {
                     ordinals
                         .into_iter()
