@@ -20,16 +20,9 @@ pub(super) fn insert_variable_identities<'flat, 'dae>(
     let mut coordinates = ModelCoordinates::new();
     let mut reserved = (0..flat.variables.len()).map(|_| None).collect::<Vec<_>>();
     for (source_ordinal, (name, variable)) in flat.variables.iter().enumerate() {
-        let role = analysis.roles[name];
-        if matches!(role, PlannedRole::UnusedExpandable | PlannedRole::Clock) {
+        let Some(role) = analysis.roles[name].runtime() else {
             continue;
-        }
-        if matches!(
-            role,
-            PlannedRole::EnumerationLiteral | PlannedRole::Aggregate
-        ) {
-            continue;
-        }
+        };
         let provenance = dae::DaeProvenance::source(variable.source_span)?;
         let value_type = value_types[name];
         let scalar_type = effective_variable_scalar_type(flat, variable)
@@ -78,22 +71,22 @@ pub(super) fn insert_variable_identities<'flat, 'dae>(
 fn reserve_variable_identity<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     variable: &flat::Variable,
-    role: PlannedRole,
+    role: RuntimeVariableRole,
     value_type: dae::ValueTypeId<'dae>,
     provenance: dae::DaeProvenance,
 ) -> Result<(Coordinate<'dae>, dae::VariableReservation<'dae>), dae::DaeConstructionError> {
     construction.variables(|variables| match role {
-        PlannedRole::Parameter => {
+        RuntimeVariableRole::Parameter => {
             let (id, definition) =
                 variables.reserve_parameter(variable.name.clone(), value_type, provenance)?;
             Ok((Coordinate::Parameter(id), definition))
         }
-        PlannedRole::Constant => {
+        RuntimeVariableRole::Constant => {
             let (id, definition) =
                 variables.reserve_constant(variable.name.clone(), value_type, provenance)?;
             Ok((Coordinate::Parameter(id), definition))
         }
-        PlannedRole::Input => {
+        RuntimeVariableRole::Input => {
             let (id, definition) = variables.reserve_input(
                 variable.name.clone(),
                 value_type,
@@ -102,37 +95,31 @@ fn reserve_variable_identity<'dae>(
             )?;
             Ok((Coordinate::Input(id), definition))
         }
-        PlannedRole::State => {
+        RuntimeVariableRole::State => {
             let (id, definition) =
                 variables.reserve_state(variable.name.clone(), value_type, provenance)?;
             Ok((Coordinate::State(id), definition))
         }
-        PlannedRole::Algebraic => {
+        RuntimeVariableRole::Algebraic => {
             let (id, definition) =
                 variables.reserve_algebraic(variable.name.clone(), value_type, provenance)?;
             Ok((Coordinate::Algebraic(id), definition))
         }
-        PlannedRole::Output => {
+        RuntimeVariableRole::Output => {
             let (id, definition) =
                 variables.reserve_output(variable.name.clone(), value_type, provenance)?;
             Ok((Coordinate::Algebraic(id), definition))
         }
-        PlannedRole::DiscreteReal => {
+        RuntimeVariableRole::DiscreteReal => {
             let (id, definition) =
                 variables.reserve_discrete_real(variable.name.clone(), value_type, provenance)?;
             Ok((Coordinate::DiscreteReal(id), definition))
         }
-        PlannedRole::DiscreteValue => {
+        RuntimeVariableRole::DiscreteValue => {
             let (id, definition) =
                 variables.reserve_discrete_value(variable.name.clone(), value_type, provenance)?;
             Ok((Coordinate::DiscreteValue(id), definition))
         }
-        PlannedRole::UnusedExpandable
-        | PlannedRole::EnumerationLiteral
-        | PlannedRole::Aggregate => {
-            unreachable!("non-runtime roles are never reserved as variables")
-        }
-        PlannedRole::Clock => unreachable!("clock variables live in the clock arena"),
     })
 }
 
@@ -169,7 +156,7 @@ pub(super) struct VariableDefinitionContext<'scope, 'dae> {
 #[derive(Clone, Copy)]
 struct VariableSpec<'flat, 'dae> {
     flat: &'flat flat::Variable,
-    role: PlannedRole,
+    role: RuntimeVariableRole,
     scalar_type: dae::ScalarType,
     value_type: dae::ValueTypeId<'dae>,
 }
@@ -202,7 +189,7 @@ fn insert_complete_variable<'dae>(
     let declaration = dae::DaeProvenance::source(variable.flat.source_span)?;
     let attributes = lower_variable_attributes(construction, context, variable)?;
     construction.variables(|variables| match variable.role {
-        PlannedRole::Parameter => variables
+        RuntimeVariableRole::Parameter => variables
             .parameter(
                 variable.flat.name.clone(),
                 variable.value_type,
@@ -210,7 +197,7 @@ fn insert_complete_variable<'dae>(
                 attributes,
             )
             .map(Coordinate::Parameter),
-        PlannedRole::Constant => variables
+        RuntimeVariableRole::Constant => variables
             .constant(
                 variable.flat.name.clone(),
                 variable.value_type,
@@ -218,7 +205,7 @@ fn insert_complete_variable<'dae>(
                 attributes,
             )
             .map(Coordinate::Parameter),
-        PlannedRole::Input => variables
+        RuntimeVariableRole::Input => variables
             .input(
                 variable.flat.name.clone(),
                 variable.value_type,
@@ -227,7 +214,7 @@ fn insert_complete_variable<'dae>(
                 attributes,
             )
             .map(Coordinate::Input),
-        PlannedRole::State => variables
+        RuntimeVariableRole::State => variables
             .state(
                 variable.flat.name.clone(),
                 variable.value_type,
@@ -235,7 +222,7 @@ fn insert_complete_variable<'dae>(
                 attributes,
             )
             .map(Coordinate::State),
-        PlannedRole::Algebraic => variables
+        RuntimeVariableRole::Algebraic => variables
             .algebraic(
                 variable.flat.name.clone(),
                 variable.value_type,
@@ -243,7 +230,7 @@ fn insert_complete_variable<'dae>(
                 attributes,
             )
             .map(Coordinate::Algebraic),
-        PlannedRole::Output => variables
+        RuntimeVariableRole::Output => variables
             .output(
                 variable.flat.name.clone(),
                 variable.value_type,
@@ -251,7 +238,7 @@ fn insert_complete_variable<'dae>(
                 attributes,
             )
             .map(Coordinate::Algebraic),
-        PlannedRole::DiscreteReal => variables
+        RuntimeVariableRole::DiscreteReal => variables
             .discrete_real(
                 variable.flat.name.clone(),
                 variable.value_type,
@@ -259,7 +246,7 @@ fn insert_complete_variable<'dae>(
                 attributes,
             )
             .map(Coordinate::DiscreteReal),
-        PlannedRole::DiscreteValue => variables
+        RuntimeVariableRole::DiscreteValue => variables
             .discrete_value(
                 variable.flat.name.clone(),
                 variable.value_type,
@@ -267,12 +254,6 @@ fn insert_complete_variable<'dae>(
                 attributes,
             )
             .map(Coordinate::DiscreteValue),
-        PlannedRole::UnusedExpandable
-        | PlannedRole::Clock
-        | PlannedRole::EnumerationLiteral
-        | PlannedRole::Aggregate => {
-            unreachable!("non-runtime roles are never inserted as variables")
-        }
     })
 }
 
@@ -333,12 +314,12 @@ fn lower_variable_attributes<'dae>(
         state_select: variable.flat.state_select,
         description: variable.flat.description.clone(),
         causality,
-        is_tunable: matches!(variable.role, PlannedRole::Parameter)
+        is_tunable: matches!(variable.role, RuntimeVariableRole::Parameter)
             && !derived_parameter
             && !variable.flat.evaluate,
         is_held: matches!(
             variable.role,
-            PlannedRole::DiscreteReal | PlannedRole::DiscreteValue
+            RuntimeVariableRole::DiscreteReal | RuntimeVariableRole::DiscreteValue
         ) && variable.flat.binding.is_none()
             && !context
                 .assigned_discrete_targets
@@ -358,12 +339,13 @@ fn lower_variable_attributes<'dae>(
 fn needs_default_start(variable: VariableSpec<'_, '_>) -> bool {
     matches!(
         variable.role,
-        PlannedRole::State
-            | PlannedRole::Algebraic
-            | PlannedRole::Output
-            | PlannedRole::DiscreteReal
-            | PlannedRole::DiscreteValue
-    ) || (matches!(variable.role, PlannedRole::Parameter) && variable.flat.fixed == Some(false))
+        RuntimeVariableRole::State
+            | RuntimeVariableRole::Algebraic
+            | RuntimeVariableRole::Output
+            | RuntimeVariableRole::DiscreteReal
+            | RuntimeVariableRole::DiscreteValue
+    ) || (matches!(variable.role, RuntimeVariableRole::Parameter)
+        && variable.flat.fixed == Some(false))
 }
 
 fn lower_variable_binding<'dae>(
@@ -386,7 +368,7 @@ fn lower_variable_binding<'dae>(
     }
     if !matches!(
         variable.role,
-        PlannedRole::Parameter | PlannedRole::Constant | PlannedRole::Input
+        RuntimeVariableRole::Parameter | RuntimeVariableRole::Constant | RuntimeVariableRole::Input
     ) {
         return Ok(None);
     }
@@ -465,7 +447,7 @@ fn lower_derived_parameter_binding<'dae>(
 
 fn variable_causality(
     variable: &flat::Variable,
-    role: PlannedRole,
+    role: RuntimeVariableRole,
     model: &flat::Model,
 ) -> dae::VariableCausality {
     let top_level_port = variable.component_ref.as_ref().is_some_and(|reference| {
@@ -476,9 +458,9 @@ fn variable_causality(
                 .is_some_and(|root| model.top_level_connectors.contains(&root.ident))
     });
     match (&variable.causality, role, top_level_port) {
-        (Causality::Input(_), PlannedRole::Input, true) => dae::VariableCausality::Input,
+        (Causality::Input(_), RuntimeVariableRole::Input, true) => dae::VariableCausality::Input,
         (Causality::Output(_), _, true) => dae::VariableCausality::Output,
-        (_, PlannedRole::Parameter, _) => dae::VariableCausality::Parameter,
+        (_, RuntimeVariableRole::Parameter, _) => dae::VariableCausality::Parameter,
         _ => dae::VariableCausality::Local,
     }
 }

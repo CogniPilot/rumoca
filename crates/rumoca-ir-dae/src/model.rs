@@ -22,8 +22,7 @@ use rumoca_core::{
 use serde::{Deserialize, Serialize};
 
 use crate::clocks::{
-    ClockEntry, ClockOperation, ClockOwnershipEntry, ClockOwnershipView, ClockView,
-    ClockedVariableKind, Clocks,
+    ClockEntry, ClockOperation, ClockOwnershipEntry, ClockOwnershipView, ClockView, Clocks,
 };
 use crate::conditions::{
     ConditionEntry, ConditionOperation, ConditionView, Conditions, RelationEntry, RelationView,
@@ -1141,9 +1140,28 @@ pub struct FunctionBody<'dae> {
 /// Non-owning linear capability for one compact function-loop transition.
 pub struct FunctionLoop<'dae> {
     fold: FunctionFoldId<'dae>,
+    /// The compact domain this transition iterates.
+    ///
+    /// A function body carries an optional domain because a body outside every
+    /// loop has none. A loop capability is minted from the domain it was begun
+    /// with, so it keeps that domain itself rather than reading the body's
+    /// option back and asserting that a loop always has one.
+    domain: DomainId<'dae>,
     body: FunctionBody<'dae>,
-    parents: Vec<FunctionFoldId<'dae>>,
+    parents: Vec<EnclosingFunctionLoop<'dae>>,
     states: Vec<FunctionLoopParent<'dae>>,
+}
+
+/// A lexically enclosing transition, kept with the domain it iterates.
+///
+/// Finishing a nested loop returns the capability to its enclosing fold, and
+/// the enclosing fold's domain has to return with it. Storing the pair is what
+/// keeps [`FunctionLoop::domain`] answering for the active transition without
+/// reading the body's option back.
+#[derive(Clone, Copy)]
+struct EnclosingFunctionLoop<'dae> {
+    fold: FunctionFoldId<'dae>,
+    domain: DomainId<'dae>,
 }
 
 impl FunctionLoop<'_> {

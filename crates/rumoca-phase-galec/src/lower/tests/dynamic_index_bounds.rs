@@ -61,8 +61,8 @@ fn conditional_pivot_fixture(guarded: &GuardedPivot) -> dae::Dae {
                     functions.parameter(&reservation, VarName::new("hint"), 2, at)?,
                 ))
             })?;
-            let x =
-                dae.functions(|functions| functions.output(&reservation, VarName::new("x"), 0, at))?;
+            let x = dae
+                .functions(|functions| functions.output(&reservation, VarName::new("x"), 0, at))?;
             let pivot_row = dae.functions(|functions| {
                 functions.local(&reservation, VarName::new("pivotRow"), integer, at)
             })?;
@@ -82,10 +82,11 @@ fn conditional_pivot_fixture(guarded: &GuardedPivot) -> dae::Dae {
             let condition =
                 dae.expressions(|expressions| expressions.at(at).function_parameter(accepted))?;
             let guarded = match guarded {
-                GuardedPivot::InRange(value) | GuardedPivot::OutOfRange(value) => dae
-                    .expressions(|expressions| {
+                GuardedPivot::InRange(value) | GuardedPivot::OutOfRange(value) => {
+                    dae.expressions(|expressions| {
                         expressions.at(at).literal(dae::DaeLiteral::Integer(*value))
-                    })?,
+                    })?
+                }
                 GuardedPivot::Unbounded => {
                     dae.expressions(|expressions| expressions.at(at).function_parameter(hint))?
                 }

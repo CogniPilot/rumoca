@@ -145,7 +145,6 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         Ok(())
     }
 
-
     pub(super) fn lower_call_at(
         &mut self,
         call: dae::ExprId<'dae>,

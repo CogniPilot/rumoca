@@ -455,6 +455,44 @@ pub(super) enum PlannedRole {
     Aggregate,
 }
 
+/// The planned roles that own a coordinate in the DAE variable arena.
+///
+/// An MLS §9.1.3 unused expandable member, a clock, an enumeration literal and
+/// a record aggregate are all planned roles with no variable of their own: the
+/// identity pass filters them before anything is reserved. Naming the outcome
+/// of that filter is what lets the reservation and definition mappings be
+/// exhaustive matches rather than matches with an arm nothing can reach.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RuntimeVariableRole {
+    Parameter,
+    Constant,
+    Input,
+    State,
+    Algebraic,
+    Output,
+    DiscreteReal,
+    DiscreteValue,
+}
+
+impl PlannedRole {
+    /// The runtime coordinate this role owns, or `None` when it owns none.
+    pub(super) const fn runtime(self) -> Option<RuntimeVariableRole> {
+        match self {
+            Self::UnusedExpandable | Self::Clock | Self::EnumerationLiteral | Self::Aggregate => {
+                None
+            }
+            Self::Parameter => Some(RuntimeVariableRole::Parameter),
+            Self::Constant => Some(RuntimeVariableRole::Constant),
+            Self::Input => Some(RuntimeVariableRole::Input),
+            Self::State => Some(RuntimeVariableRole::State),
+            Self::Algebraic => Some(RuntimeVariableRole::Algebraic),
+            Self::Output => Some(RuntimeVariableRole::Output),
+            Self::DiscreteReal => Some(RuntimeVariableRole::DiscreteReal),
+            Self::DiscreteValue => Some(RuntimeVariableRole::DiscreteValue),
+        }
+    }
+}
+
 pub(super) struct RecordEquationPlan {
     pub(super) fields: Vec<RecordEquationFieldPlan>,
 }

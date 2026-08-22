@@ -282,3 +282,60 @@ fn a_definition_of_another_function_is_rejected_rather_than_classified() {
         assert_eq!(scope.relation(foreign), None);
     });
 }
+
+/// `FunctionLoop::domain` names the transition that is open right now.
+///
+/// The capability is one value that descends into a nested loop and comes back
+/// out of it, so its fold and its domain have to move together. A domain left
+/// behind on the way out hands every statement after the inner loop the inner
+/// iteration space, which is a wrong answer rather than a refused one.
+#[test]
+fn a_loop_capability_names_the_domain_of_the_transition_that_is_open() {
+    let source =
+        TestSource::new("for i in 1:2 loop for j in 1:3 loop alpha := alpha + 1; end for; end for");
+    let at = source.source("for i in 1:2 loop", 0);
+    Dae::construct(source.map, |dae| {
+        let integer =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Integer), at))?;
+        dae.function(
+            FunctionSignature::new(VarName::new("nested"), [], [integer], at),
+            |dae, reservation| {
+                let alpha = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("alpha"), 0, at)
+                })?;
+                let (zero, one) = dae.expressions(|expressions| {
+                    Ok((
+                        expressions.at(at).literal(DaeLiteral::Integer(0))?,
+                        expressions.at(at).literal(DaeLiteral::Integer(1))?,
+                    ))
+                })?;
+                let mut body = dae.functions(|functions| functions.begin(reservation, at))?;
+                dae.functions(|functions| functions.assign(&mut body, alpha, zero, at))?;
+                let outer_domain =
+                    dae.domains(|domains| domains.structured(scope_range("i", 2), at))?;
+                let inner_domain =
+                    dae.domains(|domains| domains.nested(outer_domain, scope_range("j", 3), at))?;
+                let outer = dae
+                    .functions(|functions| functions.begin_loop(body, outer_domain, [alpha], at))?;
+                assert_eq!(outer.domain(), outer_domain);
+                let mut inner = dae.functions(|functions| {
+                    functions.begin_nested_loop(outer, inner_domain, [alpha], at)
+                })?;
+                assert_eq!(inner.domain(), inner_domain);
+                let carried = dae.functions(|functions| functions.read(inner.body(), alpha, at))?;
+                let incremented = dae.expressions(|expressions| {
+                    expressions.at(at).binary(BinaryOperator::Add, carried, one)
+                })?;
+                dae.functions(|functions| {
+                    functions.assign_loop(&mut inner, alpha, incremented, at)
+                })?;
+                let outer = dae.functions(|functions| functions.finish_nested_loop(inner, at))?;
+                assert_eq!(outer.domain(), outer_domain);
+                let body = dae.functions(|functions| functions.finish_loop(outer, at))?;
+                dae.functions(|functions| functions.define(body, at))
+            },
+        )?;
+        Ok(())
+    })
+    .expect("one nested loop constructs");
+}

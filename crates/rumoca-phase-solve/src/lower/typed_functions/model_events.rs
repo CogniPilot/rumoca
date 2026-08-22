@@ -653,13 +653,7 @@ pub(in crate::lower) fn lower_model_event_transactions<'dae>(
 ) -> Result<Vec<PendingEventTransaction<'dae>>, LowerError> {
     let mut programs = Vec::new();
     let mut registry = layout.pure_calls.borrow_mut();
-    for index in 0..view.model_event_transaction_count() {
-        let id = view
-            .model_event_transaction_id(index)
-            .expect("dense checked model-event transaction identity resolves");
-        let transaction = view
-            .model_event_transaction(id)
-            .expect("checked model-event transaction identity resolves");
+    for (_, transaction) in view.model_event_transactions() {
         let provenance = transaction.provenance().span();
         let eligible = eligible_event_transaction(view, transaction).ok_or_else(|| {
                 LowerError::non_computable(

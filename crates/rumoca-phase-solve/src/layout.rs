@@ -289,12 +289,9 @@ fn append_runtime_flags(
     view: dae::DaeView<'_>,
     first_index: usize,
 ) -> Result<RuntimeFlags, LowerError> {
-    let has_initial = (0..view.condition_count()).any(|index| {
-        view.condition(view.condition_id(index).expect("dense condition identity"))
-            .is_some_and(|condition| {
-                matches!(condition.operation(), dae::ConditionOperation::Initial)
-            })
-    });
+    let has_initial = view
+        .conditions()
+        .any(|(_, condition)| matches!(condition.operation(), dae::ConditionOperation::Initial));
     let after_initial = first_index
         .checked_add(usize::from(has_initial))
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
@@ -392,13 +389,7 @@ fn append_pre_variables(
         })?;
     }
     let mut previous_values = Vec::with_capacity(view.previous_value_count());
-    for index in 0..view.previous_value_count() {
-        let previous = view
-            .previous(
-                view.previous_id(index)
-                    .expect("dense previous identity resolves"),
-            )
-            .expect("checked previous entry resolves");
+    for (_, previous) in view.previous_values() {
         let variable = previous.variable().index() as usize;
         let current = variables[variable];
         let base = first_pre_index.checked_add(scalar_count).ok_or_else(|| {
@@ -484,10 +475,7 @@ fn continuous_pre_variables(view: dae::DaeView<'_>) -> Vec<bool> {
 /// produced while that event is settling.
 fn mark_sampled_value_sources(view: dae::DaeView<'_>, referenced: &mut [bool]) {
     let sampled = sampled_clock_variables(view);
-    for index in 0..view.discrete_real_equation_count() {
-        let equation = view
-            .discrete_real_equation(index)
-            .expect("dense checked discrete Real equation resolves");
+    for equation in view.discrete_real_equations() {
         let has_sampled_target =
             expression_mentions_sampled_variable(view, equation.residual(), &sampled);
         if has_sampled_target {
@@ -535,13 +523,7 @@ fn expression_mentions_sampled_variable<'dae>(
 
 fn sampled_clock_variables(view: dae::DaeView<'_>) -> Vec<bool> {
     let mut sampled = vec![false; view.variable_count()];
-    for index in 0..view.clock_ownership_count() {
-        let ownership = view
-            .clock_ownership(
-                view.clock_ownership_id(index)
-                    .expect("dense clock ownership identity resolves"),
-            )
-            .expect("checked clock ownership resolves");
+    for (_, ownership) in view.clock_ownerships() {
         sampled[ownership.variable().index() as usize] = ownership.sampled();
     }
     sampled

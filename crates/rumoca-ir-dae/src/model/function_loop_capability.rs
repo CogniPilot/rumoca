@@ -12,9 +12,6 @@ impl<'dae> FunctionLoop<'dae> {
     }
 
     pub const fn domain(&self) -> DomainId<'dae> {
-        match self.body.domain {
-            Some(domain) => domain,
-            None => unreachable!(),
-        }
+        self.domain
     }
 }

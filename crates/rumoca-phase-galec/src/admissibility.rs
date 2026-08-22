@@ -76,17 +76,15 @@ fn projection_errors<'dae>(
             event_actions: 0,
         });
     }
-    let dynamic = (0..view.clock_count())
-        .filter(|index| {
-            let id = view.clock_id(*index).expect("dense checked clock identity");
-            matches!(
-                view.clock(id).expect("checked clock resolves").operation(),
-                dae::ClockOperation::Triggered(_)
-            ) || matches!(
-                view.clock(id).expect("checked clock resolves").operation(),
-                dae::ClockOperation::Periodic(schedule)
-                    if schedule.anchor() == rumoca_core::ClockPhaseAnchor::SimulationStart
-            )
+    let dynamic = view
+        .clocks()
+        .filter(|(_, clock)| {
+            matches!(clock.operation(), dae::ClockOperation::Triggered(_))
+                || matches!(
+                    clock.operation(),
+                    dae::ClockOperation::Periodic(schedule)
+                        if schedule.anchor() == rumoca_core::ClockPhaseAnchor::SimulationStart
+                )
         })
         .count();
     if dynamic != 0 {
@@ -187,21 +185,14 @@ fn initialization_scalar_rows(view: dae::DaeView<'_>) -> usize {
 }
 
 fn periodic_clocks(view: dae::DaeView<'_>) -> Vec<(u32, &rumoca_core::PeriodicClockSchedule)> {
-    (0..view.clock_count())
-        .filter_map(|index| {
-            let id = view.clock_id(index).expect("dense checked clock identity");
-            match view.clock(id).expect("checked clock resolves").operation() {
-                dae::ClockOperation::Periodic(schedule)
-                    if schedule.anchor() == rumoca_core::ClockPhaseAnchor::Absolute =>
-                {
-                    Some((
-                        u32::try_from(index).expect("clock count fits u32"),
-                        schedule,
-                    ))
-                }
-                dae::ClockOperation::Periodic(_) => None,
-                dae::ClockOperation::Triggered(_) => None,
+    view.clocks()
+        .filter_map(|(id, clock)| match clock.operation() {
+            dae::ClockOperation::Periodic(schedule)
+                if schedule.anchor() == rumoca_core::ClockPhaseAnchor::Absolute =>
+            {
+                Some((id.index(), schedule))
             }
+            dae::ClockOperation::Periodic(_) | dae::ClockOperation::Triggered(_) => None,
         })
         .collect()
 }

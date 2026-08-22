@@ -25,6 +25,7 @@ impl<'dae> Functions<'_, 'dae> {
             self.begin_loop_state(parent, domain, targets, iteration_locals, provenance)?;
         Ok(FunctionLoop {
             fold,
+            domain,
             body,
             parents: Vec::new(),
             states: vec![state],
@@ -52,12 +53,16 @@ impl<'dae> Functions<'_, 'dae> {
         iteration_locals: impl IntoIterator<Item = FunctionValueId<'dae>>,
         provenance: DaeProvenance,
     ) -> Result<FunctionLoop<'dae>, DaeConstructionError> {
-        let enclosing = parent.fold;
+        let enclosing = EnclosingFunctionLoop {
+            fold: parent.fold,
+            domain: parent.domain,
+        };
         let (fold, body, state) =
             self.begin_loop_state(parent.body, domain, targets, iteration_locals, provenance)?;
         parent.parents.push(enclosing);
         parent.states.push(state);
         parent.fold = fold;
+        parent.domain = domain;
         parent.body = body;
         Ok(parent)
     }
@@ -256,7 +261,8 @@ impl<'dae> Functions<'_, 'dae> {
                 span: provenance.span(),
             })?;
         self.finish_active_loop(&mut loop_body, provenance)?;
-        loop_body.fold = parent;
+        loop_body.fold = parent.fold;
+        loop_body.domain = parent.domain;
         Ok(loop_body)
     }
 

@@ -20,10 +20,7 @@ fn collect_discrete_real_pre<'dae>(
     seen: &mut HashSet<u32>,
     ids: &mut Vec<dae::VariableId<'dae>>,
 ) -> Result<(), Vec<GalecTargetError>> {
-    for index in 0..view.discrete_real_equation_count() {
-        let equation = view
-            .discrete_real_equation(index)
-            .expect("dense checked discrete Real equation resolves");
+    for equation in view.discrete_real_equations() {
         collect_pre(view, equation.residual(), seen, ids)?;
         if let dae::DiscreteRealActivation::When { trigger, guard } = equation.activation() {
             collect_condition_pre(view, trigger, seen, ids)?;
@@ -38,13 +35,7 @@ fn collect_event_action_pre<'dae>(
     seen: &mut HashSet<u32>,
     ids: &mut Vec<dae::VariableId<'dae>>,
 ) -> Result<(), Vec<GalecTargetError>> {
-    for index in 0..view.event_action_count() {
-        let action = view
-            .event_action(
-                view.event_action_id(index)
-                    .expect("dense checked action identity"),
-            )
-            .expect("checked action resolves");
+    for (_, action) in view.event_actions() {
         collect_condition_pre(view, action.trigger(), seen, ids)?;
         collect_condition_pre(view, action.guard(), seen, ids)?;
         let value = match action.operation() {

@@ -18,11 +18,11 @@ use crate::totality_debt::scan::{
 /// Ceilings on `.expect(`, `panic!(`, `unreachable!(`, `todo!(` and
 /// `unimplemented!(` in production source, per crate.
 const TOTALITY_DEBT_CEILINGS: &[(&str, usize)] = &[
-    ("rumoca-phase-solve", 304),
-    ("rumoca-phase-galec", 257),
-    ("rumoca-phase-dae", 235),
-    ("rumoca-ir-dae", 66),
-    ("rumoca-ir-solve", 16),
+    ("rumoca-phase-solve", 272),
+    ("rumoca-phase-galec", 240),
+    ("rumoca-phase-dae", 232),
+    ("rumoca-ir-dae", 60),
+    ("rumoca-ir-solve", 15),
 ];
 
 /// Ceilings on `.unwrap()`, which carries the same obligation with no message.

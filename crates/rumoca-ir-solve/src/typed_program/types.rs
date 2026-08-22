@@ -36,6 +36,16 @@ impl<'de> Deserialize<'de> for SolveIntegerDomain {
 }
 
 impl SolveIntegerDomain {
+    /// The whole `i64` range.
+    ///
+    /// [`SolveIntegerDomain::construct`] is fallible because a caller can name
+    /// an empty range. The full range is not one, so naming it as a constant is
+    /// what removes the emptiness obligation from every caller that wants it.
+    pub const FULL: Self = Self {
+        minimum: i64::MIN,
+        maximum: i64::MAX,
+    };
+
     pub fn construct(minimum: i64, maximum: i64) -> Result<Self, SolveTypeConstructionError> {
         if minimum > maximum {
             return Err(SolveTypeConstructionError::EmptyIntegerDomain { minimum, maximum });

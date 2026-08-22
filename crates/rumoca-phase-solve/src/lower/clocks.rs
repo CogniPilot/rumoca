@@ -65,13 +65,7 @@ pub(super) fn lower_clocks<'dae>(
         activation_parameter_indices: layout.clock_activations.clone(),
     };
     let mut dae_clocks = Vec::with_capacity(view.clock_count());
-    for index in 0..view.clock_count() {
-        let dae_clock = view
-            .clock_id(index)
-            .expect("dense checked clock identity resolves");
-        let clock = view
-            .clock(dae_clock)
-            .expect("checked clock identity resolves");
+    for (index, (_, clock)) in view.clocks().enumerate() {
         let dae::ClockOperation::Periodic(schedule) = clock.operation() else {
             return Err(LowerError::unsupported(
                 "triggered clocks do not yet have checked Solve scheduling",
@@ -93,11 +87,7 @@ pub(super) fn lower_clocks<'dae>(
 
     let mut variable_owners = vec![None; view.variable_count()];
     let mut sampled_variables = vec![false; view.variable_count()];
-    for index in 0..view.clock_ownership_count() {
-        let ownership = view
-            .clock_ownership_id(index)
-            .and_then(|id| view.clock_ownership(id))
-            .expect("dense checked clock ownership resolves");
+    for (_, ownership) in view.clock_ownerships() {
         let solve_clock = dae_clocks[ownership.clock().index() as usize];
         let slot = &mut variable_owners[ownership.variable().index() as usize];
         if slot.replace((ownership.clock(), solve_clock)).is_some() {
@@ -161,13 +151,13 @@ pub(super) fn reject_clocked_continuous_feedback<'dae>(
     }
     let real_definitions = super::events::resolve_discrete_real_definitions(view)?;
     let mut rows = Vec::new();
-    for (index, definition) in real_definitions.into_iter().enumerate() {
+    for (definition, equation) in real_definitions
+        .into_iter()
+        .zip(view.discrete_real_equations())
+    {
         let Some((target, value)) = definition else {
             continue;
         };
-        let equation = view
-            .discrete_real_equation(index)
-            .expect("dense checked discrete Real equation resolves");
         rows.push((
             dae::VariableId::from(target),
             value,

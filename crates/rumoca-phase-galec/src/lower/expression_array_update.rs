@@ -6,8 +6,8 @@
 //! decide, per axis, whether that coordinate selects the updated value or the
 //! historical base.
 
-use super::*;
 use super::expression_projection::{SelectionBranch, SelectionValue};
+use super::*;
 
 type ArrayUpdateSelection = (Vec<gast::Expression>, Vec<gast::Expression>);
 
@@ -23,7 +23,6 @@ enum ArrayUpdateAxis {
 }
 
 impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
-
     /// Project one scalar from a checked tensor SSA update.
     ///
     /// GALEC exposes scalar assignments, while DAE deliberately retains an
@@ -311,9 +310,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             branches.push((selects.clone(), gast::Expression::Integer(ordinal)));
             condition = Some(match condition {
                 None => selects,
-                Some(previous) => {
-                    gast::Expression::binary(gast::BinaryOp::Or, previous, selects)
-                }
+                Some(previous) => gast::Expression::binary(gast::BinaryOp::Or, previous, selects),
             });
         }
         let condition = condition.expect("index list proven non-empty above");

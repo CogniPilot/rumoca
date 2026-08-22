@@ -56,6 +56,14 @@ pub(crate) struct ClockEntry {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ClockOwnershipEntry {
     pub(crate) variable: u32,
+    /// Which clocked coordinate role the owned variable was checked to have.
+    ///
+    /// Ownership is only ever minted after `own` rejects any other role, so
+    /// the entry carries the outcome of that check rather than leaving a
+    /// reader to re-derive it from the variable arena. The wire form omits it:
+    /// replay re-issues the same checked operation and reproduces it.
+    #[serde(skip)]
+    pub(crate) kind: ClockedVariableKind,
     pub(crate) clock: u32,
     pub(crate) sampled: bool,
     pub(crate) provenance: DaeProvenance,
@@ -186,7 +194,7 @@ impl<'dae> Clocks<'_, 'dae> {
         self.own(
             clock,
             variable.index(),
-            VariableRole::DiscreteReal,
+            ClockedVariableKind::DiscreteReal,
             false,
             provenance,
         )
@@ -201,7 +209,7 @@ impl<'dae> Clocks<'_, 'dae> {
         self.own(
             clock,
             variable.index(),
-            VariableRole::DiscreteValue,
+            ClockedVariableKind::DiscreteValue,
             false,
             provenance,
         )
@@ -217,7 +225,7 @@ impl<'dae> Clocks<'_, 'dae> {
         self.own(
             clock,
             variable.index(),
-            VariableRole::DiscreteReal,
+            ClockedVariableKind::DiscreteReal,
             true,
             provenance,
         )
@@ -233,7 +241,7 @@ impl<'dae> Clocks<'_, 'dae> {
         self.own(
             clock,
             variable.index(),
-            VariableRole::DiscreteValue,
+            ClockedVariableKind::DiscreteValue,
             true,
             provenance,
         )
@@ -254,7 +262,7 @@ impl<'dae> Clocks<'_, 'dae> {
         &mut self,
         clock: ClockId<'dae>,
         variable: u32,
-        expected_role: VariableRole,
+        kind: ClockedVariableKind,
         sampled: bool,
         provenance: DaeProvenance,
     ) -> Result<ClockOwnershipId<'dae>, DaeConstructionError> {
@@ -263,6 +271,10 @@ impl<'dae> Clocks<'_, 'dae> {
             .clocks
             .get(clock.index() as usize)
             .ok_or_else(|| unknown("clock", clock.index(), provenance))?;
+        let expected_role = match kind {
+            ClockedVariableKind::DiscreteReal => VariableRole::DiscreteReal,
+            ClockedVariableKind::DiscreteValue => VariableRole::DiscreteValue,
+        };
         let variable_entry = self.storage.variable(variable, provenance)?;
         if variable_entry.role != expected_role {
             return Err(DaeConstructionError::InvalidVariableRole {
@@ -294,6 +306,7 @@ impl<'dae> Clocks<'_, 'dae> {
         )?;
         self.storage.clock_ownerships.push(ClockOwnershipEntry {
             variable,
+            kind,
             clock: clock.index(),
             sampled,
             provenance,

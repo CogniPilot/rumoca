@@ -296,13 +296,11 @@ pub struct SolvePureCallTable {
 
 impl Default for SolvePureCallTable {
     fn default() -> Self {
-        let integer_domain = super::types::SolveIntegerDomain::construct(i64::MIN, i64::MAX)
-            .expect("the full i64 domain is nonempty");
         Self {
             arithmetic: SolveArithmeticProfile::construct(
                 super::types::SolveRealFormat::Binary64,
                 super::types::SolveRoundingMode::NearestTiesToEven,
-                integer_domain,
+                super::types::SolveIntegerDomain::FULL,
             ),
             owners: Box::new([]),
         }

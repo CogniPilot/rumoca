@@ -186,13 +186,10 @@ fn clock_domain_value_roots<'dae>(
     let mut roots = Vec::new();
     let real_clocks = discrete_real_clock_owners(view);
     let causal_plan = causal_discrete_plan(view)?;
-    for index in 0..view.discrete_real_equation_count() {
+    for (index, equation) in view.discrete_real_equations().enumerate() {
         let Some(definition) = causal_plan.discrete_real_definition(index) else {
             continue;
         };
-        let equation = view
-            .discrete_real_equation(index)
-            .expect("dense checked discrete Real equation resolves");
         let target = dae::VariableId::from(definition.target());
         let value = definition.value();
         if require_discrete_real_clock_owner(&real_clocks, target, equation.provenance().span())?
@@ -416,13 +413,10 @@ fn plan_clocked_discrete_reals<'refs, 'dae>(
     let clock_owners = discrete_real_clock_owners(view);
     let causal_plan = causal_discrete_plan(view)?;
     let mut planned = Vec::new();
-    for index in 0..view.discrete_real_equation_count() {
+    for (index, equation) in view.discrete_real_equations().enumerate() {
         let Some(definition) = causal_plan.discrete_real_definition(index) else {
             continue;
         };
-        let equation = view
-            .discrete_real_equation(index)
-            .expect("dense checked discrete Real equation resolves");
         let span = equation.provenance().span();
         let target = dae::VariableId::from(definition.target());
         if require_discrete_real_clock_owner(&clock_owners, target, span)? != clock.index() {
@@ -801,18 +795,7 @@ fn require_discrete_real_clock_owner<'dae>(
 }
 
 fn discrete_real_clock_owners(view: dae::DaeView<'_>) -> HashMap<u32, u32> {
-    (0..view.clock_ownership_count())
-        .filter_map(|index| {
-            let id = view
-                .clock_ownership_id(index)
-                .expect("dense checked clock ownership identity");
-            let ownership = view
-                .clock_ownership(id)
-                .expect("checked clock ownership resolves");
-            (ownership.kind() == dae::ClockedVariableKind::DiscreteReal)
-                .then_some((ownership.variable().index(), ownership.clock().index()))
-        })
-        .collect()
+    clock_owners_of_kind(view, dae::ClockedVariableKind::DiscreteReal)
 }
 
 fn lower_event_actions<'dae>(
@@ -826,13 +809,7 @@ fn lower_event_actions<'dae>(
 ) -> Result<(), GalecTargetError> {
     let mut lowerer = ExpressionLowerer::with_assertions(view, definitions, by_id, pre_names)
         .with_causal_inlining();
-    for index in 0..view.event_action_count() {
-        let action = view
-            .event_action(
-                view.event_action_id(index)
-                    .expect("dense checked event action identity"),
-            )
-            .expect("checked event action resolves");
+    for (_, action) in view.event_actions() {
         let span = action.provenance().span();
         let dae::EventActionOperation::Assert { level: None, .. } = action.operation() else {
             return Err(unsupported(
@@ -1015,15 +992,17 @@ fn discrete_value_owner_runs_in_domain<'dae>(
 }
 
 fn discrete_value_clock_owners(view: dae::DaeView<'_>) -> HashMap<u32, u32> {
-    (0..view.clock_ownership_count())
-        .filter_map(|index| {
-            let id = view
-                .clock_ownership_id(index)
-                .expect("dense checked clock ownership identity");
-            let ownership = view
-                .clock_ownership(id)
-                .expect("checked clock ownership resolves");
-            (ownership.kind() == dae::ClockedVariableKind::DiscreteValue)
+    clock_owners_of_kind(view, dae::ClockedVariableKind::DiscreteValue)
+}
+
+/// Owning clock of every checked coordinate of one clocked variable kind.
+fn clock_owners_of_kind(
+    view: dae::DaeView<'_>,
+    kind: dae::ClockedVariableKind,
+) -> HashMap<u32, u32> {
+    view.clock_ownerships()
+        .filter_map(|(_, ownership)| {
+            (ownership.kind() == kind)
                 .then_some((ownership.variable().index(), ownership.clock().index()))
         })
         .collect()

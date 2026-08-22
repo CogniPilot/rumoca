@@ -582,6 +582,75 @@ checks. Five concrete splits, in descending value:
 split is independently reviewable. A good first landing that also proves the
 gate ratchets down.
 
+### Landed so far
+
+The table in section 1 is the measurement at this document's base commit and
+stays there. This subsection is the ledger of what has since been converted,
+and `gate.rs` holds the matching ceilings.
+
+| crate | audited | before | now | removed |
+|---|---:|---:|---:|---:|
+| rumoca-phase-solve | 304 | 303 | 272 | 31 |
+| rumoca-phase-galec | 257 | 257 | 240 | 17 |
+| rumoca-phase-dae | 235 | 235 | 232 | 3 |
+| rumoca-ir-dae | 66 | 66 | 60 | 6 |
+| rumoca-ir-solve | 16 | 16 | 15 | 1 |
+| **total** | **878** | **877** | **819** | **58** |
+
+The "before" column is the scan immediately ahead of this landing;
+rumoca-phase-solve had already shed one site between the audit's base commit
+and it.
+
+* **W2, complete for the single-entry families.** `DaeView` now walks an arena
+  instead of being indexed into it:
+  `crates/rumoca-ir-dae/src/model/view/arena_walks.rs` holds the walk and the
+  single-entry accessor for every family whose view is built from one entry
+  (model-event transactions, relations, structured roots, conditions, roots,
+  time events, event actions, clocks, clock ownerships, previous values,
+  terminals, discrete Real equations, initialization-instant discrete values).
+  A step mints the identity from the same slice element that yields the entry,
+  so the paired `dense … identity` and `… resolves` assertions have nowhere
+  left to stand. Every `0..x_count()` loop over those families in the five
+  crates now reads `for (id, x) in view.xs()`.
+
+  Clock ownership joined that set through a typed handover:
+  `ClockOwnershipEntry` carries the `ClockedVariableKind` that `Clocks::own`
+  checked, so the view no longer re-reads the variable arena and no longer has
+  a role arm it cannot reach. The wire form omits the field and replay
+  reproduces it through the same checked operation.
+
+  What W2 does not reach is the families whose view crosses into a second
+  arena: delays, B.1c discrete-value owners, variables, expressions, and the
+  continuous and initialization owners. Those are W1's arena-well-formedness
+  obligation, not a loop shape, and their `0..x_count()` loops are still
+  written by index.
+
+* **W5, four of the five splits.** `RuntimeVariableRole` is `PlannedRole`'s
+  runtime subset, converted at the one filter in `insert_variable_identities`
+  that already skipped the other four roles, so both role mappings in
+  `construction/variable_construction.rs` are exhaustive.
+  `LoweredUnaryOperator` is `UnaryOperator` without the identity `Plus` that
+  scalar lowering erases. `SolveIntegerDomain::FULL` replaces a checked
+  construction of the whole `i64` range with a constant.
+  `FunctionLoop` carries its own non-optional `DomainId` rather than unwrapping
+  the body's option.
+
+  `WritableSlot` is not attempted. It is the largest of the five and reaches
+  the wire form of every Solve assignment target, so it wants an item of its
+  own rather than a corner of this one. `PrimitiveScalarType` is not attempted
+  either: `layout.rs`'s `ScalarType::Record` arm asserts a fact no earlier
+  phase visibly establishes, so refining the type there would move an unproven
+  claim rather than a proven one.
+
+* **Message-free obligations: all five closed.** The two in
+  `solve/lower/scalar/operators.rs` fell to `LoweredUnaryOperator`;
+  `ir-dae/model/function_loop_capability.rs` to the loop's own domain;
+  `solve/lower/scalar/builtins.rs` by naming each filling generator's value in
+  the match that selects it; and `solve/lower/scalar/arrays.rs` by collecting
+  the constant subscripts into `Option<Vec<_>>` in one pass, so deciding that
+  every subscript is constant and reading the constants out are the same
+  expression.
+
 ### Not on the worklist
 
 * **Class (c), about 99 sites.** Two sub-families. The numeric one

@@ -54,7 +54,7 @@ use analysis::{
     FunctionStatementPlan, FunctionValueSeed, HistoryOperatorPlans, ModelAlgorithmPlan,
     ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan, ModelEventTensorLoopPlan,
     MultiOutputEquationPlan, PlannedRole, RecordArrayFieldPlan, RecordArrayFieldPlans,
-    RecordEquationFieldValue, RecordEquationPlan, SemiLinearRules, analyze,
+    RecordEquationFieldValue, RecordEquationPlan, RuntimeVariableRole, SemiLinearRules, analyze,
     assigned_function_targets, discrete_value_assignment, effective_function_scalar_type,
     effective_variable_scalar_type, empty_array_bound_to_declaration, equation_partition,
     flattened_function_loop_source, function_assertion, function_record_field_name,
@@ -222,7 +222,7 @@ impl<'dae> std::ops::Deref for ModelCoordinates<'dae> {
 
 struct ReservedVariable<'flat, 'dae> {
     flat: &'flat flat::Variable,
-    role: PlannedRole,
+    role: RuntimeVariableRole,
     scalar_type: dae::ScalarType,
     value_type: dae::ValueTypeId<'dae>,
     definition: dae::VariableReservation<'dae>,

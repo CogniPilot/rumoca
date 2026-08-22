@@ -1,3 +1,4 @@
+mod arena_walks;
 mod quotient_owners;
 pub use quotient_owners::{RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView};
 
@@ -200,19 +201,6 @@ impl<'dae> DaeView<'dae> {
         previous_id => (PreviousId, previous_values),
         terminal_id => (TerminalId, terminals),
         delay_id => (DelayId, delays),
-    }
-
-    pub fn model_event_transaction(
-        self,
-        id: ModelEventTransactionId<'dae>,
-    ) -> Option<crate::ModelEventTransactionView<'dae>> {
-        Some(crate::ModelEventTransactionView {
-            entry: self
-                .dae
-                .storage
-                .model_event_transactions
-                .get(id.index() as usize)?,
-        })
     }
 
     pub fn domain(self, id: DomainId<'dae>) -> Option<DomainView<'dae>> {
@@ -495,43 +483,6 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
-    /// MLS §8.6 initialization-instant value of one discrete coordinate.
-    pub fn initial_discrete_value(self, index: usize) -> Option<InitialDiscreteValueView<'dae>> {
-        let entry = self.dae.storage.initial_discrete_values.get(index)?;
-        Some(InitialDiscreteValueView {
-            target: VariableId::from_raw(entry.target),
-            value: ExprId::from_raw(entry.value),
-            provenance: entry.provenance,
-        })
-    }
-
-    pub fn initial_discrete_values(
-        self,
-    ) -> impl ExactSizeIterator<Item = InitialDiscreteValueView<'dae>> {
-        (0..self.initial_discrete_value_count()).map(move |index| {
-            self.initial_discrete_value(index)
-                .expect("finalized discrete initial value resolves")
-        })
-    }
-
-    pub fn discrete_real_equation(self, index: usize) -> Option<DiscreteRealEquationView<'dae>> {
-        let entry = self.dae.storage.discrete_real_equations.get(index)?;
-        let activation = match entry.activation {
-            crate::equations::DiscreteRealActivationEntry::Always => DiscreteRealActivation::Always,
-            crate::equations::DiscreteRealActivationEntry::When { trigger, guard } => {
-                DiscreteRealActivation::When {
-                    trigger: ConditionId::from_raw(trigger),
-                    guard: ConditionId::from_raw(guard),
-                }
-            }
-        };
-        Some(DiscreteRealEquationView {
-            residual: ExprId::from_raw(entry.residual),
-            activation,
-            provenance: entry.provenance,
-        })
-    }
-
     pub fn discrete_value_owner(
         self,
         id: DiscreteValueOwnerId<'dae>,
@@ -580,121 +531,6 @@ impl<'dae> DaeView<'dae> {
             .sum()
     }
 
-    pub fn relation(self, id: RelationId<'dae>) -> Option<RelationView<'dae>> {
-        let entry = self.dae.storage.relations.get(id.index() as usize)?;
-        Some(RelationView {
-            expression: ExprId::from_raw(entry.expression),
-            provenance: entry.provenance,
-        })
-    }
-
-    pub fn structured_root(self, id: StructuredRootId<'dae>) -> Option<StructuredRootView<'dae>> {
-        let entry = self.dae.storage.structured_roots.get(id.index() as usize)?;
-        Some(StructuredRootView {
-            domain: DomainId::from_raw(entry.domain),
-            expression: ExprId::from_raw(entry.expression),
-            provenance: entry.provenance,
-        })
-    }
-
-    pub fn condition(self, id: ConditionId<'dae>) -> Option<ConditionView<'dae>> {
-        let entry = self.dae.storage.conditions.get(id.index() as usize)?;
-        let operation = match entry
-            .node
-            .as_ref()
-            .expect("final DAE cannot contain an undefined condition")
-        {
-            crate::conditions::ConditionNode::Initial => ConditionOperation::Initial,
-            crate::conditions::ConditionNode::Always => ConditionOperation::Always,
-            crate::conditions::ConditionNode::Relation(raw) => {
-                ConditionOperation::Relation(RelationId::from_raw(*raw))
-            }
-            crate::conditions::ConditionNode::Discrete(raw) => {
-                ConditionOperation::Discrete(ExprId::from_raw(*raw))
-            }
-            crate::conditions::ConditionNode::Clock(raw) => {
-                ConditionOperation::Clock(ClockId::from_raw(*raw))
-            }
-            crate::conditions::ConditionNode::Not(raw) => {
-                ConditionOperation::Not(ConditionId::from_raw(*raw))
-            }
-            crate::conditions::ConditionNode::And { lhs, rhs } => {
-                ConditionOperation::And(ConditionId::from_raw(*lhs), ConditionId::from_raw(*rhs))
-            }
-            crate::conditions::ConditionNode::Or { lhs, rhs } => {
-                ConditionOperation::Or(ConditionId::from_raw(*lhs), ConditionId::from_raw(*rhs))
-            }
-            crate::conditions::ConditionNode::AnyRise { lhs, rhs } => ConditionOperation::AnyRise(
-                ConditionId::from_raw(*lhs),
-                ConditionId::from_raw(*rhs),
-            ),
-        };
-        Some(ConditionView {
-            operation,
-            provenance: entry.provenance,
-        })
-    }
-
-    pub fn root(self, id: RootId<'dae>) -> Option<RootView<'dae>> {
-        let entry = self.dae.storage.roots.get(id.index() as usize)?;
-        Some(RootView {
-            relation: RelationId::from_raw(entry.relation),
-            activation: ConditionId::from_raw(entry.activation),
-            provenance: entry.provenance,
-        })
-    }
-
-    pub fn time_event(self, id: TimeEventId<'dae>) -> Option<TimeEventView<'dae>> {
-        let entry = self.dae.storage.time_events.get(id.index() as usize)?;
-        let operation = match &entry.kind {
-            TimeEventKind::Static { instant } => TimeEventOperation::Static(instant),
-            TimeEventKind::Dynamic { deadline } => {
-                TimeEventOperation::Dynamic(ExprId::from_raw(*deadline))
-            }
-        };
-        Some(TimeEventView {
-            operation,
-            provenance: entry.provenance,
-        })
-    }
-
-    pub fn event_action(self, id: EventActionId<'dae>) -> Option<EventActionView<'dae>> {
-        let entry = self.dae.storage.event_actions.get(id.index() as usize)?;
-        let operation = match entry.kind {
-            EventActionKind::Assert { message, level } => EventActionOperation::Assert {
-                message: ExprId::from_raw(message),
-                level: level.map(ExprId::from_raw),
-            },
-            EventActionKind::Terminate { message } => EventActionOperation::Terminate {
-                message: ExprId::from_raw(message),
-            },
-            EventActionKind::Reinitialize { state, value } => EventActionOperation::Reinitialize {
-                state: StateId::from_raw(state),
-                value: ExprId::from_raw(value),
-            },
-        };
-        Some(EventActionView {
-            trigger: ConditionId::from_raw(entry.trigger),
-            guard: ConditionId::from_raw(entry.guard),
-            operation,
-            provenance: entry.provenance,
-        })
-    }
-
-    pub fn clock(self, id: ClockId<'dae>) -> Option<ClockView<'dae>> {
-        let entry = self.dae.storage.clocks.get(id.index() as usize)?;
-        let operation = match &entry.kind {
-            crate::clocks::ClockKind::Periodic(lattice) => ClockOperation::Periodic(lattice),
-            crate::clocks::ClockKind::Triggered(condition) => {
-                ClockOperation::Triggered(ConditionId::from_raw(*condition))
-            }
-        };
-        Some(ClockView {
-            operation,
-            provenance: entry.provenance,
-        })
-    }
-
     pub fn periodic_clock(
         self,
         id: crate::PeriodicClockId<'dae>,
@@ -704,43 +540,6 @@ impl<'dae> DaeView<'dae> {
             unreachable!("PeriodicClockId is minted only for periodic clocks");
         };
         lattice
-    }
-
-    pub fn clock_ownership(self, id: ClockOwnershipId<'dae>) -> Option<ClockOwnershipView<'dae>> {
-        let entry = self.dae.storage.clock_ownerships.get(id.index() as usize)?;
-        let role = self
-            .dae
-            .storage
-            .variables
-            .get(entry.variable as usize)?
-            .role;
-        Some(ClockOwnershipView {
-            variable: VariableId::from_raw(entry.variable),
-            kind: match role {
-                VariableRole::DiscreteReal => ClockedVariableKind::DiscreteReal,
-                VariableRole::DiscreteValue => ClockedVariableKind::DiscreteValue,
-                _ => unreachable!("clock ownership accepts only checked clocked variable roles"),
-            },
-            clock: ClockId::from_raw(entry.clock),
-            sampled: entry.sampled,
-            provenance: entry.provenance,
-        })
-    }
-
-    pub fn previous(self, id: PreviousId<'dae>) -> Option<PreviousView<'dae>> {
-        let entry = self.dae.storage.previous_values.get(id.index() as usize)?;
-        Some(PreviousView {
-            variable: VariableId::from_raw(entry.variable),
-            clock: ClockId::from_raw(entry.clock),
-            provenance: entry.provenance,
-        })
-    }
-
-    pub fn terminal(self, id: TerminalId<'dae>) -> Option<TerminalView> {
-        let entry = self.dae.storage.terminals.get(id.index() as usize)?;
-        Some(TerminalView {
-            provenance: entry.provenance,
-        })
     }
 
     pub fn delay(self, id: DelayId<'dae>) -> Option<DelayView<'dae>> {
@@ -915,17 +714,12 @@ impl<'dae> FunctionView<'dae> {
     }
 
     pub fn parameters(self) -> impl ExactSizeIterator<Item = FunctionParameterView<'dae>> {
-        self.entry
-            .parameter_values
-            .iter()
-            .enumerate()
-            .map(move |(ordinal, entry)| FunctionParameterView {
-                id: FunctionParameterId::from_raw(
-                    self.id.index(),
-                    u32::try_from(ordinal).expect("function parameter index was checked"),
-                ),
+        arena_walks::ArenaWalk::new(&self.entry.parameter_values).map(move |(ordinal, entry)| {
+            FunctionParameterView {
+                id: FunctionParameterId::from_raw(self.id.index(), ordinal),
                 entry,
-            })
+            }
+        })
     }
 
     /// Result definitions of a Modelica body.
@@ -980,17 +774,12 @@ impl<'dae> FunctionView<'dae> {
     }
 
     pub fn values(self) -> impl ExactSizeIterator<Item = FunctionValueView<'dae>> {
-        self.entry
-            .values
-            .iter()
-            .enumerate()
-            .map(move |(ordinal, entry)| FunctionValueView {
-                id: FunctionValueId::from_raw(
-                    self.id.index(),
-                    u32::try_from(ordinal).expect("function value index was checked"),
-                ),
+        arena_walks::ArenaWalk::new(&self.entry.values).map(move |(ordinal, entry)| {
+            FunctionValueView {
+                id: FunctionValueId::from_raw(self.id.index(), ordinal),
                 entry,
-            })
+            }
+        })
     }
 
     /// Ordered Modelica body statements; empty for an external interface.
@@ -1654,27 +1443,27 @@ impl<'dae> SubscriptsView<'dae> {
     }
 
     pub fn get(self, index: usize) -> Option<SubscriptView<'dae>> {
-        let subscript = self.raw.get(index)?;
-        Some(match subscript.kind {
-            crate::expression::PackedSubscriptKind::Index(expression) => SubscriptView::Index {
-                expression: ExprId::from_raw(expression),
-                provenance: subscript.provenance,
-            },
-            crate::expression::PackedSubscriptKind::Whole => SubscriptView::Whole {
-                provenance: subscript.provenance,
-            },
-            crate::expression::PackedSubscriptKind::Slice(expression) => SubscriptView::Slice {
-                expression: ExprId::from_raw(expression),
-                provenance: subscript.provenance,
-            },
-        })
+        self.raw.get(index).map(subscript_view)
     }
 
     pub fn iter(self) -> impl ExactSizeIterator<Item = SubscriptView<'dae>> {
-        (0..self.len()).map(move |index| {
-            self.get(index)
-                .expect("finalized subscript ordinal resolves")
-        })
+        self.raw.iter().map(subscript_view)
+    }
+}
+
+fn subscript_view(subscript: &crate::expression::PackedSubscript) -> SubscriptView<'_> {
+    match subscript.kind {
+        crate::expression::PackedSubscriptKind::Index(expression) => SubscriptView::Index {
+            expression: ExprId::from_raw(expression),
+            provenance: subscript.provenance,
+        },
+        crate::expression::PackedSubscriptKind::Whole => SubscriptView::Whole {
+            provenance: subscript.provenance,
+        },
+        crate::expression::PackedSubscriptKind::Slice(expression) => SubscriptView::Slice {
+            expression: ExprId::from_raw(expression),
+            provenance: subscript.provenance,
+        },
     }
 }
 

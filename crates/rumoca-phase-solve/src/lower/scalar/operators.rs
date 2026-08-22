@@ -6,6 +6,30 @@
 
 use super::*;
 
+/// A unary operator that still has an operation to issue once lowering has
+/// erased the ones that do not.
+///
+/// MLS §3.4 unary plus is the identity on its operand, so lowering answers it
+/// with the operand register and never issues an op for it. Naming the
+/// remaining operators in their own type is what keeps that erasure from
+/// having to be restated as an assertion at each place the operator is mapped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoweredUnaryOperator {
+    Negate,
+    Not,
+}
+
+impl LoweredUnaryOperator {
+    /// `None` for the identity operator, whose lowering is its operand.
+    const fn of(operator: dae::UnaryOperator) -> Option<Self> {
+        match operator {
+            dae::UnaryOperator::Plus => None,
+            dae::UnaryOperator::Negate => Some(Self::Negate),
+            dae::UnaryOperator::Not => Some(Self::Not),
+        }
+    }
+}
+
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     pub(super) fn unary(
         &mut self,
@@ -13,13 +37,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         operand: solve::Reg,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        if operator == dae::UnaryOperator::Plus {
+        let Some(operator) = LoweredUnaryOperator::of(operator) else {
             return Ok(operand);
-        }
+        };
         let op = match operator {
-            dae::UnaryOperator::Plus => unreachable!(),
-            dae::UnaryOperator::Negate => solve::UnaryOp::Neg,
-            dae::UnaryOperator::Not => solve::UnaryOp::Not,
+            LoweredUnaryOperator::Negate => solve::UnaryOp::Neg,
+            LoweredUnaryOperator::Not => solve::UnaryOp::Not,
         };
         let dst = self.register(span)?;
         self.ops.push(solve::LinearOp::Unary {
@@ -30,9 +53,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let integer = self
             .integer_register(operand)
             .and_then(|value| match operator {
-                dae::UnaryOperator::Plus => unreachable!(),
-                dae::UnaryOperator::Negate => value.checked_neg(),
-                dae::UnaryOperator::Not => Some(i64::from(value == 0)),
+                LoweredUnaryOperator::Negate => value.checked_neg(),
+                LoweredUnaryOperator::Not => Some(i64::from(value == 0)),
             });
         self.set_integer_register(dst, integer);
         Ok(dst)

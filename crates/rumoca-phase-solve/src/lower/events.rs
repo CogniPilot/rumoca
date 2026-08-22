@@ -967,15 +967,8 @@ struct RelationMemoryOwners<'dae> {
 impl<'dae> RelationMemoryOwners<'dae> {
     fn new(view: dae::DaeView<'dae>) -> Self {
         let mut relation_by_expression = vec![None; view.expression_count()];
-        for index in 0..view.relation_count() {
-            let relation = view
-                .relation_id(index)
-                .expect("dense checked relation identity resolves");
-            let expression = view
-                .relation(relation)
-                .expect("checked relation resolves")
-                .expression();
-            relation_by_expression[expression.index() as usize] = Some(relation);
+        for (relation, entry) in view.relations() {
+            relation_by_expression[entry.expression().index() as usize] = Some(relation);
         }
         Self {
             relation_by_expression,
@@ -1021,13 +1014,10 @@ fn lower_discrete_real_equations<'dae>(
 ) -> Result<(), LowerError> {
     let definitions = resolve_discrete_real_definitions(view)?;
     let mut conditional = Vec::new();
-    for (index, definition) in definitions.into_iter().enumerate() {
+    for (definition, equation) in definitions.into_iter().zip(view.discrete_real_equations()) {
         let Some((target, value)) = definition else {
             continue;
         };
-        let equation = view
-            .discrete_real_equation(index)
-            .expect("dense checked discrete Real equation resolves");
         let span = equation.provenance().span();
         let variable = dae::VariableId::from(target);
         match equation.activation() {
@@ -1222,13 +1212,7 @@ fn lower_event_actions<'dae>(
     action_conditions: &mut ScalarRows,
 ) -> Result<(), LowerError> {
     let mut updates = Vec::new();
-    for index in 0..view.event_action_count() {
-        let id = view
-            .event_action_id(index)
-            .expect("dense event action identity resolves");
-        let action = view
-            .event_action(id)
-            .expect("checked event action identity resolves");
+    for (_, action) in view.event_actions() {
         match action.operation() {
             dae::EventActionOperation::Assert { message, level } => {
                 if level.is_some() {
@@ -1520,13 +1504,7 @@ fn lower_condition_memory<'dae>(
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
-    for index in 0..view.condition_count() {
-        let condition = view
-            .condition_id(index)
-            .expect("dense condition identity resolves");
-        let condition_view = view
-            .condition(condition)
-            .expect("checked condition identity resolves");
+    for (condition, condition_view) in view.conditions() {
         if condition_clock_owner(view, condition).is_some() {
             continue;
         }
@@ -1710,9 +1688,7 @@ fn lower_roots<'dae>(
     let mut relation_memory_targets = Vec::with_capacity(view.root_count());
     let mut owner_relations = Vec::new();
     let mut owner_span = None;
-    for index in 0..view.root_count() {
-        let id = view.root_id(index).expect("dense root identity resolves");
-        let root = view.root(id).expect("checked root identity resolves");
+    for (_, root) in view.roots() {
         let relation = view
             .relation(root.relation())
             .expect("checked root relation resolves");
@@ -1774,13 +1750,7 @@ fn lower_structured_roots<'dae>(
     zero_domains: &mut Vec<solve::RootZeroDomain>,
     relation_memory_targets: &mut Vec<Option<solve::ScalarSlot>>,
 ) -> Result<(), LowerError> {
-    for index in 0..view.structured_root_count() {
-        let id = view
-            .structured_root_id(index)
-            .expect("dense structured-root identity resolves");
-        let root = view
-            .structured_root(id)
-            .expect("checked structured-root identity resolves");
+    for (_, root) in view.structured_roots() {
         if expression_clock_owner(view, clocks, root.expression()).is_some() {
             return Err(LowerError::non_computable(
                 "clocked structured root families are not continuously monitored",
@@ -1881,13 +1851,7 @@ fn lower_time_events<'dae>(
 ) -> Result<(Vec<f64>, solve::ScalarProgramBlock), LowerError> {
     let mut scheduled = Vec::new();
     let mut dynamic = ScalarRows::default();
-    for index in 0..view.time_event_count() {
-        let id = view
-            .time_event_id(index)
-            .expect("dense time event identity resolves");
-        let event = view
-            .time_event(id)
-            .expect("checked time event identity resolves");
+    for (_, event) in view.time_events() {
         match event.operation() {
             dae::TimeEventOperation::Static(instant) => scheduled.push(instant.to_f64()),
             dae::TimeEventOperation::Dynamic(deadline) => dynamic.push(

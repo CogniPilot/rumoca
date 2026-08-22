@@ -181,17 +181,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             indices.push(index);
             result_axis += usize::from(consumes_result_axis);
         }
-        if indices
+        // Deciding that every subscript is constant and reading the constants
+        // out is one pass, not two: the proof and the use are the same
+        // expression, so a second match has no residual case to name.
+        let constant_coordinates = indices
             .iter()
-            .all(|index| matches!(index, solve::TensorIndex::Constant(_)))
-        {
-            let coordinates = indices
-                .iter()
-                .map(|index| match index {
-                    solve::TensorIndex::Constant(coordinate) => *coordinate,
-                    solve::TensorIndex::Runtime(_) => unreachable!(),
-                })
-                .collect::<Vec<_>>();
+            .map(|index| match index {
+                solve::TensorIndex::Constant(coordinate) => Some(*coordinate),
+                solve::TensorIndex::Runtime(_) => None,
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(coordinates) = constant_coordinates {
             let selected = flatten_coordinates(&base_dimensions, &coordinates)
                 .expect("checked indexed coordinates belong to the base shape");
             return self.expression(base, selected);

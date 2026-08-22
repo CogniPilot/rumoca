@@ -229,15 +229,7 @@ where
         };
         self.seed_homotopy_continuation(&mut columns)?;
 
-        for index in 0..self.view.variable_count() {
-            let id = self
-                .view
-                .variable_id(index)
-                .expect("finalized dense variable has an identity");
-            let variable = self
-                .view
-                .variable(id)
-                .expect("finalized variable identity resolves");
+        for (id, variable) in self.view.variables() {
             if is_non_numeric(variable) {
                 continue;
             }

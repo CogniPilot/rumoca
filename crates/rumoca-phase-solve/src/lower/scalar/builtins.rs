@@ -56,22 +56,22 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         for _ in 0..count {
             self.register(span)?;
         }
+        // Each filling generator names its value in the same match that selects
+        // it. Deciding twice on one operand is what forces the second decision
+        // to carry a residual case that the first one already ruled out.
         match builtin {
-            dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones | dae::PureBuiltin::Fill => {
-                let value_start = match builtin {
-                    dae::PureBuiltin::Zeros => self.constant(0.0, span)?,
-                    dae::PureBuiltin::Ones => self.constant(1.0, span)?,
-                    dae::PureBuiltin::Fill => {
-                        self.expression(arguments.get(0).expect("checked fill value argument"), 0)?
-                    }
-                    _ => unreachable!(),
-                };
-                self.ops.push(solve::LinearOp::TensorFill {
-                    dst_start,
-                    value_start,
-                    count,
-                    lanes: 1,
-                });
+            dae::PureBuiltin::Zeros => {
+                let value_start = self.constant(0.0, span)?;
+                self.push_tensor_fill(dst_start, value_start, count);
+            }
+            dae::PureBuiltin::Ones => {
+                let value_start = self.constant(1.0, span)?;
+                self.push_tensor_fill(dst_start, value_start, count);
+            }
+            dae::PureBuiltin::Fill => {
+                let value_start =
+                    self.expression(arguments.get(0).expect("checked fill value argument"), 0)?;
+                self.push_tensor_fill(dst_start, value_start, count);
             }
             dae::PureBuiltin::Identity => {
                 let [rows, columns] = dimensions else {
@@ -93,6 +93,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         self.tensor_generate_cache.insert(key, (dst_start, count));
         Ok(dst_start)
+    }
+
+    /// Issue the compact fill that every filling tensor generator shares.
+    fn push_tensor_fill(&mut self, dst_start: solve::Reg, value_start: solve::Reg, count: usize) {
+        self.ops.push(solve::LinearOp::TensorFill {
+            dst_start,
+            value_start,
+            count,
+            lanes: 1,
+        });
     }
 
     pub(super) fn builtin(

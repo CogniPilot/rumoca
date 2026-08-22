@@ -532,9 +532,13 @@ fn index_element<'dae>(
     expression: dae::ExprId<'dae>,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    expressions
-        .at(provenance)
-        .index(call, [dae::Subscript::Index { expression, provenance }])
+    expressions.at(provenance).index(
+        call,
+        [dae::Subscript::Index {
+            expression,
+            provenance,
+        }],
+    )
 }
 
 /// One vector-valued call feeding three scalar projections, used to check the
@@ -570,7 +574,11 @@ fn aggregate_call_fixture() -> dae::Dae {
                 let values = dae.expressions(|expressions| {
                     [1.0, 2.0, 3.0]
                         .into_iter()
-                        .map(|value| expressions.at(provenance).literal(dae::DaeLiteral::Real(value)))
+                        .map(|value| {
+                            expressions
+                                .at(provenance)
+                                .literal(dae::DaeLiteral::Real(value))
+                        })
                         .collect::<Result<Vec<_>, _>>()
                 })?;
                 let value =
@@ -591,7 +599,11 @@ fn aggregate_call_fixture() -> dae::Dae {
                     .expressions(|expressions| expressions.at(provenance).call(producer, 0, []))?;
                 let ordinals = dae.expressions(|expressions| {
                     (1..=3)
-                        .map(|index| expressions.at(provenance).literal(dae::DaeLiteral::Integer(index)))
+                        .map(|index| {
+                            expressions
+                                .at(provenance)
+                                .literal(dae::DaeLiteral::Integer(index))
+                        })
                         .collect::<Result<Vec<_>, _>>()
                 })?;
                 let projected = dae.expressions(|expressions| {
