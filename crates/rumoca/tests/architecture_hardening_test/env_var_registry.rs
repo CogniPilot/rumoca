@@ -76,10 +76,16 @@ fn is_env_name_char(c: char) -> bool {
 /// Source file extensions scanned for `RUMOCA_*` environment-variable usage.
 const SCANNED_EXTENSIONS: &[&str] = &["rs", "ts", "mjs", "cjs", "js"];
 
-/// Directory names that are build output, dependencies, or vendored third-party
-/// code — never first-party source, so they are not scanned.
+/// Directory names that are build output, dependencies, vendored third-party
+/// code, or a nested checkout of this same repository. None of them is
+/// first-party source of THIS tree, so they are not scanned.
+///
+/// `.claude` holds git worktrees of this repository, each with a full copy of
+/// every crate. Scanning them reports another tree's code as a violation here,
+/// which cannot be fixed from this checkout.
 const SKIPPED_DIRS: &[&str] = &[
     "target",
+    ".claude",
     "node_modules",
     ".git",
     ".vscode-test",
