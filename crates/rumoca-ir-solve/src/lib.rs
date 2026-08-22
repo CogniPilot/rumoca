@@ -47,10 +47,11 @@ pub use layout::{
 };
 pub use linear_op::{
     BinaryOp, CompareOp, FoldInitialSource, FoldTensorNode, FoldTensorUpdate,
-    FunctionConditionalArmProgram, FunctionConditionalOwnerId, FunctionConditionalProgram,
-    FunctionFoldProgram, LinearOp, RandomGenerator, Reg, ScalarProgramRegisterError,
-    ScalarProgramRegisterFlow, TargetAssignmentShape, TensorConcatenateSource, TensorIndex,
-    TensorInputKind, TensorSubscript, TensorUpdateSubscript, UnaryOp, resolve_indexed_slot,
+    FoldTensorUpdateStore, FunctionConditionalArmProgram, FunctionConditionalOwnerId,
+    FunctionConditionalProgram, FunctionFoldProgram, LinearOp, MatrixProductShape, RandomGenerator,
+    Reg, ScalarProgramRegisterError, ScalarProgramRegisterFlow, StridedOperand,
+    TargetAssignmentShape, TensorConcatenateSource, TensorIndex, TensorInputKind, TensorSubscript,
+    TensorUpdateSubscript, UnaryOp, resolve_indexed_slot,
 };
 pub use model::*;
 pub use refresh::*;

@@ -451,18 +451,22 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(ArrayUpdateAxis::Runtime(matches))
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn dynamic_record_field_array_update(
         &mut self,
-        base: dae::ExprId<'dae>,
-        value: dae::ExprId<'dae>,
-        subscripts: dae::SubscriptsView<'dae>,
-        field: usize,
-        base_record: usize,
-        field_scalar: usize,
+        update: ArrayUpdateOperands<'dae>,
+        target: RecordFieldScalar,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        let ArrayUpdateOperands {
+            base,
+            value,
+            subscripts,
+        } = update;
+        let RecordFieldScalar {
+            field,
+            element: base_record,
+            scalar: field_scalar,
+        } = target;
         let base_dimensions = self.node(base).value_type().dimensions().to_vec();
         if !self.node(value).value_type().dimensions().is_empty()
             || subscripts.len() != base_dimensions.len()

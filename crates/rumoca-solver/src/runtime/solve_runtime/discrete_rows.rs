@@ -9,6 +9,7 @@ use super::event_update::{
     DiscretePreSnapshot, DiscreteRowEvalInput, DiscreteRowsSettleInput, EventEvalParamCache,
     EventUpdateRowFilter,
 };
+use super::native_specialization::{RowEvalPoint, SpecializedRows};
 use super::support::{
     copy_runtime_values, copy_runtime_values_into, reserve_runtime_vec_capacity,
     resize_runtime_values,
@@ -312,6 +313,18 @@ struct ClockPartitionEntry<'a> {
     eval_p: &'a [f64],
 }
 
+/// The pass-private state every ordered producer of one clock partition reads
+/// and writes.
+///
+/// The buffers are seeded once from [`ClockPartitionEntry`] and then carried
+/// through the whole partition order at a single instant, so a step observes
+/// this tick's value of every earlier producer.
+struct ClockPartitionWork<'a> {
+    t: f64,
+    y: &'a mut [f64],
+    p: &'a mut [f64],
+}
+
 /// Where the issued producers append the values the pass commits atomically.
 struct ClockPartitionOutputs<'a> {
     row_values: &'a mut Vec<DiscreteRowValue>,
@@ -376,45 +389,39 @@ impl SolveRuntime {
         if let ClockPartitionPassMode::Filtered { snapshot, .. } = mode {
             self.seed_root_relation_overrides(snapshot, work_p);
         }
+        let work = &mut ClockPartitionWork {
+            t,
+            y: work_y,
+            p: work_p,
+        };
         for step in order {
             match *step {
                 solve::ClockPartitionStep::ScalarRows { start_row, count } => {
                     self.execute_clock_partition_scalar_rows(
-                        mode, start_row, count, t, work_y, work_p, row_values,
+                        mode, start_row, count, work, row_values,
                     )?;
                 }
                 solve::ClockPartitionStep::GuardedAssignment { program_index } => {
                     self.execute_clock_partition_guarded(
                         mode,
                         program_index,
-                        t,
-                        work_y,
-                        work_p,
+                        work,
                         guarded_values,
                     )?;
                 }
                 solve::ClockPartitionStep::StructuredUpdate { update_index } => {
-                    self.execute_clock_partition_structured(
-                        mode,
-                        update_index,
-                        t,
-                        work_y,
-                        work_p,
-                        row_values,
-                    )?;
+                    self.execute_clock_partition_structured(mode, update_index, work, row_values)?;
                 }
                 solve::ClockPartitionStep::EventTransaction { program_index } => {
                     self.execute_clock_partition_transaction(
                         mode,
                         program_index,
-                        t,
-                        work_y,
-                        work_p,
+                        work,
                         evaluated_transactions,
                     )?;
                 }
                 solve::ClockPartitionStep::Intermediate { row } => {
-                    self.execute_clock_partition_intermediate(mode, row, t, work_y, work_p)?;
+                    self.execute_clock_partition_intermediate(mode, row, work)?;
                 }
             }
         }
@@ -425,9 +432,7 @@ impl SolveRuntime {
         &self,
         mode: ClockPartitionPassMode<'_, '_>,
         program_index: usize,
-        t: f64,
-        work_y: &mut [f64],
-        work_p: &mut [f64],
+        work: &mut ClockPartitionWork<'_>,
         evaluated_transactions: &mut Vec<usize>,
     ) -> Result<(), RuntimeSolveError> {
         if let ClockPartitionPassMode::Filtered { snapshot, scope } = mode
@@ -440,15 +445,15 @@ impl SolveRuntime {
         {
             return Ok(());
         }
-        if !self.event_transaction_active_at(program_index, t)? {
+        if !self.event_transaction_active_at(program_index, work.t)? {
             return Ok(());
         }
-        self.eval_event_transaction_outputs(program_index, work_y, work_p, t)?;
+        self.eval_event_transaction_outputs(program_index, work.y, work.p, work.t)?;
         if self
             .failed_event_transaction_assertion(program_index)?
             .is_none()
         {
-            self.commit_event_transaction_targets(program_index, work_y, work_p)?;
+            self.commit_event_transaction_targets(program_index, work.y, work.p)?;
         }
         evaluated_transactions.push(program_index);
         Ok(())
@@ -475,16 +480,12 @@ impl SolveRuntime {
         }
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn execute_clock_partition_scalar_rows(
         &self,
         mode: ClockPartitionPassMode<'_, '_>,
         start_row: usize,
         count: usize,
-        t: f64,
-        work_y: &mut [f64],
-        work_p: &mut [f64],
+        work: &mut ClockPartitionWork<'_>,
         row_values: &mut Vec<DiscreteRowValue>,
     ) -> Result<(), RuntimeSolveError> {
         let mut cached_program = None;
@@ -503,7 +504,7 @@ impl SolveRuntime {
                 continue;
             }
             if let ClockPartitionPassMode::Filtered { snapshot, scope } = mode
-                && !self.scalar_row_admitted(row_idx, snapshot, scope, t)?
+                && !self.scalar_row_admitted(row_idx, snapshot, scope, work.t)?
             {
                 continue;
             }
@@ -516,7 +517,7 @@ impl SolveRuntime {
                         ))
                     })?;
             if cached_program != Some(program) {
-                self.eval_discrete_program_outputs(program, work_y, work_p, t, &mut outputs)?;
+                self.eval_discrete_program_outputs(program, work.y, work.p, work.t, &mut outputs)?;
                 cached_program = Some(program);
             }
             let value = outputs.get(output).copied().ok_or_else(|| {
@@ -526,7 +527,7 @@ impl SolveRuntime {
             })?;
             let target = self.model.problem.discrete.update_targets[row_idx];
             row_values.push((target, value));
-            solve_eval::apply_scalar_slot_value_exact(target, value, work_y, work_p)?;
+            solve_eval::apply_scalar_slot_value_exact(target, value, work.y, work.p)?;
         }
         Ok(())
     }
@@ -561,9 +562,7 @@ impl SolveRuntime {
         &self,
         mode: ClockPartitionPassMode<'_, '_>,
         program_index: usize,
-        t: f64,
-        work_y: &mut [f64],
-        work_p: &mut [f64],
+        work: &mut ClockPartitionWork<'_>,
         guarded_values: &mut Vec<GuardedRowValues>,
     ) -> Result<(), RuntimeSolveError> {
         if self
@@ -589,19 +588,19 @@ impl SolveRuntime {
                 if scope.skip_solver_or_time_rows && row_reads_solver_or_time(owner.program()) {
                     return Ok(());
                 }
-                if !self.guarded_assignment_accepts_snapshot(program_index, snapshot, t)? {
+                if !self.guarded_assignment_accepts_snapshot(program_index, snapshot, work.t)? {
                     return Ok(());
                 }
             }
             ClockPartitionPassMode::Unfiltered => {
-                if !self.guarded_assignment_active_at(program_index, t)? {
+                if !self.guarded_assignment_active_at(program_index, work.t)? {
                     return Ok(());
                 }
             }
         }
         let mut values = Vec::new();
-        self.eval_guarded_assignment_outputs(program_index, work_y, work_p, t, &mut values)?;
-        self.apply_guarded_assignment_outputs(program_index, &values, &[], work_y, work_p)?;
+        self.eval_guarded_assignment_outputs(program_index, work.y, work.p, work.t, &mut values)?;
+        self.apply_guarded_assignment_outputs(program_index, &values, &[], work.y, work.p)?;
         guarded_values.push((program_index, values));
         Ok(())
     }
@@ -610,9 +609,7 @@ impl SolveRuntime {
         &self,
         mode: ClockPartitionPassMode<'_, '_>,
         update_index: usize,
-        t: f64,
-        work_y: &mut [f64],
-        work_p: &mut [f64],
+        work: &mut ClockPartitionWork<'_>,
         row_values: &mut Vec<DiscreteRowValue>,
     ) -> Result<(), RuntimeSolveError> {
         if self
@@ -634,7 +631,7 @@ impl SolveRuntime {
         for &row_index in rows {
             let row = self.structured_discrete_rows.rows()[row_index];
             if let ClockPartitionPassMode::Filtered { snapshot, scope } = mode
-                && !self.structured_row_admitted(row, snapshot, scope, t)?
+                && !self.structured_row_admitted(row, snapshot, scope, work.t)?
             {
                 continue;
             }
@@ -643,13 +640,13 @@ impl SolveRuntime {
                 .rhs
                 .eval_row_unchecked_with_context(
                     row.source_row,
-                    work_y,
-                    work_p,
-                    t,
+                    work.y,
+                    work.p,
+                    work.t,
                     self.row_eval_context(),
                 )?;
             row_values.push((row.target, value));
-            solve_eval::apply_scalar_slot_value_exact(row.target, value, work_y, work_p)?;
+            solve_eval::apply_scalar_slot_value_exact(row.target, value, work.y, work.p)?;
         }
         Ok(())
     }
@@ -684,12 +681,10 @@ impl SolveRuntime {
         &self,
         mode: ClockPartitionPassMode<'_, '_>,
         row: usize,
-        t: f64,
-        work_y: &mut [f64],
-        work_p: &mut [f64],
+        work: &mut ClockPartitionWork<'_>,
     ) -> Result<(), RuntimeSolveError> {
         if matches!(mode, ClockPartitionPassMode::Filtered { .. })
-            && !self.clock_partition_intermediate_active_at(row, t)?
+            && !self.clock_partition_intermediate_active_at(row, work.t)?
         {
             return Ok(());
         }
@@ -734,13 +729,17 @@ impl SolveRuntime {
                 )?;
             }
             self.eval_single_output_rows_with_native(
-                &self.clock_partition_intermediates,
-                &self.compiled_clock_partition_intermediates,
-                &self.failed_clock_partition_intermediates,
+                SpecializedRows {
+                    block: &self.clock_partition_intermediates,
+                    cache: &self.compiled_clock_partition_intermediates,
+                    failed: &self.failed_clock_partition_intermediates,
+                },
                 &[row],
-                work_y,
-                work_p,
-                t,
+                RowEvalPoint {
+                    y: work.y,
+                    p: work.p,
+                    t: work.t,
+                },
                 &mut scratch,
             )?;
             scratch[row]
@@ -754,7 +753,7 @@ impl SolveRuntime {
             value,
             "refresh clock-partition intermediate"
         );
-        solve_eval::apply_scalar_slot_value_exact(target, value, work_y, work_p)?;
+        solve_eval::apply_scalar_slot_value_exact(target, value, work.y, work.p)?;
         Ok(())
     }
 

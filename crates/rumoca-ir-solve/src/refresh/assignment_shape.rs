@@ -1,5 +1,5 @@
 use super::dependency::{ScalarProgramYDependency, register_is_written_by, y_load_indices};
-use crate::{BinaryOp, LinearOp, TargetAssignmentShape, UnaryOp};
+use crate::{BinaryOp, LinearOp, StridedOperand, TargetAssignmentShape, UnaryOp};
 
 pub(super) fn canonical_assignment_shape_for_output(
     program: &[LinearOp],
@@ -444,11 +444,17 @@ fn assignment_expression_registers(
         }) => tensor_binary_operands(
             output,
             *dst_start,
-            *lhs_start,
-            *rhs_start,
+            (
+                StridedOperand {
+                    start: *lhs_start,
+                    stride: *lhs_stride,
+                },
+                StridedOperand {
+                    start: *rhs_start,
+                    stride: *rhs_stride,
+                },
+            ),
             *count,
-            *lhs_stride,
-            *rhs_stride,
             *lanes,
         )
         .map_or([None, None], |(lhs, rhs)| {
@@ -458,28 +464,24 @@ fn assignment_expression_registers(
     }
 }
 
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
 fn tensor_binary_operands(
     output: u32,
     destination_start: u32,
-    lhs_start: u32,
-    rhs_start: u32,
+    operands: (StridedOperand, StridedOperand),
     count: usize,
-    lhs_stride: usize,
-    rhs_stride: usize,
     lanes: usize,
 ) -> Option<(u32, u32)> {
+    let (lhs, rhs) = operands;
     let offset = output.checked_sub(destination_start)? as usize;
     if lanes == 0 || offset >= count.checked_mul(lanes)? || !offset.is_multiple_of(lanes) {
         return None;
     }
     let element = offset / lanes;
-    let lhs_offset = element.checked_mul(lhs_stride)?.checked_mul(lanes)?;
-    let rhs_offset = element.checked_mul(rhs_stride)?.checked_mul(lanes)?;
+    let lhs_offset = element.checked_mul(lhs.stride)?.checked_mul(lanes)?;
+    let rhs_offset = element.checked_mul(rhs.stride)?.checked_mul(lanes)?;
     Some((
-        lhs_start.checked_add(u32::try_from(lhs_offset).ok()?)?,
-        rhs_start.checked_add(u32::try_from(rhs_offset).ok()?)?,
+        lhs.start.checked_add(u32::try_from(lhs_offset).ok()?)?,
+        rhs.start.checked_add(u32::try_from(rhs_offset).ok()?)?,
     ))
 }
 

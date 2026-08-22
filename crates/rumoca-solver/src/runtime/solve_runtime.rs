@@ -45,6 +45,7 @@ mod initial_continuation;
 mod initial_event;
 mod initial_projection;
 mod native_specialization;
+use native_specialization::{RowEvalPoint, SpecializedRows};
 mod plans;
 mod refresh_batch;
 mod refresh_execution;
@@ -1453,13 +1454,13 @@ impl SolveRuntime {
             return Ok(());
         }
         self.eval_selected_outputs_with_native(
-            &self.root_condition_rows,
-            &self.compiled_root_rows,
-            &self.failed_root_rows,
+            SpecializedRows {
+                block: &self.root_condition_rows,
+                cache: &self.compiled_root_rows,
+                failed: &self.failed_root_rows,
+            },
             output_indices,
-            y,
-            params,
-            t,
+            RowEvalPoint { y, p: params, t },
             out,
         )
     }

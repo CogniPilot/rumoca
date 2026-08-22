@@ -1,4 +1,5 @@
-use nalgebra::{DMatrix, DVector};
+use crate::runtime::projection::ScaledNewtonSystem;
+use nalgebra::DVector;
 
 use super::*;
 
@@ -526,36 +527,17 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
     fn solve_algebraic_newton_delta(
         &self,
         block_index: usize,
-        jacobian: &DMatrix<f64>,
-        residual: &[f64],
-        row_scales: &[f64],
-        variable_scales: &[f64],
-        structure: Option<&solve::StructuralPattern>,
-        tolerance: f64,
+        system: ScaledNewtonSystem<'_>,
     ) -> Option<DVector<f64>> {
         let block_index = self.block_indices.get(block_index).copied()?;
         self.runtime
             .algebraic_newton_caches
             .get(block_index)
             .map_or_else(
-                || {
-                    crate::runtime::projection::scaled_newton_delta(
-                        jacobian,
-                        residual,
-                        row_scales,
-                        variable_scales,
-                        structure,
-                        tolerance,
-                    )
-                },
+                || crate::runtime::projection::scaled_newton_delta(system),
                 |cache| {
                     crate::runtime::projection::scaled_newton_delta_with_cache(
-                        jacobian,
-                        residual,
-                        row_scales,
-                        variable_scales,
-                        structure,
-                        tolerance,
+                        system,
                         &mut cache.borrow_mut(),
                     )
                 },

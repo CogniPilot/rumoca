@@ -11,9 +11,9 @@ use assertions::{assertion_conditions, assertion_is_map_independent, nested_call
 use model_events::ModelCoordinateKey;
 pub(super) use model_events::lower_model_event_transactions;
 use regions::{
-    EnvironmentLayout, RegionConditional, RegionContext, RegionValues, function_value_type,
-    load_region_lowerer, lower_region_assignment_chain, lower_region_conditional,
-    lower_region_values,
+    EnvironmentLayout, RegionAssignmentChain, RegionConditional, RegionContext, RegionValues,
+    function_value_type, load_region_lowerer, lower_region_assignment_chain,
+    lower_region_conditional, lower_region_values,
 };
 
 use std::{
@@ -1143,12 +1143,14 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                     outputs,
                     &environment,
                     &context,
-                    false_value_types,
-                    false_conditions,
-                    false_branches,
-                    false_fallback,
-                    false_pending,
-                    provenance,
+                    RegionAssignmentChain {
+                        value_types: false_value_types,
+                        conditions: false_conditions,
+                        branches: false_branches,
+                        fallback: false_fallback,
+                        pending: false_pending,
+                        provenance,
+                    },
                 )
             },
         )

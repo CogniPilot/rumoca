@@ -5,6 +5,22 @@
 
 use super::*;
 
+/// The Jacobian-vector seed of one forward sweep, with the scratch the sweep
+/// expands it into.
+///
+/// The seed spans `[solver-y | parameter]` space: `copy_len` leading entries
+/// come from the caller and the algebraic slots are filled by the projection
+/// forward-sensitivity, so the vector the JVP finally reads is `buffer`, never
+/// `values`. `unit` carries the per-column unit vector of the same span. Both
+/// buffers belong to [`StateDerivativeScratch`] and are reused across sweeps,
+/// so a Jacobian pass stays off the allocator.
+struct JacobianSeed<'a> {
+    values: &'a [f64],
+    copy_len: usize,
+    buffer: &'a mut Vec<f64>,
+    unit: &'a mut Vec<f64>,
+}
+
 impl SolveRuntime {
     /// Exact state Jacobian-vector product `d(der)/d(state)·v` for the state-only
     /// BDF path, accounting for the algebraic projection.
@@ -55,10 +71,12 @@ impl SolveRuntime {
         self.eval_derivative_jacobian_v_at_solver_y(
             lin,
             solver_y_guess,
-            seed,
-            self.state_count,
-            seed_buf,
-            unit_seed,
+            JacobianSeed {
+                values: seed,
+                copy_len: self.state_count,
+                buffer: seed_buf,
+                unit: unit_seed,
+            },
             out,
         )
     }
@@ -87,10 +105,12 @@ impl SolveRuntime {
         self.eval_derivative_jacobian_v_from_settled_solver_y(
             lin,
             solver_y,
-            seed,
-            self.state_count,
-            seed_buf,
-            unit_seed,
+            JacobianSeed {
+                values: seed,
+                copy_len: self.state_count,
+                buffer: seed_buf,
+                unit: unit_seed,
+            },
             out,
         )
     }
@@ -494,53 +514,43 @@ impl SolveRuntime {
         self.eval_derivative_jacobian_v_at_solver_y(
             lin,
             solver_y,
-            seed,
-            seed_copy_len,
-            seed_buf,
-            unit_seed,
+            JacobianSeed {
+                values: seed,
+                copy_len: seed_copy_len,
+                buffer: seed_buf,
+                unit: unit_seed,
+            },
             out,
         )
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn eval_derivative_jacobian_v_at_solver_y(
         &self,
         lin: AlgebraicLinearization<'_>,
         solver_y: &mut [f64],
-        seed: &[f64],
-        seed_copy_len: usize,
-        seed_buf: &mut Vec<f64>,
-        unit_seed: &mut Vec<f64>,
+        seed: JacobianSeed<'_>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         let AlgebraicLinearization { t, params, settle } = lin;
         validate_derivative_output_len(out, self.state_count)?;
         // (1) Linearization point: project the algebraics from the caller's seed.
         self.refresh_derivative_dependencies(t, solver_y, params, settle.tol, settle.max_iters)?;
-        self.eval_derivative_jacobian_v_from_settled_solver_y(
-            lin,
-            solver_y,
-            seed,
-            seed_copy_len,
-            seed_buf,
-            unit_seed,
-            out,
-        )
+        self.eval_derivative_jacobian_v_from_settled_solver_y(lin, solver_y, seed, out)
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn eval_derivative_jacobian_v_from_settled_solver_y(
         &self,
         lin: AlgebraicLinearization<'_>,
         solver_y: &[f64],
-        seed: &[f64],
-        seed_copy_len: usize,
-        seed_buf: &mut Vec<f64>,
-        unit_seed: &mut Vec<f64>,
+        seed: JacobianSeed<'_>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        let JacobianSeed {
+            values: seed,
+            copy_len: seed_copy_len,
+            buffer: seed_buf,
+            unit: unit_seed,
+        } = seed;
         let AlgebraicLinearization { t, params, .. } = lin;
         validate_derivative_output_len(out, self.state_count)?;
         // The JVP rows seed both solver-y and parameters (`SeedMode::SolverYAndP`),

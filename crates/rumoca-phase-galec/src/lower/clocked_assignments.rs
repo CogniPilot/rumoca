@@ -531,7 +531,15 @@ fn lower_discrete_real_group<'dae>(
         dae::DiscreteRealActivation::Always => (None, Vec::new()),
         dae::DiscreteRealActivation::When { trigger, guard } => {
             require_periodic_trigger(view, trigger, clock, span)?;
-            let guard = lower_action_guard(view, guard, clock, lowerer, span)?;
+            let guard = lower_action_guard(
+                &mut ActionGuardContext {
+                    view,
+                    expected: clock,
+                    lowerer,
+                    span,
+                },
+                guard,
+            )?;
             let prefix = lowerer.take_prefix_statements_with_shared_calls(shared_calls);
             (guard, prefix)
         }
@@ -852,7 +860,15 @@ fn lower_event_actions<'dae>(
         if !trigger_is_always {
             require_periodic_trigger(view, action.trigger(), clock, span)?;
         }
-        let guard = lower_action_guard(view, action.guard(), clock, &mut lowerer, span)?;
+        let guard = lower_action_guard(
+            &mut ActionGuardContext {
+                view,
+                expected: clock,
+                lowerer: &mut lowerer,
+                span,
+            },
+            action.guard(),
+        )?;
         let signal = gast::Spanned::new(
             gast::Statement::Signal(vec![gast::Identifier::new(
                 gast::PredefinedSignal::InvalidArgument.name(),
@@ -1053,11 +1069,13 @@ fn lower_discrete_value_owner<'dae>(
                 collect_condition_current_reads(context.view, trigger, &mut reads);
                 collect_condition_current_reads(context.view, guard, &mut reads);
                 let condition = lower_action_guard(
-                    context.view,
+                    &mut ActionGuardContext {
+                        view: context.view,
+                        expected: context.clock,
+                        lowerer: context.lowerer,
+                        span: branch_span,
+                    },
                     guard,
-                    context.clock,
-                    context.lowerer,
-                    branch_span,
                 )?
                 .unwrap_or(gast::Expression::Bool(true));
                 let condition_prefix = context

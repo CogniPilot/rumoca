@@ -418,17 +418,17 @@ fn solve_coupled_initial_block<M: AlgebraicProjectionModel>(
     residual: &[f64],
     jacobian: DMatrix<f64>,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
-    let delta = scaled_newton_delta(
-        &jacobian,
+    let delta = scaled_newton_delta(ScaledNewtonSystem {
+        jacobian: &jacobian,
         residual,
-        context.row_scales,
-        context.variable_scales,
-        context
+        row_scales: context.row_scales,
+        variable_scales: context.variable_scales,
+        structure: context
             .model
             .initial_projection_block_structure(context.block_index)
             .map(solve::JacobianStructure::pattern),
-        context.tol,
-    );
+        tolerance: context.tol,
+    });
     let Some(delta) = delta else {
         tracing::debug!(
             target: "rumoca_solver::projection",
@@ -883,12 +883,14 @@ pub(super) fn algebraic_block_jacobian(
     if let Some(structure) = structure {
         fill_colored_algebraic_rows(
             &mut jacobian,
-            model,
-            y,
-            p,
-            t,
-            rows,
-            y_indices,
+            AlgebraicBlockPoint {
+                model,
+                y,
+                p,
+                t,
+                rows,
+                y_indices,
+            },
             &needs_forward_jvp,
             structure,
         )?;
@@ -935,19 +937,36 @@ pub(super) fn algebraic_block_jacobian(
     Ok(jacobian)
 }
 
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
+/// One algebraic projection block and the point its Jacobian is formed at.
+///
+/// `rows` are the block's residual indices and `y_indices` its unknown
+/// columns, so the entry at `(local_row, column)` is the derivative of
+/// residual `rows[local_row]` with respect to solver variable
+/// `y_indices[column]`, evaluated at `(y, p, t)`.
+#[derive(Clone, Copy)]
+struct AlgebraicBlockPoint<'a> {
+    model: &'a dyn ImplicitProjectionModel,
+    y: &'a [f64],
+    p: &'a [f64],
+    t: f64,
+    rows: &'a [usize],
+    y_indices: &'a [usize],
+}
+
 fn fill_colored_algebraic_rows(
     jacobian: &mut DMatrix<f64>,
-    model: &dyn ImplicitProjectionModel,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    rows: &[usize],
-    y_indices: &[usize],
+    block: AlgebraicBlockPoint<'_>,
     selected_rows: &[bool],
     structure: &solve::JacobianStructure,
 ) -> Result<(), RuntimeSolveError> {
+    let AlgebraicBlockPoint {
+        model,
+        y,
+        p,
+        t,
+        rows,
+        y_indices,
+    } = block;
     let column_rows = structure.pattern().column_rows();
     // The tensor JVP certificate uses the canonical `[solver-y | parameter]`
     // seed layout. Projection colors activate only solver-y columns; parameter

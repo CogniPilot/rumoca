@@ -1,9 +1,9 @@
 use crate::RuntimeSolveError;
 use crate::runtime::projection::{
-    AlgebraicProjectionModel, ImplicitProjectionModel, InitialHomotopySystem,
+    AlgebraicProjectionModel, ImplicitProjectionModel, InitialHomotopySystem, ScaledNewtonSystem,
     project_initial_variables_with_homotopy,
 };
-use nalgebra::{DMatrix, DVector};
+use nalgebra::DVector;
 
 use super::initial_continuation::InitialContinuationCoverage;
 
@@ -127,35 +127,16 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
     fn solve_algebraic_newton_delta(
         &self,
         block_index: usize,
-        jacobian: &DMatrix<f64>,
-        residual: &[f64],
-        row_scales: &[f64],
-        variable_scales: &[f64],
-        structure: Option<&solve::StructuralPattern>,
-        tolerance: f64,
+        system: ScaledNewtonSystem<'_>,
     ) -> Option<DVector<f64>> {
         self.runtime
             .algebraic_newton_caches
             .get(block_index)
             .map_or_else(
-                || {
-                    crate::runtime::projection::scaled_newton_delta(
-                        jacobian,
-                        residual,
-                        row_scales,
-                        variable_scales,
-                        structure,
-                        tolerance,
-                    )
-                },
+                || crate::runtime::projection::scaled_newton_delta(system),
                 |cache| {
                     crate::runtime::projection::scaled_newton_delta_with_cache(
-                        jacobian,
-                        residual,
-                        row_scales,
-                        variable_scales,
-                        structure,
-                        tolerance,
+                        system,
                         &mut cache.borrow_mut(),
                     )
                 },

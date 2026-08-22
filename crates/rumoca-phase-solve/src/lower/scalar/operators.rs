@@ -279,24 +279,39 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 let rhs = self.expression(rhs, 0)?;
                 self.binary(dae::BinaryOperator::Multiply, lhs, rhs, span)
             }
-            ([inner], [rhs_inner]) if inner == rhs_inner => {
-                self.packed_multiply_outputs(lhs, rhs, *inner as usize, 1, 1, scalar, span)
-            }
+            ([inner], [rhs_inner]) if inner == rhs_inner => self.packed_multiply_outputs(
+                lhs,
+                rhs,
+                solve::MatrixProductShape {
+                    rows: 1,
+                    inner: *inner as usize,
+                    columns: 1,
+                    lanes: 1,
+                },
+                scalar,
+                span,
+            ),
             ([rows, inner], [rhs_inner]) if inner == rhs_inner => self.packed_multiply_outputs(
                 lhs,
                 rhs,
-                *inner as usize,
-                *rows as usize,
-                1,
+                solve::MatrixProductShape {
+                    rows: *rows as usize,
+                    inner: *inner as usize,
+                    columns: 1,
+                    lanes: 1,
+                },
                 scalar,
                 span,
             ),
             ([inner], [rhs_inner, columns]) if inner == rhs_inner => self.packed_multiply_outputs(
                 lhs,
                 rhs,
-                *inner as usize,
-                1,
-                *columns as usize,
+                solve::MatrixProductShape {
+                    rows: 1,
+                    inner: *inner as usize,
+                    columns: *columns as usize,
+                    lanes: 1,
+                },
                 scalar,
                 span,
             ),
@@ -304,9 +319,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .packed_multiply_outputs(
                     lhs,
                     rhs,
-                    *inner as usize,
-                    *rows as usize,
-                    *columns as usize,
+                    solve::MatrixProductShape {
+                        rows: *rows as usize,
+                        inner: *inner as usize,
+                        columns: *columns as usize,
+                        lanes: 1,
+                    },
                     scalar,
                     span,
                 ),
@@ -317,18 +335,20 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn packed_multiply_outputs(
         &mut self,
         lhs: dae::ExprId<'dae>,
         rhs: dae::ExprId<'dae>,
-        inner: usize,
-        rows: usize,
-        columns: usize,
+        shape: solve::MatrixProductShape,
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        let solve::MatrixProductShape {
+            rows,
+            inner,
+            columns,
+            lanes,
+        } = shape;
         let key = (self.context_id, lhs, rhs);
         if let Some(&(start, count)) = self.matrix_multiply_cache.get(&key) {
             return (scalar < count)
@@ -353,7 +373,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             rows,
             inner,
             columns,
-            lanes: 1,
+            lanes,
         });
         self.matrix_multiply_cache.insert(key, (dst_start, count));
         (scalar < count)

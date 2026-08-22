@@ -17,7 +17,8 @@ use rumoca_eval_solve::{
     eval_time_table_next_event_value_in,
 };
 use rumoca_ir_solve::{
-    BinaryOp, CompareOp, LinearOp, ScalarProgramBlock, UnaryOp, resolve_indexed_slot,
+    BinaryOp, CompareOp, FoldTensorUpdateStore, LinearOp, MatrixProductShape, ScalarProgramBlock,
+    UnaryOp, resolve_indexed_slot,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -1951,6 +1952,21 @@ struct PureCallResultKey {
     inputs: Box<[u32]>,
 }
 
+/// The native helper one typed pure-call site dispatches to, with the typed
+/// interface it was imported under.
+///
+/// `inputs` and `outputs` are the site's checked value types, already matched
+/// against the import; `directional` selects the tangent-carrying helper and
+/// also distinguishes the two results a single owner can cache.
+#[derive(Clone, Copy)]
+struct PureCallTarget<'a> {
+    owner: rumoca_ir_solve::SolvePureCallOwnerId,
+    inputs: &'a [rumoca_ir_solve::SolveValueType],
+    outputs: &'a [rumoca_ir_solve::SolvePureCallOutput],
+    function: FuncId,
+    directional: bool,
+}
+
 struct NestedFoldOutput<'a> {
     parent_carried: StackSlot,
     output_base: usize,
@@ -2004,6 +2020,38 @@ struct StaticTransposeCell {
     value_width: usize,
     row: usize,
     column: usize,
+}
+
+/// One tensor load from a runtime input vector into a register range.
+///
+/// `input_start` is the first element of the run inside `input` and `count`
+/// its length; `seed_start` is the matching offset in the directional seed
+/// when the load carries a tangent lane; `lanes` is the number of adjacent
+/// values stored per element.
+#[derive(Clone, Copy)]
+struct TensorLoadRequest {
+    dst_start: u32,
+    input: rumoca_ir_solve::TensorInputKind,
+    input_start: usize,
+    count: usize,
+    seed_start: Option<usize>,
+    lanes: usize,
+}
+
+/// One dense tensor update: a base tensor with a subscripted run patched into
+/// it.
+///
+/// `dimensions` are the extents walked, `subscripts` the checked coordinates
+/// of the patch, `value_start` the run supplying the patched values, and
+/// `lanes` the number of adjacent values stored per element.
+#[derive(Clone, Copy)]
+struct TensorUpdateRequest<'a> {
+    dst_start: u32,
+    base_start: u32,
+    value_start: u32,
+    dimensions: &'a [u32],
+    subscripts: &'a [rumoca_ir_solve::TensorUpdateSubscript],
+    lanes: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -2308,7 +2356,15 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 columns,
                 lanes,
             } => self.lower_matrix_multiply(
-                dst_start, lhs_start, rhs_start, rows, inner, columns, lanes,
+                dst_start,
+                lhs_start,
+                rhs_start,
+                MatrixProductShape {
+                    rows,
+                    inner,
+                    columns,
+                    lanes,
+                },
             ),
             LinearOp::TensorBinary {
                 dst_start,
@@ -2319,9 +2375,16 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 lhs_stride,
                 rhs_stride,
                 lanes,
-            } => self.lower_tensor_binary(
-                dst_start, op, lhs_start, rhs_start, count, lhs_stride, rhs_stride, lanes,
-            ),
+            } => self.lower_tensor_binary(TensorBinaryRequest {
+                dst_start,
+                op,
+                lhs_start,
+                rhs_start,
+                count,
+                lhs_stride,
+                rhs_stride,
+                lanes,
+            }),
             LinearOp::TensorCross {
                 dst_start,
                 lhs_start,
@@ -2357,14 +2420,14 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 dimensions,
                 subscripts,
                 lanes,
-            } => self.lower_tensor_update(
+            } => self.lower_tensor_update(TensorUpdateRequest {
                 dst_start,
                 base_start,
                 value_start,
-                &dimensions,
-                &subscripts,
+                dimensions: &dimensions,
+                subscripts: &subscripts,
                 lanes,
-            ),
+            }),
             LinearOp::TensorFill {
                 dst_start,
                 value_start,
@@ -2383,7 +2446,14 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 count,
                 seed_start,
                 lanes,
-            } => self.lower_tensor_load(dst_start, input, input_start, count, seed_start, lanes),
+            } => self.lower_tensor_load(TensorLoadRequest {
+                dst_start,
+                input,
+                input_start,
+                count,
+                seed_start,
+                lanes,
+            }),
             LinearOp::TableBounds { dst, table_id, max } => {
                 self.lower_table_bounds(dst, table_id, max)
             }
@@ -2603,11 +2673,13 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.lower_typed_pure_call(
             dst_start,
             input_starts,
-            site.owner(),
-            site.inputs(),
-            site.outputs(),
-            import.function,
-            false,
+            PureCallTarget {
+                owner: site.owner(),
+                inputs: site.inputs(),
+                outputs: site.outputs(),
+                function: import.function,
+                directional: false,
+            },
         )
     }
 
@@ -2644,26 +2716,29 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.lower_typed_pure_call(
             dst_start,
             input_starts,
-            site.owner(),
-            site.inputs(),
-            site.outputs(),
-            directional.function,
-            true,
+            PureCallTarget {
+                owner: site.owner(),
+                inputs: site.inputs(),
+                outputs: site.outputs(),
+                function: directional.function,
+                directional: true,
+            },
         )
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn lower_typed_pure_call(
         &mut self,
         dst_start: u32,
         input_starts: &[u32],
-        owner: rumoca_ir_solve::SolvePureCallOwnerId,
-        inputs: &[rumoca_ir_solve::SolveValueType],
-        outputs: &[rumoca_ir_solve::SolvePureCallOutput],
-        function: FuncId,
-        directional: bool,
+        target: PureCallTarget<'_>,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let PureCallTarget {
+            owner,
+            inputs,
+            outputs,
+            function,
+            directional,
+        } = target;
         let cache_key = PureCallResultKey {
             owner,
             directional,
@@ -3464,13 +3539,15 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 self.lower_fold_tensor_update(
                     carried,
                     cursor,
-                    source_base,
-                    source_stride,
-                    &dimensions,
-                    &updates,
-                    &nodes,
-                    result,
-                    lanes,
+                    FoldTensorUpdateStore {
+                        source_base,
+                        source_stride,
+                        dimensions: &dimensions,
+                        updates: &updates,
+                        nodes: &nodes,
+                        result,
+                        lanes,
+                    },
                 )?;
                 checked_fold_output_cursor(cursor, tensor_output_count(&dimensions, lanes)?)
             }
@@ -3991,18 +4068,23 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.insert(dst, value)
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    // The loop headers, bodies, and exits emitted below are one control flow
+    // that cannot be split across functions.
+    // SPEC_0021: Exception - one Cranelift block graph emits a whole matrix product.
+    #[allow(clippy::too_many_lines)]
     fn lower_matrix_multiply(
         &mut self,
         dst_start: u32,
         lhs_start: u32,
         rhs_start: u32,
-        rows: usize,
-        inner: usize,
-        columns: usize,
-        lanes: usize,
+        shape: MatrixProductShape,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let MatrixProductShape {
+            rows,
+            inner,
+            columns,
+            lanes,
+        } = shape;
         let static_work = rows
             .checked_mul(columns)
             .and_then(|outputs| outputs.checked_mul(inner))
@@ -4209,20 +4291,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(())
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn lower_tensor_binary(
         &mut self,
-        dst_start: u32,
-        op: BinaryOp,
-        lhs_start: u32,
-        rhs_start: u32,
-        count: usize,
-        lhs_stride: usize,
-        rhs_stride: usize,
-        lanes: usize,
+        request: TensorBinaryRequest,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        let request = TensorBinaryRequest {
+        let TensorBinaryRequest {
             dst_start,
             op,
             lhs_start,
@@ -4231,7 +4304,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             lhs_stride,
             rhs_stride,
             lanes,
-        };
+        } = request;
         let Some(regs_ptr) = self.backing_regs_ptr else {
             self.lower_static_tensor_binary(request)?;
             return Ok(None);
@@ -4706,8 +4779,6 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(())
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     // SPEC_0021: exhaustive static/dynamic dispatch over TensorUpdateSubscript.
     #[expect(
         clippy::too_many_lines,
@@ -4716,13 +4787,16 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
     )]
     fn lower_tensor_update(
         &mut self,
-        dst_start: u32,
-        base_start: u32,
-        value_start: u32,
-        dimensions: &[u32],
-        subscripts: &[rumoca_ir_solve::TensorUpdateSubscript],
-        lanes: usize,
+        request: TensorUpdateRequest<'_>,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let TensorUpdateRequest {
+            dst_start,
+            base_start,
+            value_start,
+            dimensions,
+            subscripts,
+            lanes,
+        } = request;
         let count = dimensions
             .iter()
             .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
@@ -5140,23 +5214,24 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(())
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn lower_tensor_load(
         &mut self,
-        dst_start: u32,
-        input: rumoca_ir_solve::TensorInputKind,
-        input_start: usize,
-        count: usize,
-        seed_start: Option<usize>,
-        lanes: usize,
+        request: TensorLoadRequest,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let TensorLoadRequest {
+            dst_start,
+            input,
+            input_start,
+            count,
+            seed_start,
+            lanes,
+        } = request;
         let input_ptr = match input {
             rumoca_ir_solve::TensorInputKind::Y => self.y_ptr,
             rumoca_ir_solve::TensorInputKind::P => self.p_ptr,
         };
         let Some(regs_ptr) = self.backing_regs_ptr else {
-            self.lower_static_tensor_load(dst_start, input, input_start, count, seed_start, lanes)?;
+            self.lower_static_tensor_load(request)?;
             return Ok(None);
         };
         let header = self.fb.create_block();
@@ -5220,15 +5295,15 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(self.fb.ins().load(types::F64, self.flags, seed_address, 0))
     }
 
-    fn lower_static_tensor_load(
-        &mut self,
-        dst_start: u32,
-        input: rumoca_ir_solve::TensorInputKind,
-        input_start: usize,
-        count: usize,
-        seed_start: Option<usize>,
-        lanes: usize,
-    ) -> Result<(), CompileError> {
+    fn lower_static_tensor_load(&mut self, request: TensorLoadRequest) -> Result<(), CompileError> {
+        let TensorLoadRequest {
+            dst_start,
+            input,
+            input_start,
+            count,
+            seed_start,
+            lanes,
+        } = request;
         for element in 0..count {
             let dst = checked_reg_offset(dst_start, element * lanes, "tensor load output")?;
             match input {
@@ -5566,8 +5641,6 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok((flat, valid))
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     // SPEC_0021: exhaustive dispatch over checked fold tensor-update nodes.
     #[expect(
         clippy::too_many_lines,
@@ -5578,14 +5651,17 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         &mut self,
         carried: StackSlot,
         output_base: usize,
-        source_base: usize,
-        source_stride: usize,
-        dimensions: &[u32],
-        updates: &[rumoca_ir_solve::FoldTensorUpdate],
-        nodes: &[rumoca_ir_solve::FoldTensorNode],
-        result: u32,
-        lanes: usize,
+        store: FoldTensorUpdateStore<'_>,
     ) -> Result<(), CompileError> {
+        let FoldTensorUpdateStore {
+            source_base,
+            source_stride,
+            dimensions,
+            updates,
+            nodes,
+            result,
+            lanes,
+        } = store;
         if output_base != source_base || updates.is_empty() {
             return Err(CompileError::Backend(
                 "invalid compact function-fold tensor update".to_string(),
@@ -5597,16 +5673,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .ok_or_else(|| {
                 CompileError::Backend("function-fold tensor update extent overflow".to_string())
             })?;
-        if self.try_lower_scalar_fold_tensor_update(
-            carried,
-            source_base,
-            source_stride,
-            dimensions,
-            updates,
-            nodes,
-            result,
-            lanes,
-        )? {
+        if self.try_lower_scalar_fold_tensor_update(carried, store)? {
             return Ok(());
         }
         let mut update_values = Vec::with_capacity(updates.len());
@@ -5856,19 +5923,20 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(())
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn try_lower_scalar_fold_tensor_update(
         &mut self,
         carried: StackSlot,
-        source_base: usize,
-        source_stride: usize,
-        dimensions: &[u32],
-        updates: &[rumoca_ir_solve::FoldTensorUpdate],
-        nodes: &[rumoca_ir_solve::FoldTensorNode],
-        result: u32,
-        lanes: usize,
+        store: FoldTensorUpdateStore<'_>,
     ) -> Result<bool, CompileError> {
+        let FoldTensorUpdateStore {
+            source_base,
+            source_stride,
+            dimensions,
+            updates,
+            nodes,
+            result,
+            lanes,
+        } = store;
         let Some(first) = updates.first() else {
             return Ok(false);
         };

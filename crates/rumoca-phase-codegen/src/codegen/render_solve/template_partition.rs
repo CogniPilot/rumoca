@@ -704,13 +704,15 @@ fn partition_node_for_template(
             push_native_affine_family(
                 partition,
                 "map",
-                domain,
-                output_map,
+                NativeAffineFamily {
+                    domain,
+                    output_map,
+                    base_ops,
+                    load_strides,
+                    const_strides,
+                    span,
+                },
                 scalar_count,
-                base_ops,
-                load_strides,
-                const_strides,
-                span,
             )?;
             partition.map_family_count += 1;
             *output_cursor = (*output_cursor).max(output_count);
@@ -731,13 +733,15 @@ fn partition_node_for_template(
             push_native_affine_family(
                 partition,
                 "stencil",
-                domain,
-                output_map,
+                NativeAffineFamily {
+                    domain,
+                    output_map,
+                    base_ops,
+                    load_strides,
+                    const_strides,
+                    span,
+                },
                 scalar_count,
-                base_ops,
-                load_strides,
-                const_strides,
-                span,
             )?;
             partition.stencil_family_count += 1;
             *output_cursor = (*output_cursor).max(output_count);
@@ -1023,21 +1027,37 @@ fn reserve_partition_capacity<T>(
     })
 }
 
-// SPEC_0021: Exception - affine family serialization groups domain, output
-// map, op rows, strides, and span into one template object.
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
+/// The affine-family body of one compute node.
+///
+/// `domain` is the iteration space walked, `output_map` the tensor outputs
+/// written, `base_ops` the op row of the first iteration, and the two stride
+/// lists how that row shifts per iteration. `ComputeNode::Map` and
+/// `ComputeNode::AffineStencil` carry the same body and are serialized from
+/// this one view, distinguished only by their kind label.
+#[derive(Clone, Copy)]
+struct NativeAffineFamily<'a> {
+    domain: &'a rumoca_core::StructuredIndexDomain,
+    output_map: &'a solve::TensorOutputMap,
+    base_ops: &'a [solve::LinearOp],
+    load_strides: &'a [solve::AffineStencilLoadStride],
+    const_strides: &'a [solve::AffineStencilConstStride],
+    span: rumoca_core::Span,
+}
+
 fn push_native_affine_family(
     partition: &mut NativeFamilyTemplatePartition,
     kind: &'static str,
-    domain: &rumoca_core::StructuredIndexDomain,
-    output_map: &solve::TensorOutputMap,
+    family: NativeAffineFamily<'_>,
     count: usize,
-    base_ops: &[solve::LinearOp],
-    load_strides: &[solve::AffineStencilLoadStride],
-    const_strides: &[solve::AffineStencilConstStride],
-    span: rumoca_core::Span,
 ) -> Result<(), rumoca_eval_solve::ScalarizeError> {
+    let NativeAffineFamily {
+        domain,
+        output_map,
+        base_ops,
+        load_strides,
+        const_strides,
+        span,
+    } = family;
     reserve_partition_capacity(
         &mut partition.families,
         1,

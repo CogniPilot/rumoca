@@ -12,6 +12,51 @@ use crate::{SolvePureCallDirectionalSite, SolvePureCallSite, SolveValueType};
 /// Register index in a lowered op sequence.
 pub type Reg = u32;
 
+/// A strided run of registers read as one tensor operand.
+///
+/// `stride` counts elements, not stored values: `0` broadcasts a single
+/// element across the whole run, `1` is compact, and a larger stride steps
+/// over an outer dimension. The per-element value width belongs to the
+/// operation, not to the operand, so the two operands of one elementwise op
+/// always share it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StridedOperand {
+    pub start: Reg,
+    pub stride: usize,
+}
+
+/// A borrowed view of one function-fold tensor-update store.
+///
+/// `source_base` and `source_stride` locate the element run the store reads
+/// from the carried aggregate, `dimensions` are the extents it walks,
+/// `updates` and `nodes` are the subscripted patches and the value graph
+/// applied per element, `result` selects the node whose value is stored, and
+/// `lanes` is the number of adjacent values stored per element.
+#[derive(Clone, Copy, Debug)]
+pub struct FoldTensorUpdateStore<'a> {
+    pub source_base: usize,
+    pub source_stride: usize,
+    pub dimensions: &'a [u32],
+    pub updates: &'a [FoldTensorUpdate],
+    pub nodes: &'a [FoldTensorNode],
+    pub result: u32,
+    pub lanes: usize,
+}
+
+/// The extents and storage width of one matrix product
+/// `[rows x columns] = [rows x inner] * [inner x columns]`.
+///
+/// Storage is element-major with `lanes` adjacent values per element: one
+/// lane is a primal evaluation, two lanes are the interleaved primal/tangent
+/// representation forward AD uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatrixProductShape {
+    pub rows: usize,
+    pub inner: usize,
+    pub columns: usize,
+    pub lanes: usize,
+}
+
 /// Checked isolator for one exact scalar view of an implicit output.
 ///
 /// The Solve phase issues this certificate with its continuous refresh owner;
@@ -748,10 +793,9 @@ pub enum LinearOp {
     },
     /// Multiply two dense row-major tensors as one aggregate owner.
     ///
-    /// Storage is element-major with `lanes` adjacent values per element.
-    /// One lane is primal evaluation; two lanes are the interleaved
-    /// primal/tangent representation used by forward AD. The operation count
-    /// is independent of the matrix extents.
+    /// Its extents and storage width are the fields of
+    /// [`MatrixProductShape`]. The operation count is independent of the
+    /// matrix extents.
     MatrixMultiply {
         dst_start: Reg,
         lhs_start: Reg,

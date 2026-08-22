@@ -8,7 +8,8 @@
 use crate::LowerError;
 use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, BinaryOp, CompareOp, ComputeBlock,
-    ComputeNode, LinearOp, RandomGenerator, Reg, ScalarProgramBlock, UnaryOp, VarLayout,
+    ComputeNode, FoldTensorUpdateStore, LinearOp, MatrixProductShape, RandomGenerator, Reg,
+    ScalarProgramBlock, StridedOperand, UnaryOp, VarLayout,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -836,7 +837,20 @@ impl AdBuilder {
                 count,
                 lhs_stride,
                 rhs_stride,
-            } => self.lower_dot_product(dst, lhs_start, rhs_start, count, lhs_stride, rhs_stride),
+            } => self.lower_dot_product(
+                dst,
+                (
+                    StridedOperand {
+                        start: lhs_start,
+                        stride: lhs_stride,
+                    },
+                    StridedOperand {
+                        start: rhs_start,
+                        stride: rhs_stride,
+                    },
+                ),
+                count,
+            ),
             LinearOp::MatrixMultiply {
                 dst_start,
                 lhs_start,
@@ -846,7 +860,15 @@ impl AdBuilder {
                 columns,
                 lanes,
             } => self.lower_matrix_multiply(
-                dst_start, lhs_start, rhs_start, rows, inner, columns, lanes,
+                dst_start,
+                lhs_start,
+                rhs_start,
+                MatrixProductShape {
+                    rows,
+                    inner,
+                    columns,
+                    lanes,
+                },
             ),
             LinearOp::TensorBinary {
                 dst_start,
@@ -858,7 +880,20 @@ impl AdBuilder {
                 rhs_stride,
                 lanes,
             } => self.lower_tensor_binary(
-                dst_start, op, lhs_start, rhs_start, count, lhs_stride, rhs_stride, lanes,
+                dst_start,
+                op,
+                (
+                    StridedOperand {
+                        start: lhs_start,
+                        stride: lhs_stride,
+                    },
+                    StridedOperand {
+                        start: rhs_start,
+                        stride: rhs_stride,
+                    },
+                ),
+                count,
+                lanes,
             ),
             LinearOp::TensorCross {
                 dst_start,
@@ -965,15 +1000,15 @@ impl AdBuilder {
                 nodes,
                 result,
                 lanes,
-            } => self.lower_store_fold_tensor_update(
+            } => self.lower_store_fold_tensor_update(FoldTensorUpdateStore {
                 source_base,
                 source_stride,
-                dimensions,
-                updates,
-                &nodes,
+                dimensions: &dimensions,
+                updates: &updates,
+                nodes: &nodes,
                 result,
                 lanes,
-            ),
+            }),
             LinearOp::TensorTranspose {
                 dst_start,
                 src_start,
@@ -1911,17 +1946,20 @@ impl AdBuilder {
     }
 
     // SPEC_0021: Exception - exhaustive tensor-subscript AD dispatch.
-    #[allow(clippy::excessive_nesting, clippy::too_many_arguments)]
+    #[allow(clippy::excessive_nesting)]
     fn lower_store_fold_tensor_update(
         &mut self,
-        source_base: usize,
-        source_stride: usize,
-        dimensions: Box<[u32]>,
-        updates: Box<[rumoca_ir_solve::FoldTensorUpdate]>,
-        nodes: &[rumoca_ir_solve::FoldTensorNode],
-        result: u32,
-        lanes: usize,
+        store: FoldTensorUpdateStore<'_>,
     ) -> Result<(), LowerError> {
+        let FoldTensorUpdateStore {
+            source_base,
+            source_stride,
+            dimensions,
+            updates,
+            nodes,
+            result,
+            lanes,
+        } = store;
         if source_stride != 1 || lanes != 1 {
             return Err(unsupported("nested dual-lane function-fold tensor update"));
         }
@@ -2006,7 +2044,7 @@ impl AdBuilder {
                 .checked_mul(2)
                 .ok_or_else(|| unsupported("function-fold tensor update AD base overflow"))?,
             source_stride: 2,
-            dimensions,
+            dimensions: dimensions.into(),
             updates: dual_updates.into_boxed_slice(),
             nodes: nodes.into_boxed_slice(),
             result,
@@ -2149,21 +2187,17 @@ impl AdBuilder {
         self.bind(dst, out)
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn lower_dot_product(
         &mut self,
         dst: Reg,
-        lhs_start: Reg,
-        rhs_start: Reg,
+        operands: (StridedOperand, StridedOperand),
         count: usize,
-        lhs_stride: usize,
-        rhs_stride: usize,
     ) -> Result<(), LowerError> {
+        let (lhs_operand, rhs_operand) = operands;
         let mut sum: Option<DualReg> = None;
         for term in 0..count {
-            let lhs = self.lookup(lhs_start + (term * lhs_stride) as Reg)?;
-            let rhs = self.lookup(rhs_start + (term * rhs_stride) as Reg)?;
+            let lhs = self.lookup(lhs_operand.start + (term * lhs_operand.stride) as Reg)?;
+            let rhs = self.lookup(rhs_operand.start + (term * rhs_operand.stride) as Reg)?;
             let re = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.re)?;
             let lhs_du = self.emit_binary(BinaryOp::Mul, lhs.du, rhs.re)?;
             let rhs_du = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.du)?;
@@ -2186,18 +2220,19 @@ impl AdBuilder {
         self.bind(dst, sum)
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn lower_matrix_multiply(
         &mut self,
         dst_start: Reg,
         lhs_start: Reg,
         rhs_start: Reg,
-        rows: usize,
-        inner: usize,
-        columns: usize,
-        lanes: usize,
+        shape: MatrixProductShape,
     ) -> Result<(), LowerError> {
+        let MatrixProductShape {
+            rows,
+            inner,
+            columns,
+            lanes,
+        } = shape;
         if lanes != 1 {
             return Err(unsupported(
                 "forward AD expects a primal matrix multiply with one lane",
@@ -2241,19 +2276,24 @@ impl AdBuilder {
         Ok(())
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn lower_tensor_binary(
         &mut self,
         dst_start: Reg,
         op: BinaryOp,
-        lhs_start: Reg,
-        rhs_start: Reg,
+        operands: (StridedOperand, StridedOperand),
         count: usize,
-        lhs_stride: usize,
-        rhs_stride: usize,
         lanes: usize,
     ) -> Result<(), LowerError> {
+        let (
+            StridedOperand {
+                start: lhs_start,
+                stride: lhs_stride,
+            },
+            StridedOperand {
+                start: rhs_start,
+                stride: rhs_stride,
+            },
+        ) = operands;
         if lanes != 1 || lhs_stride > 1 || rhs_stride > 1 {
             return Err(unsupported(
                 "forward AD expects a primal compact tensor binary with zero-or-one strides",
@@ -2654,8 +2694,6 @@ impl AdBuilder {
         Ok(())
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn lower_tensor_load(
         &mut self,
         dst_start: Reg,

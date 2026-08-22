@@ -61,6 +61,23 @@ pub(super) struct RegionValues<'borrow, 'dae> {
     pub(super) provenance: rumoca_core::Span,
 }
 
+/// One structured region's assignment chain: the guarded arms and the
+/// fallback the region assigns through.
+///
+/// `conditions` guard the parallel `branches`, `fallback` is the arm taken
+/// when none of them holds, `value_types` fixes the result type every arm must
+/// produce, and `pending` are the guard indices whose predicates are still to
+/// be published. The chain is consumed arm by arm, so it is owned rather than
+/// borrowed.
+pub(super) struct RegionAssignmentChain<'dae> {
+    pub(super) value_types: Vec<dae::ValueTypeId<'dae>>,
+    pub(super) conditions: Vec<dae::ExprId<'dae>>,
+    pub(super) branches: Vec<Vec<dae::ExprId<'dae>>>,
+    pub(super) fallback: Vec<dae::ExprId<'dae>>,
+    pub(super) pending: Vec<usize>,
+    pub(super) provenance: rumoca_core::Span,
+}
+
 pub(super) struct RegionConditional<'dae> {
     pub(super) value_type: dae::ValueTypeId<'dae>,
     pub(super) operands: Vec<dae::ExprId<'dae>>,
@@ -260,24 +277,22 @@ pub(super) fn lower_region_conditional<'program, 'dae>(
     Ok(())
 }
 
-// SPEC_0021: Exception - this is the explicit checked structured-region ABI;
-// each argument is a distinct construction proof input rather than optional
-// behavioral configuration.
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn lower_region_assignment_chain<'program, 'dae>(
     builder: &mut solve::TypedProgramBuilder<'program>,
     inputs: &[solve::ProgramSlot<'program>],
     outputs: &[solve::ProgramSlot<'program>],
     environment: &EnvironmentLayout<'dae>,
     context: &RegionContext<'dae>,
-    value_types: Vec<dae::ValueTypeId<'dae>>,
-    conditions: Vec<dae::ExprId<'dae>>,
-    branches: Vec<Vec<dae::ExprId<'dae>>>,
-    fallback: Vec<dae::ExprId<'dae>>,
-    pending: Vec<usize>,
-    provenance: rumoca_core::Span,
+    chain: RegionAssignmentChain<'dae>,
 ) -> Result<(), solve::SolveProgramConstructionError> {
+    let RegionAssignmentChain {
+        value_types,
+        conditions,
+        branches,
+        fallback,
+        pending,
+        provenance,
+    } = chain;
     if conditions.is_empty() {
         if value_types.len() != fallback.len() {
             return Err(solve::SolveProgramConstructionError::InvalidCallOutput { provenance });

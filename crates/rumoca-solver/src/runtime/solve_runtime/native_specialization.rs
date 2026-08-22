@@ -9,6 +9,30 @@
 
 use super::*;
 
+/// One prepared scalar program block together with the compiled
+/// specializations and the refusals already recorded for its rows.
+///
+/// The discrete rows, the root conditions, the visible-value rows, and the
+/// clock-partition intermediates each own a block, a cache, and a failure set;
+/// naming the trio keeps one compilation policy serving all of them.
+#[derive(Clone, Copy)]
+pub(super) struct SpecializedRows<'a> {
+    pub(super) block: &'a PreparedScalarProgramBlock,
+    pub(super) cache: &'a RefCell<FxHashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
+    pub(super) failed: &'a RefCell<BTreeSet<usize>>,
+}
+
+/// The point a scalar row is evaluated at: solver state, parameters, and time.
+///
+/// A compiled specialization and the reference interpreter must be handed the
+/// same point for the interpreter to stay an oracle for the compiled form.
+#[derive(Clone, Copy)]
+pub(super) struct RowEvalPoint<'a> {
+    pub(super) y: &'a [f64],
+    pub(super) p: &'a [f64],
+    pub(super) t: f64,
+}
+
 impl SolveRuntime {
     pub(super) fn compile_discrete_specialization(&self, program: usize) {
         let Some(backend) = &self.execution_backend else {
@@ -79,21 +103,20 @@ impl SolveRuntime {
             });
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn eval_single_output_rows_with_native(
         &self,
-        block: &PreparedScalarProgramBlock,
-        cache: &RefCell<FxHashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
-        failed: &RefCell<BTreeSet<usize>>,
+        rows: SpecializedRows<'_>,
         row_indices: &[usize],
-        y: &[f64],
-        p: &[f64],
-        t: f64,
+        point: RowEvalPoint<'_>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        let SpecializedRows {
+            block,
+            cache,
+            failed,
+        } = rows;
         for &row in row_indices {
-            if self.try_compiled_single_output(cache, row, y, p, t, out)? {
+            if self.try_compiled_single_output(cache, row, point, out)? {
                 continue;
             }
             // Retained tensor/fold programs can be dramatically more expensive
@@ -103,12 +126,17 @@ impl SolveRuntime {
             // only this provisional failure so the interpreter can learn a
             // guarded specialization and compile it below.
             failed.borrow_mut().remove(&row);
-            self.compile_cached_row(block, cache, failed, row);
-            if self.try_compiled_single_output(cache, row, y, p, t, out)? {
+            self.compile_cached_row(rows, row);
+            if self.try_compiled_single_output(cache, row, point, out)? {
                 continue;
             }
-            let value =
-                block.eval_row_unchecked_with_context(row, y, p, t, self.row_eval_context())?;
+            let value = block.eval_row_unchecked_with_context(
+                row,
+                point.y,
+                point.p,
+                point.t,
+                self.row_eval_context(),
+            )?;
             let out_len = out.len();
             let slot = out.get_mut(row).ok_or_else(|| {
                 RuntimeSolveError::solve_ir(format!(
@@ -116,24 +144,23 @@ impl SolveRuntime {
                 ))
             })?;
             *slot = value;
-            self.compile_cached_row(block, cache, failed, row);
+            self.compile_cached_row(rows, row);
         }
         Ok(())
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn eval_selected_outputs_with_native(
         &self,
-        block: &PreparedScalarProgramBlock,
-        cache: &RefCell<FxHashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
-        failed: &RefCell<BTreeSet<usize>>,
+        rows: SpecializedRows<'_>,
         output_indices: &[usize],
-        y: &[f64],
-        p: &[f64],
-        t: f64,
+        point: RowEvalPoint<'_>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        let SpecializedRows {
+            block,
+            cache,
+            failed,
+        } = rows;
         let mut programs = BTreeMap::<usize, Vec<(usize, usize)>>::new();
         for &output in output_indices {
             let (program, offset) = block.row_output_position(output).ok_or_else(|| {
@@ -144,39 +171,35 @@ impl SolveRuntime {
             programs.entry(program).or_default().push((output, offset));
         }
         for (program, selected) in programs {
-            if self.try_compiled_program_outputs(cache, program, &selected, y, p, t, out)? {
+            if self.try_compiled_program_outputs(cache, program, &selected, point, out)? {
                 continue;
             }
             failed.borrow_mut().remove(&program);
-            self.compile_cached_row(block, cache, failed, program);
-            if self.try_compiled_program_outputs(cache, program, &selected, y, p, t, out)? {
+            self.compile_cached_row(rows, program);
+            if self.try_compiled_program_outputs(cache, program, &selected, point, out)? {
                 continue;
             }
             let mut values = Vec::new();
             block.eval_row_outputs_unchecked_with_context(
                 program,
-                y,
-                p,
-                t,
+                point.y,
+                point.p,
+                point.t,
                 self.row_eval_context(),
                 &mut values,
             )?;
             copy_interpreted_program_outputs(&values, program, &selected, out)?;
-            self.compile_cached_row(block, cache, failed, program);
+            self.compile_cached_row(rows, program);
         }
         Ok(())
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn try_compiled_program_outputs(
         &self,
         cache: &RefCell<FxHashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
         program: usize,
         selected: &[(usize, usize)],
-        y: &[f64],
-        p: &[f64],
-        t: f64,
+        point: RowEvalPoint<'_>,
         out: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {
         let mut cache = cache.borrow_mut();
@@ -192,9 +215,9 @@ impl SolveRuntime {
             let mut scratch = self.compiled_output_scratch.borrow_mut();
             scratch.resize(total_outputs, 0.0);
             let called = compiled.expression.call(
-                y,
-                p,
-                t,
+                point.y,
+                point.p,
+                point.t,
                 self.model.external_tables.as_slice(),
                 &mut scratch,
             );
@@ -225,15 +248,11 @@ impl SolveRuntime {
         Ok(false)
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn try_compiled_single_output(
         &self,
         cache: &RefCell<FxHashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
         row: usize,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
+        point: RowEvalPoint<'_>,
         out: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {
         let mut cache = cache.borrow_mut();
@@ -250,7 +269,13 @@ impl SolveRuntime {
             scratch.resize(total_outputs, 0.0);
             let valid = compiled
                 .expression
-                .call(y, p, t, self.model.external_tables.as_slice(), &mut scratch)
+                .call(
+                    point.y,
+                    point.p,
+                    point.t,
+                    self.model.external_tables.as_slice(),
+                    &mut scratch,
+                )
                 .is_ok()
                 && scratch[compiled.output_count..]
                     .iter()
@@ -276,13 +301,12 @@ impl SolveRuntime {
         Ok(false)
     }
 
-    pub(super) fn compile_cached_row(
-        &self,
-        prepared: &PreparedScalarProgramBlock,
-        cache: &RefCell<FxHashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
-        failed: &RefCell<BTreeSet<usize>>,
-        row: usize,
-    ) {
+    pub(super) fn compile_cached_row(&self, rows: SpecializedRows<'_>, row: usize) {
+        let SpecializedRows {
+            block: prepared,
+            cache,
+            failed,
+        } = rows;
         let Some(backend) = &self.execution_backend else {
             return;
         };

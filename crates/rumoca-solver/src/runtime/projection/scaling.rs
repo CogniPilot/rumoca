@@ -281,59 +281,48 @@ pub(super) fn initial_residual_scales<M: AlgebraicProjectionModel>(
     Ok(scales)
 }
 
-pub(crate) fn scaled_newton_delta(
-    jacobian: &DMatrix<f64>,
-    residual: &[f64],
-    row_scales: &[f64],
-    variable_scales: &[f64],
-    structure: Option<&solve::StructuralPattern>,
-    tolerance: f64,
-) -> Option<DVector<f64>> {
-    scaled_newton_delta_impl(
-        jacobian,
-        residual,
-        row_scales,
-        variable_scales,
-        structure,
-        tolerance,
-        None,
-        true,
-    )
+/// The scaled Newton system of one projection block.
+///
+/// The Newton step is taken in scaled coordinates: `row_scales` conditions the
+/// residual rows and `variable_scales` the unknowns, `structure` is the
+/// compiler-derived sparsity that decides which linear kernel solves it, and
+/// `tolerance` is the rank tolerance of the dense fallback. The six travel
+/// together because a delta scaled by anything other than the scales its
+/// Jacobian was formed with is not a Newton step for this block.
+#[derive(Clone, Copy)]
+pub(crate) struct ScaledNewtonSystem<'a> {
+    pub(crate) jacobian: &'a DMatrix<f64>,
+    pub(crate) residual: &'a [f64],
+    pub(crate) row_scales: &'a [f64],
+    pub(crate) variable_scales: &'a [f64],
+    pub(crate) structure: Option<&'a solve::StructuralPattern>,
+    pub(crate) tolerance: f64,
+}
+
+pub(crate) fn scaled_newton_delta(system: ScaledNewtonSystem<'_>) -> Option<DVector<f64>> {
+    scaled_newton_delta_impl(system, None, true)
 }
 
 pub(crate) fn scaled_newton_delta_with_cache(
-    jacobian: &DMatrix<f64>,
-    residual: &[f64],
-    row_scales: &[f64],
-    variable_scales: &[f64],
-    structure: Option<&solve::StructuralPattern>,
-    tolerance: f64,
+    system: ScaledNewtonSystem<'_>,
     cache: &mut SparseNewtonCache,
 ) -> Option<DVector<f64>> {
-    scaled_newton_delta_impl(
+    scaled_newton_delta_impl(system, Some(cache), true)
+}
+
+fn scaled_newton_delta_impl(
+    system: ScaledNewtonSystem<'_>,
+    cache: Option<&mut SparseNewtonCache>,
+    allow_rank_deficient_fallback: bool,
+) -> Option<DVector<f64>> {
+    let ScaledNewtonSystem {
         jacobian,
         residual,
         row_scales,
         variable_scales,
         structure,
         tolerance,
-        Some(cache),
-        true,
-    )
-}
-
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
-fn scaled_newton_delta_impl(
-    jacobian: &DMatrix<f64>,
-    residual: &[f64],
-    row_scales: &[f64],
-    variable_scales: &[f64],
-    structure: Option<&solve::StructuralPattern>,
-    tolerance: f64,
-    cache: Option<&mut SparseNewtonCache>,
-    allow_rank_deficient_fallback: bool,
-) -> Option<DVector<f64>> {
+    } = system;
     if jacobian.nrows() != residual.len()
         || jacobian.nrows() != row_scales.len()
         || jacobian.ncols() != variable_scales.len()

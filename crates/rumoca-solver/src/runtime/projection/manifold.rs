@@ -2,8 +2,9 @@ use nalgebra::DMatrix;
 use rumoca_ir_solve as solve;
 
 use super::{
-    ProjectionBlockUpdate, RuntimeSolveError, algebraic_step_at_resolution, jacobian_row_scales,
-    next_scaled_backtrack, scaled_newton_delta, scaled_residual_converged, scaled_residual_norm,
+    ProjectionBlockUpdate, RuntimeSolveError, ScaledNewtonSystem, algebraic_step_at_resolution,
+    jacobian_row_scales, next_scaled_backtrack, scaled_newton_delta, scaled_residual_converged,
+    scaled_residual_norm,
 };
 
 const MANIFOLD_PROJECTION_MAX_ITERS: usize = 16;
@@ -214,14 +215,14 @@ fn project_manifold_block<M: ManifoldProjectionModel>(
         });
     }
     let before = scaled_residual_norm(&residual, &row_scales);
-    let Some(delta) = scaled_newton_delta(
-        &jacobian,
-        &residual,
-        &row_scales,
-        &variable_scales,
+    let Some(delta) = scaled_newton_delta(ScaledNewtonSystem {
+        jacobian: &jacobian,
+        residual: &residual,
+        row_scales: &row_scales,
+        variable_scales: &variable_scales,
         structure,
-        tol,
-    ) else {
+        tolerance: tol,
+    }) else {
         return Ok(ProjectionBlockUpdate {
             changed: false,
             settled: false,

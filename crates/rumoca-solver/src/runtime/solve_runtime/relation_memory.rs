@@ -579,13 +579,13 @@ impl SolveRuntime {
             }
         }
         self.eval_selected_outputs_with_native(
-            &self.event_action_conditions,
-            &self.compiled_event_action_rows,
-            &self.failed_event_action_rows,
+            SpecializedRows {
+                block: &self.event_action_conditions,
+                cache: &self.compiled_event_action_rows,
+                failed: &self.failed_event_action_rows,
+            },
             &active_rows,
-            y,
-            &action_p,
-            t,
+            RowEvalPoint { y, p: &action_p, t },
             &mut values,
         )?;
         self.project_event_transaction_action_values(t, row_filter, &mut values)?;
@@ -673,13 +673,13 @@ impl SolveRuntime {
         }
         if !plan.expression_rows.is_empty() {
             self.eval_single_output_rows_with_native(
-                &self.visible_value_rows,
-                &self.compiled_visible_rows,
-                &self.failed_visible_rows,
+                SpecializedRows {
+                    block: &self.visible_value_rows,
+                    cache: &self.compiled_visible_rows,
+                    failed: &self.failed_visible_rows,
+                },
                 &plan.expression_rows,
-                y,
-                params,
-                t,
+                RowEvalPoint { y, p: params, t },
                 values,
             )?;
             copy_grouped_expression_values(plan, values)?;

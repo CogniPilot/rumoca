@@ -14,6 +14,30 @@ use std::sync::Arc;
 
 use super::*;
 
+/// The operands of one checked array-update expression.
+///
+/// `subscripts` select where in `base` the `value` is patched, so the three
+/// are meaningful only together: a subscript list read against a different
+/// base does not describe the same update.
+#[derive(Clone, Copy)]
+pub(super) struct ArrayUpdateOperands<'dae> {
+    pub(super) base: dae::ExprId<'dae>,
+    pub(super) value: dae::ExprId<'dae>,
+    pub(super) subscripts: dae::SubscriptsView<'dae>,
+}
+
+/// One scalar of one record field, addressed by its two-level coordinate.
+///
+/// A record-valued aggregate stores a fixed number of scalars per record, so a
+/// flat scalar index splits in two: `element` is the record the scalar belongs
+/// to, and `scalar` is its offset inside that record's `field`.
+#[derive(Clone, Copy)]
+pub(super) struct RecordFieldScalar {
+    pub(super) field: usize,
+    pub(super) element: usize,
+    pub(super) scalar: usize,
+}
+
 pub(super) struct ScaledDerivativeProgram<'dae> {
     pub(super) numerator: dae::ExprId<'dae>,
     pub(super) numerator_scalar: usize,

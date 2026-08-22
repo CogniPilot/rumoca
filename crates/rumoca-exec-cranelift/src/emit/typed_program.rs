@@ -30,6 +30,22 @@ use storage::compact_register_tape;
 const CELL_BYTES: usize = std::mem::size_of::<u64>();
 static NEXT_TABLE_ID: AtomicUsize = AtomicUsize::new(0);
 
+/// One typed pure-call body and the native function it is compiled into.
+///
+/// `input_count` and `output_count` are the body's declared arities, which fix
+/// the tape layout. `directional` selects the tangent-carrying form: it has
+/// its own body, its own native function, and its own invocation-cache layout,
+/// so it is compiled as a separate unit from the primal form of the same
+/// owner.
+#[derive(Clone, Copy)]
+struct TypedProgramCompilation<'a> {
+    function: FuncId,
+    program: &'a solve::TypedProgram,
+    input_count: usize,
+    output_count: usize,
+    directional: bool,
+}
+
 #[derive(Clone)]
 pub(super) struct PureCallImport {
     pub(super) function: FuncId,
@@ -261,13 +277,14 @@ impl TableCompiler {
         let functions = self.functions.iter().copied().map(Some).collect::<Vec<_>>();
         self.compile_program(
             table,
-            owner.id(),
-            function,
-            owner.body(),
-            owner.inputs().len(),
-            owner.outputs().len(),
+            TypedProgramCompilation {
+                function,
+                program: owner.body(),
+                input_count: owner.inputs().len(),
+                output_count: owner.outputs().len(),
+                directional: false,
+            },
             &functions,
-            false,
         )
     }
 
@@ -288,29 +305,30 @@ impl TableCompiler {
         let functions = self.directional_functions.clone();
         self.compile_program(
             table,
-            owner.id(),
-            function,
-            directional.body(),
-            directional.inputs().len(),
-            directional.outputs().len(),
+            TypedProgramCompilation {
+                function,
+                program: directional.body(),
+                input_count: directional.inputs().len(),
+                output_count: directional.outputs().len(),
+                directional: true,
+            },
             &functions,
-            true,
         )
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn compile_program(
         &mut self,
         table: &solve::SolvePureCallTable,
-        _owner: solve::SolvePureCallOwnerId,
-        function: FuncId,
-        program: &solve::TypedProgram,
-        input_count: usize,
-        output_count: usize,
+        unit: TypedProgramCompilation<'_>,
         functions: &[Option<FuncId>],
-        directional: bool,
     ) -> Result<(), CompileError> {
+        let TypedProgramCompilation {
+            function,
+            program,
+            input_count,
+            output_count,
+            directional,
+        } = unit;
         let pointer_type = self.module.target_config().pointer_type();
         let mut context = self.module.make_context();
         context

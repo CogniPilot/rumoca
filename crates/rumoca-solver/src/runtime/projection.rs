@@ -17,7 +17,9 @@ use rumoca_ir_solve as solve;
 
 use super::solve_ops::RuntimeSolveError;
 use initial_diagnostics::initial_projection_error;
-pub(crate) use scaling::{SparseNewtonCache, scaled_newton_delta, scaled_newton_delta_with_cache};
+pub(crate) use scaling::{
+    ScaledNewtonSystem, SparseNewtonCache, scaled_newton_delta, scaled_newton_delta_with_cache,
+};
 use scaling::{
     algebraic_block_scales, algebraic_plan_row_scales, initial_block_fallback_scales,
     initial_residual_scales, jacobian_row_scales, model_variable_scale,
@@ -158,26 +160,12 @@ pub(crate) trait ImplicitProjectionModel {
         false
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn solve_algebraic_newton_delta(
         &self,
         _block_index: usize,
-        jacobian: &DMatrix<f64>,
-        residual: &[f64],
-        row_scales: &[f64],
-        variable_scales: &[f64],
-        structure: Option<&solve::StructuralPattern>,
-        tolerance: f64,
+        system: ScaledNewtonSystem<'_>,
     ) -> Option<DVector<f64>> {
-        scaled_newton_delta(
-            jacobian,
-            residual,
-            row_scales,
-            variable_scales,
-            structure,
-            tolerance,
-        )
+        scaled_newton_delta(system)
     }
 
     fn eval_implicit_target_value(
@@ -625,12 +613,14 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
     let before_norm = scaled_residual_norm(&residual, &row_scales);
     let delta = model.solve_algebraic_newton_delta(
         block_index,
-        &jacobian,
-        &residual,
-        &row_scales,
-        &variable_scales,
-        pattern,
-        tol,
+        ScaledNewtonSystem {
+            jacobian: &jacobian,
+            residual: &residual,
+            row_scales: &row_scales,
+            variable_scales: &variable_scales,
+            structure: pattern,
+            tolerance: tol,
+        },
     );
     let Some(delta) = delta else {
         return Ok(ProjectionBlockUpdate {
@@ -1200,22 +1190,9 @@ impl<M: AlgebraicProjectionModel> ImplicitProjectionModel
     fn solve_algebraic_newton_delta(
         &self,
         block_index: usize,
-        jacobian: &DMatrix<f64>,
-        residual: &[f64],
-        row_scales: &[f64],
-        variable_scales: &[f64],
-        structure: Option<&solve::StructuralPattern>,
-        tolerance: f64,
+        system: ScaledNewtonSystem<'_>,
     ) -> Option<DVector<f64>> {
-        self.model.solve_algebraic_newton_delta(
-            block_index,
-            jacobian,
-            residual,
-            row_scales,
-            variable_scales,
-            structure,
-            tolerance,
-        )
+        self.model.solve_algebraic_newton_delta(block_index, system)
     }
 
     fn implicit_target_assignment_is_exact(&self, row_idx: usize, target_y_index: usize) -> bool {

@@ -122,14 +122,14 @@ fn projection_scale_expands_to_the_current_coordinate_magnitude() {
 #[test]
 fn scaled_newton_system_normalizes_mixed_magnitude_columns() {
     let jacobian = DMatrix::from_diagonal(&DVector::from_vec(vec![1.0e-12, 1.0e12]));
-    let delta = scaled_newton_delta(
-        &jacobian,
-        &[-1.0, -1.0],
-        &[1.0, 1.0],
-        &[1.0e12, 1.0e-12],
-        None,
-        1.0e-12,
-    )
+    let delta = scaled_newton_delta(ScaledNewtonSystem {
+        jacobian: &jacobian,
+        residual: &[-1.0, -1.0],
+        row_scales: &[1.0, 1.0],
+        variable_scales: &[1.0e12, 1.0e-12],
+        structure: None,
+        tolerance: 1.0e-12,
+    })
     .expect("scaled diagonal system should solve");
 
     assert!((delta[0] - 1.0e12).abs() <= 1.0e-4);

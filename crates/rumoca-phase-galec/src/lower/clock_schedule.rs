@@ -28,8 +28,6 @@ struct ScheduledAssignment<'dae> {
     assignment: ClockedAssignment,
 }
 
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn lower_clock_schedule<'dae>(
     view: dae::DaeView<'dae>,
     definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
@@ -37,9 +35,7 @@ pub(super) fn lower_clock_schedule<'dae>(
     classified: &[ClassifiedVariable<'dae>],
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
-    nominals: &mut Vec<Option<f64>>,
-    protected: &mut Vec<gast::ProtectedEntity>,
-    startup: &mut Vec<gast::Spanned<gast::Statement>>,
+    declarations: &mut ProtectedDeclarations<'_>,
 ) -> Result<ScheduledClockAssignments, GalecTargetError> {
     let unclocked_owner = schedule
         .domains
@@ -89,9 +85,7 @@ pub(super) fn lower_clock_schedule<'dae>(
                 classified,
                 pre_names,
                 &mut generated_names,
-                nominals,
-                protected,
-                startup,
+                declarations,
             )?);
         }
     }
@@ -260,8 +254,6 @@ fn clock_domain_cycle<'dae>(
     )
 }
 
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
 fn append_divider_state<'dae>(
     clock: dae::ClockId<'dae>,
     divisor: u32,
@@ -269,9 +261,7 @@ fn append_divider_state<'dae>(
     classified: &[ClassifiedVariable<'dae>],
     pre_names: &HashMap<u32, gast::Name>,
     generated_names: &mut HashSet<String>,
-    nominals: &mut Vec<Option<f64>>,
-    protected: &mut Vec<gast::ProtectedEntity>,
-    startup: &mut Vec<gast::Spanned<gast::Statement>>,
+    declarations: &mut ProtectedDeclarations<'_>,
 ) -> Result<gast::Name, GalecTargetError> {
     let mut suffix = 0_u32;
     let name = loop {
@@ -300,19 +290,19 @@ fn append_divider_state<'dae>(
         },
         span,
     };
-    protected.push(gast::ProtectedEntity {
+    declarations.protected.push(gast::ProtectedEntity {
         kind: gast::ProtectedKind::State,
         decl: declaration,
         start: Some(gast::Expression::Integer(0)),
     });
-    startup.push(gast::Spanned::new(
+    declarations.startup.push(gast::Spanned::new(
         gast::Statement::Assignment {
             target: state_reference(name.clone(), span),
             value: gast::Expression::Integer(0),
         },
         span,
     ));
-    nominals.push(None);
+    declarations.nominals.push(None);
     Ok(name)
 }
 

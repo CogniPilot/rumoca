@@ -7,10 +7,10 @@
 
 mod causal_outputs;
 mod clock_schedule;
-mod conditionals;
 mod clocked_assignments;
-mod expression_function_folds;
+mod conditionals;
 mod expression_array_update;
+mod expression_function_folds;
 mod expression_functions;
 mod expression_helpers;
 mod expression_projection;
@@ -96,6 +96,28 @@ struct ProjectionParts {
     do_step_locals: Vec<gast::VariableDeclaration>,
 }
 
+impl ProjectionParts {
+    fn protected_declarations(&mut self) -> ProtectedDeclarations<'_> {
+        ProtectedDeclarations {
+            nominals: &mut self.nominals,
+            protected: &mut self.protected,
+            startup: &mut self.startup,
+        }
+    }
+}
+
+/// The three parallel outputs one protected declaration contributes to a
+/// GALEC block.
+///
+/// A protected entity, the Startup assignment that seeds it, and its nominal
+/// are appended together for every state a lowering pass declares, so the
+/// three vectors stay index-aligned only when they are extended as a unit.
+struct ProtectedDeclarations<'a> {
+    nominals: &'a mut Vec<Option<f64>>,
+    protected: &'a mut Vec<gast::ProtectedEntity>,
+    startup: &'a mut Vec<gast::Spanned<gast::Statement>>,
+}
+
 /// Lower one checked DAE into validated eFMI Algorithm Code.
 pub fn lower_to_algorithm_code(
     input: &GalecInput<'_>,
@@ -142,9 +164,7 @@ fn lower_view<'dae>(
             .span(),
         classified.as_slice(),
         &pre_names,
-        &mut parts.nominals,
-        &mut parts.protected,
-        &mut parts.startup,
+        &mut parts.protected_declarations(),
     )?;
 
     let clocked = lower_clock_schedule(
@@ -154,9 +174,7 @@ fn lower_view<'dae>(
         classified.as_slice(),
         &by_id,
         &pre_names,
-        &mut parts.nominals,
-        &mut parts.protected,
-        &mut parts.startup,
+        &mut parts.protected_declarations(),
     )
     .map_err(single)?;
     parts.do_step_locals.extend(clocked.locals);
@@ -251,9 +269,7 @@ fn build_variable_parts<'dae>(
         by_id,
         pre_names,
         &mut evaluator,
-        &mut parts.nominals,
-        &mut parts.protected,
-        &mut parts.startup,
+        &mut parts.protected_declarations(),
     )?;
     Ok(parts)
 }
@@ -916,17 +932,13 @@ fn build_pre_names<'dae>(
         .collect()
 }
 
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
 fn append_previous_states<'dae>(
     view: dae::DaeView<'dae>,
     referenced: &[dae::VariableId<'dae>],
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
     evaluator: &mut NumericEvaluator<'dae>,
-    nominals: &mut Vec<Option<f64>>,
-    protected: &mut Vec<gast::ProtectedEntity>,
-    startup: &mut Vec<gast::Spanned<gast::Statement>>,
+    declarations: &mut ProtectedDeclarations<'_>,
 ) -> Result<(), Vec<GalecTargetError>> {
     for id in referenced {
         let base = by_id
@@ -943,27 +955,25 @@ fn append_previous_states<'dae>(
         let start = projected.start;
         let mut decl = declaration(&previous, projected.range);
         decl.name = previous.name.clone();
-        protected.push(gast::ProtectedEntity {
+        declarations.protected.push(gast::ProtectedEntity {
             kind: gast::ProtectedKind::State,
             decl,
             start: Some(start.clone()),
         });
-        startup.push(initial_assignment(&previous, start));
-        nominals.push(projected.nominal);
+        declarations
+            .startup
+            .push(initial_assignment(&previous, start));
+        declarations.nominals.push(projected.nominal);
     }
     Ok(())
 }
 
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
 fn append_clock_period(
     clock: &AdmittedClock,
     span: Span,
     classified: &[ClassifiedVariable<'_>],
     pre_names: &HashMap<u32, gast::Name>,
-    nominals: &mut Vec<Option<f64>>,
-    protected: &mut Vec<gast::ProtectedEntity>,
-    startup: &mut Vec<gast::Spanned<gast::Statement>>,
+    declarations: &mut ProtectedDeclarations<'_>,
 ) -> Result<String, Vec<GalecTargetError>> {
     let mut candidate = "samplePeriod".to_owned();
     let mut suffix = 0usize;
@@ -982,7 +992,7 @@ fn append_clock_period(
         crate::mangle::galec_variable_name(&candidate).map_err(single)?,
         span,
     );
-    nominals.push(None);
+    declarations.nominals.push(None);
     let declaration = gast::VariableDeclaration {
         ty: gast::TypeRef::Primitive(gast::ScalarType::Real),
         name: name.clone(),
@@ -990,12 +1000,12 @@ fn append_clock_period(
         range: gast::RangeAttributes::default(),
         span,
     };
-    protected.push(gast::ProtectedEntity {
+    declarations.protected.push(gast::ProtectedEntity {
         kind: gast::ProtectedKind::Constant,
         decl: declaration,
         start: Some(gast::Expression::Real(clock.period_seconds)),
     });
-    startup.push(gast::Spanned::new(
+    declarations.startup.push(gast::Spanned::new(
         gast::Statement::Assignment {
             target: state_reference(name.clone(), span),
             value: gast::Expression::Real(clock.period_seconds),
@@ -1036,13 +1046,26 @@ fn append_pre_commits<'dae>(
     Ok(())
 }
 
-fn lower_action_guard<'dae>(
+/// The clock domain one event guard is lowered against.
+///
+/// A guard is admitted only when every clock it names is the clock whose
+/// `DoStep` runs the action, so the whole guard tree is walked against one
+/// expected clock, one checked view that resolves its conditions, one lowerer
+/// that records the locals the guard emits, and one span its diagnostics
+/// carry.
+struct ActionGuardContext<'a, 'b, 'dae> {
     view: dae::DaeView<'dae>,
-    guard: dae::ConditionId<'dae>,
     expected: dae::ClockId<'dae>,
-    lowerer: &mut ExpressionLowerer<'_, 'dae>,
+    lowerer: &'a mut ExpressionLowerer<'b, 'dae>,
     span: Span,
+}
+
+fn lower_action_guard<'dae>(
+    context: &mut ActionGuardContext<'_, '_, 'dae>,
+    guard: dae::ConditionId<'dae>,
 ) -> Result<Option<gast::Expression>, GalecTargetError> {
+    let view = context.view;
+    let span = context.span;
     match view
         .condition(guard)
         .expect("checked event guard resolves")
@@ -1053,7 +1076,7 @@ fn lower_action_guard<'dae>(
             "initial() event actions are outside a periodic DoStep clock".to_owned(),
             span,
         )),
-        dae::ConditionOperation::Clock(found) if found == expected => Ok(None),
+        dae::ConditionOperation::Clock(found) if found == context.expected => Ok(None),
         dae::ConditionOperation::Clock(_) => Err(unsupported(
             "multiple-clock-event-guard",
             "event action combines distinct clock domains".to_owned(),
@@ -1063,17 +1086,17 @@ fn lower_action_guard<'dae>(
             let relation = view
                 .relation(relation)
                 .expect("checked relation identity resolves");
-            let expression = lowerer.lower(relation.expression())?;
+            let expression = context.lowerer.lower(relation.expression())?;
             require_boolean(&expression, span)?;
             Ok(Some(expression.expression))
         }
         dae::ConditionOperation::Discrete(expression) => {
-            let expression = lowerer.lower(expression)?;
+            let expression = context.lowerer.lower(expression)?;
             require_boolean(&expression, span)?;
             Ok(Some(expression.expression))
         }
         dae::ConditionOperation::Not(condition) => {
-            let condition = lower_action_guard(view, condition, expected, lowerer, span)?;
+            let condition = lower_action_guard(context, condition)?;
             condition
                 .map(|condition| Some(gast::Expression::Not(Box::new(condition))))
                 .ok_or_else(|| {
@@ -1085,10 +1108,10 @@ fn lower_action_guard<'dae>(
                 })
         }
         dae::ConditionOperation::And(lhs, rhs) => {
-            combine_action_guards(view, lhs, rhs, expected, lowerer, gast::BinaryOp::And, span)
+            combine_action_guards(context, lhs, rhs, gast::BinaryOp::And)
         }
         dae::ConditionOperation::Or(lhs, rhs) => {
-            combine_action_guards(view, lhs, rhs, expected, lowerer, gast::BinaryOp::Or, span)
+            combine_action_guards(context, lhs, rhs, gast::BinaryOp::Or)
         }
         // A vector activation is `edge(b1) or … or edge(bn)`, and GALEC has no
         // per-element activation buffer to build those edges from. Lowering the
@@ -1106,19 +1129,14 @@ fn lower_action_guard<'dae>(
     }
 }
 
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
 fn combine_action_guards<'dae>(
-    view: dae::DaeView<'dae>,
+    context: &mut ActionGuardContext<'_, '_, 'dae>,
     lhs: dae::ConditionId<'dae>,
     rhs: dae::ConditionId<'dae>,
-    expected: dae::ClockId<'dae>,
-    lowerer: &mut ExpressionLowerer<'_, 'dae>,
     operator: gast::BinaryOp,
-    span: Span,
 ) -> Result<Option<gast::Expression>, GalecTargetError> {
-    let lhs = lower_action_guard(view, lhs, expected, lowerer, span)?;
-    let rhs = lower_action_guard(view, rhs, expected, lowerer, span)?;
+    let lhs = lower_action_guard(context, lhs)?;
+    let rhs = lower_action_guard(context, rhs)?;
     Ok(match (lhs, rhs) {
         (Some(lhs), Some(rhs)) => Some(gast::Expression::binary(operator, lhs, rhs)),
         (Some(expression), None) | (None, Some(expression)) if operator == gast::BinaryOp::And => {
@@ -1928,7 +1946,6 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             _ => unreachable!("ordinary scalar operation was lowered before aggregate dispatch"),
         }
     }
-
 }
 
 fn conditional_activation_operands(operands: dae::ExpressionOperands<'_>) -> Vec<u32> {

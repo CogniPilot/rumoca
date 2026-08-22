@@ -19,11 +19,12 @@ use std::{
 };
 
 use rumoca_ir_solve::{
-    BinaryOp, CompareOp, LinearOp, Reg, ScalarProgramBlock, ScalarProgramRegisterFlow,
-    SolveEventActionKind, SolveEventMessagePart, SolveEventPartition,
-    SolveProblemShapeContractError, SolvePureCallDirectionalSite, SolvePureCallSite,
-    SolvePureCallTable, SolveScalarType, SolveStringConversionFormat, SolveStringConversionSource,
-    SolveValueKind, SolveValueType, UnaryOp, resolve_indexed_slot,
+    BinaryOp, CompareOp, FoldTensorUpdateStore, LinearOp, MatrixProductShape, Reg,
+    ScalarProgramBlock, ScalarProgramRegisterFlow, SolveEventActionKind, SolveEventMessagePart,
+    SolveEventPartition, SolveProblemShapeContractError, SolvePureCallDirectionalSite,
+    SolvePureCallSite, SolvePureCallTable, SolveScalarType, SolveStringConversionFormat,
+    SolveStringConversionSource, SolveValueKind, SolveValueType, StridedOperand, UnaryOp,
+    resolve_indexed_slot,
 };
 
 mod compute_block_scalarize;
@@ -2056,7 +2057,16 @@ fn eval_lazy_tensor_algebra_op(regs: &mut [f64], op: LinearOp) -> Result<(), Eva
             columns,
             lanes,
         } => eval_matrix_multiply(
-            regs, dst_start, lhs_start, rhs_start, rows, inner, columns, lanes,
+            regs,
+            dst_start,
+            lhs_start,
+            rhs_start,
+            MatrixProductShape {
+                rows,
+                inner,
+                columns,
+                lanes,
+            },
         ),
         LinearOp::TensorBinary {
             dst_start,
@@ -2068,7 +2078,21 @@ fn eval_lazy_tensor_algebra_op(regs: &mut [f64], op: LinearOp) -> Result<(), Eva
             rhs_stride,
             lanes,
         } => eval_tensor_binary(
-            regs, dst_start, op, lhs_start, rhs_start, count, lhs_stride, rhs_stride, lanes,
+            regs,
+            dst_start,
+            op,
+            (
+                StridedOperand {
+                    start: lhs_start,
+                    stride: lhs_stride,
+                },
+                StridedOperand {
+                    start: rhs_start,
+                    stride: rhs_stride,
+                },
+            ),
+            count,
+            lanes,
         ),
         LinearOp::TensorTranspose {
             dst_start,
@@ -3043,13 +3067,15 @@ fn eval_row_prepared_fast(
                 regs,
                 input,
                 sink,
-                *source_base,
-                *source_stride,
-                dimensions,
-                updates,
-                nodes,
-                *result,
-                *lanes,
+                FoldTensorUpdateStore {
+                    source_base: *source_base,
+                    source_stride: *source_stride,
+                    dimensions,
+                    updates,
+                    nodes,
+                    result: *result,
+                    lanes: *lanes,
+                },
             )?;
             continue;
         }
@@ -3215,7 +3241,16 @@ fn eval_row_prepared_fast(
                 columns,
                 lanes,
             } => eval_matrix_multiply(
-                regs, *dst_start, *lhs_start, *rhs_start, *rows, *inner, *columns, *lanes,
+                regs,
+                *dst_start,
+                *lhs_start,
+                *rhs_start,
+                MatrixProductShape {
+                    rows: *rows,
+                    inner: *inner,
+                    columns: *columns,
+                    lanes: *lanes,
+                },
             ),
             LinearOp::TensorBinary {
                 dst_start,
@@ -3230,11 +3265,17 @@ fn eval_row_prepared_fast(
                 regs,
                 *dst_start,
                 *op,
-                *lhs_start,
-                *rhs_start,
+                (
+                    StridedOperand {
+                        start: *lhs_start,
+                        stride: *lhs_stride,
+                    },
+                    StridedOperand {
+                        start: *rhs_start,
+                        stride: *rhs_stride,
+                    },
+                ),
                 *count,
-                *lhs_stride,
-                *rhs_stride,
                 *lanes,
             ),
             LinearOp::TensorCross {
@@ -3521,20 +3562,21 @@ fn eval_row_prepared_fast(
     Ok(())
 }
 
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
 fn eval_fold_tensor_update(
     regs: &[f64],
     input: PreparedRowEval<'_, '_>,
     sink: &mut OutputCursor<'_>,
-    source_base: usize,
-    source_stride: usize,
-    dimensions: &[u32],
-    updates: &[rumoca_ir_solve::FoldTensorUpdate],
-    nodes: &[rumoca_ir_solve::FoldTensorNode],
-    result: u32,
-    lanes: usize,
+    store: FoldTensorUpdateStore<'_>,
 ) -> Result<(), EvalSolveError> {
+    let FoldTensorUpdateStore {
+        source_base,
+        source_stride,
+        dimensions,
+        updates,
+        nodes,
+        result,
+        lanes,
+    } = store;
     let carried = input
         .fold_carried
         .ok_or_else(|| invalid_row("aggregate output escaped its function-fold update body"))?;
@@ -3603,18 +3645,19 @@ fn fold_tensor_node_value(
     }
 }
 
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
 fn eval_matrix_multiply(
     regs: &mut [f64],
     dst_start: Reg,
     lhs_start: Reg,
     rhs_start: Reg,
-    rows: usize,
-    inner: usize,
-    columns: usize,
-    lanes: usize,
+    shape: MatrixProductShape,
 ) {
+    let MatrixProductShape {
+        rows,
+        inner,
+        columns,
+        lanes,
+    } = shape;
     for element in 0..rows.saturating_mul(columns) {
         let row = element / columns;
         let column = element % columns;
@@ -3639,22 +3682,18 @@ fn eval_matrix_multiply(
     }
 }
 
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
 fn eval_tensor_binary(
     regs: &mut [f64],
     dst_start: Reg,
     op: BinaryOp,
-    lhs_start: Reg,
-    rhs_start: Reg,
+    operands: (StridedOperand, StridedOperand),
     count: usize,
-    lhs_stride: usize,
-    rhs_stride: usize,
     lanes: usize,
 ) {
+    let (lhs_operand, rhs_operand) = operands;
     for element in 0..count {
-        let lhs = lhs_start as usize + element * lhs_stride * lanes;
-        let rhs = rhs_start as usize + element * rhs_stride * lanes;
+        let lhs = lhs_operand.start as usize + element * lhs_operand.stride * lanes;
+        let rhs = rhs_operand.start as usize + element * rhs_operand.stride * lanes;
         let dst = dst_start as usize + element * lanes;
         let lhs_re = regs[lhs];
         let rhs_re = regs[rhs];
@@ -4318,9 +4357,11 @@ fn eval_pure_call_payload(
     }
     eval_typed_call_payload(
         table,
-        site.owner(),
-        site.inputs(),
-        site.output_scalar_count(),
+        PureCallSignature {
+            owner: site.owner(),
+            inputs: site.inputs(),
+            output_count: site.output_scalar_count(),
+        },
         input_starts,
         &mut read,
         false,
@@ -4343,26 +4384,41 @@ fn eval_pure_call_directional_payload(
     }
     eval_typed_call_payload(
         table,
-        site.owner(),
-        site.inputs(),
-        site.output_scalar_count(),
+        PureCallSignature {
+            owner: site.owner(),
+            inputs: site.inputs(),
+            output_count: site.output_scalar_count(),
+        },
         input_starts,
         &mut read,
         true,
     )
 }
 
-// SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-#[allow(clippy::too_many_arguments)]
+/// The typed signature of one pure-call site.
+///
+/// `owner` is the model entry the call dispatches to, `inputs` the value type
+/// of each argument, and `output_count` the scalar width the site expects
+/// back, which the payload checks the callee against.
+#[derive(Clone, Copy)]
+struct PureCallSignature<'a> {
+    owner: rumoca_ir_solve::SolvePureCallOwnerId,
+    inputs: &'a [SolveValueType],
+    output_count: Option<usize>,
+}
+
 fn eval_typed_call_payload(
     table: &SolvePureCallTable,
-    owner: rumoca_ir_solve::SolvePureCallOwnerId,
-    inputs: &[SolveValueType],
-    output_count: Option<usize>,
+    signature: PureCallSignature<'_>,
     input_starts: &[Reg],
     read: &mut impl FnMut(Reg) -> Result<f64, EvalSolveError>,
     directional: bool,
 ) -> Result<Vec<f64>, EvalSolveError> {
+    let PureCallSignature {
+        owner,
+        inputs,
+        output_count,
+    } = signature;
     let mut arguments = Vec::with_capacity(inputs.len());
     for (&start, value_type) in input_starts.iter().zip(inputs) {
         let mut elements = Vec::with_capacity(value_type.scalar_count() as usize);
