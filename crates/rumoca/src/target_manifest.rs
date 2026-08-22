@@ -11,8 +11,8 @@ use rumoca_compile::codegen::targets::TargetFile;
 #[cfg(test)]
 use rumoca_compile::codegen::targets::validate_solve_tensor_inventory;
 use rumoca_compile::codegen::targets::{
-    RenderedTargetFile, TargetBundle, TargetManifest, TargetTemplateIr, TargetTemplateSource,
-    ensure_target_has_rendered_files, validate_dae_target_capabilities,
+    RenderedTargetFile, TargetBundle, TargetCapabilities, TargetManifest, TargetTemplateIr,
+    TargetTemplateSource, ensure_target_has_rendered_files, validate_dae_target_capabilities,
     validate_solve_target_capabilities,
 };
 #[cfg(any(feature = "scheduled-sim", feature = "fmu-packaging"))]
@@ -579,14 +579,13 @@ fn validate_target_requirements(
     result: &CompilationResult,
     manifest: &TargetManifest,
 ) -> Result<()> {
-    let Some(capabilities) = &manifest.capabilities else {
-        return Ok(());
-    };
     match manifest.ir {
         TargetTemplateIr::Dae | TargetTemplateIr::AlgorithmCode => {
+            let capabilities = declared_capabilities(manifest)?;
             validate_dae_target_capabilities(&result.dae, manifest, capabilities)?;
         }
         TargetTemplateIr::Solve | TargetTemplateIr::Fmi => {
+            let capabilities = declared_capabilities(manifest)?;
             // Solve remains a projection of checked DAE semantics. Inspect the
             // source artifact as well so a partial kernel cannot erase tables,
             // randomness, events, or another target capability obligation.
@@ -595,9 +594,46 @@ fn validate_target_requirements(
                 .context("Lower Solve IR for target capability validation")?;
             validate_solve_target_capabilities(&solve, manifest, capabilities)?;
         }
+        // Flat and AST templates carry no capability obligation. The Flat
+        // render context proves its own contract before any byte is produced
+        // (`rumoca::codegen::EC007`, the non-materialized structured-family
+        // refusal), and the AST is source structure with no lowering claim a
+        // capability column could describe.
         TargetTemplateIr::Flat | TargetTemplateIr::Ast => {}
     }
     Ok(())
+}
+
+/// The `[capabilities]` table a DAE-derived target must declare before it may
+/// render.
+///
+/// An absent table is a refusal, not a waiver. The entire DAE/Solve
+/// admissibility proof runs through this table: the compact-family gate, the
+/// residual-algebraic gate, the Phase-DAE temporal-operator invariant, and
+/// `SolveProblem::validate` itself. Reading "undeclared" as "unconstrained"
+/// therefore lets a target that states nothing render a model it cannot
+/// express and publish the bytes as if they had been checked.
+///
+/// `parse_target_manifest` refuses an undeclared `dae`, `fmi`, or
+/// `algorithm-code` manifest outright, and the DAE-only and LSP Solve render
+/// paths demand the table of their own callers, so this is the guard at the
+/// point of use rather than a second rule: it is what makes the refusal
+/// structural here instead of inherited from whoever produced the manifest.
+///
+/// The fault is in the target manifest, not in the model, so this diagnostic
+/// carries no source span: no span over the compiled Modelica points at the
+/// thing that has to change.
+fn declared_capabilities(manifest: &TargetManifest) -> Result<&TargetCapabilities> {
+    manifest.capabilities.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "unsupported-feature:target-capabilities-undeclared: target '{}' consumes {:?} IR \
+             but declares no [capabilities] table, so nothing states which models it can \
+             render; add a [capabilities] table to target.toml declaring every column this \
+             target implements",
+            manifest.name.as_deref().unwrap_or("custom"),
+            manifest.ir,
+        )
+    })
 }
 
 #[cfg(feature = "scheduled-sim")]

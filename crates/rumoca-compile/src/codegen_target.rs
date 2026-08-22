@@ -978,7 +978,10 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
         TargetTemplateIr::Dae | TargetTemplateIr::Fmi | TargetTemplateIr::AlgorithmCode
     ) && manifest.capabilities.is_none()
     {
-        bail!("DAE-derived target manifest must declare a [capabilities] table");
+        bail!(
+            "unsupported-feature:target-capabilities-undeclared: DAE-derived target manifest \
+             must declare a [capabilities] table"
+        );
     }
     if let Some(capabilities) = &manifest.capabilities {
         validate_target_capabilities(manifest, capabilities)?;

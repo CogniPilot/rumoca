@@ -40,7 +40,7 @@ pub use crate::fmt_cli::FmtArgs;
 pub use crate::sim_bench::SimBenchArgs;
 use crate::{CompilationResult, Compiler, CompilerError, DaeCompilationResult, TemplateIr};
 use rumoca_compile::{
-    codegen::render_flat_template_with_name,
+    codegen::{CodegenError, render_flat_template_with_name},
     compile::{Dae, FlatModel},
 };
 use rumoca_core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap};
@@ -694,10 +694,18 @@ pub fn run(cli: Cli) -> Result<()> {
 }
 
 /// Build a miette [`Report`] for any CLI error, preferring the compiler's own
-/// diagnostic codes when the error is a [`CompilerError`].
+/// diagnostic codes when the error is a [`CompilerError`] or a [`CodegenError`].
+///
+/// The `--emit <stage>-mo` dumps render through the codegen crate directly, so
+/// their refusals arrive unwrapped. Reporting both keeps one refusal carrying
+/// one stable code whichever emission surface raised it, rather than a code a
+/// caller can match on from `--target` but not from `--emit`.
 pub fn build_cli_error_report(error: &anyhow::Error) -> Report {
     if let Some(compiler_error) = error.downcast_ref::<CompilerError>() {
         return Report::new(compiler_error.clone());
+    }
+    if let Some(codegen_error) = error.downcast_ref::<CodegenError>() {
+        return Report::new(codegen_error.clone());
     }
     let mut message = error.to_string();
     for cause in error.chain().skip(1) {

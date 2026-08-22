@@ -244,8 +244,38 @@ fn flat_modelica_fails_closed_for_non_materialized_structured_families() {
         "the rejection must identify the unsupported scalar view:\n{stderr}"
     );
     assert!(
+        stderr.contains("rumoca::codegen::EC007"),
+        "the rejection must carry its stable diagnostic code so a caller can match on \
+         the refusal rather than on prose:\n{stderr}"
+    );
+    assert!(
         !stdout.contains("= 0.0"),
         "failed Flat export must not publish cheapened equation bodies:\n{stdout}"
+    );
+}
+
+/// The Flat JSON dump is the self-describing sibling of the export above: it
+/// serializes the cheapened rows AND the `interiors_materialized` flag that
+/// says they are cheapened, so it makes no claim a checked view could falsify
+/// and is deliberately not refused.
+#[test]
+fn flat_json_publishes_the_materialization_flag_with_the_cheapened_rows() {
+    let (_dir, file) = named_fixture_file(
+        "NonMaterializedStructuredFixture",
+        NON_MATERIALIZED_STRUCTURED_FIXTURE,
+    );
+    let out = assert_emit_ok(&file, "flat-json");
+    let json =
+        serde_json::from_str::<serde_json::Value>(&out).expect("flat-json must be valid JSON");
+    let families = json
+        .get("structured_equations")
+        .and_then(serde_json::Value::as_array)
+        .expect("flat artifact exposes structured_equations");
+    assert!(
+        families
+            .iter()
+            .any(|family| family["interiors_materialized"] == serde_json::json!(false)),
+        "the dump must state that its interior rows are not materialized:\n{out}"
     );
 }
 
