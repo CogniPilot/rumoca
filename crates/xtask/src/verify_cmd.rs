@@ -1,4 +1,5 @@
 mod corpus_pin;
+mod embedded;
 mod fuzz;
 mod kani;
 mod msl_cargo_setup_timing;
@@ -30,6 +31,7 @@ use crate::{
 };
 
 use corpus_pin::VerifyCorpusPinArgs;
+use embedded::VerifyEmbeddedArgs;
 use fuzz::VerifyFuzzArgs;
 use msl_cargo_setup_timing::{
     MslCargoSetupStepMetadata, MslCargoSetupTimingStep, run_msl_cargo_setup_step,
@@ -455,6 +457,12 @@ pub(crate) enum VerifyCommand {
     /// stack and the MSL canary roster, compiled and compared against their
     /// recorded behavior. Fails closed when the corpus is not on the machine.
     CorpusPin(VerifyCorpusPinArgs),
+    /// Size and precision budget for the embedded flight artifacts: every
+    /// emitted translation unit cross-compiled for Cortex-M7 hard float,
+    /// weighed against the ceilings in `infra/verification/embedded-budget.json`
+    /// and read for heap or double-precision symbols. Fails closed when the
+    /// flight models or the ARM toolchain are not on the machine.
+    Embedded(VerifyEmbeddedArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -619,6 +627,7 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
         VerifyCommand::MslHotspots => run_msl_hotspot_flamegraphs(root),
         VerifyCommand::Fuzz(args) => fuzz::run(&args, root),
         VerifyCommand::CorpusPin(args) => corpus_pin::run(root, &args),
+        VerifyCommand::Embedded(args) => embedded::run(root, &args),
     }
 }
 

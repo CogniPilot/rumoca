@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "ceiling_policy": "A ceiling is a statement about one artifact built by one cross toolchain, and the toolchain it was taken with is named in each row's budget.measured.comment. `text_bytes` is the summed .text of every emitted translation unit; `state_bytes` is sizeof(<Model>State) for the target ABI; both are bytes. Ceilings are fall-only in spirit: when size work lands, lower the ceiling in the same change that lands the saving, so the saving cannot be quietly spent again. Raising a ceiling is not forbidden but is never routine, and needs a reviewed justification recorded in the row's comment saying what grew and why the growth is worth the flash. The initial ceilings sit about four percent above the measurement recorded beside them: real headroom for ordinary churn, still tight enough that a five percent regression is red.",
+  "entries": [
+    {
+      "id": "navigation-estimator/embedded-c-galec",
+      "model": "Vehicles.Rdd2.NavigationEstimator",
+      "entry_point": "Vehicles/package.mo",
+      "target": "embedded-c-galec",
+      "why": "The artifact that flies: the RDD2 navigation estimator as GALEC-derived embedded C, linked into the Zephyr image on the vehicle's microcontroller. Its flash footprint and its single static allocation are acceptance criteria for that deployment, not diagnostics.",
+      "budget": {
+        "text_bytes": 65713,
+        "state_bytes": 61830,
+        "measured": {
+          "text_bytes": 63186,
+          "state_bytes": 59452,
+          "comment": "Measured 2026-08-22 after the never-concurrent scratch overlay landed, with gcc-arm-embedded-15.2.rel1, under arm-none-eabi-gcc -Os -std=c99 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -ffunction-sections -c over both emitted translation units. text 63186 B = 63018 B model + 168 B shared kernels; ceiling 65713 B is +4.0%. state 59452 B, provably the floor for scratch-region overlay of this call graph; ceiling 61830 B is +4.0%. About 3.7 KB of that state is model state; the rest is scratch whose remaining reduction belongs to intra-function slot liveness or marshalling elimination, not region overlay."
+        }
+      }
+    },
+    {
+      "id": "navigation-estimator/galec-production",
+      "model": "Vehicles.Rdd2.NavigationEstimator",
+      "entry_point": "Vehicles/package.mo",
+      "target": "galec-production",
+      "why": "The same estimator inside its eFMU Production Code container, the form the certification review reads. Its C bodies come from the same shared templates as the embedded-c-galec row, so the two rows are pinned to the same numbers on purpose: a divergence between them means the packaging track changed what gets compiled rather than only how it is wrapped, which is a finding either way.",
+      "budget": {
+        "text_bytes": 65713,
+        "state_bytes": 61830,
+        "measured": {
+          "text_bytes": 63186,
+          "state_bytes": 59452,
+          "comment": "Measured 2026-08-22 after the never-concurrent scratch overlay landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It therefore carries that row's ceilings unchanged rather than its own four-percent band, so the two artifacts cannot drift apart without one of them going red."
+        }
+      }
+    },
+    {
+      "id": "ukf-estimator/galec-production",
+      "model": "Estimation.StrapdownINS.UKF.Estimator",
+      "entry_point": "Estimation/package.mo",
+      "target": "galec-production",
+      "why": "The heaviest matrix-algebra model with an established eFMI target, and nearly as large as the navigation estimator despite being a smaller model: sigma-point work is where an unrolled kernel or a widened scratch region shows up first, so this row is the early warning for both ceilings.",
+      "budget": {
+        "text_bytes": 64644,
+        "state_bytes": 47270,
+        "measured": {
+          "text_bytes": 62158,
+          "state_bytes": 45452,
+          "comment": "Measured 2026-08-22 after the never-concurrent scratch overlay landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the NavigationEstimator rows. text 62158 B = 61990 B model + 168 B shared kernels; ceiling 64644 B is +4.0%. state 45452 B (struct EstimatorState), 5180 B below the pre-overlay measurement because exact reachability packs the sigma-point scratch tighter than call depth did; ceiling 47270 B is +4.0%."
+        }
+      }
+    }
+  ]
+}
