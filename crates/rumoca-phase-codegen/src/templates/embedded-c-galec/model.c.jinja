@@ -88,7 +88,8 @@ self->{{ state_symbol(value.reference.value[0]) }}{% for index in value.referenc
 {%- if value.kind == "mul" -%}*{%- elif value.kind == "div" -%}/{%- elif value.kind == "add" -%}+{%- elif value.kind == "sub" -%}-{%- elif value.kind == "lt" -%}<{%- elif value.kind == "gt" -%}>{%- elif value.kind == "le" -%}<={%- elif value.kind == "ge" -%}>={%- elif value.kind == "eq" -%}=={%- elif value.kind == "ne" -%}!={%- elif value.kind == "and" -%}&&{%- elif value.kind == "or" -%}||{%- else -%}{{ fail_closed_binary_operator }}{%- endif -%}
 {%- endmacro -%}
 {%- macro binary(value, lhs, rhs) -%}
-{%- if value.op.kind == "pow" and value.square_reducible -%}({{ lhs }} * {{ lhs }})
+{%- if value.op.kind == "pow" and value.square_form == "multiply" -%}({{ lhs }} * {{ lhs }})
+{%- elif value.op.kind == "pow" and value.square_form == "bound_multiply" -%}rumoca_galec_square({{ lhs }})
 {%- elif value.op.kind == "pow" -%}powf({{ lhs }}, {{ rhs }})
 {%- elif value.op.kind in ["lt", "gt", "le", "ge", "eq", "ne"] and (value.lhs.scalar.kind == "real" or value.rhs.scalar.kind == "real") -%}rumoca_galec_compare_{{ value.op.kind }}(&self->rumoca_galec_error_signal_status, {{ lhs }}, {{ rhs }})
 {%- else -%}({{ lhs }} {{ binary_operator(value.op) }} {{ rhs }})
@@ -864,7 +865,7 @@ void {{ c_model }}_dostep({{ c_model }}State *self) {
  * ------------------------------------------------------------------------ */
 {%- endif %}
 {%- set uses = algorithm_code.package.block.semantic_uses -%}
-{%- if uses.bounded_selection or uses.sign or uses.integer_conversion or uses.real_min or uses.real_max or uses.compare_lt or uses.compare_gt or uses.compare_le or uses.compare_ge or uses.compare_eq or uses.compare_ne or uses.integer_min or uses.integer_max or uses.division_towards_zero %}
+{%- if uses.bounded_selection or uses.sign or uses.integer_conversion or uses.real_min or uses.real_max or uses.real_square or uses.compare_lt or uses.compare_gt or uses.compare_le or uses.compare_ge or uses.compare_eq or uses.compare_ne or uses.integer_min or uses.integer_max or uses.division_towards_zero %}
 
 /* ---------------------------------------------------------------------------
  * GALEC semantics that C99 does not already provide
@@ -873,7 +874,10 @@ void {{ c_model }}_dostep({{ c_model }}State *self) {
  * instead discard one qNaN operand, so they are not semantic substitutes.
  * Relational comparisons on Real signal NAN and evaluate to false when either
  * operand is NaN — in particular C's native `!=` result for NaN is not
- * GALEC-conformant. Every helper below evaluates each argument exactly once.
+ * GALEC-conformant. Every helper below evaluates each argument exactly once,
+ * which is the whole reason `rumoca_galec_square` is one of them: `x ^ 2` is
+ * emitted as a multiply, and a base that is not free to write twice is bound
+ * by that parameter instead of being duplicated.
  * ------------------------------------------------------------------------ */
 {%- endif %}
 {%- if uses.bounded_selection %}
@@ -940,6 +944,16 @@ static inline float rumoca_galec_max(float u1, float u2) {
         result = u1;
     }
     return result;
+}
+{%- endif %}
+{%- if uses.real_square %}
+
+/* GALEC `x ^ 2` over a Real base whose text is not free to repeat. The
+ * parameter binds the base, so it is evaluated once; the body is the same
+ * single binary32 multiply the duplicated form emits, which is the
+ * correctly-rounded square for every binary32 input. */
+static inline float rumoca_galec_square(float value) {
+    return value * value;
 }
 {%- endif %}
 {%- if uses.compare_lt %}

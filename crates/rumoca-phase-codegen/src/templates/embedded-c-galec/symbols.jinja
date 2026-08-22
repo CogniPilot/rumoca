@@ -43,7 +43,7 @@
     "alignas", "alignof", "bool", "constexpr", "false", "nullptr",
     "static_assert", "thread_local", "true", "typeof", "typeof_unqual",
     "self", "rumoca_galec_sign", "rumoca_galec_min", "rumoca_galec_max",
-    "rumoca_galec_bounded_index",
+    "rumoca_galec_bounded_index", "rumoca_galec_square",
     "rumoca_galec_imin", "rumoca_galec_imax", "rumoca_galec_division_towards_zero",
     "rumoca_galec_compare_lt", "rumoca_galec_compare_gt", "rumoca_galec_compare_le",
     "rumoca_galec_compare_ge", "rumoca_galec_compare_eq", "rumoca_galec_compare_ne",
@@ -54,11 +54,12 @@
     "sinhf", "coshf", "tanhf", "powf"
 ] -%}
 {#- The identifiers the `rumoca_galec_` helper bodies in `model.c.jinja`
-    declare themselves: `value`/`extent` (bounded_index and sign),
+    declare themselves: `value`/`extent` (bounded_index, sign, and square),
     `u1`/`u2` (the Real min/max helpers), `status`/`lhs`/`rhs` (the six
     comparison helpers, imin/imax, division_towards_zero) and `result` (every
-    one of them). They are the only identifiers these templates emit WITHOUT
-    the generated prefix, so the allocator's prefix rule does not cover them,
+    helper that selects between values). They are the only identifiers these
+    templates emit WITHOUT the generated prefix, so the allocator's prefix rule
+    does not cover them,
     and a file-scope symbol of the same name — a GALEC function named `result`
     becomes `static void result(...)` — is shadowed by the helper local of
     that name under the profile's -Wshadow -Werror. Keep this list in step

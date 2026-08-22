@@ -59,6 +59,46 @@ equation
 end EmbeddedGalecMinMax;
 ";
 
+const SQUARE_MODEL: &str = "EmbeddedGalecSquare";
+
+/// A squared base that is NOT free to write twice: `x ^ 2` reduces to a
+/// multiply, and the operand is bound by `rumoca_galec_square` instead of being
+/// duplicated. This is the shape the RDD2 navigation estimator squares.
+const SQUARE_FIXTURE: &str = "\
+model EmbeddedGalecSquare
+  constant Real samplePeriod = 0.1;
+  input Real u;
+  discrete output Real y(start = 0.0);
+equation
+  when sample(0.0, samplePeriod) then
+    y = max(u, 1.0) ^ 2;
+  end when;
+end EmbeddedGalecSquare;
+";
+
+const SQUARE_DRIVER: &str = r#"
+#include <math.h>
+#include "EmbeddedGalecSquare.c"
+
+int main(void) {
+    /* Squares that are exactly representable in binary32, so the multiply is
+       the same value however the C implementation is allowed to evaluate it.
+       The bound helper must agree with the duplicated multiply the reduction
+       emits wherever the base IS free to write twice. */
+    const float samples[6] = { 0.0f, 0.5f, 1.5f, 3.0f, -2.25f, 7.0f };
+    for (int index = 0; index < 6; ++index) {
+        const float sample = samples[index];
+        if (rumoca_galec_square(sample) != sample * sample) {
+            return 1;
+        }
+    }
+    if (!isnan(rumoca_galec_square(NAN))) {
+        return 2;
+    }
+    return 0;
+}
+"#;
+
 /// Continuous model the capability gate must reject (GAL-006).
 const CONTINUOUS_FIXTURE: &str = "\
 model EmbeddedGalecContinuous
@@ -185,6 +225,63 @@ fn real_min_max_use_order_sensitive_relational_nan_semantics() {
     );
 }
 
+/// `x ^ 2` never reaches `powf` in the emitted C. A base that is free to write
+/// twice is duplicated in place; this one is a call, so it is bound by
+/// `rumoca_galec_square` and evaluated exactly once, and the helper's result is
+/// the same multiply.
+#[test]
+fn a_squared_call_result_is_bound_and_multiplied_rather_than_raised() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let file = write_fixture(dir.path(), SQUARE_MODEL, SQUARE_FIXTURE);
+    let output = run_compile_embedded_c_galec(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "square fixture failed to compile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let generated_source =
+        fs::read_to_string(out_dir.join(format!("{SQUARE_MODEL}.c"))).expect("read generated C");
+    assert!(
+        generated_source.contains("rumoca_galec_square("),
+        "a call base must be bound by the square helper: {generated_source}"
+    );
+    assert!(
+        !generated_source.contains("powf"),
+        "a Real square must not reach powf: {generated_source}"
+    );
+
+    let driver = out_dir.join("square.c");
+    fs::write(&driver, SQUARE_DRIVER).expect("write square driver");
+    let program = out_dir.join("square");
+    // The driver includes the model unit textually to reach its `static inline`
+    // helpers, so the shared kernel library goes on the command line as it does
+    // for every other link of a generated model unit.
+    let program_kernels = out_dir.join(super::cc_support::GALEC_KERNEL_LIBRARY);
+    let compile = assurance_c99_cc()
+        .arg("-o")
+        .arg(&program)
+        .arg(&driver)
+        .arg(&program_kernels)
+        .arg("-lm")
+        .output()
+        .expect("run cc");
+    assert!(
+        compile.status.success(),
+        "strict square probe compile failed.\nstderr:\n{}\nsource:\n{}",
+        String::from_utf8_lossy(&compile.stderr),
+        generated_source
+    );
+
+    let run = Command::new(&program).output().expect("run square probe");
+    assert!(
+        run.status.success(),
+        "bound square probe exited with {:?}",
+        run.status.code()
+    );
+}
+
 /// The emitted sources compile under strict ISO C99 warnings, link against libm
 /// with a real driver, and the executed block reproduces the discrete
 /// dynamics tick for tick.
@@ -203,6 +300,7 @@ fn emitted_c_compiles_links_and_reproduces_the_discrete_dynamics() {
         "static inline float rumoca_galec_sign",
         "static inline float rumoca_galec_min",
         "static inline float rumoca_galec_max",
+        "static inline float rumoca_galec_square",
         "static inline bool rumoca_galec_compare_",
         "static inline int32_t rumoca_galec_imin",
         "static inline int32_t rumoca_galec_imax",

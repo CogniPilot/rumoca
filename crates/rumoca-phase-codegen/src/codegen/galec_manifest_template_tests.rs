@@ -544,8 +544,8 @@ fn galec_c_policy_reserves_the_helper_local_identifiers() {
     );
 }
 
-/// `x ^ 2` on a Real base prints as `(x * x)` in the emitted C, while every
-/// other power keeps its `powf` call (task #54).
+/// `x ^ 2` on a Real base prints as `(x * x)` in the emitted C when the base is
+/// free to write twice, while every other power keeps its `powf` call.
 ///
 /// This is an emission choice, not a semantic one, so it is pinned here on the
 /// C text rather than in the `.alg` goldens — the checked GALEC still prints
@@ -553,7 +553,7 @@ fn galec_c_policy_reserves_the_helper_local_identifiers() {
 ///
 /// The multiply is not an approximation of the call: it is the correctly-rounded
 /// square for every binary32 input, and it is what picolibc's own `powf`
-/// computes for `y == 2` (a single `vmul.f32`). See `is_square_reducible` in
+/// computes for `y == 2` (a single `vmul.f32`). See `real_square_form` in
 /// `views/algorithm_code_typed.rs`.
 #[test]
 fn galec_c_prints_a_real_square_as_a_multiply() {
@@ -589,10 +589,11 @@ fn galec_c_keeps_powf_for_a_non_square_exponent() {
     );
 }
 
-/// A compound base keeps `powf`: printing it as a multiply would duplicate the
-/// operand's text and recompute it.
+/// A compound base is bound by `rumoca_galec_square` rather than printed twice.
+/// The helper's parameter is the binding, so the sum is written once and
+/// evaluated once, exactly as the `powf` call evaluated it once.
 #[test]
-fn galec_c_keeps_powf_for_a_compound_base() {
+fn galec_c_binds_a_compound_base_before_multiplying() {
     let source = render_square_fixture(galec::Expression::binary(
         galec::BinaryOp::Pow,
         galec::Expression::Paren(Box::new(galec::Expression::binary(
@@ -603,8 +604,55 @@ fn galec_c_keeps_powf_for_a_compound_base() {
         galec::Expression::Integer(2),
     ));
     assert!(
-        source.contains("powf("),
-        "a compound base must keep its powf call rather than be printed twice: {source}"
+        source.contains("rumoca_galec_square(((self->u + 1.0f)))"),
+        "a compound base must be bound by the square helper and appear once: {source}"
+    );
+    assert!(
+        !source.contains("powf"),
+        "the bound form must not also emit a powf call: {source}"
+    );
+    assert!(
+        source.contains("static inline float rumoca_galec_square(float value) {"),
+        "the square helper must be defined where it is called: {source}"
+    );
+}
+
+/// A builtin-call base is bound too. This is the shape the RDD2 navigation
+/// estimator squares in its SE_2(3) left Jacobian, `max(theta_sq, eps) ^ 2`,
+/// and duplicating a call is a cost the `powf` call did not have.
+#[test]
+fn galec_c_binds_a_call_base_before_multiplying() {
+    let source = render_square_fixture(galec::Expression::binary(
+        galec::BinaryOp::Pow,
+        galec::Expression::Call(galec::FunctionCall {
+            function: galec::Name::ident("max"),
+            arguments: vec![
+                galec::Expression::Ref(galec::Reference::state(galec::Name::ident("u"))),
+                galec::Expression::Real(1.0),
+            ],
+        }),
+        galec::Expression::Integer(2),
+    ));
+    assert!(
+        source.contains("rumoca_galec_square(rumoca_galec_max(self->u, 1.0f))"),
+        "a call base must be bound by the square helper and appear once: {source}"
+    );
+    assert!(
+        !source.contains("powf"),
+        "the bound form must not also emit a powf call: {source}"
+    );
+}
+
+/// The helper follows the same reachability rule as every other
+/// `rumoca_galec_` helper: a block that squares only bases free to write twice
+/// never calls it, so defining it would be dead code the profile's `-Werror`
+/// build has to account for.
+#[test]
+fn galec_c_omits_the_square_helper_when_no_base_needs_binding() {
+    let source = render_square_fixture(square_of_input(galec::Expression::Integer(2)));
+    assert!(
+        !source.contains("rumoca_galec_square"),
+        "an in-place multiply must not pull in the binding helper: {source}"
     );
 }
 

@@ -293,6 +293,9 @@ struct SemanticOperationUses {
     integer_conversion: bool,
     real_min: bool,
     real_max: bool,
+    /// Set by [`SquareForm::BoundMultiply`]: the block squares at least one
+    /// Real base that has to be bound before it is multiplied.
+    real_square: bool,
     integer_min: bool,
     integer_max: bool,
     division_towards_zero: bool,
@@ -485,7 +488,7 @@ struct TypedSpannedStatement<'a> {
     ///
     /// Carried as a sibling of the node, never as a rewrite of it, for the same
     /// reason [`TypedReferenceView::context_resident`] and
-    /// `TypedExpressionNodeView::Binary::square_reducible` are sibling flags:
+    /// `TypedExpressionNodeView::Binary::square_form` are sibling fields:
     /// this view is shared with the Algorithm Code (`.alg`) rendering, and a
     /// target-specific *emission* decision must not change what the checked
     /// GALEC prints. `model.alg.jinja` never reads this field, so the `.alg`
@@ -697,19 +700,38 @@ enum TypedExpressionNodeView<'a> {
         associativity: ast::Associativity,
         lhs: Box<TypedExpressionView<'a>>,
         rhs: Box<TypedExpressionView<'a>>,
-        /// `true` when this is `<real> ^ 2` with a base cheap enough to print
-        /// twice, so a C-family target may emit `lhs * lhs` in place of a
-        /// `powf` call. See [`is_square_reducible`] for the exact conditions and
-        /// for why the multiply is the *more* accurate of the two spellings.
+        /// Which spelling a C-family target gives this node when it is
+        /// `<real> ^ 2`. See [`SquareForm`] and [`real_square_form`] for the
+        /// exact conditions and for why the multiply is the *more* accurate of
+        /// the two spellings.
         ///
-        /// Carried as a sibling flag rather than a rewritten `Mul` node on
+        /// Carried as a sibling field rather than a rewritten `Mul` node on
         /// purpose, for the same reason
         /// [`TypedReferenceView::context_resident`] is a flag: this view is
         /// shared by the Algorithm Code (`.alg`) rendering, and a
         /// target-specific *emission* decision must not change what the checked
         /// GALEC prints. `x ^ 2` stays `x ^ 2` in `model.alg.jinja`.
-        square_reducible: bool,
+        square_form: SquareForm,
     },
+}
+
+/// How a C-family target spells a power.
+///
+/// A square over a Real base is always emitted as a multiply; the variants
+/// differ only in where the operand that is multiplied comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SquareForm {
+    /// Not a square over a Real base: the target prints its `powf` call.
+    Power,
+    /// The base is cheap and effect-free to print twice, so the target prints
+    /// `(lhs * lhs)` and needs no binding of its own.
+    Multiply,
+    /// The base is neither, so the target prints `rumoca_galec_square(lhs)`.
+    /// The helper's parameter is the binding: the base's rendered text appears
+    /// once and is therefore evaluated once, exactly as the `powf` call
+    /// evaluated it once.
+    BoundMultiply,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2015,7 +2037,14 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
         } else {
             ShapeEvidence::scalar(ast::ScalarType::Boolean)
         };
-        let square_reducible = op == ast::BinaryOp::Pow && is_square_reducible(&lhs, &rhs);
+        let square_form = if op == ast::BinaryOp::Pow {
+            real_square_form(&lhs, &rhs)
+        } else {
+            SquareForm::Power
+        };
+        if square_form == SquareForm::BoundMultiply {
+            self.block.semantic_uses.borrow_mut().real_square = true;
+        }
         Ok((
             shape,
             TypedExpressionNodeView::Binary {
@@ -2024,50 +2053,12 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 associativity: op.precedence_class().associativity(),
                 lhs,
                 rhs,
-                square_reducible,
+                square_form,
             },
         ))
     }
 }
 
-/// Whether `lhs ^ rhs` may be printed by a C-family target as `lhs * lhs`
-/// rather than as a `powf` call.
-///
-/// Three conditions, all necessary:
-///
-/// 1. `rhs` is exactly the literal 2 — Integer `2` or Real `2.0`. GALEC allows
-///    a mixed-type `^` (see `validate/types.rs`, `allow_mixed`), and `x ^ 2`
-///    with an Integer literal exponent is the common Modelica spelling, so the
-///    exponent's *type* is deliberately not constrained, only its value.
-/// 2. The base is Real. An Integer `^` printed as `*` would change the emitted
-///    C expression's type from `float` (what `powf` returns) to `int32_t`, and
-///    with it the overflow behaviour — that is a semantic change, not a
-///    rounding-neutral respelling.
-/// 3. The base is cheap and effect-free to print twice, because the rewrite
-///    duplicates its rendered text. This excludes anything that could re-run a
-///    bounds check, a Real comparison (which writes `ErrorSignalStatus`), or a
-///    user function call.
-///
-/// Under these conditions `lhs * lhs` is not an approximation of
-/// `powf(lhs, 2.0f)` — it is the correctly-rounded value of `lhs²` for *every*
-/// binary32 input. That was verified exhaustively over all 2^32 bit patterns
-/// against an exact oracle: `(double)x * (double)x` is error-free for binary32
-/// operands (24+24 significand bits fit binary64's 53, and 2·[-149, 127] fits
-/// its exponent range), so rounding it once to `float` is by construction the
-/// correctly-rounded square. The single multiply matched that oracle on all
-/// 4_278_190_080 finite inputs, with zero exceptions.
-///
-/// It is also what the deployment target already computes: picolibc's `powf`
-/// tests for `y == 2.0f` and takes a fast path whose body is a single
-/// `vmul.f32 s0, s15, s15`. So on target this rewrite is bit-for-bit inert and
-/// only removes the call and its ~28 instructions of dispatch.
-///
-/// A *host* libm need not agree, and glibc's does not: the same exhaustive
-/// sweep found `powf(x, 2.0f)` off by 1 ulp from the correctly-rounded square
-/// on 1_548_806 inputs. Since `tests/suite_galec_fmu/galec_equivalence.rs` compiles the
-/// generated C with the host `cc -lm`, emitting the multiply is what makes
-/// that host verification leg and a picolibc target build agree on the same
-/// bits instead of differing on ~0.036% of squared values.
 /// Decide which statements of one list a C-family target prints as calls into
 /// the shared array-kernel library, and return the accumulator locals the
 /// rewrite left with no reader.
@@ -2695,11 +2686,63 @@ fn is_iterator_reference(value: &TypedExpressionView<'_>, iterator: &ast::Name) 
         .is_some_and(|name| name == iterator.lexeme())
 }
 
-fn is_square_reducible(lhs: &TypedExpressionView<'_>, rhs: &TypedExpressionView<'_>) -> bool {
-    if lhs.scalar != Some(ast::ScalarType::Real) {
-        return false;
+/// How a C-family target prints `lhs ^ rhs`.
+///
+/// Two conditions decide that a multiply is available at all, and both are
+/// necessary:
+///
+/// 1. `rhs` is exactly the literal 2, Integer `2` or Real `2.0`. GALEC allows
+///    a mixed-type `^` (see `validate/types.rs`, `allow_mixed`), and `x ^ 2`
+///    with an Integer literal exponent is the common Modelica spelling, so the
+///    exponent's *type* is deliberately not constrained, only its value.
+/// 2. The base is Real. An Integer `^` printed as `*` would change the emitted
+///    C expression's type from `float` (what `powf` returns) to `int32_t`, and
+///    with it the overflow behaviour, that is a semantic change, not a
+///    rounding-neutral respelling.
+///
+/// A third question then picks between the two multiply spellings rather than
+/// refusing: is the base cheap and effect-free to *print twice*?
+/// [`SquareForm::Multiply`] duplicates the rendered text, so it is reserved for
+/// bases where that is free. Everything else, a builtin call, a nested
+/// operator, an if-expression, a bounded selection, takes
+/// [`SquareForm::BoundMultiply`], where `rumoca_galec_square`'s parameter binds
+/// the base so its text appears once and its cost and its effects (a bounds
+/// check, a Real comparison writing `ErrorSignalStatus`) occur exactly once, as
+/// they did under the `powf` call it replaces.
+///
+/// Under these conditions `lhs * lhs` is not an approximation of
+/// `powf(lhs, 2.0f)`, it is the correctly-rounded value of `lhs²` for *every*
+/// binary32 input. That was verified exhaustively over all 2^32 bit patterns
+/// against an exact oracle: `(double)x * (double)x` is error-free for binary32
+/// operands (24+24 significand bits fit binary64's 53, and 2·[-149, 127] fits
+/// its exponent range), so rounding it once to `float` is by construction the
+/// correctly-rounded square. The single multiply matched that oracle on all
+/// 4_278_190_080 finite inputs, with zero exceptions.
+///
+/// The bound form inherits that argument unchanged: `rumoca_galec_square` takes
+/// its argument by value as a `float` and returns `float`, so its body is the
+/// same single binary32 multiply with the same single rounding.
+///
+/// It is also what the deployment target already computes: picolibc's `powf`
+/// tests for `y == 2.0f` and takes a fast path whose body is a single
+/// `vmul.f32 s0, s15, s15`. So on target this rewrite is bit-for-bit inert and
+/// only removes the call and its ~28 instructions of dispatch.
+///
+/// A *host* libm need not agree, and glibc's does not: the same exhaustive
+/// sweep found `powf(x, 2.0f)` off by 1 ulp from the correctly-rounded square
+/// on 1_548_806 inputs. Since `tests/suite_galec_fmu/galec_equivalence.rs` compiles the
+/// generated C with the host `cc -lm`, emitting the multiply is what makes
+/// that host verification leg and a picolibc target build agree on the same
+/// bits instead of differing on ~0.036% of squared values.
+fn real_square_form(lhs: &TypedExpressionView<'_>, rhs: &TypedExpressionView<'_>) -> SquareForm {
+    if lhs.scalar != Some(ast::ScalarType::Real) || !exponent_is_two(rhs) {
+        return SquareForm::Power;
     }
-    exponent_is_two(rhs) && duplication_safe(lhs)
+    if duplication_safe(lhs) {
+        SquareForm::Multiply
+    } else {
+        SquareForm::BoundMultiply
+    }
 }
 
 /// Whether an exponent is exactly the literal 2.
@@ -2741,16 +2784,19 @@ fn builtin_name<'a>(call: &TypedCallView<'a>) -> &'a str {
 /// Everything else — calls, nested operators, if-expressions, bounded
 /// selections — is excluded, so a base that would cost something to recompute
 /// or that could re-run an effect (a user function, a Real comparison writing
-/// `ErrorSignalStatus`) keeps its `powf` call.
+/// `ErrorSignalStatus`) is squared through the binding helper instead of by
+/// duplication. This is therefore a choice between two multiply spellings, not
+/// a gate on whether the square reduces at all; see [`real_square_form`].
 ///
-/// Subscripts are *not* a reason to refuse on their own. An ordinary reference
-/// prints its subscripts through the `subscript` macro as `[N - 1]` or
-/// `[i - 1]`; the bounds-checked `rumoca_galec_bounded_index(…)` spelling
+/// Subscripts are *not* a reason to fall back on their own. An ordinary
+/// reference prints its subscripts through the `subscript` macro as `[N - 1]`
+/// or `[i - 1]`; the bounds-checked `rumoca_galec_bounded_index(…)` spelling
 /// belongs to the separate `bounded_reference` macro, which serves
 /// `BoundedSelection` nodes and is unreachable from here. This matters in
 /// practice: every squared base in the RDD2 navigation estimator is a
 /// constant-subscripted array element such as `q[0]` or `ctx->omega_l[2]`, and
-/// refusing those would leave the reduction with nothing to do.
+/// binding those would spend a helper call on text that is already free to
+/// repeat.
 fn duplication_safe(value: &TypedExpressionView<'_>) -> bool {
     match &value.node {
         TypedExpressionNodeView::Bool(_)
@@ -2774,12 +2820,14 @@ fn reference_duplication_safe(reference: &TypedReferenceView<'_>) -> bool {
         .all(|part| part.subscripts.iter().all(duplication_safe))
 }
 
-/// Gate tests for the `x ^ 2` → `x * x` emission flag (task #54).
+/// Gate tests for the `x ^ 2` emission form.
 ///
 /// These pin the *decision*, which is the part that lives in Rust; the C tokens
 /// it selects are the template's and are covered by the golden/differential
-/// suites. The negative cases matter more than the positive one: each is a way
-/// the rewrite would stop being value-preserving or cost-free.
+/// suites. Three outcomes are distinguished, and the boundary that matters most
+/// is [`SquareForm::Power`]: a case that lands there is one where no multiply is
+/// value-preserving at all. The boundary between the two multiply spellings is a
+/// cost question, and each case below says which of the two it is.
 #[cfg(test)]
 mod square_reduction_tests {
     use super::*;
@@ -2830,89 +2878,111 @@ mod square_reduction_tests {
 
     /// The common Modelica spelling: a Real variable, an Integer literal 2.
     #[test]
-    fn real_reference_with_integer_two_reduces() {
+    fn real_reference_with_integer_two_multiplies_in_place() {
         let x = ast::Name::ident("x");
-        assert!(is_square_reducible(&real_ref(&x), &integer_literal(2)));
+        assert_eq!(
+            real_square_form(&real_ref(&x), &integer_literal(2)),
+            SquareForm::Multiply
+        );
     }
 
     #[test]
-    fn real_reference_with_real_two_reduces() {
+    fn real_reference_with_real_two_multiplies_in_place() {
         let x = ast::Name::ident("x");
-        assert!(is_square_reducible(&real_ref(&x), &real_literal(2.0)));
+        assert_eq!(
+            real_square_form(&real_ref(&x), &real_literal(2.0)),
+            SquareForm::Multiply
+        );
     }
 
     /// Unary minus over a plain reference is still one cheap, effect-free token.
     #[test]
-    fn negated_reference_reduces() {
+    fn negated_reference_multiplies_in_place() {
         let x = ast::Name::ident("x");
         let base = scalar_view(
             ast::ScalarType::Real,
             TypedExpressionNodeView::Neg(reference(&x, Vec::new())),
         );
-        assert!(is_square_reducible(&base, &integer_literal(2)));
+        assert_eq!(
+            real_square_form(&base, &integer_literal(2)),
+            SquareForm::Multiply
+        );
     }
 
     /// An Integer base must keep `powf`: `i * i` would be `int32_t` arithmetic
     /// where `powf(i, 2)` is `float`, changing both the type and the overflow
-    /// behaviour of the emitted expression.
+    /// behaviour of the emitted expression. Binding the base would not rescue
+    /// it, so this is the one case where no multiply spelling is available.
     #[test]
-    fn integer_base_does_not_reduce() {
+    fn integer_base_keeps_the_power() {
         let i = ast::Name::ident("i");
         let base = scalar_view(
             ast::ScalarType::Integer,
             TypedExpressionNodeView::Ref(reference(&i, Vec::new())),
         );
-        assert!(!is_square_reducible(&base, &integer_literal(2)));
+        assert_eq!(
+            real_square_form(&base, &integer_literal(2)),
+            SquareForm::Power
+        );
     }
 
     /// Only the exponent 2 reduces; a cube has no single-multiply equivalent.
     #[test]
-    fn exponent_three_does_not_reduce() {
+    fn exponent_three_keeps_the_power() {
         let x = ast::Name::ident("x");
-        assert!(!is_square_reducible(&real_ref(&x), &integer_literal(3)));
+        assert_eq!(
+            real_square_form(&real_ref(&x), &integer_literal(3)),
+            SquareForm::Power
+        );
     }
 
     /// A value that merely rounds to 2.0 in print is not the literal 2.
     #[test]
-    fn exponent_near_two_does_not_reduce() {
+    fn exponent_near_two_keeps_the_power() {
         let x = ast::Name::ident("x");
-        assert!(!is_square_reducible(
-            &real_ref(&x),
-            &real_literal(2.000_000_1)
-        ));
+        assert_eq!(
+            real_square_form(&real_ref(&x), &real_literal(2.000_000_1)),
+            SquareForm::Power
+        );
     }
 
-    /// A constant-subscripted array element reduces. This is the shape every
-    /// squared base in the RDD2 navigation estimator actually has (`q[0]`,
-    /// `ctx->omega_l[2]`, …), and it prints as `[N - 1]` — a constant, free to
-    /// repeat.
+    /// A constant-subscripted array element is duplicated in place. This is the
+    /// shape every squared base in the RDD2 navigation estimator actually has
+    /// (`q[0]`, `ctx->omega_l[2]`, …), and it prints as `[N - 1]`, a constant,
+    /// free to repeat.
     #[test]
-    fn literal_subscripted_base_reduces() {
+    fn literal_subscripted_base_multiplies_in_place() {
         let v = ast::Name::ident("v");
         let base = scalar_view(
             ast::ScalarType::Real,
             TypedExpressionNodeView::Ref(reference(&v, vec![integer_literal(1)])),
         );
-        assert!(is_square_reducible(&base, &integer_literal(2)));
+        assert_eq!(
+            real_square_form(&base, &integer_literal(2)),
+            SquareForm::Multiply
+        );
     }
 
-    /// A loop-induction subscript reduces too: it prints as `[i - 1]`, a plain
-    /// local read with no effect and no meaningful recomputation cost.
+    /// A loop-induction subscript is duplicated too: it prints as `[i - 1]`, a
+    /// plain local read with no effect and no meaningful recomputation cost.
     #[test]
-    fn induction_subscripted_base_reduces() {
+    fn induction_subscripted_base_multiplies_in_place() {
         let v = ast::Name::ident("v");
         let i = ast::Name::ident("i");
         let base = scalar_view(
             ast::ScalarType::Real,
             TypedExpressionNodeView::Ref(reference(&v, vec![real_ref(&i)])),
         );
-        assert!(is_square_reducible(&base, &integer_literal(2)));
+        assert_eq!(
+            real_square_form(&base, &integer_literal(2)),
+            SquareForm::Multiply
+        );
     }
 
-    /// A *computed* subscript does not: duplicating it would recompute the
-    /// index expression on every use.
+    /// A *computed* subscript is bound instead: duplicating it would recompute
+    /// the index expression on every use.
     #[test]
-    fn computed_subscript_base_does_not_reduce() {
+    fn computed_subscript_base_binds_the_operand() {
         let v = ast::Name::ident("v");
         let i = ast::Name::ident("i");
         let index = scalar_view(
@@ -2923,21 +2993,24 @@ mod square_reduction_tests {
                 associativity: ast::Associativity::Left,
                 lhs: Box::new(real_ref(&i)),
                 rhs: Box::new(integer_literal(1)),
-                square_reducible: false,
+                square_form: SquareForm::Power,
             },
         );
         let base = scalar_view(
             ast::ScalarType::Real,
             TypedExpressionNodeView::Ref(reference(&v, vec![index])),
         );
-        assert!(!is_square_reducible(&base, &integer_literal(2)));
+        assert_eq!(
+            real_square_form(&base, &integer_literal(2)),
+            SquareForm::BoundMultiply
+        );
     }
 
-    /// A function-call base keeps `powf`. The estimator has these too —
+    /// A function-call base is bound. The estimator has these:
     /// `rumoca_galec_max(theta_sq, eps) ^ 2` — and duplicating a call is both a
-    /// cost and, for a user function, an effect.
+    /// cost and, for a user function, an effect; binding it is neither.
     #[test]
-    fn call_base_does_not_reduce() {
+    fn call_base_binds_the_operand() {
         let f = ast::Name::ident("f");
         let base = scalar_view(
             ast::ScalarType::Real,
@@ -2949,19 +3022,25 @@ mod square_reduction_tests {
                 outputs: Vec::new(),
             }),
         );
-        assert!(!is_square_reducible(&base, &integer_literal(2)));
+        assert_eq!(
+            real_square_form(&base, &integer_literal(2)),
+            SquareForm::BoundMultiply
+        );
     }
 
-    /// A compound base — `(a + b) ^ 2` — keeps `powf`: the rewrite would print
-    /// the sum twice and recompute it.
+    /// A compound base, `(a + b) ^ 2`, is bound: printing the sum twice would
+    /// recompute it.
     #[test]
-    fn parenthesized_base_does_not_reduce() {
+    fn parenthesized_base_binds_the_operand() {
         let a = ast::Name::ident("a");
         let base = scalar_view(
             ast::ScalarType::Real,
             TypedExpressionNodeView::Paren(Box::new(real_ref(&a))),
         );
-        assert!(!is_square_reducible(&base, &integer_literal(2)));
+        assert_eq!(
+            real_square_form(&base, &integer_literal(2)),
+            SquareForm::BoundMultiply
+        );
     }
 
     /// The shape real models actually produce: `x ^ real(2)`, the GALEC
@@ -2982,12 +3061,15 @@ mod square_reduction_tests {
                 outputs: Vec::new(),
             }),
         );
-        assert!(is_square_reducible(&real_ref(&x), &exponent));
+        assert_eq!(
+            real_square_form(&real_ref(&x), &exponent),
+            SquareForm::Multiply
+        );
     }
 
     /// The same wrapper around a different literal must not reduce.
     #[test]
-    fn real_conversion_wrapped_three_does_not_reduce() {
+    fn real_conversion_wrapped_three_keeps_the_power() {
         let x = ast::Name::ident("x");
         let real = ast::Name::ident("real");
         let exponent = scalar_view(
@@ -3000,12 +3082,15 @@ mod square_reduction_tests {
                 outputs: Vec::new(),
             }),
         );
-        assert!(!is_square_reducible(&real_ref(&x), &exponent));
+        assert_eq!(
+            real_square_form(&real_ref(&x), &exponent),
+            SquareForm::Power
+        );
     }
 
     /// A *user* function that happens to be named `real` is not the builtin.
     #[test]
-    fn user_function_named_real_does_not_reduce() {
+    fn user_function_named_real_keeps_the_power() {
         let x = ast::Name::ident("x");
         let real = ast::Name::ident("real");
         let exponent = scalar_view(
@@ -3018,15 +3103,21 @@ mod square_reduction_tests {
                 outputs: Vec::new(),
             }),
         );
-        assert!(!is_square_reducible(&real_ref(&x), &exponent));
+        assert_eq!(
+            real_square_form(&real_ref(&x), &exponent),
+            SquareForm::Power
+        );
     }
 
     /// A non-literal exponent is unknown at emission time.
     #[test]
-    fn variable_exponent_does_not_reduce() {
+    fn variable_exponent_keeps_the_power() {
         let x = ast::Name::ident("x");
         let n = ast::Name::ident("n");
-        assert!(!is_square_reducible(&real_ref(&x), &real_ref(&n)));
+        assert_eq!(
+            real_square_form(&real_ref(&x), &real_ref(&n)),
+            SquareForm::Power
+        );
     }
 }
 
@@ -3285,7 +3376,7 @@ mod kernelize_tests {
                 associativity: op.precedence_class().associativity(),
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
-                square_reducible: false,
+                square_form: SquareForm::Power,
             },
         )
     }
