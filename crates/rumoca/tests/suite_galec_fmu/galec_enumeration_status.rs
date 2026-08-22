@@ -162,7 +162,7 @@ fn enumeration_variable_projects_to_an_integer() {
         "enumeration variables must project to GALEC, got:\n{stderr}"
     );
     assert!(
-        !stderr.contains("[EGT017]"),
+        !stderr.contains("EGT017"),
         "enumeration variables must no longer raise EGT017, got:\n{stderr}"
     );
 
