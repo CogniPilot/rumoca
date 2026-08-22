@@ -1,3 +1,4 @@
+mod corpus_pin;
 mod fuzz;
 mod kani;
 mod msl_cargo_setup_timing;
@@ -28,6 +29,7 @@ use crate::{
     vscode_cmd, wasm_smoke,
 };
 
+use corpus_pin::VerifyCorpusPinArgs;
 use fuzz::VerifyFuzzArgs;
 use msl_cargo_setup_timing::{
     MslCargoSetupStepMetadata, MslCargoSetupTimingStep, run_msl_cargo_setup_step,
@@ -449,6 +451,10 @@ pub(crate) enum VerifyCommand {
     MslHotspots,
     /// Bounded libFuzzer run of the standalone `infra/fuzz/` parser fuzz target
     Fuzz(VerifyFuzzArgs),
+    /// Blocking differential over the pinned real-model corpus: the RDD2 flight
+    /// stack and the MSL canary roster, compiled and compared against their
+    /// recorded behavior. Fails closed when the corpus is not on the machine.
+    CorpusPin(VerifyCorpusPinArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,6 +479,18 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
     VerifyStep {
         label: "MSL parity",
         args: &["verify", "msl-parity", "--no-remote-quality-baseline"],
+        include_in_full: true,
+        include_in_quick: true,
+    },
+    // The real-model differential runs next to MSL parity for the same reason:
+    // it is the highest-signal evidence that a compiler change did not break
+    // the models the top-level theorem is about. It fails closed when the
+    // out-of-tree flight corpus is absent, so it is deliberately part of the
+    // suite rather than an opt-in: a verification run that quietly measured no
+    // real model is the outcome this gate exists to prevent.
+    VerifyStep {
+        label: "corpus pin",
+        args: &["verify", "corpus-pin"],
         include_in_full: true,
         include_in_quick: true,
     },
@@ -600,6 +618,7 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
         VerifyCommand::MslParity(args) => run_msl_quality_gate(root, &args),
         VerifyCommand::MslHotspots => run_msl_hotspot_flamegraphs(root),
         VerifyCommand::Fuzz(args) => fuzz::run(&args, root),
+        VerifyCommand::CorpusPin(args) => corpus_pin::run(root, &args),
     }
 }
 

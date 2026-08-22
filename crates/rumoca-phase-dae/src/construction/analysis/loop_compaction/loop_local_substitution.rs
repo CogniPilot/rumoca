@@ -1,4 +1,11 @@
 //! Eliminate loop-local prefixes only under exact dominance and use proofs.
+//!
+//! Two decisions here drop a definition: [`inline_dominated_loop_locals`]
+//! substitutes one forward inside a loop body, and [`loop_local_substitutions`]
+//! folds a whole prefix into the body's trailing statement. Both require a
+//! [`liveness::LoopLocalStoreUnobserved`] for the name, which is the one place
+//! the question "is this value observed again?" is answered, and both keep the
+//! obligations that are not that question as explicit guards of their own.
 
 use super::*;
 
@@ -72,10 +79,11 @@ fn loop_body_shapes(
 
 /// Inline loop-local prefix definitions into one trailing statement.
 ///
-/// The local must be unobserved after the loop, absent from outputs, and not
-/// reassigned by the trailing statement. The prefix definition dominates each
-/// substituted use, so a conditional or nested loop can retain one compact
-/// owner without manufacturing a scalar scratch transition.
+/// Both decisions below drop a definition only while holding a
+/// [`liveness::LoopLocalStoreUnobserved`] for its target, so nothing the
+/// dataflow answer cannot certify is folded away. The prefix definition
+/// dominates each substituted use, so a conditional or nested loop can retain
+/// one compact owner without manufacturing a scalar scratch transition.
 pub(super) fn inline_loop_local_prefixes(
     statements: &[rumoca_core::Statement],
     locals: &HashSet<VarName>,
@@ -120,29 +128,16 @@ fn inline_loop_local_prefixes_in_scope(
         .collect()
 }
 
-/// Prove that a definition dies before the enclosing loops re-enter their body.
+/// The names the function's caller observes once the body returns.
 ///
-/// A dominance proof over a straight-line suffix is not a proof inside a loop:
-/// MLS §11.2.2 re-executes the body from its first statement, so every earlier
-/// statement of the same body — and of every enclosing loop body — is also a
-/// *later* reader of the value. A scalar that is read on such a path before it
-/// is written again is loop-carried, and deleting its definition would silently
-/// feed every iteration the value the loop was entered with.
-///
-/// Every re-entry point is its own path out of the definition, so each one is
-/// asked separately. Chaining them into a single sequential walk would let the
-/// nearest body's write settle the value that an *enclosing* body reads: an
-/// enclosing loop re-enters after this loop has been left, without re-running
-/// this body's prefix, so that write never happens on the path in question.
-/// Only within one body does an earlier write kill the incoming value.
-fn definition_escapes_back_edge(
-    body_prefix: &[rumoca_core::Statement],
-    back_edges: &[&[rumoca_core::Statement]],
-    target: &VarName,
-) -> bool {
-    std::iter::once(body_prefix)
-        .chain(back_edges.iter().copied())
-        .any(|segment| super::statements_read_incoming_name(segment, target))
+/// MLS §12.4.1 makes a function's outputs its result, so a value left in an
+/// output is observed even though no statement of the body reads it. Handing
+/// them to the liveness prover as the set live on exit is what lets it answer
+/// the question a membership test can only refuse: an output the exit path
+/// definitely rewrites before returning is not observed at the store under
+/// proof.
+fn observed_by_the_caller(outputs: &HashSet<VarName>) -> liveness::LiveSet {
+    outputs.iter().cloned().collect()
 }
 
 fn inline_one_loop_local_prefix(
@@ -249,6 +244,18 @@ fn inline_one_loop_local_prefix(
     }
 }
 
+/// Replace a definition that dominates its uses with its value at those uses,
+/// inside one loop body.
+///
+/// A definition is dropped only while holding a
+/// [`liveness::LoopLocalStoreUnobserved`] for its target, so a name the
+/// dataflow answer cannot certify keeps every store it has. The witness owns
+/// the four questions about whether the value is observed again: by the caller
+/// through an output, by the statements that run once the loop is left, by this
+/// body's own back edge, and by an enclosing loop's. The guards left here are
+/// the ones that are not liveness questions at all: whether the stored
+/// expression can be reproduced at each later use, and the shared-scratch
+/// retention policy.
 fn inline_dominated_loop_locals(
     mut statements: Vec<rumoca_core::Statement>,
     outer_suffix: &[rumoca_core::Statement],
@@ -257,29 +264,48 @@ fn inline_dominated_loop_locals(
     outputs: &HashSet<VarName>,
     preserve_shared: bool,
 ) -> Vec<rumoca_core::Statement> {
+    let live_on_exit = observed_by_the_caller(outputs);
     let mut ordinal = 0usize;
     while ordinal < statements.len() {
         let Some((target, value)) = scalar_local_definition(&statements[ordinal]) else {
             ordinal += 1;
             continue;
         };
+        if !locals.contains(&target) {
+            ordinal += 1;
+            continue;
+        }
         let suffix = &statements[ordinal + 1..];
-        if !locals.contains(&target)
-            || outputs.contains(&target)
-            || statements_read_name(outer_suffix, &target)
-            || definition_escapes_back_edge(&statements[..ordinal], back_edges, &target)
-            || statements_read_nonrewritable_name(suffix, &target)
-            || statements_assign_name(suffix, &target)
+        let substituted = [suffix];
+        let witness = liveness::prove_unobserved_loop_local_store(
+            &target,
+            liveness::LoopLocalStoreRegions {
+                substituted: &substituted,
+                body_prefix: &statements[..ordinal],
+                enclosing_bodies: back_edges,
+                exit: outer_suffix,
+                live_on_exit: &live_on_exit,
+            },
+        );
+        let Some(witness) = witness else {
+            ordinal += 1;
+            continue;
+        };
+        if statements_assign_name(suffix, &target)
             || (preserve_shared
                 && statements_read_count(suffix, &target) > 1
                 && !statements_loop_ranges_read_name(suffix, &target))
             || expression_reads_name(&value, &target)
+            // Substituting the value at a later use only reproduces this
+            // definition while the value still reads the same thing. A later
+            // write to any of its dependencies would silently move the read
+            // forward in the algorithm's order (MLS §11.1).
             || expression_dependencies_change(&value, suffix)
         {
             ordinal += 1;
             continue;
         }
-        let substitutions = HashMap::from([(target, value)]);
+        let substitutions = HashMap::from([(witness.name().clone(), value)]);
         let mut rewriter = LocalSubstitution {
             values: &substitutions,
         };
@@ -301,6 +327,16 @@ fn scalar_local_definition(statement: &rumoca_core::Statement) -> Option<(VarNam
         .then(|| (VarName::new(&part.ident), value.clone()))
 }
 
+/// Whether a later statement moves a value `expression` reads.
+///
+/// Substituting an expression at a later use reproduces the definition only
+/// while everything the expression reads still holds what it held where the
+/// definition ran (MLS §11.1). A later write reaches that value whenever the
+/// written name and the read name denote the same storage or one is nested in
+/// the other: `t := e` defines every field beneath `t`, and `t.f := e`
+/// redefines part of `t`. Comparing the two names for equality alone lets both
+/// of those writes through, and the substituted expression then reads the new
+/// value at the old position.
 pub(super) fn expression_dependencies_change(
     expression: &Expression,
     statements: &[rumoca_core::Statement],
@@ -309,17 +345,91 @@ pub(super) fn expression_dependencies_change(
     expression.collect_var_refs(&mut references);
     references
         .iter()
-        .any(|reference| statements_assign_name(statements, reference))
+        .any(|reference| statements_write_value_named(statements, reference))
 }
 
+fn statements_write_value_named(
+    statements: &[rumoca_core::Statement],
+    reference: &VarName,
+) -> bool {
+    statements_write_where(statements, &|component| {
+        component_writes_value_named(component, reference)
+    })
+}
+
+/// Whether writing through `component` reaches the value `reference` names.
+///
+/// Both names are read as dotted paths, and they reach the same storage when
+/// one path is a prefix of the other. Subscripts are dropped from both sides: a
+/// write to one element is a write to part of the array, which is what a read
+/// of the array observes.
+fn component_writes_value_named(
+    component: &rumoca_core::ComponentReference,
+    reference: &VarName,
+) -> bool {
+    let read = value_path(reference.as_str());
+    let written = component
+        .parts()
+        .iter()
+        .map(|part| part.ident.as_str())
+        .collect::<Vec<_>>();
+    let shared = read.len().min(written.len());
+    read[..shared] == written[..shared]
+}
+
+/// The dotted path a value name spells, with each segment's subscripts dropped.
+///
+/// A name reaches this analysis as flat text that may carry subscripts inside
+/// it, as in `a[i].b`, so the split has to ignore a dot that sits inside a
+/// subscript.
+fn value_path(text: &str) -> Vec<&str> {
+    let mut path = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (offset, byte) in text.bytes().enumerate() {
+        match byte {
+            b'[' => depth += 1,
+            b']' => depth = depth.saturating_sub(1),
+            b'.' if depth == 0 => {
+                path.push(&text[start..offset]);
+                start = offset + 1;
+            }
+            _ => {}
+        }
+    }
+    path.push(&text[start..]);
+    path.into_iter().map(strip_subscripts).collect()
+}
+
+fn strip_subscripts(segment: &str) -> &str {
+    match segment.find('[') {
+        Some(offset) => &segment[..offset],
+        None => segment,
+    }
+}
+
+/// The value each loop-local prefix definition contributes to the trailing
+/// statement, or nothing when the prefix cannot be folded away.
+///
+/// The whole prefix disappears when this succeeds, so every one of its
+/// definitions needs its own [`liveness::LoopLocalStoreUnobserved`]; a single
+/// name the dataflow answer cannot certify keeps the prefix as it stands. The
+/// witness owns whether the value is observed again; the guards here own
+/// whether the value can be reproduced inside the trailing statement.
+///
+/// The trailing statement is rewritten in one pass, so a read it performs after
+/// writing the name would be replaced with the prefix's value rather than the
+/// one it just wrote. `statements_assign_name` is therefore a refusal: the
+/// substitution has no way to stop at the write.
 fn loop_local_substitutions(
     prefix: &[rumoca_core::Statement],
-    suffix: &[rumoca_core::Statement],
-    back_edges: &[&[rumoca_core::Statement]],
-    nested_body: &[rumoca_core::Statement],
+    exit: &[rumoca_core::Statement],
+    enclosing_bodies: &[&[rumoca_core::Statement]],
+    trailing: &[rumoca_core::Statement],
     outputs: &HashSet<VarName>,
     preserve_shared: bool,
 ) -> Option<HashMap<VarName, Expression>> {
+    let live_on_exit = observed_by_the_caller(outputs);
     let mut substitutions = HashMap::new();
     for (ordinal, statement) in prefix.iter().enumerate() {
         let rumoca_core::Statement::Assignment { comp, value, .. } = statement else {
@@ -328,25 +438,42 @@ fn loop_local_substitutions(
         let [part] = comp.parts() else {
             return None;
         };
-        let target = VarName::new(&part.ident);
-        if !part.subs.is_empty()
-            || outputs.contains(&target)
-            || statements_read_name(suffix, &target)
-            || definition_escapes_back_edge(&prefix[..ordinal], back_edges, &target)
-            || statements_read_nonrewritable_name(nested_body, &target)
-            || statements_partially_assign_name(nested_body, &target)
-            || (preserve_shared
-                && statement_segments_read_count(&[&prefix[ordinal + 1..], nested_body], &target)
-                    > 1
-                && !statements_loop_ranges_read_name(nested_body, &target))
-            || expression_reads_name(value, &target)
-        {
+        if !part.subs.is_empty() {
             return None;
         }
+        let target = VarName::new(&part.ident);
+        // The values of the later prefix definitions are rewritten too, so
+        // their reads of this name are substituted reads like the trailing
+        // statement's and carry the same obligations.
+        let substituted = [&prefix[ordinal + 1..], trailing];
+        let witness = liveness::prove_unobserved_loop_local_store(
+            &target,
+            liveness::LoopLocalStoreRegions {
+                substituted: &substituted,
+                body_prefix: &prefix[..ordinal],
+                enclosing_bodies,
+                exit,
+                live_on_exit: &live_on_exit,
+            },
+        )?;
         let mut rewriter = LocalSubstitution {
             values: &substitutions,
         };
-        substitutions.insert(target, rewriter.rewrite_expression(value));
+        // The expression that actually lands in the trailing statement is the
+        // one already folded through the earlier definitions, so it is the one
+        // whose dependencies have to hold still.
+        let replacement = rewriter.rewrite_expression(value);
+        if statements_assign_name(trailing, &target)
+            || (preserve_shared
+                && statement_segments_read_count(&substituted, &target) > 1
+                && !statements_loop_ranges_read_name(trailing, &target))
+            || expression_reads_name(value, &target)
+            || expression_dependencies_change(&replacement, &prefix[ordinal + 1..])
+            || expression_dependencies_change(&replacement, trailing)
+        {
+            return None;
+        }
+        substitutions.insert(witness.name().clone(), replacement);
     }
     Some(substitutions)
 }
@@ -558,17 +685,29 @@ pub(super) fn expression_reads_name(expression: &Expression, name: &VarName) -> 
 }
 
 fn statements_assign_name(statements: &[rumoca_core::Statement], name: &VarName) -> bool {
+    statements_write_where(statements, &|component| {
+        component_targets_name(component, name)
+    })
+}
+
+/// Whether any statement writes through a component reference `writes` accepts.
+///
+/// The two write questions this module asks differ only in which references
+/// count, so the walk over the statement tree is stated once here.
+fn statements_write_where(
+    statements: &[rumoca_core::Statement],
+    writes: &dyn Fn(&rumoca_core::ComponentReference) -> bool,
+) -> bool {
     statements.iter().any(|statement| match statement {
-        rumoca_core::Statement::Assignment { comp, .. } => component_targets_name(comp, name),
+        rumoca_core::Statement::Assignment { comp, .. } => writes(comp),
         // A multi-output call `(a, b) := f(...)` writes through its receiving
         // list (MLS §12.4.4); missing those writes would let a substitution
         // read a value the call has already replaced.
-        rumoca_core::Statement::FunctionCall { outputs, .. } => outputs
-            .iter()
-            .flatten()
-            .any(|output| component_targets_name(output, name)),
-        rumoca_core::Statement::For { equations, .. } => statements_assign_name(equations, name),
-        rumoca_core::Statement::While { block, .. } => statements_assign_name(&block.stmts, name),
+        rumoca_core::Statement::FunctionCall { outputs, .. } => {
+            outputs.iter().flatten().any(writes)
+        }
+        rumoca_core::Statement::For { equations, .. } => statements_write_where(equations, writes),
+        rumoca_core::Statement::While { block, .. } => statements_write_where(&block.stmts, writes),
         rumoca_core::Statement::If {
             cond_blocks,
             else_block,
@@ -576,14 +715,14 @@ fn statements_assign_name(statements: &[rumoca_core::Statement], name: &VarName)
         } => {
             cond_blocks
                 .iter()
-                .any(|block| statements_assign_name(&block.stmts, name))
+                .any(|block| statements_write_where(&block.stmts, writes))
                 || else_block
                     .as_deref()
-                    .is_some_and(|block| statements_assign_name(block, name))
+                    .is_some_and(|block| statements_write_where(block, writes))
         }
         rumoca_core::Statement::When { blocks, .. } => blocks
             .iter()
-            .any(|block| statements_assign_name(&block.stmts, name)),
+            .any(|block| statements_write_where(&block.stmts, writes)),
         _ => false,
     })
 }

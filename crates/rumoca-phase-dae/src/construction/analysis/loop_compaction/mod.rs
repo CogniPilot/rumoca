@@ -4,8 +4,10 @@ mod dependent_domains;
 /// evidence built from it.
 ///
 /// [`inline_straight_line_scalar_definitions`] deletes a store only while
-/// holding a [`liveness::StoreUnobserved`] for its target; the remaining
-/// syntactic predicates are measured against the same dataflow answer by
+/// holding a [`liveness::StoreUnobserved`] for its target, and the two
+/// loop-local substitution sites drop a definition only while holding a
+/// [`liveness::LoopLocalStoreUnobserved`]; the remaining syntactic predicates
+/// are measured against the same dataflow answer by
 /// [`liveness_differential_tests`].
 mod liveness;
 #[cfg(test)]

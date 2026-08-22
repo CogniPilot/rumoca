@@ -48,9 +48,9 @@
 //! `return` leaves the function and `break` leaves the enclosing loop. Both are
 //! treated as transparent, which over-approximates liveness on the path that
 //! falls through and can under-approximate it on the jump path.
-//! [`prove_unobserved_stores`] therefore refuses to certify anything about a
-//! region containing either, and [`contains_unstructured_jump`] is the test it
-//! uses.
+//! [`prove_unobserved_stores`] and [`prove_unobserved_loop_local_store`]
+//! therefore refuse to certify anything about a region containing either, and
+//! [`contains_unstructured_jump`] is the test they use.
 
 use super::*;
 use std::collections::BTreeSet;
@@ -149,6 +149,149 @@ pub(super) fn prove_unobserved_stores(
         .collect()
 }
 
+/// The regions a store inside a loop body can be observed from.
+///
+/// Every field is one of the store's successors, and the prover joins them the
+/// way control flow joins them. Naming them separately is what keeps the join
+/// right: `exit` is reached by falling out of the loop and `body_prefix` by
+/// going around its back edge, so the two are *alternatives* and neither may be
+/// allowed to hide a read in the other.
+pub(super) struct LoopLocalStoreRegions<'a> {
+    /// The segments whose reads of the name the rewrite replaces with the
+    /// stored expression, in the order they run.
+    pub(super) substituted: &'a [&'a [rumoca_core::Statement]],
+    /// The statements of this loop's own body that run before the store.
+    ///
+    /// The back edge re-enters the body at its first statement, and the store
+    /// is re-executed when control reaches it again, so these statements are
+    /// exactly the ones that can observe what the previous iteration stored.
+    pub(super) body_prefix: &'a [rumoca_core::Statement],
+    /// The bodies of the enclosing loops, each re-entered on its own back edge.
+    ///
+    /// An enclosing loop re-enters after this loop has been left, without
+    /// re-running this body's prefix, so each body is a path of its own rather
+    /// than a continuation of the previous one.
+    pub(super) enclosing_bodies: &'a [&'a [rumoca_core::Statement]],
+    /// What runs once this loop is left, through to the end of the function.
+    pub(super) exit: &'a [rumoca_core::Statement],
+    /// The names the function's caller observes once the body returns.
+    pub(super) live_on_exit: &'a LiveSet,
+}
+
+/// Evidence that no execution observes the value a store inside a loop body
+/// leaves in one name.
+///
+/// The field and the constructor are private, so a value of this type exists
+/// only where [`prove_unobserved_loop_local_store`] discharged the obligations
+/// it states. The two loop-local substitution sites have no path that drops a
+/// definition without one.
+///
+/// # Theorem (folding a witnessed definition forward preserves meaning)
+///
+/// Let `store` be an assignment `name := e` at some position in the body of a
+/// `for` loop, with `body_prefix` the body statements before it, `substituted`
+/// the segments the rewrite may edit, `enclosing_bodies` the bodies of the
+/// loops enclosing this one, `exit` everything that runs once this loop is
+/// left, and `live_on_exit` the names the caller observes. Suppose
+/// `prove_unobserved_loop_local_store` returns evidence for `name`. Let the
+/// rewrite delete `store` and substitute `e` for every unsubscripted read of
+/// `name` in `substituted`.
+///
+/// Assume the value-reproduction side conditions the sites establish: `e` does
+/// not read `name`; no statement of `substituted` that can run before a
+/// substituted read writes `name`; no statement of `substituted` writes a name
+/// `e` reads; and `e` is pure (MLS §12.3), because a segment holding no read of
+/// `name` drops `e` instead of reproducing it. Then, from any initial
+/// environment, the loop and its rewrite terminate together, they agree on
+/// every name other than `name` at every point outside the loop body, and no
+/// execution reaching `exit`, a back edge, or the function's return observes
+/// the value `store` left.
+///
+/// Termination is carried as a hypothesis rather than claimed: the rewrite
+/// changes no guard and no domain, so neither program can diverge where the
+/// other halts.
+pub(super) struct LoopLocalStoreUnobserved {
+    name: VarName,
+}
+
+impl LoopLocalStoreUnobserved {
+    /// The name this evidence is about.
+    pub(super) fn name(&self) -> &VarName {
+        &self.name
+    }
+}
+
+/// Prove that nothing observes the value a store inside a loop body leaves in
+/// `name`, given the regions control can reach once the store has run.
+///
+/// Four obligations are established, all positively:
+///
+/// * every path out of every region is one this module models, so the dataflow
+///   answer describes the program's real successors;
+/// * every read of the name inside the substituted segments is a plain
+///   unsubscripted read, which is what the substitution replaces with the
+///   stored expression;
+/// * no execution of the loop-exit path observes the value, counting the
+///   caller's view of the function's outputs as an observation at the end of
+///   that path; and
+/// * no execution of any back edge observes the value.
+///
+/// The back edges are joined by [`live_in_alternatives`] rather than composed
+/// in sequence. Sequencing them would let the nearest body's write settle the
+/// value an enclosing body reads, and the enclosing loop re-enters without
+/// re-running the nearer body, so that write never happens on the path in
+/// question.
+///
+/// The back-edge query uses an empty exit set rather than the exit path's
+/// answer, and that is enough for both directions. It loses no precision
+/// because the exit obligation is discharged first, so `name` is absent from
+/// the exit answer, and this module's transfer functions move each name through
+/// a statement independently of the others. It loses no soundness because a
+/// path that goes around a back edge runs the statements between the store and
+/// the loop head first, and those statements are the head of the exit path: a
+/// write there settles the value on both paths at once, and where it does not,
+/// the exit obligation has already asked about everything the back-edge path
+/// can still reach.
+pub(super) fn prove_unobserved_loop_local_store(
+    name: &VarName,
+    regions: LoopLocalStoreRegions<'_>,
+) -> Option<LoopLocalStoreUnobserved> {
+    // Destructured field by field, with no `..` rest pattern, so a region added
+    // to the store's successors stops compiling here rather than going unasked.
+    let LoopLocalStoreRegions {
+        substituted,
+        body_prefix,
+        enclosing_bodies,
+        exit,
+        live_on_exit,
+    } = regions;
+    let control_flow_is_modeled = !contains_unstructured_jump(body_prefix)
+        && !contains_unstructured_jump(exit)
+        && !substituted
+            .iter()
+            .chain(enclosing_bodies.iter())
+            .any(|segment| contains_unstructured_jump(segment));
+    if !control_flow_is_modeled {
+        return None;
+    }
+    let every_read_is_substitutable = !substituted
+        .iter()
+        .any(|segment| statements_read_nonrewritable_name(segment, name));
+    if !every_read_is_substitutable {
+        return None;
+    }
+    if live_in(exit, live_on_exit).contains(name) {
+        return None;
+    }
+    let mut back_edges = Vec::with_capacity(enclosing_bodies.len() + 1);
+    back_edges.push(body_prefix);
+    back_edges.extend_from_slice(enclosing_bodies);
+    if live_in_alternatives(&back_edges, &LiveSet::new()).contains(name) {
+        return None;
+    }
+    Some(LoopLocalStoreUnobserved { name: name.clone() })
+}
+
 /// Names live on entry to `statements`, given the names live on exit.
 pub(super) fn live_in(statements: &[rumoca_core::Statement], live_out: &LiveSet) -> LiveSet {
     let mut live = live_out.clone();
@@ -182,9 +325,10 @@ pub(super) fn live_in_concatenation(
 /// is no path, so nothing is live.
 ///
 /// `live_in_for` and `live_in_while` perform this join inline at the loop head.
-/// Naming it separately lets the differential measurements compare the join
-/// against the sequence composition and against execution over the corpus.
-#[cfg(test)]
+/// [`prove_unobserved_loop_local_store`] performs it over the back edges a
+/// store inside a loop body can be re-entered by, and naming it separately also
+/// lets the differential measurements compare the join against the sequence
+/// composition and against execution over the corpus.
 pub(super) fn live_in_alternatives(
     segments: &[&[rumoca_core::Statement]],
     live_out: &LiveSet,

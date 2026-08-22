@@ -12,6 +12,7 @@
 | `cargo xtask verify workspace` | Workspace build/tests |
 | `cargo xtask verify docs` | Documentation build (rustdoc + mdBook books) |
 | `cargo xtask verify msl-parity` | MSL parity gate on its own |
+| `cargo xtask verify corpus-pin` | Pinned real-model corpus: the RDD2 flight stack and the MSL canary roster |
 | `cargo xtask verify template-runtimes` | Opt-in execution tests for generated target code |
 
 Editor surfaces have their own gates:
@@ -24,6 +25,35 @@ cargo xtask playground test  # wasm build + browser smoke tests
 `verify quick`/`full` include the coverage, VS Code, and wasm gates, so
 they need the same prerequisites CI installs: `cargo-llvm-cov`, Node/npm,
 and the wasm Rust target/tooling.
+
+### The pinned corpus
+
+`verify corpus-pin` compiles the models in
+`infra/verification/corpus-pin.json` and compares each one against the
+behavior recorded there: the RDD2/Cubs2 flight stack out of the out-of-tree
+`modelica_models` checkout, and the twenty-model MSL canary roster in
+`infra/verification/msl-canary-20.json`. Every deviation is red in both
+directions: a row pinned to compile that stops compiling, and equally a row
+pinned to be refused that starts compiling, because the manifest is the
+reviewed record of what the compiler accepts.
+
+The flight corpus is out of tree, so its path never appears in this
+repository. Give it at run time, either way:
+
+```bash
+cargo xtask verify corpus-pin --models-root /path/to/modelica_models
+# or, once per checkout:
+mkdir -p target/verification
+printf '{"models_root": "/path/to/modelica_models"}\n' > target/verification/corpus-config.json
+```
+
+A missing corpus is a hard failure with the headline
+`corpus unmeasured: the pinned corpus is not on this machine`, never a skip:
+a green run that compared nothing would report the corpus as correct.
+
+To move a pin, run with `--record`, diff the proposal it writes under
+`target/verification/` against the manifest, and copy across only what you
+have adjudicated. The gate never edits its own expectations.
 
 ## During Development
 

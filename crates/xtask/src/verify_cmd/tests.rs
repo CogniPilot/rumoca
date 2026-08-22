@@ -55,6 +55,7 @@ fn quick_suite_runs_format_tests_architecture_and_msl_parity() {
         vec![
             vec!["verify", "lint"],
             vec!["verify", "msl-parity", "--no-remote-quality-baseline"],
+            vec!["verify", "corpus-pin"],
             vec!["verify", "architecture"],
             vec!["verify", "workspace"],
         ]

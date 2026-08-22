@@ -440,3 +440,355 @@ fn a_subscripted_callable_reference_keeps_the_store() {
         "the callable's subscript is a read of `t`"
     );
 }
+
+/// ```text
+/// for i loop
+///   t := 1.0;
+///   for j loop
+///     y[j] := t;      // reads what the previous inner iteration left
+///     t := q[j];
+///   end for;
+/// end for;
+/// ```
+///
+/// The trailing statement is rewritten in a single pass that replaces every
+/// unsubscripted read of `t`, including the one the inner loop performs after
+/// its own write to `t`. Folding `t := 1.0` into it would therefore make every
+/// iteration read `1.0` where only the first one does.
+#[test]
+fn a_trailing_statement_that_rewrites_the_local_keeps_the_prefix_definition() {
+    let inner = for_loop(
+        "j",
+        2,
+        vec![
+            rumoca_core::Statement::Assignment {
+                comp: element("y", "j", 5),
+                value: var("t"),
+                span: span(),
+            },
+            assign("t", indexed("q", "j")),
+        ],
+    );
+    let statements = vec![for_loop("i", 2, vec![assign("t", real(1.0)), inner])];
+    let compacted = inline_loop_local_prefixes(&statements, &names(&["t"]), &names(&["y"]));
+    assert_eq!(
+        loop_body(&compacted).len(),
+        2,
+        "the definition the inner loop's first iteration reads was folded away: {}",
+        super::liveness_corpus::render(&compacted)
+    );
+}
+
+/// ```text
+/// for i loop
+///   t := q;
+///   if c then
+///     q := 3.0;
+///     y := t;         // must still observe the value `q` held on entry
+///   end if;
+/// end for;
+/// ```
+///
+/// Substituting `q` for `t` inside the trailing statement moves the read of `q`
+/// past the write the same statement performs (MLS §11.1), so `y` would take
+/// the new value instead of the one the definition captured.
+#[test]
+fn a_trailing_statement_that_rewrites_a_dependency_keeps_the_prefix_definition() {
+    let trailing = rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: var("c"),
+            stmts: vec![assign("q", real(3.0)), assign("y", var("t"))],
+        }],
+        else_block: None,
+        span: span(),
+    };
+    let statements = vec![for_loop("i", 2, vec![assign("t", var("q")), trailing])];
+    let compacted = inline_loop_local_prefixes(&statements, &names(&["t", "q"]), &names(&["y"]));
+    assert_eq!(
+        loop_body(&compacted).len(),
+        2,
+        "the definition that captured the earlier `q` was folded away: {}",
+        super::liveness_corpus::render(&compacted)
+    );
+}
+
+/// ```text
+/// for i loop o := r[i]; z[i] := i; end for;
+/// <exit>
+/// ```
+///
+/// One loop whose body defines `o` and one statement after it. The second body
+/// statement keeps the body non-empty, so a folded definition stays folded
+/// rather than reverting with the loop.
+fn loop_defining_o(exit: rumoca_core::Statement) -> Vec<rumoca_core::Statement> {
+    vec![
+        for_loop(
+            "i",
+            4,
+            vec![
+                assign("o", indexed("r", "i")),
+                rumoca_core::Statement::Assignment {
+                    comp: element("z", "i", 7),
+                    value: var("i"),
+                    span: span(),
+                },
+            ],
+        ),
+        exit,
+    ]
+}
+
+/// An output the exit path definitely rewrites before the function returns is
+/// not observed at the store under proof, so the witness certifies it where a
+/// membership test in the output set could only refuse.
+#[test]
+fn an_output_the_exit_path_definitely_rewrites_is_still_folded() {
+    let statements = loop_defining_o(assign("o", real(0.0)));
+    let compacted = inline_loop_local_prefixes(&statements, &names(&["o"]), &names(&["o"]));
+    assert_eq!(
+        loop_body(&compacted).len(),
+        1,
+        "the exit path settles `o`, so the loop's store is not observed: {}",
+        super::liveness_corpus::render(&compacted)
+    );
+}
+
+/// The same loop, with the output read after it instead of rewritten, keeps its
+/// store: the caller observes what the last iteration left.
+#[test]
+fn an_output_the_exit_path_reads_keeps_its_store() {
+    let statements = loop_defining_o(assign("last", var("o")));
+    let compacted = inline_loop_local_prefixes(&statements, &names(&["o"]), &names(&["o"]));
+    assert_eq!(
+        loop_body(&compacted).len(),
+        2,
+        "the store the exit path reads was folded away: {}",
+        super::liveness_corpus::render(&compacted)
+    );
+}
+
+/// The same loop again, with nothing after it at all: the caller still observes
+/// the output, so the store stays.
+#[test]
+fn an_output_no_statement_rewrites_keeps_its_store() {
+    let statements = loop_defining_o(assign("last", real(0.0)));
+    let compacted = inline_loop_local_prefixes(&statements, &names(&["o"]), &names(&["o"]));
+    assert_eq!(
+        loop_body(&compacted).len(),
+        2,
+        "the caller observes `o`, so the loop's store is not dead: {}",
+        super::liveness_corpus::render(&compacted)
+    );
+}
+
+/// The same loop with `o` a plain local rather than an output. Nothing but the
+/// loop-exit path can object, so this is the shape that holds the exit-path
+/// obligation on its own.
+#[test]
+fn a_local_the_exit_path_reads_keeps_its_store() {
+    let statements = loop_defining_o(assign("last", var("o")));
+    let compacted = inline_loop_local_prefixes(&statements, &names(&["o"]), &names(&["last"]));
+    assert_eq!(
+        loop_body(&compacted).len(),
+        2,
+        "the store the exit path reads was folded away: {}",
+        super::liveness_corpus::render(&compacted)
+    );
+}
+
+/// And with nothing after the loop reading it, the same local is folded away.
+#[test]
+fn a_local_no_later_statement_reads_is_folded() {
+    let statements = loop_defining_o(assign("last", real(0.0)));
+    let compacted = inline_loop_local_prefixes(&statements, &names(&["o"]), &names(&["last"]));
+    assert_eq!(
+        loop_body(&compacted).len(),
+        1,
+        "nothing observes `o`, so its store had no reason to stay: {}",
+        super::liveness_corpus::render(&compacted)
+    );
+}
+
+/// `for i loop t := q; y[i] := t[i]; end for;`
+///
+/// Nothing observes `t` outside the loop, but the read inside it is subscripted
+/// and the substitution replaces only a plain unsubscripted read. Folding the
+/// definition away would leave that read with no definition at all.
+#[test]
+fn a_subscripted_read_keeps_the_prefix_definition() {
+    let statements = vec![for_loop(
+        "i",
+        3,
+        vec![
+            assign("t", var("q")),
+            rumoca_core::Statement::Assignment {
+                comp: element("y", "i", 14),
+                value: indexed("t", "i"),
+                span: span(),
+            },
+        ],
+    )];
+    let compacted = inline_loop_local_prefixes(&statements, &names(&["t"]), &names(&["y"]));
+    assert_eq!(
+        loop_body(&compacted).len(),
+        2,
+        "the definition feeding a read the substitution cannot rewrite was folded away: {}",
+        super::liveness_corpus::render(&compacted)
+    );
+}
+
+fn field_read(record: &str, field: &str) -> Expression {
+    Expression::VarRef {
+        name: Reference::new(format!("{record}.{field}")),
+        subscripts: Vec::new(),
+        span: span(),
+    }
+}
+
+fn field_target(record: &str, field: &str) -> ComponentReference {
+    ComponentReference::construct(
+        false,
+        span(),
+        vec![
+            rumoca_core::ComponentRefPart {
+                ident: record.to_string(),
+                span: span(),
+                subs: Vec::new(),
+                def_id: rumoca_core::DefId::new(11),
+            },
+            rumoca_core::ComponentRefPart {
+                ident: field.to_string(),
+                span: span(),
+                subs: Vec::new(),
+                def_id: rumoca_core::DefId::new(12),
+            },
+        ],
+    )
+    .expect("test component reference has exact identity")
+}
+
+/// ```text
+/// for i loop
+///   w := t.f;
+///   t := r[i];      // defines every field beneath `t`
+///   y[i] := w;
+/// end for;
+/// ```
+///
+/// Writing the whole record defines `t.f` with it, so folding `w := t.f` into
+/// the trailing statement would move the field read past the write that
+/// replaces it (MLS §11.1). Nothing assigns the name `t.f`, so only a
+/// dependency test that reads the two names as nested paths can see it.
+#[test]
+fn a_whole_record_write_moves_a_later_field_read() {
+    let statements = vec![for_loop(
+        "i",
+        3,
+        vec![
+            assign("w", field_read("t", "f")),
+            assign("t", indexed("r", "i")),
+            rumoca_core::Statement::Assignment {
+                comp: element("y", "i", 9),
+                value: var("w"),
+                span: span(),
+            },
+        ],
+    )];
+    let compacted = inline_loop_local_prefixes(&statements, &names(&["t", "w"]), &names(&["y"]));
+    assert_eq!(
+        loop_body(&compacted).len(),
+        3,
+        "the field read was moved past the write that replaces it: {}",
+        super::liveness_corpus::render(&compacted)
+    );
+}
+
+/// ```text
+/// for i loop
+///   w := t;
+///   t.f := q[i];    // redefines part of `t`
+///   y[i] := w;
+/// end for;
+/// ```
+///
+/// The same question from the other side: the write names a field and the read
+/// names the whole record. Nothing assigns the name `t`, so a scan that
+/// compares the two names for equality reports no change and the substituted
+/// read picks up the new field.
+#[test]
+fn a_field_write_moves_a_later_whole_record_read() {
+    let statements = vec![for_loop(
+        "i",
+        3,
+        vec![
+            assign("w", var("t")),
+            rumoca_core::Statement::Assignment {
+                comp: field_target("t", "f"),
+                value: indexed("q", "i"),
+                span: span(),
+            },
+            rumoca_core::Statement::Assignment {
+                comp: element("y", "i", 10),
+                value: var("w"),
+                span: span(),
+            },
+        ],
+    )];
+    let compacted = inline_loop_local_prefixes(&statements, &names(&["t", "w"]), &names(&["y"]));
+    assert_eq!(
+        loop_body(&compacted).len(),
+        3,
+        "the record read was moved past the field write: {}",
+        super::liveness_corpus::render(&compacted)
+    );
+}
+
+/// ```text
+/// for k loop
+///   w := t;               // reads what the previous OUTER iteration left
+///   for i loop
+///     t := r[i];
+///     y[i] := t;
+///   end for;
+/// end for;
+/// last := w;
+/// ```
+///
+/// The inner loop's prefix definition is dead inside its own body and dead on
+/// the path out of it, but the outer loop re-enters at `w := t` without
+/// re-running the inner body. Only the enclosing body, asked as a re-entry path
+/// of its own, sees that read.
+#[test]
+fn an_enclosing_back_edge_keeps_an_inner_prefix_definition() {
+    let inner = for_loop(
+        "i",
+        3,
+        vec![
+            assign("t", indexed("r", "i")),
+            rumoca_core::Statement::Assignment {
+                comp: element("y", "i", 13),
+                value: var("t"),
+                span: span(),
+            },
+        ],
+    );
+    let statements = vec![
+        for_loop("k", 2, vec![assign("w", var("t")), inner]),
+        assign("last", var("w")),
+    ];
+    let compacted =
+        inline_loop_local_prefixes(&statements, &names(&["t", "w"]), &names(&["y", "last"]));
+    let outer = loop_body(&compacted);
+    let rumoca_core::Statement::For { equations, .. } = &outer[1] else {
+        panic!(
+            "the inner loop was rewritten away: {}",
+            super::liveness_corpus::render(&compacted)
+        );
+    };
+    assert_eq!(
+        equations.len(),
+        2,
+        "the definition the outer back edge reads was folded away: {}",
+        super::liveness_corpus::render(&compacted)
+    );
+}

@@ -79,7 +79,7 @@ const REPORTED_EXAMPLES: usize = 6;
 /// carries no seed: no program the generator currently draws reaches it, so
 /// [`outer_loop_distribution_reorders_writes_to_a_constant_coordinate`] is the
 /// only thing holding it.
-const OPEN_PASS_DEFECT_SEEDS: [u64; 6] = [2980, 2988, 11994, 12049, 16285, 23943];
+const OPEN_PASS_DEFECT_SEEDS: [u64; 0] = [];
 
 /// What the theorem requires of one program.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -792,30 +792,25 @@ fn diverging_entries(
 /// to `b`, so the substituted read observes the new `b` instead of the one the
 /// definition read (MLS §11.1 orders the statements of an algorithm section).
 ///
-/// `loop_local_substitutions` inlines a loop body's scalar prefix into the
-/// body's trailing statement without asking whether the value's dependencies
-/// are written again inside that trailing statement. Its two sibling
-/// substitution paths, `inline_dominated_loop_locals` and
-/// `inline_straight_line_scalar_definitions`, both ask exactly that through
-/// `expression_dependencies_change`.
-///
-/// This test states the defect rather than the theorem, so fixing the pass
-/// requires deleting it along with the matching entries in
-/// [`OPEN_PASS_DEFECT_SEEDS`].
+/// `loop_local_substitutions` may fold a loop body's scalar prefix into the
+/// body's trailing statement only when the value's dependencies hold still
+/// across that statement. Here the trailing loop rewrites the dependency, so
+/// the loop-local witness refuses the fold and the definition survives; the
+/// two executions agree on every output.
 #[test]
 fn a_loop_local_prefix_substitution_moves_a_read_past_a_later_write() {
     let body = loop_local_prefix_defect();
     let compacted = compact(&body).expect("the pass accepts the shape");
-    assert_ne!(
+    assert_eq!(
         compacted,
         body,
-        "the pass no longer rewrites the shape: {}",
+        "the fold must be refused when the trailing statement rewrites a dependency: {}",
         render(&body)
     );
     assert_eq!(
         diverging_entries(&body, &compacted),
-        ENTRY_VALUES.len(),
-        "the substitution no longer changes the output: {} became {}",
+        0,
+        "outputs must be preserved: {} became {}",
         render(&body),
         render(&compacted)
     );
@@ -857,27 +852,24 @@ fn loop_local_target_rewrite_defect() -> Vec<rumoca_core::Statement> {
 ///
 /// `loop_local_substitutions` asks `statements_partially_assign_name` whether
 /// the trailing statement writes part of the target, and never asks whether it
-/// writes the whole of it. Its sibling `inline_dominated_loop_locals` asks
-/// exactly that through `statements_assign_name`, and refuses this very pair of
-/// statements when it meets them as a straight-line suffix.
-///
-/// This test states the defect rather than the theorem, so fixing the pass
-/// requires deleting it along with the matching entries in
-/// [`OPEN_PASS_DEFECT_SEEDS`].
+/// writes the whole of it. The loop-local witness treats the trailing
+/// statement's write of the target as a positive obligation it cannot meet,
+/// so the fold is refused, the definition survives, and the two executions
+/// agree on every output.
 #[test]
 fn a_loop_local_prefix_substitution_ignores_a_rewrite_of_its_target() {
     let body = loop_local_target_rewrite_defect();
     let compacted = compact(&body).expect("the pass accepts the shape");
-    assert_ne!(
+    assert_eq!(
         compacted,
         body,
-        "the pass no longer rewrites the shape: {}",
+        "the fold must be refused when the trailing statement writes the target: {}",
         render(&body)
     );
     assert_eq!(
         diverging_entries(&body, &compacted),
-        ENTRY_VALUES.len(),
-        "the substitution no longer changes the output: {} became {}",
+        0,
+        "outputs must be preserved: {} became {}",
         render(&body),
         render(&compacted)
     );

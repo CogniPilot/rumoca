@@ -319,7 +319,8 @@ fn segment_sequence_composition_against_liveness() {
 
 /// Alternative composition: the several loop bodies a definition can be
 /// re-entered by are competing successors, which is the composition
-/// `definition_escapes_back_edge` performs by asking each segment separately.
+/// [`liveness::prove_unobserved_loop_local_store`] performs by joining the back
+/// edges with [`liveness::live_in_alternatives`].
 ///
 /// Execution pins the join in both directions, and the join is asserted to
 /// contain the sequence composition of the same segments, so treating
@@ -365,7 +366,7 @@ fn segment_alternative_composition_against_liveness() {
             }
         }
     });
-    divergence.report("definition_escapes_back_edge composition (alternatives)");
+    divergence.report("back-edge composition (alternatives)");
     sequenced_predicate
         .report("statement_segments_read_incoming_name over alternative re-entry segments");
     println!(
@@ -775,4 +776,362 @@ fn witness_query(
         witnessed: true,
         beyond_the_predicate: !predicate_allowed,
     }
+}
+
+/// One region the two loop-local substitution sites build around a definition.
+///
+/// A definition inside a loop body is followed by the segments the rewrite
+/// substitutes into, and then by two competing successors: the loop-exit edge
+/// into everything that runs once the loop is left, and the back edges into
+/// this body's prefix and into each enclosing body. `live_on_exit` is what the
+/// caller reads once the exit path finishes.
+struct LoopLocalSample<'a> {
+    substituted: &'a [rumoca_core::Statement],
+    body_prefix: &'a [rumoca_core::Statement],
+    enclosing_bodies: Vec<&'a [rumoca_core::Statement]>,
+    exit: &'a [rumoca_core::Statement],
+    live_on_exit: LiveSet,
+}
+
+/// Enumerate those regions from the same grammar as the programs.
+///
+/// Every corpus composite serves as an exit path and every corpus body as a
+/// re-entry segment, in both re-entry roles: once as this body's own prefix and
+/// once as an enclosing body, the second time with a name the caller observes.
+///
+/// The substituted segment is drawn from the same grammar, which builds only
+/// unsubscripted reads, so it discharges the rewritability obligation on every
+/// sample here; [`the_loop_local_witness_refuses_a_read_it_cannot_rewrite`]
+/// covers the read this grammar cannot express.
+fn for_each_loop_local_region(visit: &mut dyn FnMut(&LoopLocalSample<'_>)) {
+    let observed_by_the_caller: LiveSet = std::iter::once(VarName::new("a")).collect();
+    for_each_segment_pair(&mut |composite, body| {
+        visit(&LoopLocalSample {
+            substituted: body,
+            body_prefix: body,
+            enclosing_bodies: Vec::new(),
+            exit: composite,
+            live_on_exit: LiveSet::new(),
+        });
+        visit(&LoopLocalSample {
+            substituted: body,
+            body_prefix: &[],
+            enclosing_bodies: vec![body],
+            exit: composite,
+            live_on_exit: observed_by_the_caller.clone(),
+        });
+    });
+}
+
+/// The composition the witness retired at both loop-local sites: membership in
+/// the output set, `statements_read_name` over the exit path, and
+/// `statements_read_incoming_name` asked of each back edge separately.
+fn retired_loop_local_guards_allow(sample: &LoopLocalSample<'_>, name: &VarName) -> bool {
+    !sample.live_on_exit.contains(name)
+        && !statements_read_name(sample.exit, name)
+        && !std::iter::once(sample.body_prefix)
+            .chain(sample.enclosing_bodies.iter().copied())
+            .any(|segment| statements_read_incoming_name(segment, name))
+        && !statements_read_nonrewritable_name(sample.substituted, name)
+}
+
+fn loop_local_evidence(
+    sample: &LoopLocalSample<'_>,
+    name: &VarName,
+) -> Option<liveness::LoopLocalStoreUnobserved> {
+    let substituted = [sample.substituted];
+    liveness::prove_unobserved_loop_local_store(
+        name,
+        liveness::LoopLocalStoreRegions {
+            substituted: &substituted,
+            body_prefix: sample.body_prefix,
+            enclosing_bodies: &sample.enclosing_bodies,
+            exit: sample.exit,
+            live_on_exit: &sample.live_on_exit,
+        },
+    )
+}
+
+/// A one-line rendering of a region, so a reported disagreement names it.
+fn render_loop_local_region(sample: &LoopLocalSample<'_>) -> String {
+    let enclosing = sample
+        .enclosing_bodies
+        .iter()
+        .map(|segment| render(segment))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let observed = sample
+        .live_on_exit
+        .iter()
+        .map(|name| name.as_str().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "prefix [{}] substituted [{}] exit [{}] enclosing [{enclosing}] caller reads [{observed}]",
+        render(sample.body_prefix),
+        render(sample.substituted),
+        render(sample.exit),
+    )
+}
+
+/// The evidence the two loop-local substitution sites require, measured against
+/// both other answers over the whole corpus of regions.
+///
+/// Two properties matter and are asserted here. No evidence is ever issued for
+/// a value some execution observes, on the exit path or on any back edge, which
+/// is the theorem's own conclusion checked by running the program. And the
+/// evidence is never withheld from a name the retired guards would have let the
+/// sites fold, so replacing them loses no substitution this grammar can
+/// express.
+///
+/// The reverse direction is a gain and is counted, not bounded. Three classes
+/// produce it, each one a place where the retired guard asked a coarser
+/// question than liveness:
+///
+/// * an output the exit path definitely rewrites before the function returns,
+///   which a membership test in the output set could only refuse;
+/// * an exit path that definitely overwrites the value before every read of it,
+///   or that reads it only through a `for` binder shadowing the name, which
+///   `statements_read_name` counts as a read either way; and
+/// * a back edge whose `while` body definitely overwrites the value before
+///   reading it, which `statements_read_incoming_name` routes through its
+///   catch-all arm and reports as a read.
+#[test]
+fn the_loop_local_witness_is_sound_and_loses_nothing_over_the_corpus() {
+    let names = value_names();
+    let mut regions = 0usize;
+    let mut witnessed = 0usize;
+    let mut newly_foldable = 0usize;
+    for_each_loop_local_region(&mut |sample| {
+        regions += 1;
+        let observed_on_exit =
+            liveness_corpus::observed_incoming_reads_before_exit(sample.exit, &sample.live_on_exit);
+        let mut observed_on_a_back_edge =
+            liveness_corpus::observed_incoming_reads(sample.body_prefix);
+        for segment in &sample.enclosing_bodies {
+            observed_on_a_back_edge.extend(liveness_corpus::observed_incoming_reads(segment));
+        }
+        for name in &names {
+            let retired_allowed = retired_loop_local_guards_allow(sample, name);
+            let Some(evidence) = loop_local_evidence(sample, name) else {
+                assert!(
+                    !retired_allowed,
+                    "no evidence for `{}`, which the retired guards allowed in: {}",
+                    name.as_str(),
+                    render_loop_local_region(sample)
+                );
+                continue;
+            };
+            assert_eq!(
+                evidence.name(),
+                name,
+                "the evidence must name the value it is about"
+            );
+            assert!(
+                !observed_on_exit.contains(name),
+                "evidence was issued for `{}`, which the exit path observes in: {}",
+                name.as_str(),
+                render_loop_local_region(sample)
+            );
+            assert!(
+                !observed_on_a_back_edge.contains(name),
+                "evidence was issued for `{}`, which a back edge observes in: {}",
+                name.as_str(),
+                render_loop_local_region(sample)
+            );
+            witnessed += 1;
+            newly_foldable += usize::from(!retired_allowed);
+        }
+    });
+    println!(
+        "checked {regions} loop-local regions: {witnessed} witnessed definitions, {newly_foldable} of them beyond the retired guards"
+    );
+    assert!(
+        regions > 90_000,
+        "the region corpus shrank to {regions} samples"
+    );
+    assert!(witnessed > 0, "the corpus proved nothing foldable");
+    assert!(
+        newly_foldable > 0,
+        "the corpus must contain a definition only the dataflow answer proves unobserved"
+    );
+}
+
+fn quiet_sample<'a>(exit: &'a [rumoca_core::Statement]) -> LoopLocalSample<'a> {
+    LoopLocalSample {
+        substituted: &[],
+        body_prefix: &[],
+        enclosing_bodies: Vec::new(),
+        exit,
+        live_on_exit: LiveSet::new(),
+    }
+}
+
+/// `break` and `return` leave a region along an edge this dataflow does not
+/// model, so no evidence is issued about a region containing either, whichever
+/// region it sits in.
+#[test]
+fn the_loop_local_witness_refuses_an_unstructured_jump() {
+    let name = VarName::new("a");
+    let quiet = vec![assign("c", &[])];
+    assert!(
+        loop_local_evidence(&quiet_sample(&quiet), &name).is_some(),
+        "nothing observes `a` in a region that does not mention it"
+    );
+    for jump in [
+        rumoca_core::Statement::Break { span: span() },
+        rumoca_core::Statement::Return { span: span() },
+    ] {
+        let with_jump = vec![assign("c", &[]), jump];
+        let positions = [
+            LoopLocalSample {
+                substituted: &with_jump,
+                ..quiet_sample(&quiet)
+            },
+            LoopLocalSample {
+                body_prefix: &with_jump,
+                ..quiet_sample(&quiet)
+            },
+            LoopLocalSample {
+                enclosing_bodies: vec![&with_jump],
+                ..quiet_sample(&quiet)
+            },
+            quiet_sample(&with_jump),
+        ];
+        for sample in &positions {
+            assert!(
+                loop_local_evidence(sample, &name).is_none(),
+                "a region that jumps out is outside the modeled control flow: {}",
+                render_loop_local_region(sample)
+            );
+        }
+    }
+}
+
+/// The back edges are alternative successors, so the witness joins them rather
+/// than composing them in sequence. This is the shape from
+/// [`sequencing_two_enclosing_back_edges_hides_the_outer_read`], asked of the
+/// prover the substitution sites actually consult.
+#[test]
+fn the_loop_local_witness_joins_the_back_edges_rather_than_sequencing_them() {
+    let inner = for_loop("n", &[], vec![assign("acc", &[])]);
+    let middle_body = vec![assign("acc", &[]), inner];
+    let outer_body = vec![
+        assign("w", &["acc"]),
+        for_loop("m", &[], middle_body.clone()),
+    ];
+    let quiet: Vec<rumoca_core::Statement> = Vec::new();
+    let sample = LoopLocalSample {
+        enclosing_bodies: vec![&middle_body, &outer_body],
+        ..quiet_sample(&quiet)
+    };
+    let name = VarName::new("acc");
+    assert!(
+        !statement_segments_read_incoming_name(&[&middle_body, &outer_body], &name),
+        "the sequence operator lets the middle body's write hide the outer read"
+    );
+    assert!(
+        loop_local_evidence(&sample, &name).is_none(),
+        "the outer body reads `acc` on its own re-entry path, so nothing is proven"
+    );
+}
+
+/// The body's own prefix is a back edge like any other, and the region names it
+/// as a required field for that reason: leaving it out is the difference
+/// between refusing a loop-carried definition and folding it away.
+#[test]
+fn the_loop_local_witness_asks_this_body_prefix_too() {
+    let prefix = vec![assign("w", &["acc"])];
+    let quiet: Vec<rumoca_core::Statement> = Vec::new();
+    let name = VarName::new("acc");
+    assert!(
+        loop_local_evidence(
+            &LoopLocalSample {
+                body_prefix: &prefix,
+                ..quiet_sample(&quiet)
+            },
+            &name,
+        )
+        .is_none(),
+        "the body prefix reads `acc` when the back edge re-enters it"
+    );
+    assert!(
+        loop_local_evidence(&quiet_sample(&quiet), &name).is_some(),
+        "with the prefix left out of the region there is nothing left to object"
+    );
+}
+
+/// The substitution replaces a plain unsubscripted read; a read it cannot
+/// rewrite would be left with no definition once the store is dropped.
+#[test]
+fn the_loop_local_witness_refuses_a_read_it_cannot_rewrite() {
+    let name = VarName::new("a");
+    let quiet: Vec<rumoca_core::Statement> = Vec::new();
+    let subscripted = vec![rumoca_core::Statement::Assignment {
+        comp: nested_component("c", "g"),
+        value: Expression::VarRef {
+            name: Reference::new("a"),
+            subscripts: vec![Subscript::Expr {
+                expr: Box::new(Expression::Literal {
+                    value: rumoca_core::Literal::Integer(1),
+                    span: span(),
+                }),
+                span: span(),
+            }],
+            span: span(),
+        },
+        span: span(),
+    }];
+    assert!(
+        loop_local_evidence(
+            &LoopLocalSample {
+                substituted: &subscripted,
+                ..quiet_sample(&quiet)
+            },
+            &name,
+        )
+        .is_none(),
+        "`a[1]` is not a read the substitution can replace"
+    );
+}
+
+/// A function's outputs are its result (MLS §12.4.1), so the caller reads them
+/// past the last statement of the body. The witness counts that read, and
+/// discharges it where the exit path settles the output first.
+#[test]
+fn the_loop_local_witness_counts_the_caller_as_a_reader() {
+    let name = VarName::new("a");
+    let observed_by_the_caller: LiveSet = std::iter::once(name.clone()).collect();
+    let quiet = vec![assign("c", &[])];
+    let settled = vec![assign("a", &[])];
+    assert!(
+        loop_local_evidence(
+            &LoopLocalSample {
+                live_on_exit: observed_by_the_caller.clone(),
+                ..quiet_sample(&quiet)
+            },
+            &name,
+        )
+        .is_none(),
+        "nothing on the exit path rewrites `a`, so the caller observes the store"
+    );
+    assert!(
+        loop_local_evidence(
+            &LoopLocalSample {
+                live_on_exit: observed_by_the_caller,
+                ..quiet_sample(&settled)
+            },
+            &name,
+        )
+        .is_some(),
+        "the exit path rewrites `a` before returning, so the store is not observed"
+    );
+    assert!(
+        liveness_corpus::observed_incoming_reads_before_exit(
+            &quiet,
+            &std::iter::once(name.clone()).collect()
+        )
+        .contains(&name),
+        "the execution oracle agrees that a surviving output is observed"
+    );
 }

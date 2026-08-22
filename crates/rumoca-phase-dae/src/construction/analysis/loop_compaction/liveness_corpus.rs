@@ -8,7 +8,7 @@
 //! overwrite, a conditional overwrite, a read before a write, a read after a
 //! loop, and the same read one loop deeper.
 //!
-//! [`observed_incoming_reads`] answers the corpus's central question by
+//! [`observed_incoming_reads_before_exit`] answers the corpus's central question by
 //! executing it rather than by analyzing it. It carries a set of *states*, each
 //! recording which values a path has already overwritten, and forks that set at
 //! every branch and every loop iteration count. A name is reported when some
@@ -204,13 +204,35 @@ type Paths = BTreeSet<Overwritten>;
 /// Names whose value on entry to `statements` is read by some execution path
 /// before that path overwrites it.
 pub(super) fn observed_incoming_reads(statements: &[rumoca_core::Statement]) -> LiveSet {
+    observed_incoming_reads_before_exit(statements, &LiveSet::new())
+}
+
+/// The same question, with `live_on_exit` read once the statements finish.
+///
+/// A function's outputs are its result (MLS §12.4.1), so a caller reads them at
+/// a point past the last statement of the body. That read observes the incoming
+/// value on any path that reaches the end without overwriting it, which is a
+/// property of the path set the simulation already carries.
+pub(super) fn observed_incoming_reads_before_exit(
+    statements: &[rumoca_core::Statement],
+    live_on_exit: &LiveSet,
+) -> LiveSet {
     let mut simulation = Simulation {
         observed: LiveSet::new(),
         shadowed: LiveSet::new(),
     };
     let entry: Paths = std::iter::once(Overwritten::new()).collect();
-    simulation.sequence(statements, &entry);
-    simulation.observed
+    let reached = simulation.sequence(statements, &entry);
+    let mut observed = simulation.observed;
+    for name in live_on_exit {
+        if reached
+            .iter()
+            .any(|overwritten| !overwritten.contains(name))
+        {
+            observed.insert(name.clone());
+        }
+    }
+    observed
 }
 
 struct Simulation {
