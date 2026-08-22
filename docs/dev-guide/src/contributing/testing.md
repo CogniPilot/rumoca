@@ -52,9 +52,41 @@ A missing corpus is a hard failure with the headline
 `corpus unmeasured: the pinned corpus is not on this machine`, never a skip:
 a green run that compared nothing would report the corpus as correct.
 
+#### What each row is judged on
+
+A **simulate** row is judged on its pinned readings, and on whether those
+readings can see the run at all. A row whose every pinned variable holds one
+value over `[0, t_end]` is red as unobserved rather than green: a probe reads
+the last sample at or before it, so a run truncated to its first sample would
+reproduce every such pin exactly, and so would a compiler that stopped after
+initialization. "Holds one value" is measured against the row's own
+tolerances, so a pin whose tolerance swallows the whole travel does not count
+as seeing it. When a model does nothing inside the corpus default window, the
+row states a longer `t_end` and its `why` says why; the three clocked-signal
+canaries run to 0.5 for that reason.
+
+A **compile** row is judged on the artifacts it declares under
+`expect.artifacts`, not on the exit status alone. Each one names a path
+relative to the row's output directory, a `min_bytes` floor, and a kind:
+`file` is checked for existence and size, `efmu-container` additionally has to
+open as a zip carrying a non-empty `__content.xml` at its root. A compile row
+that declares nothing is red for the same reason a simulate row that pins
+nothing is.
+
+Every row runs under a deadline derived from `runtime_budget_seconds`: a row's
+even share of it with a wide multiplier, never below thirty seconds. A row
+that outruns its deadline is killed and reported with the command that hung,
+because this gate runs inside `verify quick` and a model that stops
+terminating must cost one row rather than the developer loop. The deadline is
+a hang catcher, not a performance assertion, so it sits far above the slowest
+row the corpus has.
+
 To move a pin, run with `--record`, diff the proposal it writes under
 `target/verification/` against the manifest, and copy across only what you
-have adjudicated. The gate never edits its own expectations.
+have adjudicated. The gate never edits its own expectations, and it will not
+propose a pin it would then call unobserved: a run that moves nothing yields
+an empty proposal and a note telling you to choose other observables or raise
+`t_end`.
 
 ### The embedded budget
 

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "runtime_budget_seconds": 180.0,
   "entries": [
     {
@@ -14,7 +14,39 @@
       },
       "expect": {
         "outcome": "succeeds",
-        "observations": []
+        "observations": [],
+        "artifacts": [
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator/__content.xml",
+            "kind": "file",
+            "min_bytes": 256
+          },
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator/AlgorithmCode/Vehicles_Rdd2_NavigationEstimator.alg",
+            "kind": "file",
+            "min_bytes": 131072
+          },
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator/ProductionCode/Vehicles_Rdd2_NavigationEstimator.c",
+            "kind": "file",
+            "min_bytes": 262144
+          },
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator/ProductionCode/Vehicles_Rdd2_NavigationEstimator.h",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator/ProductionCode/manifest.xml",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator.efmu",
+            "kind": "efmu-container",
+            "min_bytes": 65536
+          }
+        ]
       }
     },
     {
@@ -29,7 +61,29 @@
       },
       "expect": {
         "outcome": "succeeds",
-        "observations": []
+        "observations": [],
+        "artifacts": [
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator.c",
+            "kind": "file",
+            "min_bytes": 262144
+          },
+          {
+            "path": "Vehicles_Rdd2_NavigationEstimator.h",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "rumoca_galec_kernels.c",
+            "kind": "file",
+            "min_bytes": 512
+          },
+          {
+            "path": "rumoca_galec_kernels.h",
+            "kind": "file",
+            "min_bytes": 1024
+          }
+        ]
       }
     },
     {
@@ -44,7 +98,34 @@
       },
       "expect": {
         "outcome": "succeeds",
-        "observations": []
+        "observations": [],
+        "artifacts": [
+          {
+            "path": "Estimation_StrapdownINS_UKF_Estimator/__content.xml",
+            "kind": "file",
+            "min_bytes": 256
+          },
+          {
+            "path": "Estimation_StrapdownINS_UKF_Estimator/AlgorithmCode/Estimation_StrapdownINS_UKF_Estimator.alg",
+            "kind": "file",
+            "min_bytes": 131072
+          },
+          {
+            "path": "Estimation_StrapdownINS_UKF_Estimator/ProductionCode/Estimation_StrapdownINS_UKF_Estimator.c",
+            "kind": "file",
+            "min_bytes": 262144
+          },
+          {
+            "path": "Estimation_StrapdownINS_UKF_Estimator/ProductionCode/manifest.xml",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "Estimation_StrapdownINS_UKF_Estimator.efmu",
+            "kind": "efmu-container",
+            "min_bytes": 65536
+          }
+        ]
       }
     },
     {
@@ -128,7 +209,8 @@
             "value": 0.01904627326865809,
             "tolerance": 5e-6
           }
-        ]
+        ],
+        "artifacts": []
       }
     },
     {
@@ -182,7 +264,8 @@
             "value": 0.01904627326865809,
             "tolerance": 5e-6
           }
-        ]
+        ],
+        "artifacts": []
       }
     },
     {
@@ -236,7 +319,8 @@
             "value": 0.09929820159810587,
             "tolerance": 1.992982015981059e-6
           }
-        ]
+        ],
+        "artifacts": []
       }
     },
     {
@@ -295,10 +379,10 @@
       "corpus": "msl",
       "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedPulse",
       "entry_point": "Modelica 4.1.0/package.mo",
-      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json). t_end is 0.5 rather than the corpus default 0.02 because this model does nothing before 0.1: its clock has a 0.1 s period and the pulse first rises at 0.1, falls at 0.3 and rises again at 0.5, so a 0.02 window reports the initial value at every probe and pins nothing about the run",
       "check": {
         "kind": "simulate",
-        "t_end": 0.02,
+        "t_end": 0.5,
         "dt": 0.01,
         "solver": "rk-like"
       },
@@ -313,9 +397,9 @@
           },
           {
             "variable": "pulse.y",
-            "time": 0.02,
-            "value": 0.0,
-            "tolerance": 1e-6
+            "time": 0.5,
+            "value": 1.0,
+            "tolerance": 0.000011000000000000001
           },
           {
             "variable": "pulse.simTime",
@@ -325,9 +409,9 @@
           },
           {
             "variable": "pulse.simTime",
-            "time": 0.02,
-            "value": 0.0,
-            "tolerance": 1e-6
+            "time": 0.5,
+            "value": 0.5,
+            "tolerance": 6e-6
           },
           {
             "variable": "pulse.next",
@@ -337,11 +421,12 @@
           },
           {
             "variable": "pulse.next",
-            "time": 0.02,
-            "value": 0.1,
-            "tolerance": 2.0000000000000003e-6
+            "time": 0.5,
+            "value": 0.9,
+            "tolerance": 0.00001
           }
-        ]
+        ],
+        "artifacts": []
       }
     },
     {
@@ -366,10 +451,10 @@
       "corpus": "msl",
       "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep",
       "entry_point": "Modelica 4.1.0/package.mo",
-      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json). t_end is 0.5 rather than the corpus default 0.02 because this model does nothing before 0.2: its clock has a 0.1 s period and the step fires at 0.2, so a 0.02 window reports the initial value at every probe and pins nothing about the run",
       "check": {
         "kind": "simulate",
-        "t_end": 0.02,
+        "t_end": 0.5,
         "dt": 0.01,
         "solver": "rk-like"
       },
@@ -384,9 +469,9 @@
           },
           {
             "variable": "step.y",
-            "time": 0.02,
-            "value": 1.0,
-            "tolerance": 0.000011000000000000001
+            "time": 0.5,
+            "value": 4.0,
+            "tolerance": 0.000041
           },
           {
             "variable": "step.simTime",
@@ -396,9 +481,9 @@
           },
           {
             "variable": "step.simTime",
-            "time": 0.02,
-            "value": 0.0,
-            "tolerance": 1e-6
+            "time": 0.5,
+            "value": 0.5,
+            "tolerance": 6e-6
           },
           {
             "variable": "assignClock1.u",
@@ -408,11 +493,12 @@
           },
           {
             "variable": "assignClock1.u",
-            "time": 0.02,
-            "value": 1.0,
-            "tolerance": 0.000011000000000000001
+            "time": 0.5,
+            "value": 4.0,
+            "tolerance": 0.000041
           }
-        ]
+        ],
+        "artifacts": []
       }
     },
     {
@@ -466,7 +552,8 @@
             "value": 0.3486898871648547,
             "tolerance": 4.486898871648548e-6
           }
-        ]
+        ],
+        "artifacts": []
       }
     },
     {
@@ -474,10 +561,10 @@
       "corpus": "msl",
       "model": "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedRamp",
       "entry_point": "Modelica 4.1.0/package.mo",
-      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
+      "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json). t_end is 0.5 rather than the corpus default 0.02 because this model does nothing before 0.2: its clock has a 0.1 s period and the tick-based ramp leaves zero on its third tick and reaches its plateau on the fifth, so a 0.02 window reports the initial value at every probe and pins nothing about the run",
       "check": {
         "kind": "simulate",
-        "t_end": 0.02,
+        "t_end": 0.5,
         "dt": 0.01,
         "solver": "rk-like"
       },
@@ -492,9 +579,9 @@
           },
           {
             "variable": "assignClock1.u",
-            "time": 0.02,
-            "value": 0.0,
-            "tolerance": 1e-6
+            "time": 0.5,
+            "value": 1.0,
+            "tolerance": 0.000011000000000000001
           },
           {
             "variable": "assignClock1.y",
@@ -504,9 +591,9 @@
           },
           {
             "variable": "assignClock1.y",
-            "time": 0.02,
-            "value": 0.0,
-            "tolerance": 1e-6
+            "time": 0.5,
+            "value": 1.0,
+            "tolerance": 0.000011000000000000001
           },
           {
             "variable": "ramp.y",
@@ -516,11 +603,12 @@
           },
           {
             "variable": "ramp.y",
-            "time": 0.02,
-            "value": 0.0,
-            "tolerance": 1e-6
+            "time": 0.5,
+            "value": 1.0,
+            "tolerance": 0.000011000000000000001
           }
-        ]
+        ],
+        "artifacts": []
       }
     },
     {
@@ -574,7 +662,8 @@
             "value": 0.0,
             "tolerance": 1e-6
           }
-        ]
+        ],
+        "artifacts": []
       }
     },
     {
@@ -628,7 +717,8 @@
             "value": -4.74571174666184,
             "tolerance": 0.0000484571174666184
           }
-        ]
+        ],
+        "artifacts": []
       }
     },
     {
@@ -682,7 +772,8 @@
             "value": 2.500000000000001,
             "tolerance": 0.000026000000000000012
           }
-        ]
+        ],
+        "artifacts": []
       }
     },
     {
@@ -753,7 +844,8 @@
             "value": 1.2497500083332223,
             "tolerance": 0.000013497500083332224
           }
-        ]
+        ],
+        "artifacts": []
       }
     },
     {

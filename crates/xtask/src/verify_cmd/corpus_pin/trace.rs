@@ -68,6 +68,33 @@ impl Trace {
         self.times.last().copied().unwrap_or(f64::NAN)
     }
 
+    /// The span between the largest and the smallest finite sample of `name`
+    /// over `[0, t_end]`, or `None` when the trace does not carry `name`.
+    ///
+    /// This is how [`super::observability`] tells a run that moved from one
+    /// that stood still, so it reads every sample rather than the two endpoints
+    /// a pin happens to probe: a variable that leaves its start value and comes
+    /// back has moved, and a trace truncated to one sample has not.
+    pub(crate) fn spread_until(&self, name: &str, t_end: f64) -> Option<f64> {
+        let index = self.names.iter().position(|candidate| candidate == name)?;
+        let column = &self.columns[index];
+        let mut span: Option<(f64, f64)> = None;
+        for (sample, &stamp) in self.times.iter().enumerate() {
+            if stamp > t_end + PROBE_EPSILON {
+                break;
+            }
+            let value = column[sample];
+            if !value.is_finite() {
+                continue;
+            }
+            span = Some(match span {
+                None => (value, value),
+                Some((low, high)) => (low.min(value), high.max(value)),
+            });
+        }
+        span.map(|(low, high)| high - low)
+    }
+
     /// The reported value of `name` at `time`, held right-continuously: the last
     /// sample at or before the probe.
     ///

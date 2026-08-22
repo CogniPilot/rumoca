@@ -6,9 +6,19 @@
 //! of what the compiler accepts and an unreviewed widening of that set is the
 //! silent drift this gate exists to catch. Making the improvement green is one
 //! line of manifest diff, and that diff is the point.
+//!
+//! Three outcomes are red without being a deviation from the pinned behavior,
+//! because in each of them the row measured nothing: a run that outran its
+//! deadline, a simulate row whose pins cannot see the run move
+//! ([`super::observability`]), and a compile row that declares no output
+//! artifact ([`super::artifacts`]). A green tick that means "nothing was
+//! compared" is the one outcome an oracle net cannot survive, so each of them
+//! fails instead.
 
+use super::artifacts;
 use super::execution::{ModelRun, first_diagnostic_code};
-use super::manifest::{Check, CorpusEntry, Expectation, PinnedObservation};
+use super::manifest::{Check, CorpusEntry, Expectation, ExpectedArtifact, PinnedObservation};
+use super::observability::{self, Unobserved};
 
 /// The outcome of judging one row.
 pub(crate) struct Verdict {
@@ -26,9 +36,18 @@ impl Verdict {
 }
 
 pub(crate) fn judge(entry: &CorpusEntry, run: &ModelRun) -> Verdict {
-    let findings = match &entry.expect {
-        Expectation::Succeeds { observations } => judge_success(entry, run, observations),
-        Expectation::Refused { diagnostic } => judge_refusal(run, diagnostic),
+    let findings = if run.timed_out {
+        // A killed run produced no evidence for or against its pin, whichever
+        // direction the pin points, so the timeout is the whole finding.
+        vec![timed_out(run)]
+    } else {
+        match &entry.expect {
+            Expectation::Succeeds {
+                observations,
+                artifacts,
+            } => judge_success(entry, run, observations, artifacts),
+            Expectation::Refused { diagnostic } => judge_refusal(run, diagnostic),
+        }
     };
     Verdict {
         id: entry.id.clone(),
@@ -38,10 +57,22 @@ pub(crate) fn judge(entry: &CorpusEntry, run: &ModelRun) -> Verdict {
     }
 }
 
+fn timed_out(run: &ModelRun) -> String {
+    format!(
+        "timed out after {:.0}s and was killed: `{}` never finished. The deadline is this \
+         row's share of the manifest's runtime_budget_seconds, sized as a hang catcher rather \
+         than a performance assertion, so a row that outruns it is not slow, it stopped \
+         terminating.",
+        run.deadline.as_secs_f64(),
+        run.command_line
+    )
+}
+
 fn judge_success(
     entry: &CorpusEntry,
     run: &ModelRun,
     observations: &[PinnedObservation],
+    artifacts: &[ExpectedArtifact],
 ) -> Vec<String> {
     if !run.succeeded {
         return vec![format!(
@@ -52,20 +83,38 @@ fn judge_success(
             indent(&tail(&run.output))
         )];
     }
+    match &entry.check {
+        Check::Compile { target: _ } => judge_artifacts(run, artifacts),
+        Check::Simulate {
+            t_end,
+            dt: _,
+            solver: _,
+        } => judge_readings(entry, run, observations, *t_end),
+    }
+}
+
+fn judge_artifacts(run: &ModelRun, artifacts: &[ExpectedArtifact]) -> Vec<String> {
+    let Some(output_dir) = run.output_dir.as_deref() else {
+        return vec![
+            "pinned to compile but the run recorded no output path, so nothing it wrote can \
+             be read back"
+                .to_string(),
+        ];
+    };
+    artifacts::judge(output_dir, artifacts)
+}
+
+fn judge_readings(
+    entry: &CorpusEntry,
+    run: &ModelRun,
+    observations: &[PinnedObservation],
+    t_end: f64,
+) -> Vec<String> {
     if observations.is_empty() {
-        return match &entry.check {
-            Check::Compile { target: _ } => Vec::new(),
-            Check::Simulate {
-                t_end: _,
-                dt: _,
-                solver: _,
-            } => vec![
-                "pinned to succeed but pins no reading, so this row proves only that the \
-                 process exited zero. Record its readings with `--record` and copy the \
-                 adjudicated numbers into the manifest."
-                    .to_string(),
-            ],
-        };
+        // Settled before the trace is opened: a row that pins nothing is red
+        // whether or not it wrote a readable trace, and reporting a trace
+        // problem here would name the wrong defect.
+        return vec![Unobserved::NoReadings.finding()];
     }
     let trace = match run.trace() {
         Ok(trace) => trace,
@@ -76,6 +125,21 @@ fn judge_success(
             )];
         }
     };
+    if let Some(unobserved) = observability::assess(observations, &trace, t_end) {
+        // A pinned variable the trace does not carry is the sharper finding:
+        // the unobserved verdict would tell the operator to pin something that
+        // moves when the real defect is that the pinned name vanished. Both
+        // paths stay red; only the message changes.
+        let vanished: Vec<String> = observations
+            .iter()
+            .filter(|observation| trace.spread_until(&observation.variable, t_end).is_none())
+            .filter_map(|observation| compare(entry, &trace, observation))
+            .collect();
+        if !vanished.is_empty() {
+            return vanished;
+        }
+        return vec![unobserved.finding()];
+    }
     observations
         .iter()
         .filter_map(|observation| compare(entry, &trace, observation))

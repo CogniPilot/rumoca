@@ -18,7 +18,17 @@
 //!   Turning the improvement green is a one-line manifest diff.
 //! * A row pinned to be refused that is refused for a *different* reason is red:
 //!   a changed refusal is a behavior change.
-//! * A simulated row must reproduce every pinned reading within its tolerance.
+//! * A simulated row must reproduce every pinned reading within its tolerance,
+//!   and its pins must be able to see the run move at all: a row whose every
+//!   pinned variable is constant over the run is red as unobserved, because a
+//!   truncated run would reproduce it exactly. [`corpus_pin::observability`]
+//!   owns that judgement.
+//! * A compiled row must emit every artifact it declares. Exit status alone
+//!   would keep a target green while it wrote nothing. [`corpus_pin::artifacts`]
+//!   owns that judgement.
+//! * A row that outruns its deadline is killed and red. The gate runs inside
+//!   `verify quick`, so a model that stops terminating must cost one row rather
+//!   than the developer loop.
 //! * A corpus that is not on the machine is red with
 //!   [`roots::CORPUS_UNMEASURED_HEADLINE`], never a skip. This mirrors the
 //!   `parity unmeasured` precedent exactly: a green tick that means "nothing was
@@ -36,22 +46,29 @@
 //! * Roughly nine seconds of every MSL row is parsing the standard library, so
 //!   the twenty canary rows cost about 210 seconds of CPU no matter how short
 //!   the simulation is. They are run across several workers instead.
-//! * `t_end` is 0.02 with `dt` 0.01: initialization plus a couple of reported
-//!   steps. That is enough to catch a wrong initial value or a wrong first
-//!   derivative, which is where lowering bugs show up, and it keeps a flight
-//!   mission that runs for minutes down to seconds.
+//! * `t_end` is 0.02 with `dt` 0.01 wherever that is enough: initialization
+//!   plus a couple of reported steps, which catches a wrong initial value or a
+//!   wrong first derivative, where lowering bugs show up, and keeps a flight
+//!   mission that runs for minutes down to seconds. Rows whose model does
+//!   nothing that early state a longer `t_end` and say why: a window in which
+//!   nothing moves buys speed by measuring nothing.
 //! * The flight-stack component models (navigation estimator, controller, outer
 //!   loop, UKF estimator) are driven by inputs a standalone simulation cannot
 //!   supply, so their established target is code generation. Those rows compile
-//!   and are judged on that, which costs one to three seconds each.
+//!   and are judged on the artifacts they emit, which costs one to three
+//!   seconds each.
 //!
 //! The measured wall time is printed against the manifest's budget but never
 //! asserted: the sibling RDD2 performance guard documents at length why a
 //! wall-clock assertion on a shared machine measures load rather than the
-//! compiler.
+//! compiler. The budget does derive the per-row deadline
+//! ([`manifest::CorpusManifest::row_deadline`]), which is a different claim: not
+//! "this row was fast enough" but "this row still terminates".
 
+mod artifacts;
 mod execution;
 mod manifest;
+mod observability;
 mod record;
 mod roots;
 #[cfg(test)]
@@ -66,7 +83,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::run_status;
 use execution::{ModelRun, RunContext};
@@ -133,6 +150,9 @@ pub(super) fn run(root: &Path, args: &VerifyCorpusPinArgs) -> Result<()> {
     roots::ensure_usable(&selected, &roots)?;
     let rumoca = resolve_compiler(root, args)?;
     let entries: Vec<&CorpusEntry> = selected.entries.iter().collect();
+    // Read from the whole manifest, never the selection: a `--only` run must
+    // not hand its one row the budget of all twenty-eight.
+    let deadline = manifest.row_deadline();
 
     println!(
         "corpus pin: {} row(s) from {}",
@@ -147,10 +167,20 @@ pub(super) fn run(root: &Path, args: &VerifyCorpusPinArgs) -> Result<()> {
         }
     }
     println!("  compiler: {}", rumoca.display());
+    println!("  row deadline: {:.0}s", deadline.as_secs_f64());
 
     let artifact_dir = prepare_artifact_dir(root)?;
     let started = Instant::now();
-    let runs = execute(&entries, &roots, &rumoca, &artifact_dir, jobs(args))?;
+    let runs = execute(
+        &entries,
+        &roots,
+        &rumoca,
+        &artifact_dir,
+        Schedule {
+            jobs: jobs(args),
+            deadline,
+        },
+    )?;
     let wall_seconds = started.elapsed().as_secs_f64();
 
     let verdicts: Vec<Verdict> = entries
@@ -235,6 +265,14 @@ fn prepare_artifact_dir(root: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// How the run queue is worked: how many rows at a time, and how long each of
+/// them may take.
+#[derive(Clone, Copy)]
+struct Schedule {
+    jobs: usize,
+    deadline: Duration,
+}
+
 /// One worker's shared view of the run queue.
 struct Worker<'a> {
     entries: &'a [&'a CorpusEntry],
@@ -242,6 +280,7 @@ struct Worker<'a> {
     rumoca: &'a Path,
     artifact_dir: &'a Path,
     cache_dir: &'a Path,
+    deadline: Duration,
     next: &'a AtomicUsize,
     slots: &'a [Mutex<Option<Result<ModelRun>>>],
 }
@@ -257,6 +296,7 @@ impl Worker<'_> {
                 corpus_root: self.roots.root_for(entry.corpus),
                 artifact_dir: self.artifact_dir,
                 cache_dir: self.cache_dir,
+                deadline: self.deadline,
             };
             let outcome = execution::run_entry(entry, &context);
             *self.slots[index].lock().expect("corpus slot mutex") = Some(outcome);
@@ -269,13 +309,14 @@ impl Worker<'_> {
     }
 }
 
-/// Run every selected row, at most `jobs` compiler processes at a time.
+/// Run every selected row, at most `schedule.jobs` compiler processes at a
+/// time, each under `schedule.deadline`.
 fn execute(
     entries: &[&CorpusEntry],
     roots: &CorpusRoots,
     rumoca: &Path,
     artifact_dir: &Path,
-    jobs: usize,
+    schedule: Schedule,
 ) -> Result<Vec<ModelRun>> {
     let cache_dir = artifact_dir.join("cache");
     fs::create_dir_all(&cache_dir)
@@ -289,11 +330,12 @@ fn execute(
         rumoca,
         artifact_dir,
         cache_dir: &cache_dir,
+        deadline: schedule.deadline,
         next: &next,
         slots: &slots,
     };
     std::thread::scope(|scope| {
-        for _ in 0..jobs.min(entries.len().max(1)) {
+        for _ in 0..schedule.jobs.min(entries.len().max(1)) {
             scope.spawn(|| worker.drain());
         }
     });
@@ -315,14 +357,18 @@ fn write_proposal(
     runs: &[ModelRun],
 ) -> Result<()> {
     let mut proposed = manifest.clone();
+    let mut notes: Vec<(String, String)> = Vec::new();
     for (entry, run) in entries.iter().zip(runs) {
-        let updated = record::propose_entry(entry, run);
+        let proposal = record::propose_entry(entry, run);
+        if let Some(note) = proposal.note {
+            notes.push((entry.id.clone(), note));
+        }
         if let Some(slot) = proposed
             .entries
             .iter_mut()
             .find(|candidate| candidate.id == entry.id)
         {
-            *slot = updated;
+            *slot = proposal.entry;
         }
     }
     let path = root.join(PROPOSAL_PATH);
@@ -333,6 +379,13 @@ fn write_proposal(
         path.display(),
         manifest::MANIFEST_PATH
     );
+    if notes.is_empty() {
+        return Ok(());
+    }
+    println!("  The proposal deliberately left these rows unfilled:");
+    for (id, note) in &notes {
+        println!("    {id}\n      {note}");
+    }
     Ok(())
 }
 
@@ -351,6 +404,7 @@ struct Summary {
     failed: usize,
     wall_seconds: f64,
     budget_seconds: f64,
+    row_deadline_seconds: f64,
     entries: Vec<SummaryRow>,
 }
 
@@ -403,6 +457,7 @@ fn write_summary(
         failed: verdicts.iter().filter(|v| !v.passed()).count(),
         wall_seconds,
         budget_seconds: manifest.runtime_budget_seconds,
+        row_deadline_seconds: manifest.row_deadline().as_secs_f64(),
         entries: verdicts
             .iter()
             .map(|verdict| SummaryRow {

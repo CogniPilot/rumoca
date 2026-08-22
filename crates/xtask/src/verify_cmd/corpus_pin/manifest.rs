@@ -13,19 +13,45 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
+
+use super::execution::artifact_stem;
 
 /// Location of the pinned corpus manifest, relative to the workspace root.
 pub(crate) const MANIFEST_PATH: &str = "infra/verification/corpus-pin.json";
 
 /// Bumped whenever a field changes meaning. A manifest written for another
 /// version is refused rather than reinterpreted.
-pub(crate) const MANIFEST_SCHEMA_VERSION: u32 = 1;
+///
+/// Version 2 added the per-row output-artifact expectations a compile row is
+/// judged on, and made `runtime_budget_seconds` load-bearing: it now also
+/// derives the per-row deadline in [`CorpusManifest::row_deadline`].
+pub(crate) const MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 /// Solver names the gate is willing to ask for. Mirrors `rumoca --solver`; a
 /// manifest naming anything else is refused at load time instead of producing a
 /// clap error from a subprocess halfway through the run.
 const KNOWN_SOLVERS: [&str; 3] = ["auto", "bdf", "rk-like"];
+
+/// How much longer than its share of the budget a single row may run before it
+/// is killed as hung.
+///
+/// The deadline is a hang catcher, never a performance assertion: the sibling
+/// RDD2 performance guard records at length why a wall-clock assertion on a
+/// shared developer machine measures machine load rather than the compiler. So
+/// the multiplier sits far above the spread a loaded machine produces. At the
+/// checked-in budget a row's share is about six seconds and its deadline a
+/// little over three minutes. The corpus's slowest row is the implicit-session
+/// waypoint mission, measured at forty-three seconds on an idle machine and
+/// fifty-eight on a busy one, so the deadline keeps better than three times its
+/// worst measurement and lands near the budget for the whole corpus, which is
+/// the point at which a row has stopped being slow.
+const DEADLINE_HEADROOM: f64 = 30.0;
+
+/// Floor under [`CorpusManifest::row_deadline`], so a small manifest still
+/// leaves each row room to parse the standard library.
+const DEADLINE_FLOOR: Duration = Duration::from_secs(30);
 
 /// The whole pinned corpus.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -38,9 +64,28 @@ pub(crate) struct CorpusManifest {
     /// RDD2 performance guard records at length why a wall-clock assertion on a
     /// shared developer machine measures machine load rather than the compiler;
     /// this gate does not repeat that mistake. The number is here so a corpus
-    /// addition that doubles the runtime is visible in review.
+    /// addition that doubles the runtime is visible in review, and it is the
+    /// one place [`CorpusManifest::row_deadline`] reads from, so the per-row
+    /// deadline moves with the reviewed budget instead of with an environment
+    /// variable.
     pub(crate) runtime_budget_seconds: f64,
     pub(crate) entries: Vec<CorpusEntry>,
+}
+
+impl CorpusManifest {
+    /// How long one row may run before it is killed and reported as hung.
+    ///
+    /// Derived from the reviewed budget: a row's even share of it, times
+    /// [`DEADLINE_HEADROOM`], never below [`DEADLINE_FLOOR`]. Computed from the
+    /// whole manifest rather than from a `--only` selection, so focusing on one
+    /// row does not hand that row the entire corpus budget.
+    pub(crate) fn row_deadline(&self) -> Duration {
+        let rows = self.entries.len().max(1);
+        let share = self.runtime_budget_seconds / rows as f64;
+        Duration::try_from_secs_f64(share * DEADLINE_HEADROOM)
+            .unwrap_or(DEADLINE_FLOOR)
+            .max(DEADLINE_FLOOR)
+    }
 }
 
 /// One gated (model, check) pair. A model checked two ways (two solvers, two
@@ -106,7 +151,7 @@ impl Check {
     }
 
     /// The run's stop time, for validating that a probe lands inside it.
-    fn stop_time(&self) -> Option<f64> {
+    pub(crate) fn stop_time(&self) -> Option<f64> {
         match self {
             Self::Compile { target: _ } => None,
             Self::Simulate {
@@ -126,9 +171,11 @@ impl Check {
 #[serde(tag = "outcome", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) enum Expectation {
     /// The command exits zero. For a simulate check, every pinned observation
-    /// must also be reproduced within its tolerance.
+    /// must also be reproduced within its tolerance; for a compile check, every
+    /// declared artifact must be on disk and hold what its kind requires.
     Succeeds {
         observations: Vec<PinnedObservation>,
+        artifacts: Vec<ExpectedArtifact>,
     },
     /// The command exits nonzero and reports this diagnostic code. Refusal is
     /// free under the top-level theorem, but a *different* refusal is a
@@ -147,6 +194,46 @@ pub(crate) struct PinnedObservation {
     /// Absolute tolerance. Sized per row: initialization readings agree
     /// bit-for-bit across solvers, a reading after one step does not.
     pub(crate) tolerance: f64,
+}
+
+/// One file a compile row's target must emit.
+///
+/// A compile row judged on the exit status alone stays green while its target
+/// emits nothing at all, so every compile row states the files it is pinned to
+/// produce and the gate reads them back off disk.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExpectedArtifact {
+    /// Path relative to the row's `-o` output directory.
+    pub(crate) path: String,
+    pub(crate) kind: ArtifactKind,
+    /// Floor on the artifact's size in bytes. `1` states only "non-empty"; a
+    /// larger floor is how a row pins that a generated source file is still a
+    /// generated source file rather than a stub.
+    pub(crate) min_bytes: u64,
+}
+
+/// How deeply the gate looks into one declared artifact.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ArtifactKind {
+    /// A regular file, judged on existence and size only.
+    File,
+    /// The zip form of an eFMI eFMU container. Judged additionally on the
+    /// cheapest structural property the container has: it opens as a zip and
+    /// carries a non-empty `__content.xml` at the archive root, which is the
+    /// marker the packaging step itself uses to recognize one of its own
+    /// products.
+    EfmuContainer,
+}
+
+impl ArtifactKind {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::EfmuContainer => "eFMU container",
+        }
+    }
 }
 
 pub(crate) fn manifest_path(root: &Path) -> PathBuf {
@@ -172,19 +259,31 @@ pub(crate) fn validate(manifest: &CorpusManifest) -> Result<()> {
         MANIFEST_SCHEMA_VERSION
     );
     ensure!(
-        manifest.runtime_budget_seconds > 0.0,
-        "runtime_budget_seconds must be positive"
+        manifest.runtime_budget_seconds.is_finite() && manifest.runtime_budget_seconds > 0.0,
+        "runtime_budget_seconds must be finite and positive"
     );
     ensure!(
         !manifest.entries.is_empty(),
         "a corpus manifest with no entries would certify nothing"
     );
     let mut seen = BTreeSet::new();
+    let mut stems = BTreeSet::new();
     for entry in &manifest.entries {
         ensure!(
             seen.insert(entry.id.as_str()),
             "duplicate corpus entry id `{}`",
             entry.id
+        );
+        // Two ids that flatten to one artifact stem would share an output
+        // directory and a trace path, so each row could be judged on what the
+        // other one wrote. Distinct ids are not enough on their own: the stem
+        // maps every character outside `[A-Za-z0-9._-]` to `_`.
+        ensure!(
+            stems.insert(artifact_stem(&entry.id)),
+            "corpus entry id `{}` shares its artifact stem `{}` with another row, so the two \
+             would overwrite each other's output",
+            entry.id,
+            artifact_stem(&entry.id)
         );
         validate_entry(entry).with_context(|| format!("corpus entry `{}`", entry.id))?;
     }
@@ -241,23 +340,10 @@ fn validate_check(check: &Check) -> Result<()> {
 
 fn validate_expectation(expect: &Expectation, check: &Check) -> Result<()> {
     match expect {
-        Expectation::Succeeds { observations } => {
-            let Some(stop_time) = check.stop_time() else {
-                ensure!(
-                    observations.is_empty(),
-                    "a compile check produces no trace, so it cannot carry pinned observations"
-                );
-                return Ok(());
-            };
-            // A simulate row that pins no reading is admissible but not green:
-            // the gate reports it as unobserved at run time. Keeping that out of
-            // load-time validation is what lets `--record` bootstrap a new row
-            // from a manifest that does not yet know the numbers.
-            for observation in observations {
-                validate_observation(observation, stop_time)?;
-            }
-            Ok(())
-        }
+        Expectation::Succeeds {
+            observations,
+            artifacts,
+        } => validate_success(observations, artifacts, check),
         Expectation::Refused { diagnostic } => {
             ensure!(
                 !diagnostic.trim().is_empty(),
@@ -266,6 +352,40 @@ fn validate_expectation(expect: &Expectation, check: &Check) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn validate_success(
+    observations: &[PinnedObservation],
+    artifacts: &[ExpectedArtifact],
+    check: &Check,
+) -> Result<()> {
+    for artifact in artifacts {
+        validate_artifact(artifact)?;
+    }
+    let Some(stop_time) = check.stop_time() else {
+        // A compile row that declares no artifact is admissible but not green:
+        // the gate reports it as unverified at run time, exactly the treatment
+        // a simulate row with no pinned reading gets. Keeping both out of
+        // load-time validation is what lets a new row be bootstrapped from a
+        // manifest that does not yet know what the target emits.
+        ensure!(
+            observations.is_empty(),
+            "a compile check produces no trace, so it cannot carry pinned observations"
+        );
+        return Ok(());
+    };
+    ensure!(
+        artifacts.is_empty(),
+        "a simulate check is judged on its trace, so it cannot carry expected artifacts"
+    );
+    // A simulate row that pins no reading is admissible but not green: the gate
+    // reports it as unobserved at run time. Keeping that out of load-time
+    // validation is what lets `--record` bootstrap a new row from a manifest
+    // that does not yet know the numbers.
+    for observation in observations {
+        validate_observation(observation, stop_time)?;
+    }
+    Ok(())
 }
 
 fn validate_observation(observation: &PinnedObservation, stop_time: f64) -> Result<()> {
@@ -287,5 +407,31 @@ fn validate_observation(observation: &PinnedObservation, stop_time: f64) -> Resu
     if !(tolerance.is_finite() && *tolerance > 0.0) {
         bail!("observation of `{variable}` needs a finite positive tolerance, found {tolerance}");
     }
+    Ok(())
+}
+
+fn validate_artifact(artifact: &ExpectedArtifact) -> Result<()> {
+    let ExpectedArtifact {
+        path,
+        kind: _,
+        min_bytes,
+    } = artifact;
+    ensure!(!path.trim().is_empty(), "an artifact needs a path");
+    let relative = Path::new(path);
+    ensure!(
+        !relative.is_absolute(),
+        "artifact `{path}` must be relative to the row's output directory"
+    );
+    ensure!(
+        relative
+            .components()
+            .all(|component| matches!(component, Component::Normal(_))),
+        "artifact `{path}` must not escape the row's output directory"
+    );
+    ensure!(
+        *min_bytes >= 1,
+        "artifact `{path}` needs a positive min_bytes; an artifact allowed to be empty proves \
+         nothing"
+    );
     Ok(())
 }

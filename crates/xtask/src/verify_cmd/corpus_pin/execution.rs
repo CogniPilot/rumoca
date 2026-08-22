@@ -1,18 +1,43 @@
-//! Running one pinned row: build the compiler invocation, run it, and say what
-//! happened without deciding whether that was allowed.
+//! Running one pinned row: build the compiler invocation, run it under a
+//! deadline, and say what happened without deciding whether that was allowed.
 //!
 //! Judgement lives in [`super::verdict`]. Keeping the two apart is what lets
 //! `--record` reuse the identical invocation to propose new pins: a recorder
 //! that ran the model differently from the gate would pin numbers the gate then
 //! fails to reproduce.
+//!
+//! # Why every row runs under a deadline
+//!
+//! This gate is wired into `verify quick`, so it sits in the developer loop. A
+//! model that stops terminating would otherwise hang that loop with no output
+//! and no row to blame, and a hang is exactly the shape a fresh non-termination
+//! bug takes. The deadline comes from the manifest budget
+//! ([`super::manifest::CorpusManifest::row_deadline`]) so it is reviewed data
+//! rather than a hidden constant, and it is sized as a hang catcher rather than
+//! a performance assertion.
+//!
+//! # Why the child writes to files rather than pipes
+//!
+//! A killed process leaves anything it spawned behind, still holding the write
+//! end of an inherited pipe. Reading that pipe to end-of-file would then block
+//! until the *grandchild* finished, which is precisely the hang the deadline
+//! exists to end. Each row's streams go to two files beside its artifacts
+//! instead: nothing can block on them, and the raw child output survives the run
+//! for whoever reads the report.
 
 use anyhow::{Context, Result};
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use super::manifest::{Check, CorpusEntry};
 use super::trace::Trace;
+
+/// How often the deadline is rechecked while a row runs. Short enough that a
+/// killed row is reported promptly, long enough to cost nothing next to a run
+/// measured in seconds.
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Everything one corpus row's invocation produced.
 pub(crate) struct ModelRun {
@@ -22,7 +47,15 @@ pub(crate) struct ModelRun {
     pub(crate) output: String,
     /// Where the simulate check wrote its CSV, if it wrote one.
     pub(crate) trace_path: Option<PathBuf>,
+    /// Where a compile check was told to write, so the row's declared
+    /// artifacts can be read back from it.
+    pub(crate) output_dir: Option<PathBuf>,
     pub(crate) elapsed: Duration,
+    /// The row outran its deadline and was killed, so nothing it produced is
+    /// evidence about anything.
+    pub(crate) timed_out: bool,
+    /// The deadline this row was given, so the timeout finding can state it.
+    pub(crate) deadline: Duration,
     /// The exact command line, so a red row can be reproduced by hand.
     pub(crate) command_line: String,
 }
@@ -37,27 +70,29 @@ impl ModelRun {
     }
 }
 
-/// Where a row's sources and artifacts live for this invocation.
+/// Where a row's sources and artifacts live for this invocation, and how long
+/// it may run.
 pub(crate) struct RunContext<'a> {
     pub(crate) rumoca: &'a Path,
     pub(crate) corpus_root: &'a Path,
     pub(crate) artifact_dir: &'a Path,
     pub(crate) cache_dir: &'a Path,
+    pub(crate) deadline: Duration,
 }
 
 pub(crate) fn run_entry(entry: &CorpusEntry, context: &RunContext<'_>) -> Result<ModelRun> {
     let stem = artifact_stem(&entry.id);
     let mut command = Command::new(context.rumoca);
-    let trace_path = match &entry.check {
+    let (trace_path, output_dir) = match &entry.check {
         Check::Compile { target } => {
             let out = context.artifact_dir.join(format!("{stem}.out"));
             compile_command(&mut command, entry, context, target, &out);
-            None
+            (None, Some(out))
         }
         Check::Simulate { t_end, dt, solver } => {
             let out = context.artifact_dir.join(format!("{stem}.csv"));
             simulate_command(&mut command, entry, context, (*t_end, *dt, solver), &out);
-            Some(out)
+            (Some(out), None)
         }
     };
     // The compiler appends `MODELICAPATH` entries to `--source-root`. The gate
@@ -66,20 +101,102 @@ pub(crate) fn run_entry(entry: &CorpusEntry, context: &RunContext<'_>) -> Result
     command.env_remove("MODELICAPATH");
     command.current_dir(context.artifact_dir);
     let command_line = describe(&command);
+    let logs = Logs::beside(context.artifact_dir, &stem);
     let started = Instant::now();
-    let output = command
-        .output()
-        .with_context(|| format!("failed to run `{command_line}`"))?;
+    let outcome = run_to_completion(&mut command, context.deadline, &logs, &command_line)?;
     let elapsed = started.elapsed();
-    let mut text = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    text.push_str(&strip_ansi(&String::from_utf8_lossy(&output.stdout)));
     Ok(ModelRun {
-        succeeded: output.status.success(),
-        output: text,
+        succeeded: outcome.succeeded,
+        output: logs.read(),
         trace_path: trace_path.filter(|path| path.is_file()),
+        output_dir,
         elapsed,
+        timed_out: outcome.timed_out,
+        deadline: context.deadline,
         command_line,
     })
+}
+
+/// Where one row's child streams are captured.
+struct Logs {
+    standard_error: PathBuf,
+    standard_output: PathBuf,
+}
+
+impl Logs {
+    fn beside(artifact_dir: &Path, stem: &str) -> Self {
+        Self {
+            standard_error: artifact_dir.join(format!("{stem}.stderr")),
+            standard_output: artifact_dir.join(format!("{stem}.stdout")),
+        }
+    }
+
+    /// Both streams, ANSI stripped, diagnostics first. A stream that could not
+    /// be read back contributes nothing rather than failing the row: the
+    /// verdict is about the model, not about this file.
+    fn read(&self) -> String {
+        let mut text = strip_ansi(&read_lossy(&self.standard_error));
+        text.push_str(&strip_ansi(&read_lossy(&self.standard_output)));
+        text
+    }
+}
+
+fn read_lossy(path: &Path) -> String {
+    fs::read(path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default()
+}
+
+/// What one child process did, before anything judges it.
+struct ChildOutcome {
+    succeeded: bool,
+    timed_out: bool,
+}
+
+/// Run the child with its streams captured, and kill it if it outruns
+/// `deadline`.
+fn run_to_completion(
+    command: &mut Command,
+    deadline: Duration,
+    logs: &Logs,
+    command_line: &str,
+) -> Result<ChildOutcome> {
+    let standard_error = fs::File::create(&logs.standard_error)
+        .with_context(|| format!("failed to create {}", logs.standard_error.display()))?;
+    let standard_output = fs::File::create(&logs.standard_output)
+        .with_context(|| format!("failed to create {}", logs.standard_output.display()))?;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stderr(Stdio::from(standard_error))
+        .stdout(Stdio::from(standard_output))
+        .spawn()
+        .with_context(|| format!("failed to run `{command_line}`"))?;
+    let (status, timed_out) = wait_for_child(&mut child, deadline)?;
+    Ok(ChildOutcome {
+        // A killed child's exit status says "signalled", which is neither a
+        // refusal nor a success. The timeout verdict owns it instead.
+        succeeded: !timed_out && status.is_some_and(|status| status.success()),
+        timed_out,
+    })
+}
+
+/// Poll the child until it exits or outruns `deadline`, in which case it is
+/// killed and reaped. The flag says which of the two happened.
+fn wait_for_child(child: &mut Child, deadline: Duration) -> Result<(Option<ExitStatus>, bool)> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to poll the compiler process")?
+        {
+            return Ok((Some(status), false));
+        }
+        if started.elapsed() >= deadline {
+            let _ = child.kill();
+            return Ok((child.wait().ok(), true));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
 }
 
 fn compile_command(
