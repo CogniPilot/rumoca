@@ -64,11 +64,10 @@
 //! # Status of the evidence this crate produces
 //!
 //! Agreement between this reference and the compiler is *validation* evidence,
-//! not proof evidence. SPEC_0037 says so directly — "OMC/MSL parity, fuzzing,
-//! property tests, and differential traces remain validation evidence for the
-//! formal definitions. They are not proof evidence." This crate is a candidate
-//! for that spec's "One IR semantics implemented — executable formal
-//! definition" promotion criterion; it does not on its own discharge it.
+//! not proof evidence; SPEC_0037 §5 states that rule and SPEC_0037 §7 records
+//! where this crate stands today. It is a candidate for that spec's "One IR
+//! semantics implemented" promotion criterion; it does not on its own
+//! discharge it.
 //!
 //! # Example
 //!

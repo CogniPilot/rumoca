@@ -91,10 +91,10 @@ Volta, nvm, or the official Node installer, then retry that command.
 
 ### Kani bounded verification
 
-The SPEC_0037 verification track carries bounded-verification harnesses in
-`rumoca-ir-dae` and `rumoca-solver`. Each property is written once as a plain
-function with two drivers: `#[cfg(kani)]` proof harnesses and, under
-`#[cfg(not(kani))]`, a `proptest` fallback stating the identical property.
+The SPEC_0037 verification track carries its bounded-verification harnesses in
+`rumoca-solver`. Each property is written once as a plain function with two
+drivers: `#[cfg(kani)]` proof harnesses and, under `#[cfg(not(kani))]`, a
+`proptest` fallback stating the identical property.
 
 The official Linux flake pins Kani 0.67.0 and its matching Rust nightly in a
 dedicated shell, leaving the ordinary development toolchain unchanged. Run the

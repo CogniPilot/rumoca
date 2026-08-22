@@ -15,9 +15,9 @@
 //! exactly what that does and does not force. The property then re-encodes what
 //! it decoded under *both* codecs and demands identical bytes.
 //!
-//! `mod tests` is `#[cfg(test)]`-gated in `lib.rs`, so the `#[cfg(kani)]` proof
-//! module below is inert today. It is written anyway because it is the exact
-//! shape the proof takes once this harness moves out from under that gate.
+//! `mod tests` is `#[cfg(test)]`-gated in `lib.rs`, so this property carries a
+//! property-test driver and no bounded-proof driver; the shape below is the one
+//! a proof takes once the harness moves out from under that gate.
 
 use super::*;
 
@@ -623,8 +623,8 @@ fn all_variant_fixture(plan: &FixturePlan) -> WireVariantFixture {
 /// For a checked `Dae` carrying every condition and coordinate variant, decoding
 /// an encoding reconstructs a value that re-encodes to identical bytes, under
 /// both the ordinal-tagged codec (bincode) and the name-tagged codec (JSON).
-/// SPEC_0037 phase-proof obligation "Wire — Decode reconstructs only checked
-/// current IR; round trip preserves identity".
+/// The decoder is a trust-boundary checker under SPEC_0037 §2, and SPEC_0037 §7
+/// records this property as property-tested rather than proven.
 ///
 /// `Dae` has no `PartialEq`, so identity is byte equality of the re-encoding —
 /// the idiom the existing wire tests already use.
@@ -772,9 +772,9 @@ mod property_tests {
         /// For a checked `Dae` carrying every condition and coordinate variant,
         /// decoding an encoding reconstructs a value that re-encodes to
         /// identical bytes, under both the ordinal-tagged codec (bincode) and
-        /// the name-tagged codec (JSON). SPEC_0037 phase-proof obligation
-        /// "Wire — Decode reconstructs only checked current IR; round trip
-        /// preserves identity".
+        /// the name-tagged codec (JSON). The decoder is a trust-boundary
+        /// checker under SPEC_0037 §2, and SPEC_0037 §7 records this property
+        /// as property-tested rather than proven.
         #[test]
         fn wire_round_trip_is_ordinal_stable(plan in fixture_plan()) {
             check_all_variants_round_trip(&plan);

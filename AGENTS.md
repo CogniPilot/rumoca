@@ -23,6 +23,7 @@ spec, it's not a rule — propose a spec change first.
 |---|---|
 | Compiler pipeline / any IR / any phase | [SPEC_0007](spec/SPEC_0007_IR_PIPELINE.md) — IR stage contracts, structural-lowering scope; row catalog in [SPEC_0040](spec/SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md) |
 | Valid-by-construction IR aggregates and proofs | [SPEC_0036](spec/SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) — construction rules; row catalog in [SPEC_0043](spec/SPEC_0043_CONSTRUCTION_CATALOG.md) |
+| Proof harnesses, trusted-base checkers, reference semantics | [SPEC_0037](spec/SPEC_0037_FORMALLY_VERIFIED_COMPILER.md): verification architecture, checker discipline, and the proof ladder; witness precedent in [SPEC_0039](spec/SPEC_0039_PROOF_CARRYING_SPARSITY.md) |
 | Range-preserving array/tensor/stencil IR | [SPEC_0032](spec/SPEC_0032_RANGE_PRESERVING_TENSORS.md) — compact domains, scalar views, Map/AffineStencil ownership |
 | Crate dependencies, foundation types, re-exports, single-source helpers | [SPEC_0029](spec/SPEC_0029_CRATE_BOUNDARIES.md) — boundary rules; ownership catalog in [SPEC_0041](spec/SPEC_0041_CRATE_OWNERSHIP_CATALOG.md) |
 | eFMI/GALEC export targets | [SPEC_0034](spec/SPEC_0034_GALEC_EFMI_EXPORT.md) — GAL-NNN rules; language traps and decisions in [SPEC_0042](spec/SPEC_0042_GALEC_LANGUAGE_CATALOG.md) |

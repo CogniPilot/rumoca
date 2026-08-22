@@ -244,3 +244,249 @@ ALLOWED_PHASE_TO_PHASE_DEPENDENCIES with a reason. Unrecorded: {unrecorded:?}"
 the exception list stays a live record rather than history: {stale:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Definitional-semantics trusted base
+// ---------------------------------------------------------------------------
+
+/// The complete, exact `[dependencies]` set of `rumoca-reference`.
+///
+/// Empty: the definitional semantics links nothing, so its trusted base is its
+/// own source (SPEC_0037 §5). Every entry added here enlarges what a proof
+/// about the semantics has to assume, which is why the set is pinned rather
+/// than filtered for compiler crates alone.
+const REFERENCE_DEPENDENCY_ALLOWLIST: &[&str] = &[];
+
+/// Manifest sections `rumoca-reference` may declare.
+///
+/// Any other top-level section can carry production surface this gate does not
+/// model: a `[target.'cfg(unix)'.dependencies]` table or a `[build-dependencies]`
+/// table each add links that the `[dependencies]` allowlist never sees. The
+/// gate refuses a section it cannot classify instead of passing it.
+const REFERENCE_MANIFEST_SECTIONS: &[&str] =
+    &["package", "dependencies", "dev-dependencies", "lints"];
+
+/// The `rumoca-reference` manifest as its top-level sections, or the reason it
+/// could not be read as such.
+///
+/// Every check below reads this, so text the gate cannot parse with certainty
+/// becomes a named refusal rather than an empty finding (SPEC_0037 §2). There
+/// is no path on which an unreadable manifest leaves a check silently
+/// satisfied.
+fn reference_manifest_sections(manifest: &str) -> Result<toml::Table, String> {
+    toml::from_str::<toml::Table>(manifest)
+        .map_err(|error| format!("manifest does not parse as TOML: {error}"))
+}
+
+/// Every name a `[dependencies]` entry puts into the trusted base.
+///
+/// A rename declares the real crate in `package`, so both the alias and the
+/// package it resolves to are judged.
+fn declared_dependency_names(alias: &str, spec: &toml::Value) -> Vec<String> {
+    let mut names = vec![alias.to_string()];
+    if let Some(package) = spec.get("package").and_then(toml::Value::as_str)
+        && package != alias
+    {
+        names.push(package.to_string());
+    }
+    names
+}
+
+/// Why `name` may not sit in the definitional semantics' production set, if it
+/// may not.
+fn trusted_base_offence(name: &str) -> Option<String> {
+    if name.starts_with("rumoca-") {
+        Some(format!("production dependency on compiler crate `{name}`"))
+    } else if REFERENCE_DEPENDENCY_ALLOWLIST.contains(&name) {
+        None
+    } else {
+        Some(format!("production dependency `{name}` is not allowlisted"))
+    }
+}
+
+/// Every way `manifest` grows the definitional semantics' trusted base.
+///
+/// Total over arbitrary text and closed against what it cannot classify: an
+/// empty result means the gate read the whole manifest and found nothing, and
+/// never that the gate failed to read it.
+fn reference_trusted_base_offences(manifest: &str) -> Vec<String> {
+    let sections = match reference_manifest_sections(manifest) {
+        Ok(sections) => sections,
+        Err(diagnostic) => return vec![diagnostic],
+    };
+
+    let mut offences: Vec<String> = sections
+        .keys()
+        .filter(|section| !REFERENCE_MANIFEST_SECTIONS.contains(&section.as_str()))
+        .map(|section| {
+            format!("section `[{section}]` is not one of {REFERENCE_MANIFEST_SECTIONS:?}")
+        })
+        .collect();
+
+    match sections.get("dependencies") {
+        None => {}
+        Some(toml::Value::Table(dependencies)) => offences.extend(
+            dependencies
+                .iter()
+                .flat_map(|(alias, spec)| declared_dependency_names(alias, spec))
+                .filter_map(|name| trusted_base_offence(&name)),
+        ),
+        Some(other) => offences.push(format!(
+            "`dependencies` is a {}, which this gate cannot classify",
+            other.type_str()
+        )),
+    }
+
+    offences
+}
+
+/// Whether the differential harness still links the real pipeline, or the
+/// reason the gate cannot confirm that it does.
+fn reference_keeps_compiler_dev_dependency(manifest: &str) -> Result<(), String> {
+    let sections = reference_manifest_sections(manifest)?;
+    match sections.get("dev-dependencies") {
+        Some(toml::Value::Table(dev)) if dev.contains_key("rumoca-compile") => Ok(()),
+        Some(toml::Value::Table(_)) => {
+            Err("[dev-dependencies] does not name `rumoca-compile`".to_string())
+        }
+        Some(other) => Err(format!(
+            "`dev-dependencies` is a {}, which this gate cannot classify",
+            other.type_str()
+        )),
+        None => Err("the manifest declares no [dev-dependencies] section".to_string()),
+    }
+}
+
+#[test]
+fn test_reference_semantics_trusted_base_is_pinned() {
+    let content = read_manifest("rumoca-reference");
+    let offences = reference_trusted_base_offences(&content);
+
+    assert!(
+        offences.is_empty(),
+        "rumoca-reference is the definitional semantics: the differentials and any future \
+proof transcription trust whatever it links, so its production dependency set is pinned \
+to {REFERENCE_DEPENDENCY_ALLOWLIST:?} by SPEC_0037 §5. Growing it enlarges the semantics' \
+trusted base and is a deliberate decision, not a build detail: add the crate to \
+REFERENCE_DEPENDENCY_ALLOWLIST (or the section to REFERENCE_MANIFEST_SECTIONS) in the same \
+change, so the enlargement is reviewed here. Found: {offences:#?}"
+    );
+
+    if let Err(reason) = reference_keeps_compiler_dev_dependency(&content) {
+        panic!(
+            "rumoca-reference must keep its compiler dependency in [dev-dependencies]: the \
+differential harness needs the real pipeline, and the pinned production set above is only \
+meaningful while that harness still runs (SPEC_0037 §5). {reason}"
+        );
+    }
+}
+
+#[test]
+fn test_reference_trusted_base_gate_rejects_synthetic_growth() {
+    const COMPILER_DEPENDENCY: &str = "[package]\nname = \"rumoca-reference\"\n\n\
+[dependencies]\nrumoca-compile = { workspace = true }\n\n[lints]\nworkspace = true\n";
+    const EXTERNAL_DEPENDENCY: &str = "[package]\nname = \"rumoca-reference\"\n\n\
+[dependencies]\nserde = \"1\"\n\n[lints]\nworkspace = true\n";
+    const DEPENDENCY_SUB_TABLE: &str = "[package]\nname = \"rumoca-reference\"\n\n\
+[dependencies.serde]\nversion = \"1\"\n\n[lints]\nworkspace = true\n";
+    const TARGET_DEPENDENCY: &str = "[package]\nname = \"rumoca-reference\"\n\n\
+[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n\n[lints]\nworkspace = true\n";
+    const COMMENTED_HEADER: &str = "[package]\nname = \"rumoca-reference\"\n\n\
+[dependencies] # production\nrumoca-compile = { workspace = true }\n\n\
+[lints]\nworkspace = true\n";
+    const ROOT_INLINE_TABLE: &str = "dependencies = { serde = \"1\" }\n\n\
+[package]\nname = \"rumoca-reference\"\n\n[lints]\nworkspace = true\n";
+    const RENAMED_COMPILER: &str = "[package]\nname = \"rumoca-reference\"\n\n\
+[dependencies]\npipeline = { package = \"rumoca-compile\", workspace = true }\n\n\
+[lints]\nworkspace = true\n";
+    const DEPENDENCIES_NOT_A_TABLE: &str = "dependencies = \"everything\"\n\n\
+[package]\nname = \"rumoca-reference\"\n\n[lints]\nworkspace = true\n";
+    const SELF_NAMED_PACKAGE: &str = "[package]\nname = \"rumoca-reference\"\n\n\
+[dependencies]\nserde = { package = \"serde\", version = \"1\" }\n\n\
+[lints]\nworkspace = true\n";
+    const UNPARSEABLE: &str = "[package]\nname = \"rumoca-reference\"\n\n\
+[dependencies\nrumoca-compile = { workspace = true }\n";
+    const PINNED_SHAPE: &str = "[package]\nname = \"rumoca-reference\"\n\n# comment\n\
+[dependencies]\n\n[dev-dependencies]\nrumoca-compile = { workspace = true }\n\n\
+[lints]\nworkspace = true\n";
+
+    for (label, manifest) in [
+        ("compiler dependency", COMPILER_DEPENDENCY),
+        ("external dependency", EXTERNAL_DEPENDENCY),
+        ("dependency sub-table", DEPENDENCY_SUB_TABLE),
+        ("target-specific dependency", TARGET_DEPENDENCY),
+        ("comment-suffixed section header", COMMENTED_HEADER),
+        ("root-level inline dependency table", ROOT_INLINE_TABLE),
+        ("renamed compiler dependency", RENAMED_COMPILER),
+        ("non-table dependencies key", DEPENDENCIES_NOT_A_TABLE),
+        ("manifest that does not parse", UNPARSEABLE),
+    ] {
+        assert!(
+            !reference_trusted_base_offences(manifest).is_empty(),
+            "the gate must reject a {label} added to rumoca-reference"
+        );
+    }
+
+    for (label, manifest) in [
+        ("compiler dependency", COMPILER_DEPENDENCY),
+        ("comment-suffixed section header", COMMENTED_HEADER),
+        ("renamed compiler dependency", RENAMED_COMPILER),
+    ] {
+        assert!(
+            reference_trusted_base_offences(manifest)
+                .iter()
+                .any(|offence| offence.contains("rumoca-compile")),
+            "a compiler dependency behind a {label} must be named in the refusal, not merely \
+counted"
+        );
+    }
+
+    assert!(
+        reference_trusted_base_offences(RENAMED_COMPILER)
+            .iter()
+            .any(|offence| offence.contains("`pipeline`")),
+        "a rename must be refused under its alias as well as under the package it resolves to, \
+so the offence list can be read against the manifest text"
+    );
+    assert!(
+        reference_trusted_base_offences(COMPILER_DEPENDENCY)
+            .iter()
+            .any(|offence| offence.contains("compiler crate")),
+        "a compiler dependency and an unallowlisted external crate break two different rules of \
+SPEC_0037 §5, and the refusal must say which one"
+    );
+
+    assert_eq!(
+        reference_trusted_base_offences(SELF_NAMED_PACKAGE),
+        vec!["production dependency `serde` is not allowlisted".to_string()],
+        "a `package` key repeating its own alias names one crate, so it must be refused once"
+    );
+
+    assert!(
+        reference_trusted_base_offences(UNPARSEABLE)
+            .iter()
+            .any(|offence| offence.contains("does not parse")),
+        "text the gate cannot parse must refuse with a parse diagnostic, so an unreadable \
+manifest reads as a failure rather than as a clean one"
+    );
+    assert!(
+        reference_keeps_compiler_dev_dependency(UNPARSEABLE).is_err(),
+        "the dev-dependency guard must also refuse text it cannot parse"
+    );
+
+    assert_eq!(
+        reference_trusted_base_offences(PINNED_SHAPE),
+        Vec::<String>::new(),
+        "the shipped manifest shape must pass, or the gate cannot tell growth from it"
+    );
+    assert_eq!(
+        reference_keeps_compiler_dev_dependency(PINNED_SHAPE),
+        Ok(()),
+        "the shipped manifest shape must satisfy the dev-dependency guard"
+    );
+    assert!(
+        reference_keeps_compiler_dev_dependency(COMPILER_DEPENDENCY).is_err(),
+        "moving the compiler dependency out of [dev-dependencies] must refuse, so the pinned \
+production set cannot be satisfied by a manifest whose harness no longer runs"
+    );
+}

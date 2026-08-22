@@ -48,7 +48,7 @@ struct KaniProof {
     source: String,
     claims: Vec<String>,
     selection: ProofSelection,
-    /// Trusted premises the harness relies on, required by SPEC_0037:256.
+    /// Trusted premises the harness relies on, required by SPEC_0037 §3a.
     assumptions: Vec<String>,
     bound: ProofBound,
     covers: u32,
@@ -294,7 +294,7 @@ fn validate_selection(proof: &KaniProof) -> Result<()> {
     Ok(())
 }
 
-/// SPEC_0037:256 requires every manifest entry to identify the trusted
+/// SPEC_0037 §3a requires every manifest entry to identify the trusted
 /// premises under which its property holds, so an entry without at least one
 /// non-empty assumption is inadmissible.
 fn validate_assumptions(proof: &KaniProof) -> Result<()> {

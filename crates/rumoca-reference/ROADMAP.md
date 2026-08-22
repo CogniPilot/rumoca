@@ -9,12 +9,11 @@ The governing spec is
 added this crate moved it from `archive/deferred/` to `DRAFT`, because a source
 file may only cite an active spec — that status change is **provisional and
 awaiting maintainer sign-off**, and `DRAFT` means work has started under it, not
-that any claim in it holds. SPEC_0037's adoption sequence puts "Initialization
-and discrete events" at **V2**, which is the slice implemented here, and its
-promotion criteria list "One IR semantics implemented — executable formal
-definition" as a requirement. This crate is a candidate for that criterion; the
-criterion also wants a proof assistant selected by maintainer vote, and that has
-not happened.
+that any claim in it holds. SPEC_0037 §5 names this crate the definitional
+semantics, and its promotion criteria list "One IR semantics implemented" as a
+requirement, with an executable formal definition as the evidence. This crate
+is a candidate for that criterion; the criterion also wants a proof assistant
+selected by maintainer vote, and that has not happened.
 
 ## What slice 1 established
 
@@ -172,8 +171,8 @@ roughly:
 
 Rows whose statement is a property of the *semantics* can become lemmas about
 the Lean model. Rows whose statement is a property of the *compiler* cannot —
-they need a refinement theorem between the compiler and the model, which is
-SPEC_0037's per-phase obligation, not this crate's.
+they need a refinement theorem between the compiler and the model, which
+SPEC_0037 §1 assigns to translation validation, not to this crate.
 
 | Row | Becomes |
 |---|---|
@@ -201,12 +200,11 @@ narrowly:
 > theorem, and until one exists a `MachineChecked` row must also carry a
 > `Test` pin like an `Enforced` one.
 
-That last sentence is the load-bearing one. SPEC_0037 is explicit that
-"OMC/MSL parity, fuzzing, property tests, and differential traces remain
-validation evidence for the formal definitions. They are not proof evidence" —
-so a status that let a proof about the *model* be read as a claim about the
-*compiler* would be exactly the overstatement SPEC_0037's trusted-computing-base
-section exists to prevent.
+That last sentence is the load-bearing one. SPEC_0037 §5 is explicit that
+differential agreement is validation evidence and not proof evidence, so a
+status that let a proof about the *model* be read as a claim about the
+*compiler* would be exactly the overstatement SPEC_0037 §6's
+trusted-computing-base rules exist to prevent.
 
 Adding the variant needs, at minimum: the proof-assistant version pinned in the
 build manifest, a reproducible proof CI job with a bounded runtime (SPEC_0037
