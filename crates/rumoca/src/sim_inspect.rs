@@ -68,7 +68,7 @@ pub(crate) fn run_structure_dump(dae: &Dae, model: &str, solver_mode: SimSolverM
             if let Ok(Some(diagnosis)) = rumoca_sim::diagnose_structural_singularity(dae, &opts) {
                 print_singularity_diagnosis(&diagnosis);
             }
-            return Err(anyhow::Error::msg(error));
+            return Err(crate::cli::simulation_failure_error(&error));
         }
     };
 
@@ -143,7 +143,7 @@ pub(crate) fn run_jacobian(
     };
     // One lowering for both Jacobians (lowering can dominate on large models).
     let probe = rumoca_sim::state_and_parameter_jacobian_for_dae(dae, &opts, &overrides, t)
-        .map_err(anyhow::Error::msg)?;
+        .map_err(|error| crate::cli::simulation_failure_error(&error))?;
     let report = &probe.state;
     let param = &probe.parameter;
 
@@ -279,7 +279,7 @@ pub(crate) fn run_objective_gradient(
     } else {
         rumoca_sim::steady_state_objective_gradient_for_dae(dae, &opts, &overrides, objective, t)
     }
-    .map_err(anyhow::Error::msg)?;
+    .map_err(|error| crate::cli::simulation_failure_error(&error))?;
     let report = &probe.report;
     let mode = if adjoint { "adjoint" } else { "forward" };
 
@@ -348,7 +348,8 @@ pub(crate) fn run_eval_at(
     // Enable NaN tracing so the runtime also names offending variables (with
     // source spans) during the eval; the report below names them as well.
     nan_trace::set_nan_trace(true);
-    let probe = eval_dae_at(dae, &opts, &overrides, t).map_err(anyhow::Error::msg);
+    let probe = eval_dae_at(dae, &opts, &overrides, t)
+        .map_err(|error| crate::cli::simulation_failure_error(&error));
     nan_trace::set_nan_trace(false);
     let probe = probe?;
     let report = &probe.report;

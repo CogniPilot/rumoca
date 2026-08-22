@@ -270,6 +270,16 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
+    /// Number of scalar lanes one value of this type occupies once packed.
+    ///
+    /// This is `ValueType::scalar_count` for every non-record type. A record
+    /// has no scalar count of its own, so consumers that must lay one out in a
+    /// scalar execution buffer, such as a loop-carried tuple, use the packed
+    /// width of its fields instead.
+    pub fn packed_scalar_count(self, id: ValueTypeId<'dae>) -> Option<usize> {
+        self.packed_value_count(id)
+    }
+
     fn packed_value_count(self, id: ValueTypeId<'dae>) -> Option<usize> {
         let value_type = self.value_type(id)?;
         if !value_type.is_record() {

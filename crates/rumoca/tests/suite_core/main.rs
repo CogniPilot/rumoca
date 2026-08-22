@@ -43,6 +43,7 @@ mod forward_param_jacobian_test;
 mod function_conditional_sequence_test;
 mod function_inner_index_slice_compaction;
 mod function_input_shadow_state_test;
+mod function_loop_carried_record;
 mod function_loop_carried_scalar;
 mod function_loop_reduction_checked;
 mod function_loop_snapshot_test;

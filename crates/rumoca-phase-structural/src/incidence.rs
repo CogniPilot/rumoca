@@ -435,7 +435,7 @@ fn projection_span(error: &rumoca_eval_dae::ProjectionError) -> rumoca_core::Spa
         | rumoca_eval_dae::ProjectionError::IndexOutOfBounds { span, .. }
         | rumoca_eval_dae::ProjectionError::IntegerOverflow { span }
         | rumoca_eval_dae::ProjectionError::FunctionRecursion { span }
-        | rumoca_eval_dae::ProjectionError::UnsupportedRecordOperation { span }
+        | rumoca_eval_dae::ProjectionError::UnsupportedRecordOperation { span, .. }
         | rumoca_eval_dae::ProjectionError::ExternalFunction { span, .. } => *span,
     }
 }

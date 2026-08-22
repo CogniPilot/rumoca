@@ -1831,9 +1831,12 @@ fn print_summary(model: &str, result: &CompilationResult) {
 /// `anyhow::Error::msg` drops the code, leaving a CLI user with no triage
 /// handle for a defect the LSP reports by code.
 ///
-/// Shared with the value-returning `sim` entry point (`cli::value`) so both
-/// surfaces render one identity for the same failure.
-fn simulation_failure_error(error: &rumoca_sim::SimulationDiagnosticError) -> anyhow::Error {
+/// Shared with the value-returning `sim` entry point (`cli::value`) and with
+/// the `--inspect` dumps in [`crate::sim_inspect`], so every surface renders
+/// one identity for the same failure.
+pub(crate) fn simulation_failure_error(
+    error: &rumoca_sim::SimulationDiagnosticError,
+) -> anyhow::Error {
     anyhow::anyhow!("[{}] {error}", error.diagnostic_code())
 }
 

@@ -23,8 +23,14 @@ pub enum ProjectionError {
     IntegerOverflow { span: Span },
     #[error("function scalar projection exceeded the checked recursion limit")]
     FunctionRecursion { span: Span },
-    #[error("record field projection has no checked aggregate definition")]
-    UnsupportedRecordOperation { span: Span },
+    #[error(
+        "record field `{target}` cannot be read one field at a time: its value comes from {operation}, which this compiler does not project per record field"
+    )]
+    UnsupportedRecordOperation {
+        target: String,
+        operation: &'static str,
+        span: Span,
+    },
     #[error(
         "external {language} function `{name}` calls `{symbol}`, which this runtime cannot execute"
     )]
@@ -51,6 +57,44 @@ fn external_projection_error(
         language: external.language().as_str(),
         symbol: external.symbol().to_string(),
         span,
+    }
+}
+
+/// Report a record value whose definition projection cannot split per field.
+///
+/// The rejected value is named the way the source names it, `Record.field`
+/// where the DAE retained both names, so a reader can find the declaration
+/// without reading IR. The definition form is named too, because that is what
+/// decides whether the source has to change or the compiler does.
+fn unsupported_record_operation(node: dae::ExpressionView<'_>, field: usize) -> ProjectionError {
+    let value_type = node.value_type();
+    let target = match (
+        value_type.record_name(),
+        value_type.record_field_name(field),
+    ) {
+        (Some(record), Some(name)) => format!("{record}.{name}"),
+        (Some(record), None) => format!("{record} field {field}"),
+        (None, Some(name)) => name.to_string(),
+        (None, None) => format!("field {field}"),
+    };
+    ProjectionError::UnsupportedRecordOperation {
+        target,
+        operation: record_definition_form(node.operation()),
+        span: node.provenance().span(),
+    }
+}
+
+/// Name the definition form a record field projection could not look through.
+const fn record_definition_form(operation: dae::ExpressionOperation<'_>) -> &'static str {
+    match operation {
+        dae::ExpressionOperation::Field { .. } => "a field of an enclosing record",
+        dae::ExpressionOperation::Coordinate(_) => "a coordinate of the model",
+        dae::ExpressionOperation::Builtin { .. } => "a built-in operator result",
+        dae::ExpressionOperation::Binary { .. } | dae::ExpressionOperation::Unary { .. } => {
+            "an arithmetic result"
+        }
+        dae::ExpressionOperation::ClockTransfer { .. } => "a clocked transfer",
+        _ => "a definition form record projection does not cover",
     }
 }
 
@@ -126,6 +170,7 @@ struct FunctionFoldDependency {
     function: u32,
     fold: u32,
     carried: u32,
+    field: Option<usize>,
     scalar: usize,
 }
 
@@ -230,7 +275,7 @@ where
             }
             dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. }
             | dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
-                self.function_fold_dependency(fold, carried, scalar_index)
+                self.function_fold_dependency(fold, carried, None, scalar_index)
             }
             dae::ExpressionOperation::Index { base, subscripts } => {
                 match self.indexed_base_scalar(
@@ -297,16 +342,24 @@ where
         .then_some(node))
     }
 
+    /// Visit the coordinates one carried loop value depends on.
+    ///
+    /// `field` selects a record field ordinal of the carried value; `None`
+    /// projects the carried value itself. A record-typed carry has no scalar
+    /// view of its own, so its readers reach it through this field-projected
+    /// entry instead.
     fn function_fold_dependency(
         &mut self,
         fold: dae::FunctionFoldId<'dae>,
         carried: u32,
+        field: Option<usize>,
         scalar: usize,
     ) -> Result<(), ProjectionError> {
         let dependency = FunctionFoldDependency {
             function: fold.function().index(),
             fold: fold.ordinal(),
             carried,
+            field,
             scalar,
         };
         if !self.function_fold_active.insert(dependency.clone()) {
@@ -322,7 +375,7 @@ where
             .rhs(carried)
             .expect("checked fold carried ordinal has an initial value");
         let projected = (|| {
-            self.expression(initial, scalar)?;
+            self.projected_value(initial, field, scalar)?;
             let domain = self
                 .view
                 .domain(fold_view.domain())
@@ -337,13 +390,26 @@ where
                 .expect("checked fold domain remains representable");
             for point in points {
                 self.domain_points.push((fold_view.domain(), point));
-                self.expression(update, scalar)?;
+                self.projected_value(update, field, scalar)?;
                 self.domain_points.pop();
             }
             Ok(())
         })();
         self.function_fold_active.remove(&dependency);
         projected
+    }
+
+    /// Project either one scalar of a value or one scalar of a record field.
+    fn projected_value(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        field: Option<usize>,
+        scalar: usize,
+    ) -> Result<(), ProjectionError> {
+        match field {
+            Some(field) => self.record_field(expression, field, scalar),
+            None => self.expression(expression, scalar),
+        }
     }
 
     fn emit_coordinate(&mut self, coordinate: dae::CoordinateView<'dae>, scalar: usize) {
@@ -638,6 +704,13 @@ where
         scalar_index: usize,
     ) -> Result<(), ProjectionError> {
         let node = self.node(expression);
+        // A fold boundary owns its own re-entry guard, the same way
+        // `expression_to_project` treats one.
+        if let dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. }
+        | dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } = node.operation()
+        {
+            return self.function_fold_dependency(fold, carried, Some(field), scalar_index);
+        }
         if !self.visit_function_expression_once(expression, Some(field), scalar_index) {
             return Ok(());
         }
@@ -711,9 +784,7 @@ where
                 self.all_record_field_scalars(value, field)?;
                 self.subscripts(subscripts)
             }
-            _ => Err(ProjectionError::UnsupportedRecordOperation {
-                span: node.provenance().span(),
-            }),
+            _ => Err(unsupported_record_operation(node, field)),
         }
     }
 

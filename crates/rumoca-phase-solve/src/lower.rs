@@ -988,7 +988,7 @@ fn manifold_state_slots<'dae>(
             | rumoca_eval_dae::ProjectionError::IndexOutOfBounds { span, .. }
             | rumoca_eval_dae::ProjectionError::IntegerOverflow { span }
             | rumoca_eval_dae::ProjectionError::FunctionRecursion { span }
-            | rumoca_eval_dae::ProjectionError::UnsupportedRecordOperation { span }
+            | rumoca_eval_dae::ProjectionError::UnsupportedRecordOperation { span, .. }
             | rumoca_eval_dae::ProjectionError::ExternalFunction { span, .. } => *span,
         };
         LowerError::non_computable(error.to_string(), span)
@@ -2640,11 +2640,15 @@ fn checked_index(index: i64, extent: u32, span: Span) -> Result<u32, LowerError>
     Ok(u32::try_from(index - 1).expect("positive in-range u32 index"))
 }
 
+/// Number of scalar registers one value of this expression occupies.
+///
+/// A record value is laid out as the packed lanes of its fields, so a record
+/// expression reports that packed width rather than having no scalar view.
 fn scalar_count<'dae>(view: dae::DaeView<'dae>, expression: dae::ExprId<'dae>) -> usize {
-    view.expression(expression)
-        .expect("branded expression resolves")
-        .value_type()
-        .scalar_count()
+    let node = view
+        .expression(expression)
+        .expect("branded expression resolves");
+    view.packed_scalar_count(node.value_type_id())
         .expect("checked expression scalar capacity")
 }
 

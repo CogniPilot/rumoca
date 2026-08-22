@@ -1695,6 +1695,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             } => self.record_array_update_field(
                 expression, base, value, subscripts, field, scalar, span,
             ),
+            dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => {
+                let lane = self.packed_lane_of_record_field(expression, field, scalar, span)?;
+                self.function_fold_parameter(fold, carried, lane, span)
+            }
+            dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
+                let lane = self.packed_lane_of_record_field(expression, field, scalar, span)?;
+                self.function_fold_output(fold, carried, lane, span)
+            }
             _ => Err(LowerError::contract(
                 "record field has no checked aggregate definition",
                 span,
@@ -2120,6 +2128,85 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .expect("checked record projection has a finite field layout")
     }
 
+    /// Lower one packed lane of a value.
+    ///
+    /// A record value has no scalar view of its own; its lanes are the packed
+    /// lanes of its fields, in field order within each array element. A
+    /// loop-carried tuple lays every carried value out this way, so a
+    /// record-typed carry is reached one field lane at a time.
+    pub(super) fn packed_lane(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        lane: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        if !self.node(expression).value_type().is_record() {
+            return self.expression(expression, lane);
+        }
+        let (field, scalar) = self.record_field_of_packed_lane(expression, lane, span)?;
+        self.record_field(expression, field, scalar, span)
+    }
+
+    /// Split one packed lane of a record value into its field ordinal and the
+    /// scalar index of that field.
+    fn record_field_of_packed_lane(
+        &self,
+        expression: dae::ExprId<'dae>,
+        lane: usize,
+        span: Span,
+    ) -> Result<(usize, usize), LowerError> {
+        let node = self.node(expression);
+        let field_count = node.value_type().record_field_count();
+        let out_of_range = || LowerError::contract("record packed lane is out of range", span);
+        let first = self
+            .view
+            .record_field_layout(node.value_type_id(), 0)
+            .ok_or_else(out_of_range)?;
+        let record_width = first.record_width();
+        if record_width == 0 || lane >= first.outer_count() * record_width {
+            return Err(out_of_range());
+        }
+        let element = lane / record_width;
+        let offset = lane % record_width;
+        for field in 0..field_count {
+            let layout = self
+                .view
+                .record_field_layout(node.value_type_id(), field)
+                .ok_or_else(out_of_range)?;
+            if offset < layout.field_offset()
+                || offset >= layout.field_offset() + layout.field_width()
+            {
+                continue;
+            }
+            let scalar = element * layout.field_width() + (offset - layout.field_offset());
+            return Ok((field, scalar));
+        }
+        Err(out_of_range())
+    }
+
+    /// Locate one scalar of one record field within the record's packed lanes.
+    fn packed_lane_of_record_field(
+        &self,
+        expression: dae::ExprId<'dae>,
+        field: usize,
+        scalar: usize,
+        span: Span,
+    ) -> Result<usize, LowerError> {
+        let layout = self
+            .view
+            .record_field_layout(self.node(expression).value_type_id(), field)
+            .ok_or_else(|| LowerError::contract("record field has no finite layout", span))?;
+        if layout.field_width() == 0 || scalar >= layout.outer_count() * layout.field_width() {
+            return Err(LowerError::contract(
+                "record field scalar is out of range",
+                span,
+            ));
+        }
+        let element = scalar / layout.field_width();
+        let offset = scalar % layout.field_width();
+        Ok(element * layout.record_width() + layout.field_offset() + offset)
+    }
+
     // SPEC_0021: Exception - exhaustive top-level lowering of one checked function fold.
     #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
     pub(super) fn function_fold_output(
@@ -2148,7 +2235,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .rhs_iter()
             .map(|initial| {
                 (0..scalar_count(self.view, initial))
-                    .map(|element| self.expression(initial, element))
+                    .map(|element| self.packed_lane(initial, element, span))
                     .collect::<Result<Vec<_>, _>>()
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -2216,7 +2303,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             )? && !update.compact_nested_fold_output(fold, carried, expression, width, span)?
             {
                 for element in 0..width {
-                    let output = update.expression(expression, element)?;
+                    let output = update.packed_lane(expression, element, span)?;
                     update
                         .ops
                         .push(solve::LinearOp::StoreOutput { src: output });
@@ -2336,7 +2423,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .iter()
             .map(|&initial| {
                 (0..scalar_count(self.view, initial))
-                    .map(|element| self.expression(initial, element))
+                    .map(|element| self.packed_lane(initial, element, span))
                     .collect::<Result<Vec<_>, _>>()
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -2425,7 +2512,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 && update.compact_nested_fold_output(fold, carried, expression, width, span)?;
             if !compact_tensor && !compact_nested {
                 for element in 0..scalar_width {
-                    let output = update.expression(expression, element)?;
+                    let output = update.packed_lane(expression, element, span)?;
                     update
                         .ops
                         .push(solve::LinearOp::StoreOutput { src: output });
@@ -2578,7 +2665,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 initial.push(solve::FoldInitialSource::ParentCarried { base, count });
             } else {
                 let registers = (0..count)
-                    .map(|scalar| self.expression(expression, scalar))
+                    .map(|scalar| self.packed_lane(expression, scalar, span))
                     .collect::<Result<Vec<_>, _>>()?;
                 initial.push(solve::FoldInitialSource::Registers {
                     start: self.pack_fold_registers(&registers, span)?,
@@ -2706,7 +2793,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 && update.compact_nested_fold_output(fold, carried, expression, width, span)?;
             if !compact_tensor && !compact_nested {
                 for element in 0..scalar_width {
-                    let output = update.expression(expression, element)?;
+                    let output = update.packed_lane(expression, element, span)?;
                     update
                         .ops
                         .push(solve::LinearOp::StoreOutput { src: output });
