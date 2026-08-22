@@ -28,8 +28,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             })
             .transpose()?
             .map(std::sync::Arc::<[solve::LinearOp]>::from);
+        let message_owner = AssertionMessageOwner::Specialized {
+            call,
+            function,
+            registered,
+        };
         for (output_offset, assertion) in registered.assertions.iter().enumerate() {
-            let message = self.literal_assertion_message(assertion.message, call_span)?;
+            let message = self.assertion_message(&message_owner, assertion.message, call_span)?;
             self.insert_assertion(
                 root_program
                     .as_ref()
@@ -264,7 +269,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         provenance: dae::DaeProvenance,
         call_span: Span,
     ) -> Result<(), LowerError> {
-        let message = self.literal_assertion_message(message, call_span)?;
+        let message =
+            self.assertion_message(&AssertionMessageOwner::TextOnly, message, call_span)?;
         let root_program = self
             .active_clock
             .is_none()
@@ -283,7 +289,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         provenance: dae::DaeProvenance,
         call_span: Span,
     ) -> Result<(), LowerError> {
-        let message = self.literal_assertion_message(message, call_span)?;
+        let message =
+            self.assertion_message(&AssertionMessageOwner::TextOnly, message, call_span)?;
         let root_program = self
             .active_clock
             .is_none()
@@ -298,7 +305,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         &self,
         root_program: Option<CollectedCallAssertionRoot>,
         action_program: CollectedCallAssertionProgram<'dae>,
-        message: String,
+        message: solve::SolveEventMessage,
         provenance: dae::DaeProvenance,
         projection: Option<CallAssertionProjection>,
     ) -> Result<(), LowerError> {
@@ -310,9 +317,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 action_program,
                 action: solve::SolveEventAction {
                     kind: solve::SolveEventActionKind::Assert,
-                    message: solve::SolveEventMessage {
-                        parts: vec![solve::SolveEventMessagePart::Text(message)],
-                    },
+                    message,
                     span: provenance.span(),
                     origin: provenance.origin().to_string(),
                     clock_owner: None,
@@ -661,25 +666,301 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler
     }
 
-    fn literal_assertion_message(
+    fn assertion_message(
         &self,
+        owner: &AssertionMessageOwner<'_, 'dae>,
         message: dae::ExprId<'dae>,
         call_span: Span,
-    ) -> Result<String, LowerError> {
-        let expression = self
-            .view
-            .expression(message)
-            .expect("checked function assertion message resolves");
-        match expression.operation() {
-            dae::ExpressionOperation::Literal(dae::DaeLiteral::String(message)) => {
-                Ok(message.clone())
+    ) -> Result<solve::SolveEventMessage, LowerError> {
+        let mut parts = Vec::new();
+        self.push_assertion_message_parts(owner, message, call_span, &mut parts)?;
+        Ok(solve::SolveEventMessage { parts })
+    }
+
+    fn push_assertion_message_parts(
+        &self,
+        owner: &AssertionMessageOwner<'_, 'dae>,
+        message: dae::ExprId<'dae>,
+        call_span: Span,
+        parts: &mut Vec<solve::SolveEventMessagePart>,
+    ) -> Result<(), LowerError> {
+        let node = self.node(message);
+        match node.operation() {
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::String(text)) => {
+                parts.push(solve::SolveEventMessagePart::Text(text.clone()));
+                Ok(())
             }
-            _ => Err(LowerError::non_computable(
-                "call-scoped assertion messages with runtime conversions do not yet have a call-specialized Solve schedule",
-                call_span,
+            dae::ExpressionOperation::Binary {
+                operator: dae::BinaryOperator::Add,
+                lhs,
+                rhs,
+            } if node.value_type().scalar_type() == dae::ScalarType::String => {
+                self.push_assertion_message_parts(owner, lhs, call_span, parts)?;
+                self.push_assertion_message_parts(owner, rhs, call_span, parts)
+            }
+            dae::ExpressionOperation::StringConversion { value, format, .. } => {
+                parts.push(self.assertion_message_conversion(owner, value, format, call_span)?);
+                Ok(())
+            }
+            _ => Err(LowerError::unsupported(
+                "a function-assertion message requires String literals, concatenation, or checked String conversions",
+                node.provenance().span(),
             )),
         }
     }
+
+    fn assertion_message_conversion(
+        &self,
+        owner: &AssertionMessageOwner<'_, 'dae>,
+        value: dae::ExprId<'dae>,
+        format: dae::StringConversionFormatView<'dae>,
+        call_span: Span,
+    ) -> Result<solve::SolveEventMessagePart, LowerError> {
+        let source = self.assertion_message_source(value)?;
+        let value = self.assertion_message_value_program(owner, value, call_span)?;
+        let format = self.assertion_message_format(owner, format, call_span)?;
+        Ok(solve::SolveEventMessagePart::Conversion {
+            value,
+            source,
+            format,
+        })
+    }
+
+    fn assertion_message_source(
+        &self,
+        value: dae::ExprId<'dae>,
+    ) -> Result<solve::SolveStringConversionSource, LowerError> {
+        let node = self.node(value);
+        match node.value_type().scalar_type() {
+            dae::ScalarType::Real => Ok(solve::SolveStringConversionSource::Real),
+            dae::ScalarType::Integer => Ok(solve::SolveStringConversionSource::Integer),
+            dae::ScalarType::Boolean => Ok(solve::SolveStringConversionSource::Boolean),
+            dae::ScalarType::Enumeration | dae::ScalarType::String | dae::ScalarType::Record => {
+                Err(LowerError::unsupported(
+                    "a function-assertion message converts only Real, Integer, and Boolean values",
+                    node.provenance().span(),
+                ))
+            }
+        }
+    }
+
+    fn assertion_message_format(
+        &self,
+        owner: &AssertionMessageOwner<'_, 'dae>,
+        format: dae::StringConversionFormatView<'dae>,
+        call_span: Span,
+    ) -> Result<solve::SolveStringConversionFormat, LowerError> {
+        match format {
+            dae::StringConversionFormatView::Options {
+                minimum_length,
+                left_justified,
+                significant_digits,
+            } => Ok(solve::SolveStringConversionFormat::Options {
+                minimum_length: self.assertion_message_option(owner, minimum_length, call_span)?,
+                left_justified: self.assertion_message_option(owner, left_justified, call_span)?,
+                significant_digits: self.assertion_message_option(
+                    owner,
+                    significant_digits,
+                    call_span,
+                )?,
+            }),
+            dae::StringConversionFormatView::Format { value } => Err(LowerError::unsupported(
+                "an explicit String format is not representable in a function-assertion message",
+                self.node(value).provenance().span(),
+            )),
+        }
+    }
+
+    fn assertion_message_option(
+        &self,
+        owner: &AssertionMessageOwner<'_, 'dae>,
+        value: Option<dae::ExprId<'dae>>,
+        call_span: Span,
+    ) -> Result<Option<Vec<solve::LinearOp>>, LowerError> {
+        value
+            .map(|value| self.assertion_message_value_program(owner, value, call_span))
+            .transpose()
+    }
+
+    /// One standalone program for a converted assertion-message value.
+    ///
+    /// Evaluators run it only while rendering an action that already fired, so
+    /// the value stays inside that failure and no nested effect is scheduled as
+    /// an unconditional call-scoped row.
+    fn assertion_message_value_program(
+        &self,
+        owner: &AssertionMessageOwner<'_, 'dae>,
+        value: dae::ExprId<'dae>,
+        call_span: Span,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        match owner {
+            AssertionMessageOwner::TextOnly => Err(LowerError::unsupported(
+                "a function assertion without a call-specialized schedule renders only literal message text",
+                self.node(value).provenance().span(),
+            )),
+            AssertionMessageOwner::Specialized {
+                call,
+                function,
+                registered,
+            } => self
+                .specialized_message_value_program(*call, *function, registered, value, call_span),
+        }
+    }
+
+    /// SOLVE-C25: a converted message value projects the same shared pure-call
+    /// owner the root and action projections consume.
+    fn specialized_message_value_program(
+        &self,
+        call: dae::ExprId<'dae>,
+        function: dae::FunctionId<'dae>,
+        registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
+        value: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        let arguments = match self.node(call).operation() {
+            dae::ExpressionOperation::Call { arguments, .. } => arguments,
+            _ => {
+                return Err(LowerError::contract(
+                    "typed pure-call assertion message owner is not a call expression",
+                    span,
+                ));
+            }
+        };
+        let mut compiler = self.fork_for_call_action();
+        compiler.call_action_compilation = true;
+        let (start, replayed) = compiler
+            .emit_typed_pure_call(call, function, arguments, span)?
+            .ok_or_else(|| {
+                LowerError::contract(
+                    "typed pure-call assertion message lost its issued invocation",
+                    span,
+                )
+            })?;
+        if replayed.owner != registered.owner || replayed.site != registered.site {
+            return Err(LowerError::contract(
+                "typed pure-call assertion message changed its issued owner",
+                span,
+            ));
+        }
+        let register =
+            compiler.specialized_message_register(start, registered, function, arguments, value)?;
+        compiler
+            .ops
+            .push(solve::LinearOp::StoreOutput { src: register });
+        Ok(compiler.ops)
+    }
+
+    fn specialized_message_register(
+        &mut self,
+        start: solve::Reg,
+        registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
+        function: dae::FunctionId<'dae>,
+        arguments: dae::ExpressionOperands<'dae>,
+        value: dae::ExprId<'dae>,
+    ) -> Result<solve::Reg, LowerError> {
+        let node = self.node(value);
+        let span = node.provenance().span();
+        match node.operation() {
+            dae::ExpressionOperation::Literal(literal) => {
+                self.specialized_message_literal(literal, span)
+            }
+            dae::ExpressionOperation::FunctionValue { definition, .. } => {
+                self.specialized_message_result(start, registered, function, definition, span)
+            }
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
+                parameter,
+            )) if parameter.function() == function => {
+                let argument = arguments.get(parameter.ordinal() as usize).ok_or_else(|| {
+                    LowerError::contract(
+                        "call-specialized assertion message parameter has no checked argument",
+                        span,
+                    )
+                })?;
+                self.pack_expression(argument)
+            }
+            _ => Err(LowerError::unsupported(
+                "a call-specialized assertion message converts only a declared result of its own call, one of that call's arguments, or a literal",
+                span,
+            )),
+        }
+    }
+
+    fn specialized_message_literal(
+        &mut self,
+        literal: &dae::DaeLiteral,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        match literal {
+            dae::DaeLiteral::Real(value) => self.constant(*value, span),
+            dae::DaeLiteral::Integer(value) => self.constant(*value as f64, span),
+            dae::DaeLiteral::Boolean(value) => self.constant(f64::from(u8::from(*value)), span),
+            dae::DaeLiteral::Enumeration(_) | dae::DaeLiteral::String(_) => {
+                Err(LowerError::unsupported(
+                    "a call-specialized assertion message converts only Real, Integer, and Boolean literals",
+                    span,
+                ))
+            }
+        }
+    }
+
+    fn specialized_message_result(
+        &self,
+        start: solve::Reg,
+        registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
+        function: dae::FunctionId<'dae>,
+        definition: dae::FunctionDefinitionView<'dae>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let results = self
+            .view
+            .function(function)
+            .ok_or_else(|| {
+                LowerError::contract("assertion message function identity does not resolve", span)
+            })?
+            .result_values();
+        let index = results
+            .iter()
+            .position(|result| result.id() == definition.id())
+            .ok_or_else(|| {
+                LowerError::unsupported(
+                    "a call-specialized assertion message converts only a declared result of its own call",
+                    span,
+                )
+            })?;
+        let range = registered.result_ranges.get(index).ok_or_else(|| {
+            LowerError::contract(
+                "call-specialized assertion message result has no owner projection",
+                span,
+            )
+        })?;
+        if range.len() != 1 {
+            return Err(LowerError::unsupported(
+                "a call-specialized assertion message converts only scalar results",
+                span,
+            ));
+        }
+        u32::try_from(range.start)
+            .ok()
+            .and_then(|offset| start.checked_add(offset))
+            .ok_or_else(|| {
+                LowerError::contract(
+                    "call-specialized assertion message register overflows",
+                    span,
+                )
+            })
+    }
+}
+
+/// Evaluation owner a function-assertion message renders against.
+enum AssertionMessageOwner<'call, 'dae> {
+    /// The shared pure-call owner named by SOLVE-C25.
+    Specialized {
+        call: dae::ExprId<'dae>,
+        function: dae::FunctionId<'dae>,
+        registered: &'call crate::lower::typed_functions::RegisteredCall<'dae>,
+    },
+    /// No call-specialized owner exists, so no converted value is projectable.
+    TextOnly,
 }
 
 fn has_assertion(statements: dae::FunctionStatements<'_>) -> bool {

@@ -1693,7 +1693,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 value,
                 subscripts,
             } => self.record_array_update_field(
-                expression, base, value, subscripts, field, scalar, span,
+                expression,
+                ArrayUpdateOperands {
+                    base,
+                    value,
+                    subscripts,
+                },
+                field,
+                scalar,
+                span,
             ),
             dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => {
                 let lane = self.packed_lane_of_record_field(expression, field, scalar, span)?;
@@ -2002,9 +2010,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     indexed,
                     base,
                     subscripts,
-                    field,
-                    record_scalar,
-                    field_scalar,
+                    RecordFieldScalar {
+                        field,
+                        element: record_scalar,
+                        scalar: field_scalar,
+                    },
                     span,
                 )
             }
@@ -2012,18 +2022,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn dynamic_indexed_record_field(
         &mut self,
         indexed: dae::ExprId<'dae>,
         base: dae::ExprId<'dae>,
         subscripts: dae::SubscriptsView<'dae>,
-        field: usize,
-        record_scalar: usize,
-        field_scalar: usize,
+        target: RecordFieldScalar,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        let RecordFieldScalar {
+            field,
+            element: record_scalar,
+            scalar: field_scalar,
+        } = target;
         let result_dimensions = self.node(indexed).value_type().dimensions();
         let base_dimensions = self.node(base).value_type().dimensions().to_vec();
         if !result_dimensions.is_empty()
@@ -2069,18 +2080,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(dst)
     }
 
-    // SPEC_0021: Exception - validated boundary keeps proof-relevant inputs explicit.
-    #[allow(clippy::too_many_arguments)]
     fn record_array_update_field(
         &mut self,
         updated: dae::ExprId<'dae>,
-        base: dae::ExprId<'dae>,
-        value: dae::ExprId<'dae>,
-        subscripts: dae::SubscriptsView<'dae>,
+        update: ArrayUpdateOperands<'dae>,
         field: usize,
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        let ArrayUpdateOperands {
+            base,
+            value,
+            subscripts,
+        } = update;
         let field_width = self.record_layout(updated, field).field_width();
         let base_record = scalar / field_width;
         let field_scalar = scalar % field_width;
@@ -2104,12 +2116,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     || reason == "binder-valued subscript has no active domain" =>
             {
                 self.dynamic_record_field_array_update(
-                    base,
-                    value,
-                    subscripts,
-                    field,
-                    base_record,
-                    field_scalar,
+                    update,
+                    RecordFieldScalar {
+                        field,
+                        element: base_record,
+                        scalar: field_scalar,
+                    },
                     span,
                 )
             }
@@ -4015,14 +4027,18 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let scheduled = self.active_clock.is_none() && !registered.assertions.is_empty();
         if scheduled {
             self.schedule_typed_pure_call_assertions(call, function, &registered, span)
-                .map_err(|error| {
-                    LowerError::non_computable(
+                .map_err(|error| match error {
+                    // A refused feature already names its own construct and
+                    // span; restating it as a specialization failure would
+                    // move the diagnostic away from the source it rejects.
+                    LowerError::Unsupported { .. } => error,
+                    error => LowerError::non_computable(
                         format!(
                             "typed assertions for `{}` could not be specialized: {error}",
                             self.function_name_for_diagnostic(function)
                         ),
                         span,
-                    )
+                    ),
                 })?;
         }
         Ok(scheduled)

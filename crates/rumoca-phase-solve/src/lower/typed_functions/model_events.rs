@@ -261,12 +261,8 @@ impl<'dae> PureCallRegistry<'dae> {
                 .map(|definition| (definition.value, definition.clock)),
         )?;
         let predicate_count = assertions.len();
-        let (coordinate_inputs, inputs, outputs) = event_transaction_interface(
-            view,
-            transaction,
-            coordinate_types,
-            predicate_count,
-        )?;
+        let (coordinate_inputs, inputs, outputs) =
+            event_transaction_interface(view, transaction, coordinate_types, predicate_count)?;
         let identity = self.identities.issue(provenance)?;
         let owner = self.table.add_owner(
             identity,
@@ -450,7 +446,8 @@ fn lower_clock_member_group<'program, 'dae>(
         .enumerate()
         .filter_map(|(index, definition)| (definition.clock == clock).then_some(index))
         .collect::<Vec<_>>();
-    let lowered = activated_assignment_group(lowerer, definitions, &members, activation, provenance)?;
+    let lowered =
+        activated_assignment_group(lowerer, definitions, &members, activation, provenance)?;
     for (index, value) in members.into_iter().zip(lowered) {
         values[index] = Some(value);
     }
