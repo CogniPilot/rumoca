@@ -4225,6 +4225,7 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-galec",
  "rumoca-eval-solve",
+ "rumoca-exec-cranelift",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",

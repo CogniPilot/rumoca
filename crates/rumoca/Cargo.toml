@@ -194,6 +194,12 @@ rumoca-phase-parse = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
 rumoca-eval-solve = { workspace = true }
+# Native side of the interpreter-versus-JIT differential oracle
+# (`tests/suite_core/backend_executor_differential.rs`). `rumoca-sim` already
+# links this crate unconditionally off wasm, so the edge adds no link cost; the
+# test needs the compile entry point by name to drive both executors over one
+# block.
+rumoca-exec-cranelift = { workspace = true }
 # SPEC_0034 GAL-027/GAL-038 independence oracle.
 # `tests/suite_galec_fmu/galec_equivalence.rs`
 # is its consumer: it interprets the same checked AlgorithmCodePackage the
