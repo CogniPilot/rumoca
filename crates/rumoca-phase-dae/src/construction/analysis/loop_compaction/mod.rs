@@ -14,6 +14,21 @@ mod liveness_corpus;
 mod liveness_differential_tests;
 #[cfg(test)]
 mod loop_carry_tests;
+/// The executable preservation theorem for this pass.
+///
+/// [`preservation_differential_tests`] runs every corpus program twice, once as
+/// written and once as [`compact_function_loops`] rewrites it, and requires the
+/// two executions to agree on the function's outputs.
+#[cfg(test)]
+mod preservation_corpus;
+#[cfg(test)]
+mod preservation_differential_tests;
+#[cfg(test)]
+mod preservation_interpreter;
+#[cfg(test)]
+mod preservation_programs;
+#[cfg(test)]
+mod preservation_values;
 mod loop_local_substitution;
 
 use accumulator_reductions::compact_accumulator_loops;
