@@ -14,6 +14,10 @@ mod liveness;
 mod liveness_corpus;
 #[cfg(test)]
 mod liveness_differential_tests;
+/// Enumerated coverage of the alternative join against a non-empty exit set,
+/// the axis [`liveness_differential_tests`] leaves open.
+#[cfg(test)]
+mod liveness_join_tests;
 #[cfg(test)]
 mod loop_carry_tests;
 /// The executable preservation theorem for this pass.

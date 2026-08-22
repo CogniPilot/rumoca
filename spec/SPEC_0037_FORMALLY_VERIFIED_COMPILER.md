@@ -180,6 +180,7 @@ This section is the inventory, and a row moves only with the evidence it names.
 | `advance_event_iteration_lanes` event-history advance | Proven by one Kani harness under a declared unwind bound |
 | Kani driver, manifest schema, pinned verifier, CI job | Scaffolding, exercised by that single manifest entry |
 | Loop-compaction store deletion | L1: differential corpus, no witness gating |
+| Liveness alternatives join | L1 over its whole bounded domain, exit sets included; a bounded L3 harness on it did not finish symbolic execution |
 | DAE wire round trip | Property-tested, not proven |
 | Translation validation | SPEC_0039 defines a witness; no phase yet ships a producer and checker pair under it |
 | Definitional semantics | Slice 1 implemented and differentially validated, not transcribed |
