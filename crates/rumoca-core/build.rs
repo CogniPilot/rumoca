@@ -18,6 +18,21 @@ use std::process::Command;
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
+    // The identity must track the checkout, not the last time this crate
+    // happened to rebuild: a stale constant reports an identity the binary does
+    // not have, which is a false match waiting to happen. HEAD changes on
+    // checkout and commit; the ref file changes on commit to the same branch.
+    for path in ["../../.git/HEAD", "../../.git/index"] {
+        if std::path::Path::new(path).exists() {
+            println!("cargo::rerun-if-changed={path}");
+        }
+    }
+    if let Some(head_ref) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        let ref_path = format!("../../.git/{head_ref}");
+        if std::path::Path::new(&ref_path).exists() {
+            println!("cargo::rerun-if-changed={ref_path}");
+        }
+    }
 
     let identity = commit_identity()
         .map_or_else(|| "None".to_owned(), |value| format!("Some(\"{value}\")"));
