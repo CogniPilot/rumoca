@@ -3,6 +3,7 @@ use rumoca_core::{SourceMap, Span, VarName};
 use super::*;
 
 mod conditional_records;
+mod dynamic_index_bounds;
 mod indexed_updates;
 
 #[test]

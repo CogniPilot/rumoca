@@ -14,6 +14,7 @@ mod expression_array_update;
 mod expression_functions;
 mod expression_helpers;
 mod expression_projection;
+mod local_integer_bounds;
 mod pre_references;
 mod start;
 mod user_functions;
@@ -33,6 +34,7 @@ use rumoca_ir_galec::package::AlgorithmCodePackage;
 
 use clock_schedule::lower_clock_schedule;
 use expression_helpers::*;
+use local_integer_bounds::{ConditionalIntegerBounds, LocalIntegerBounds};
 use pre_references::referenced_pre_variables;
 use start::{StartShape, StartValues};
 
@@ -1152,11 +1154,14 @@ struct ExpressionLowerer<'a, 'dae> {
     array_update_index_locals: HashMap<u32, gast::Name>,
     /// Proven ranges of scalar Integer function locals, keyed by lexeme.
     ///
-    /// Only straight-line assignments contribute, and the map is cleared at
-    /// every nested-block boundary, so an entry always comes from an
-    /// assignment that re-executes before any reader it is used for. A local
-    /// read before its assignment simply has no entry and is refused.
-    local_integer_bounds: HashMap<String, (i64, i64)>,
+    /// The map is the ranges that hold at the current point of the function
+    /// body. A straight-line assignment replaces the entry for its target; a
+    /// conditional replaces the entry for each local it writes with the union
+    /// over its reaching definitions ([`ConditionalIntegerBounds`]); a loop
+    /// drops the entries of the locals its body may write. So an entry always
+    /// bounds every value a reader can observe, and a local read before its
+    /// assignment simply has no entry and is refused.
+    local_integer_bounds: LocalIntegerBounds,
     /// Primitive expression values already committed to a function local.
     ///
     /// Function construction returns the current RHS expression for a later
@@ -1378,7 +1383,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             materialized_function_calls: HashMap::new(),
             materialized_shared_record_fields: HashMap::new(),
             array_update_index_locals: HashMap::new(),
-            local_integer_bounds: HashMap::new(),
+            local_integer_bounds: LocalIntegerBounds::new(),
             assigned_primitive_expressions: HashMap::new(),
             called_user_functions: HashSet::new(),
             function_scope: None,
@@ -1469,43 +1474,6 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     fn drain_prefix_statements(&mut self) -> Vec<gast::Spanned<gast::Statement>> {
         std::mem::take(&mut self.pending_prefix_statements)
-    }
-
-    /// Record the proven range of a scalar Integer local, or forget any range
-    /// previously proven for it when the new value has none.
-    pub(super) fn remember_local_integer_bounds(
-        &mut self,
-        name: gast::Name,
-        value: &gast::Expression,
-    ) {
-        let lexeme = name.lexeme().to_owned();
-        match self.integer_expression_bounds(value) {
-            Some(bounds) => {
-                self.local_integer_bounds.insert(lexeme, bounds);
-            }
-            None => {
-                self.local_integer_bounds.remove(&lexeme);
-            }
-        }
-    }
-
-    /// Forget every proven local range.
-    pub(super) fn forget_local_integer_bounds(&mut self) {
-        self.local_integer_bounds.clear();
-    }
-
-    /// Forget the proven ranges of the locals a nested block may assign.
-    ///
-    /// A range proven outside a loop does not survive into it if the body
-    /// reassigns the local, because a reader would then see a value from a
-    /// previous iteration; and a range proven inside does not survive out,
-    /// because the loop may run zero times. Only the locals the block writes
-    /// are affected: an index established before an inner loop and merely read
-    /// inside it keeps its range, which is the ordinary shape of a back
-    /// substitution walking its right-hand sides.
-    pub(super) fn forget_assigned_local_integer_bounds(&mut self, assigned: &HashSet<String>) {
-        self.local_integer_bounds
-            .retain(|name, _| !assigned.contains(name));
     }
 
     fn finish_statement_group(&mut self) {

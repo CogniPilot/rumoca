@@ -478,9 +478,6 @@ fn lower_function_statement<'a, 'dae>(
                     lowerer,
                     statements,
                 )?;
-                // Same reason as a conditional value assignment: the group may
-                // not run, so nothing it writes is proven afterwards.
-                lowerer.forget_local_integer_bounds();
             } else {
                 for definition in definitions.iter() {
                     lower_function_assignment(view, definition, lowerer, statements)?;
@@ -583,8 +580,10 @@ fn lower_function_conditional_group<'a, 'dae>(
         .map(|condition| condition.index())
         .collect::<Vec<_>>();
     let entry_materialization = lowerer.conditional_materialization_snapshot();
+    let mut reaching_bounds = ConditionalIntegerBounds::enter(lowerer);
     let mut branches = Vec::with_capacity(conditions.len());
     for (ordinal, condition_id) in conditions.into_iter().enumerate() {
+        reaching_bounds.start_arm(lowerer);
         let prefix_start = lowerer.pending_prefix_statements.len();
         let condition = lowerer.lower(condition_id)?;
         let span = view
@@ -628,6 +627,7 @@ fn lower_function_conditional_group<'a, 'dae>(
         }
         lowerer.conditional_activation_path.pop();
         lowerer.restore_conditional_materialization(&condition_materialization);
+        reaching_bounds.finish_arm(lowerer);
         branches.push(LoweredFunctionConditionalBranch {
             prefix,
             condition: condition.expression,
@@ -647,9 +647,12 @@ fn lower_function_conditional_group<'a, 'dae>(
                 }
             })?,
         });
+    reaching_bounds.start_arm(lowerer);
     let fallback = lower_function_conditional_fallback(view, &definitions, conditional, lowerer)?;
     lowerer.conditional_activation_path.pop();
     lowerer.restore_conditional_materialization(&entry_materialization);
+    reaching_bounds.finish_arm(lowerer);
+    reaching_bounds.commit(lowerer);
     statements.extend(nest_function_conditional_branches(branches, fallback));
     Ok(())
 }
@@ -728,9 +731,6 @@ fn lower_function_value_assignment<'a, 'dae>(
         lower_conditional_function_value_assignment(
             view, target, operands, span, lowerer, statements,
         )?;
-        // A conditional assignment may leave the previous value in place, so
-        // neither the new range nor the old one is proven after it.
-        lowerer.forget_local_integer_bounds();
         if !target_type.is_record() {
             lowerer.remember_primitive_assignment(expression.index(), value_name(target)?);
         }
@@ -827,8 +827,10 @@ fn lower_conditional_function_value_assignment<'a, 'dae>(
     materialize_common_record_conditionals(view, operands, lowerer, statements)?;
     let activation_operands = conditional_activation_operands(operands);
     let entry_materialization = lowerer.conditional_materialization_snapshot();
+    let mut reaching_bounds = ConditionalIntegerBounds::enter(lowerer);
     let mut branches = Vec::with_capacity(operands.len() / 2);
     for ordinal in (0..operands.len() - 1).step_by(2) {
+        reaching_bounds.start_arm(lowerer);
         let condition_id = operands
             .get(ordinal)
             .expect("checked conditional assignment condition");
@@ -861,6 +863,7 @@ fn lower_conditional_function_value_assignment<'a, 'dae>(
         )?;
         lowerer.conditional_activation_path.pop();
         lowerer.restore_conditional_materialization(&condition_materialization);
+        reaching_bounds.finish_arm(lowerer);
         branches.push(LoweredFunctionConditionalBranch {
             prefix,
             condition: condition.expression,
@@ -879,6 +882,7 @@ fn lower_conditional_function_value_assignment<'a, 'dae>(
                 }
             })?,
         });
+    reaching_bounds.start_arm(lowerer);
     let mut fallback = Vec::new();
     lower_function_value_assignment(
         view,
@@ -892,6 +896,8 @@ fn lower_conditional_function_value_assignment<'a, 'dae>(
     )?;
     lowerer.conditional_activation_path.pop();
     lowerer.restore_conditional_materialization(&entry_materialization);
+    reaching_bounds.finish_arm(lowerer);
+    reaching_bounds.commit(lowerer);
     statements.extend(nest_function_conditional_branches(branches, fallback));
     Ok(())
 }
@@ -1162,9 +1168,9 @@ fn lower_primitive_function_assignment<'a, 'dae>(
     // Carry the assigned range forward so a later subscript by this local can
     // be proven in bounds. `pivotRow := n - reverseIndex + 1` is the shape that
     // matters: an index derived from a loop binder, then used to subscript in
-    // the same body. Only straight-line assignments record anything, and the
-    // record is dropped at every block boundary, so what is remembered is
-    // always an assignment that re-executes before each of its readers.
+    // the same body. The record is narrowed at each control-flow join (a
+    // conditional unions its arms, a loop drops what its body writes), so what
+    // is remembered always bounds every value a reader can observe.
     if target_scalar == gast::ScalarType::Integer && target_type.dimensions().is_empty() {
         lowerer.remember_local_integer_bounds(target_name.clone(), &value);
     }
