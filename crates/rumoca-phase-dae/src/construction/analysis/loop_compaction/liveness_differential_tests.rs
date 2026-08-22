@@ -320,6 +320,10 @@ fn segment_sequence_composition_against_liveness() {
 /// Alternative composition: the several loop bodies a definition can be
 /// re-entered by are competing successors, which is the composition
 /// `definition_escapes_back_edge` performs by asking each segment separately.
+///
+/// Execution pins the join in both directions, and the join is asserted to
+/// contain the sequence composition of the same segments, so treating
+/// alternatives as a sequence can only lose a read and never invent one.
 #[test]
 fn segment_alternative_composition_against_liveness() {
     let names = value_names();
@@ -329,6 +333,12 @@ fn segment_alternative_composition_against_liveness() {
     for_each_segment_pair(&mut |first, second| {
         let live = liveness::live_in_alternatives(&[first, second], &LiveSet::new());
         let sequenced = liveness::live_in_concatenation(&[first, second], &LiveSet::new());
+        assert!(
+            sequenced.is_subset(&live),
+            "sequencing reported a live name the join does not: {} | {}",
+            render(first),
+            render(second)
+        );
         sequenced_predicate_divergence(&mut sequenced_predicate, first, second, &live, &names);
         for name in &names {
             let observed = liveness_corpus::observed_incoming_reads(first).contains(name)
@@ -517,4 +527,252 @@ fn a_body_write_must_not_hide_a_read_after_the_loop() {
             .contains(&name),
         "the zero-iteration execution reads the incoming `a`"
     );
+}
+
+fn span() -> Span {
+    Span::from_offsets(rumoca_core::SourceId::DUMMY, 0, 1)
+}
+
+fn part(ident: &str) -> rumoca_core::ComponentRefPart {
+    rumoca_core::ComponentRefPart {
+        ident: ident.to_string(),
+        span: span(),
+        subs: Vec::new(),
+        def_id: rumoca_core::DefId::new(1),
+    }
+}
+
+fn nested_component(first: &str, second: &str) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference::construct(false, span(), vec![part(first), part(second)])
+        .expect("test component reference has exact identity")
+}
+
+fn nested_read(first: &str, second: &str) -> Expression {
+    Expression::VarRef {
+        name: Reference::new(format!("{first}.{second}")),
+        subscripts: Vec::new(),
+        span: span(),
+    }
+}
+
+/// The substitution site recognizes a definite whole-value write by
+/// `scalar_assignment_target`: one part, no subscripts. A write through a
+/// longer path is not that rule, so it must not hide a later read here either.
+/// Accepting it would let the oracle report a store dead that the pass itself
+/// would never have called dead.
+#[test]
+fn a_multi_part_write_is_not_a_kill() {
+    let program = vec![
+        rumoca_core::Statement::Assignment {
+            comp: nested_component("r", "f"),
+            value: Expression::Literal {
+                value: rumoca_core::Literal::Integer(1),
+                span: span(),
+            },
+            span: span(),
+        },
+        rumoca_core::Statement::Assignment {
+            comp: nested_component("c", "g"),
+            value: nested_read("r", "f"),
+            span: span(),
+        },
+    ];
+    let live = liveness::live_in(&program, &LiveSet::new());
+    assert!(
+        live.contains(&VarName::new("r.f")),
+        "a two-part write is not the site's kill rule, so it cannot hide the read"
+    );
+    assert!(
+        live.contains(&VarName::new("r")),
+        "reading `r.f` observes part of `r`"
+    );
+}
+
+fn call_writing(target: &str) -> rumoca_core::Statement {
+    rumoca_core::Statement::FunctionCall {
+        comp: Reference::new("f"),
+        args: Vec::new(),
+        outputs: vec![Some(
+            rumoca_core::ComponentReference::construct(false, span(), vec![part(target)])
+                .expect("test component reference has exact identity"),
+        )],
+        span: span(),
+    }
+}
+
+/// A call's receiving element writes its target (MLS §12.4.4), and neither
+/// answer treats that write as a kill: the site's kill rule recognizes only an
+/// assignment, so the incoming value stays live wherever a later statement
+/// reads it. Both answers also agree that the element itself is not a read, so
+/// the two stay aligned on this form in both directions.
+#[test]
+fn a_call_receiving_element_is_a_write_neither_answer_kills_on() {
+    let name = VarName::new("t");
+    let read_after = vec![call_writing("t"), assign("c", &["t"])];
+    assert!(
+        statements_read_incoming_name(&read_after, &name),
+        "the syntactic scan sees the read behind the call"
+    );
+    assert!(
+        liveness::live_in(&read_after, &LiveSet::new()).contains(&name),
+        "the call is not a recognized kill, so the read behind it keeps `t` live"
+    );
+    let no_read_after = vec![call_writing("t"), assign("c", &[])];
+    assert!(
+        !statements_read_incoming_name(&no_read_after, &name),
+        "a receiving element is a write, not a read"
+    );
+    assert!(
+        !liveness::live_in(&no_read_after, &LiveSet::new()).contains(&name),
+        "nothing in the segment reads `t`"
+    );
+}
+
+/// `f[a]()`: the callable of a call statement is selected by a component
+/// reference, and the subscripts on that reference are evaluated where the call
+/// runs (MLS §12.4.4). A walk that inspects only the arguments and the receiving
+/// elements reports the subscript's value dead while the call still observes it,
+/// which is the direction a deletion proof may not be wrong in.
+#[test]
+fn a_subscripted_callable_reference_is_a_read() {
+    let name = VarName::new("a");
+    let call = vec![rumoca_core::Statement::FunctionCall {
+        comp: Reference::from_component_reference(
+            rumoca_core::ComponentReference::construct(
+                false,
+                span(),
+                vec![rumoca_core::ComponentRefPart {
+                    ident: "f".to_string(),
+                    span: span(),
+                    subs: vec![Subscript::Expr {
+                        expr: Box::new(Expression::VarRef {
+                            name: Reference::new("a"),
+                            subscripts: Vec::new(),
+                            span: span(),
+                        }),
+                        span: span(),
+                    }],
+                    def_id: rumoca_core::DefId::new(1),
+                }],
+            )
+            .expect("test component reference has exact identity"),
+        ),
+        args: Vec::new(),
+        outputs: Vec::new(),
+        span: span(),
+    }];
+    assert!(
+        statements_read_incoming_name(&call, &name),
+        "the generic statement walk reaches the callable's subscript"
+    );
+    assert!(
+        liveness::live_in(&call, &LiveSet::new()).contains(&name),
+        "the callable's subscript keeps `a` live across the call"
+    );
+}
+
+/// Evidence about one name, given the segments that run after an empty block.
+fn evidence_for(
+    name: &VarName,
+    after: &[rumoca_core::Statement],
+) -> Option<liveness::StoreUnobserved> {
+    let mut proven =
+        liveness::prove_unobserved_stores(&HashSet::from([name.clone()]), &[], &[after]);
+    proven.remove(name)
+}
+
+/// `break` and `return` leave the region along an edge this dataflow does not
+/// model, so no evidence is issued about a region containing either.
+#[test]
+fn the_witness_refuses_an_unstructured_jump() {
+    let name = VarName::new("a");
+    let quiet = vec![assign("c", &[])];
+    assert!(
+        evidence_for(&name, &quiet).is_some(),
+        "nothing observes `a` in a segment that does not mention it"
+    );
+    for jump in [
+        rumoca_core::Statement::Break { span: span() },
+        rumoca_core::Statement::Return { span: span() },
+    ] {
+        let with_jump = vec![assign("c", &[]), jump];
+        assert!(
+            evidence_for(&name, &with_jump).is_none(),
+            "a region that jumps out is outside the modeled control flow"
+        );
+    }
+}
+
+/// The evidence the substitution site requires, measured against both other
+/// answers over the whole corpus.
+///
+/// Two properties matter and are asserted here. No evidence is ever issued for
+/// a value some execution observes, which is the theorem's own second clause
+/// checked by running the program. And the evidence is never withheld from a
+/// name the retired predicate would have allowed the site to delete, so
+/// replacing that predicate loses no deletion this grammar can express. The
+/// reverse direction is a gain and is counted, not bounded: those are the
+/// programs where the predicate scanned a loop body for any read at all.
+#[test]
+fn the_witness_is_sound_and_loses_nothing_over_the_corpus() {
+    let names = value_names();
+    let mut witnessed = 0usize;
+    let mut newly_deletable = 0usize;
+    for_each_program(&mut |program| {
+        let observed = liveness_corpus::observed_incoming_reads(program);
+        for name in &names {
+            let query = witness_query(program, name, &observed);
+            witnessed += usize::from(query.witnessed);
+            newly_deletable += usize::from(query.beyond_the_predicate);
+        }
+    });
+    println!(
+        "{witnessed} witnessed store deletions, {newly_deletable} of them beyond the retired predicate"
+    );
+    assert!(witnessed > 0, "the corpus proved nothing deletable");
+    assert!(
+        newly_deletable > 0,
+        "the corpus must contain a store only the dataflow answer proves dead"
+    );
+}
+
+/// One corpus query, with both of the test's assertions discharged.
+struct WitnessQuery {
+    witnessed: bool,
+    beyond_the_predicate: bool,
+}
+
+fn witness_query(
+    program: &[rumoca_core::Statement],
+    name: &VarName,
+    observed: &LiveSet,
+) -> WitnessQuery {
+    let predicate_allowed = !statements_read_incoming_name(program, name);
+    let Some(evidence) = evidence_for(name, program) else {
+        assert!(
+            !predicate_allowed,
+            "no evidence for `{}`, which the retired predicate allowed in: {}",
+            name.as_str(),
+            render(program)
+        );
+        return WitnessQuery {
+            witnessed: false,
+            beyond_the_predicate: false,
+        };
+    };
+    assert_eq!(
+        evidence.name(),
+        name,
+        "the evidence must name the value it is about"
+    );
+    assert!(
+        !observed.contains(name),
+        "evidence was issued for `{}`, which is observed by: {}",
+        name.as_str(),
+        render(program)
+    );
+    WitnessQuery {
+        witnessed: true,
+        beyond_the_predicate: !predicate_allowed,
+    }
 }

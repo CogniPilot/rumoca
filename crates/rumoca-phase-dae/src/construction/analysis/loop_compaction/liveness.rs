@@ -1,4 +1,5 @@
-//! Liveness of function-local values over the function statement tree.
+//! Liveness of function-local values over the function statement tree, and the
+//! store-deletion evidence built from it.
 //!
 //! The store-deletion proofs in this module ask one question in many syntactic
 //! disguises: is the value a statement writes ever observed again? This is the
@@ -18,8 +19,9 @@
 //! * A loop's back edge and its exit edge are alternative successors of the
 //!   body's last statement, never a sequence. A name is live there when either
 //!   successor observes it, so the body's own write can never hide a read
-//!   placed after the loop. [`live_in_alternatives`] is the operator for that
-//!   shape.
+//!   placed after the loop. `live_in_for` and `live_in_while` join the two
+//!   edges by union at the loop head for that reason, and
+//!   `live_in_alternatives` names that join for the differential measurements.
 //! * A `for` domain and a `while` guard may admit zero iterations (MLS
 //!   §11.2.2), so the loop-exit edge leaves the loop head: whatever is live
 //!   after the loop is live before it, whatever the body writes.
@@ -34,18 +36,118 @@
 //! (MLS §11.2.2), so a binder is removed from the body's answer before it
 //! reaches the enclosing scope.
 //!
+//! Only one statement form kills a value: an assignment whose target is a whole
+//! unsubscripted scalar, recognized by [`scalar_assignment_target`], which is
+//! the same rule the substitution site uses to decide what it may delete. Every
+//! other write, including a call's receiving element and a `reinit` target, is
+//! left transparent. The answer is therefore an over-approximation of true
+//! liveness wherever a value is definitely written by a form this rule does not
+//! recognize, and an over-approximation is what a deletion proof needs.
+//!
 //! Two statement forms transfer control somewhere this module does not model:
 //! `return` leaves the function and `break` leaves the enclosing loop. Both are
 //! treated as transparent, which over-approximates liveness on the path that
-//! falls through and can under-approximate it on the jump path. Ask
-//! [`contains_unstructured_jump`] before trusting an answer about a body that
-//! contains either.
+//! falls through and can under-approximate it on the jump path.
+//! [`prove_unobserved_stores`] therefore refuses to certify anything about a
+//! region containing either, and [`contains_unstructured_jump`] is the test it
+//! uses.
 
 use super::*;
 use std::collections::BTreeSet;
 
 /// Names whose incoming value may still be observed.
 pub(super) type LiveSet = BTreeSet<VarName>;
+
+/// Evidence that no execution observes the value a store leaves in one name.
+///
+/// The field and the constructor are private, so a value of this type exists
+/// only where [`prove_unobserved_stores`] discharged the obligations it states.
+/// A caller holding no evidence for a name has no way to obtain the permission
+/// the substitution site requires, which is why the site has no path that
+/// deletes a store without it.
+///
+/// # Theorem (deleting a witnessed store preserves meaning)
+///
+/// Let `name` be a function-local value, `block` a list of assignments the pass
+/// may rewrite, and `after` the segments that can execute once `block`
+/// finishes. Suppose `prove_unobserved_stores` returns evidence for `name` at
+/// `block` and `after`. Let `store` be an assignment `name := e` in `block`
+/// whose target is a whole unsubscripted scalar, and let `block'` be `block`
+/// with `store` deleted and `e` substituted for every later unsubscripted read
+/// of `name` in `block`. Assume the three value-reproduction side conditions
+/// the site establishes for `store`: no statement after `store` writes a name
+/// `e` reads, `e` does not read `name`, and no statement after `store` in
+/// `block` writes part of `name`. Assume also that `e` is pure (MLS §12.3):
+/// where `block` holds no later unsubscripted read of `name`, `block'` drops
+/// `e` instead of reproducing it, so an effect inside `e` would be lost.
+/// Then, from any initial environment, if either of `block ++ after` and
+/// `block' ++ after` terminates so does the other, they terminate on
+/// environments that agree on every name other than `name`, and no execution of
+/// `after` reads `name` before redefining it. The two interpretations therefore
+/// agree on every observable outcome.
+///
+/// Termination is carried as a hypothesis rather than claimed, because `after`
+/// may contain a `while` whose guard this module never evaluates. The rewrite
+/// changes no guard and no value any guard reads, so neither program can
+/// diverge where the other halts.
+///
+/// The evidence discharges the clause about `after`, and with it the clause the
+/// syntactic predicates got wrong: `after` is entered through the operators
+/// above, so a loop's back edge and its exit edge remain alternatives and
+/// neither can hide the other's read. At the `for` call site the first segment
+/// of `after` is the loop that encloses `block`, so `block ++ after` is an
+/// unrolling of the program rather than the program itself. That is the shape
+/// the conclusion needs: the segments name every point control reaches once
+/// `block` finishes, however many times the enclosing loop runs.
+pub(super) struct StoreUnobserved {
+    name: VarName,
+}
+
+impl StoreUnobserved {
+    /// The name this evidence is about.
+    pub(super) fn name(&self) -> &VarName {
+        &self.name
+    }
+}
+
+/// Prove, for each of `names`, that nothing observes the value stored in it,
+/// given the block the substitution rewrites and the segments that run after
+/// it. A name absent from the result has no evidence and keeps every store.
+///
+/// Three obligations are established, all positively:
+///
+/// * every path out of `block` and out of `after` is one this module models,
+///   so the dataflow answer describes the program's real successors;
+/// * every read of the name inside `block` is a plain unsubscripted read,
+///   which is what the substitution replaces with the stored expression; and
+/// * no execution of `after` reads the name before redefining it.
+///
+/// The dataflow answer over `after` is computed once and then queried, so a
+/// block declaring many locals costs one backward walk rather than one per
+/// name.
+pub(super) fn prove_unobserved_stores(
+    names: &HashSet<VarName>,
+    block: &[rumoca_core::Statement],
+    after: &[&[rumoca_core::Statement]],
+) -> HashMap<VarName, StoreUnobserved> {
+    let control_flow_is_modeled = !contains_unstructured_jump(block)
+        && !after
+            .iter()
+            .any(|segment| contains_unstructured_jump(segment));
+    if !control_flow_is_modeled {
+        return HashMap::new();
+    }
+    let observed_by_a_successor = live_in_concatenation(after, &LiveSet::new());
+    names
+        .iter()
+        .filter(|name| {
+            let no_successor_observes_it = !observed_by_a_successor.contains(*name);
+            let every_read_is_substitutable = !statements_read_nonrewritable_name(block, name);
+            no_successor_observes_it && every_read_is_substitutable
+        })
+        .map(|name| (name.clone(), StoreUnobserved { name: name.clone() }))
+        .collect()
+}
 
 /// Names live on entry to `statements`, given the names live on exit.
 pub(super) fn live_in(statements: &[rumoca_core::Statement], live_out: &LiveSet) -> LiveSet {
@@ -78,6 +180,11 @@ pub(super) fn live_in_concatenation(
 /// sequence instead would let a write in one segment hide a read in another,
 /// which is the mistake this operator exists to prevent. With no segments there
 /// is no path, so nothing is live.
+///
+/// `live_in_for` and `live_in_while` perform this join inline at the loop head.
+/// Naming it separately lets the differential measurements compare the join
+/// against the sequence composition and against execution over the corpus.
+#[cfg(test)]
 pub(super) fn live_in_alternatives(
     segments: &[&[rumoca_core::Statement]],
     live_out: &LiveSet,
@@ -90,6 +197,7 @@ pub(super) fn live_in_alternatives(
 }
 
 /// Whether the value `name` holds on entry to `statements` is read inside them.
+#[cfg(test)]
 pub(super) fn reads_incoming_value(statements: &[rumoca_core::Statement], name: &VarName) -> bool {
     live_in(statements, &LiveSet::new()).contains(name)
 }
@@ -97,14 +205,52 @@ pub(super) fn reads_incoming_value(statements: &[rumoca_core::Statement], name: 
 /// Whether any statement transfers control by a path this module leaves
 /// unmodeled.
 pub(super) fn contains_unstructured_jump(statements: &[rumoca_core::Statement]) -> bool {
-    statements.iter().any(|statement| match statement {
-        rumoca_core::Statement::Return { .. } | rumoca_core::Statement::Break { .. } => true,
-        rumoca_core::Statement::For { equations, .. } => contains_unstructured_jump(equations),
-        rumoca_core::Statement::While { block, .. } => contains_unstructured_jump(&block.stmts),
+    statements.iter().any(statement_contains_unstructured_jump)
+}
+
+/// Every variant is destructured field by field, with no `..` rest pattern, so
+/// a statement form that grows a field carrying nested statements stops
+/// compiling here rather than hiding a jump inside it.
+fn statement_contains_unstructured_jump(statement: &rumoca_core::Statement) -> bool {
+    match statement {
+        rumoca_core::Statement::Return { span: _ } | rumoca_core::Statement::Break { span: _ } => {
+            true
+        }
+        rumoca_core::Statement::Empty { span: _ }
+        | rumoca_core::Statement::Assignment {
+            comp: _,
+            value: _,
+            span: _,
+        }
+        | rumoca_core::Statement::FunctionCall {
+            comp: _,
+            args: _,
+            outputs: _,
+            span: _,
+        }
+        | rumoca_core::Statement::Reinit {
+            variable: _,
+            value: _,
+            span: _,
+        }
+        | rumoca_core::Statement::Assert {
+            condition: _,
+            message: _,
+            level: _,
+            span: _,
+        } => false,
+        rumoca_core::Statement::For {
+            indices: _,
+            equations,
+            span: _,
+        } => contains_unstructured_jump(equations),
+        rumoca_core::Statement::While { block, span: _ } => {
+            contains_unstructured_jump(&block.stmts)
+        }
         rumoca_core::Statement::If {
             cond_blocks,
             else_block,
-            ..
+            span: _,
         } => {
             cond_blocks
                 .iter()
@@ -113,38 +259,62 @@ pub(super) fn contains_unstructured_jump(statements: &[rumoca_core::Statement]) 
                     .as_deref()
                     .is_some_and(contains_unstructured_jump)
         }
-        rumoca_core::Statement::When { blocks, .. } => blocks
+        rumoca_core::Statement::When { blocks, span: _ } => blocks
             .iter()
             .any(|block| contains_unstructured_jump(&block.stmts)),
-        _ => false,
-    })
+    }
 }
 
+/// The transfer function of one statement.
+///
+/// Every variant is destructured field by field, with no `..` rest pattern, so
+/// a statement form that grows a field carrying an expression stops compiling
+/// here. A read position the generic statement walk reaches but this match does
+/// not is a value reported dead while the program still observes it, which is
+/// the one direction a deletion proof may not be wrong in. Enumerating read
+/// positions by hand is exactly where such a position is easy to lose, so the
+/// compiler is made to check the enumeration.
 fn live_in_statement(statement: &rumoca_core::Statement, live_out: &LiveSet) -> LiveSet {
     match statement {
-        rumoca_core::Statement::Empty { .. }
-        | rumoca_core::Statement::Return { .. }
-        | rumoca_core::Statement::Break { .. } => live_out.clone(),
-        rumoca_core::Statement::Assignment { comp, value, .. }
-        | rumoca_core::Statement::Reinit {
-            variable: comp,
+        rumoca_core::Statement::Empty { span: _ }
+        | rumoca_core::Statement::Return { span: _ }
+        | rumoca_core::Statement::Break { span: _ } => live_out.clone(),
+        rumoca_core::Statement::Assignment {
+            comp,
             value,
-            ..
+            span: _,
         } => {
             let mut live = live_out.clone();
-            if let Some(target) = whole_definition_target(comp) {
+            if let Some(target) = scalar_assignment_target(comp) {
                 kill_value(&mut live, &target);
             }
             collect_expression_reads(value, &mut live);
             collect_subscript_reads(comp, &mut live);
             live
         }
-        rumoca_core::Statement::FunctionCall { args, outputs, .. } => {
+        rumoca_core::Statement::Reinit {
+            variable,
+            value,
+            span: _,
+        } => {
             let mut live = live_out.clone();
-            for output in outputs.iter().flatten() {
-                if let Some(target) = whole_definition_target(output) {
-                    kill_value(&mut live, &target);
-                }
+            collect_expression_reads(value, &mut live);
+            collect_subscript_reads(variable, &mut live);
+            live
+        }
+        rumoca_core::Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+            span: _,
+        } => {
+            let mut live = live_out.clone();
+            // The callable is selected by a component reference whose
+            // subscripts are ordinary value reads, evaluated where the call
+            // runs. The reference's own name denotes a function rather than a
+            // value, so it is not itself a read.
+            if let Some(callable) = comp.component_ref() {
+                collect_subscript_reads(callable, &mut live);
             }
             for argument in args {
                 collect_expression_reads(argument, &mut live);
@@ -158,7 +328,7 @@ fn live_in_statement(statement: &rumoca_core::Statement, live_out: &LiveSet) -> 
             condition,
             message,
             level,
-            ..
+            span: _,
         } => {
             let mut live = live_out.clone();
             collect_expression_reads(condition, &mut live);
@@ -171,15 +341,19 @@ fn live_in_statement(statement: &rumoca_core::Statement, live_out: &LiveSet) -> 
         rumoca_core::Statement::If {
             cond_blocks,
             else_block,
-            ..
+            span: _,
         } => live_in_branches(cond_blocks, else_block.as_deref(), live_out),
         // A `when` branch runs only when its condition becomes true, so the
         // edge that runs no branch at all is always available.
-        rumoca_core::Statement::When { blocks, .. } => live_in_branches(blocks, None, live_out),
+        rumoca_core::Statement::When { blocks, span: _ } => {
+            live_in_branches(blocks, None, live_out)
+        }
         rumoca_core::Statement::For {
-            indices, equations, ..
+            indices,
+            equations,
+            span: _,
         } => live_in_for(indices, equations, live_out),
-        rumoca_core::Statement::While { block, .. } => live_in_while(block, live_out),
+        rumoca_core::Statement::While { block, span: _ } => live_in_while(block, live_out),
     }
 }
 
@@ -255,20 +429,6 @@ fn live_in_while(block: &rumoca_core::StatementBlock, live_out: &LiveSet) -> Liv
     head
 }
 
-/// The name a write defines in full, when it covers the whole value.
-///
-/// A subscripted write leaves the other elements of the value intact, so it
-/// neither kills the incoming value nor reads it.
-pub(super) fn whole_definition_target(
-    component: &rumoca_core::ComponentReference,
-) -> Option<VarName> {
-    component
-        .parts()
-        .iter()
-        .all(|part| part.subs.is_empty())
-        .then(|| component.to_var_name())
-}
-
 /// Remove `name` and every value nested beneath it.
 ///
 /// Defining `r` in full defines `r.field`; defining `r.field` leaves `r`'s
@@ -278,14 +438,21 @@ fn kill_value(live: &mut LiveSet, name: &VarName) {
     live.retain(|candidate| candidate != name && !candidate.as_str().starts_with(&nested));
 }
 
+/// The reads carried by the subscripts of a component reference.
+///
+/// The subscript forms are matched field by field for the same reason the
+/// statement forms are: a form that grows an expression field has to stop
+/// compiling here rather than drop the read it carries.
 pub(super) fn collect_subscript_reads(
     component: &rumoca_core::ComponentReference,
     reads: &mut LiveSet,
 ) {
     for part in component.parts() {
         for subscript in &part.subs {
-            if let Subscript::Expr { expr, .. } = subscript {
-                collect_expression_reads(expr, reads);
+            match subscript {
+                Subscript::Expr { expr, span: _ } => collect_expression_reads(expr, reads),
+                // A literal index and a whole-dimension colon name no value.
+                Subscript::Index { value: _, span: _ } | Subscript::Colon { span: _ } => {}
             }
         }
     }

@@ -21,9 +21,7 @@
 //! [`super::liveness`]; every control-flow decision is made independently, by
 //! forward simulation rather than backward transfer.
 
-use super::liveness::{
-    LiveSet, collect_expression_reads, collect_subscript_reads, whole_definition_target,
-};
+use super::liveness::{LiveSet, collect_expression_reads, collect_subscript_reads};
 use super::*;
 use rumoca_core::{ComponentReference, Literal, OpBinary};
 use std::collections::BTreeSet;
@@ -250,7 +248,7 @@ impl Simulation {
                 collect_expression_reads(value, &mut reads);
                 collect_subscript_reads(comp, &mut reads);
                 self.observe(&reads, paths);
-                overwrite(paths, whole_definition_target(comp).as_ref())
+                overwrite(paths, scalar_assignment_target(comp).as_ref())
             }
             rumoca_core::Statement::If {
                 cond_blocks,

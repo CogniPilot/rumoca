@@ -83,6 +83,23 @@ fn for_loop(index: &str, count: i64, body: Vec<rumoca_core::Statement>) -> rumoc
     }
 }
 
+fn element(name: &str, index: &str, def_id: u32) -> ComponentReference {
+    ComponentReference::construct(
+        false,
+        span(),
+        vec![rumoca_core::ComponentRefPart {
+            ident: name.to_string(),
+            span: span(),
+            subs: vec![Subscript::Expr {
+                expr: Box::new(var(index)),
+                span: span(),
+            }],
+            def_id: rumoca_core::DefId::new(def_id),
+        }],
+    )
+    .expect("test component reference has exact identity")
+}
+
 fn names(names: &[&str]) -> HashSet<VarName> {
     names.iter().map(|name| VarName::new(*name)).collect()
 }
@@ -264,6 +281,83 @@ fn conditionally_written_loop_carry_survives() {
     );
 }
 
+/// ```text
+/// for i loop
+///   for j loop
+///     t := r[j];            // the store under classification
+///   end for;
+///   if c[i] then break; end if;
+///   t := 0.0;
+/// end for;
+/// last := t;
+/// ```
+///
+/// `break` leaves the outer loop from a point no backward walk of the body
+/// reaches, so `t := 0.0` does not settle the value `last := t` observes on
+/// that path. Only the store inside the inner loop does. A proof that walks
+/// past the jump as though it fell through sees the later kill, calls the
+/// inner store dead, and loses the value the break path returns.
+#[test]
+fn a_break_past_a_later_kill_keeps_the_store() {
+    let statements = vec![
+        for_loop(
+            "i",
+            2,
+            vec![
+                for_loop("j", 2, vec![assign("t", indexed("r", "j"))]),
+                rumoca_core::Statement::If {
+                    cond_blocks: vec![rumoca_core::StatementBlock {
+                        cond: indexed("c", "i"),
+                        stmts: vec![rumoca_core::Statement::Break { span: span() }],
+                    }],
+                    else_block: None,
+                    span: span(),
+                },
+                assign("t", real(0.0)),
+            ],
+        ),
+        assign("last", var("t")),
+    ];
+    let compacted = inline_dead_loop_scalar_locals(&statements, &names(&["t"]), &HashSet::new());
+    let outer = loop_body(&compacted);
+    let rumoca_core::Statement::For { equations, .. } = &outer[0] else {
+        panic!("the inner loop was rewritten away: {compacted:#?}");
+    };
+    assert_eq!(
+        equations.len(),
+        1,
+        "the store the break path returns was deleted: {compacted:#?}"
+    );
+}
+
+/// `for i loop t := r[i]; y[i] := t[i]; end for;`
+///
+/// Nothing after the loop observes `t`, so its value escapes nowhere. The read
+/// inside the loop is subscripted, though, and substitution replaces only a
+/// plain unsubscripted read; deleting the store would leave that read with no
+/// definition at all.
+#[test]
+fn a_subscripted_read_of_the_local_keeps_the_store() {
+    let statements = vec![for_loop(
+        "i",
+        4,
+        vec![
+            assign("t", indexed("r", "i")),
+            rumoca_core::Statement::Assignment {
+                comp: element("y", "i", 2),
+                value: indexed("t", "i"),
+                span: span(),
+            },
+        ],
+    )];
+    let compacted = inline_dead_loop_scalar_locals(&statements, &names(&["t"]), &HashSet::new());
+    assert_eq!(
+        loop_body(&compacted).len(),
+        2,
+        "the store feeding a read substitution cannot rewrite was deleted: {compacted:#?}"
+    );
+}
+
 /// `for i loop t := r[i] * 2; y[i] := t; end for;`
 ///
 /// A temporary written and consumed inside one iteration is dead at the loop
@@ -311,5 +405,38 @@ fn same_iteration_temporary_is_still_inlined() {
         loop_body(&compacted).len(),
         1,
         "the same-iteration temporary was not inlined: {compacted:#?}"
+    );
+}
+
+/// ```text
+/// for i loop t := r[i]; end for;
+/// f[t]();
+/// ```
+///
+/// The callable of a call statement is selected by a component reference, and
+/// the subscripts on it are evaluated where the call runs (MLS §12.4.4). That
+/// makes `t` live after the loop, so the loop's store is its only definition.
+/// A liveness walk that reads only the arguments and the receiving elements of
+/// a call misses the subscript, certifies the store as unobserved, and deletes
+/// the definition the call depends on.
+#[test]
+fn a_subscripted_callable_reference_keeps_the_store() {
+    let call = vec![rumoca_core::Statement::FunctionCall {
+        comp: Reference::from_component_reference(element("f", "t", 4)),
+        args: Vec::new(),
+        outputs: Vec::new(),
+        span: span(),
+    }];
+    let mut statements = vec![for_loop("i", 4, vec![assign("t", indexed("r", "i"))])];
+    statements.extend(call.clone());
+    let compacted = inline_dead_loop_scalar_locals(&statements, &names(&["t"]), &HashSet::new());
+    assert_eq!(
+        loop_body(&compacted).len(),
+        1,
+        "the store the callable's subscript reads was deleted: {compacted:#?}"
+    );
+    assert!(
+        liveness::reads_incoming_value(&call, &VarName::new("t")),
+        "the callable's subscript is a read of `t`"
     );
 }

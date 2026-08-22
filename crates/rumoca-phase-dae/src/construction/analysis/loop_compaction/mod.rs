@@ -1,11 +1,12 @@
 mod accumulator_reductions;
 mod dependent_domains;
-/// Dataflow liveness over the function statement tree.
+/// Dataflow liveness over the function statement tree, and the store-deletion
+/// evidence built from it.
 ///
-/// The store-deletion proofs in this module still ask their own syntactic
-/// questions; this states the same question once as a dataflow answer, and
-/// [`liveness_differential_tests`] measures where the two diverge.
-#[cfg(test)]
+/// [`inline_straight_line_scalar_definitions`] deletes a store only while
+/// holding a [`liveness::StoreUnobserved`] for its target; the remaining
+/// syntactic predicates are measured against the same dataflow answer by
+/// [`liveness_differential_tests`].
 mod liveness;
 #[cfg(test)]
 mod liveness_corpus;
@@ -969,6 +970,13 @@ fn inline_dead_scalars_in_statement(
     }
 }
 
+/// Replace a scalar local's definition with its value at the later uses inside
+/// one straight-line block.
+///
+/// A definition is removed only while holding a [`liveness::StoreUnobserved`]
+/// for its target, so a name the dataflow answer cannot certify keeps every
+/// store it has. The remaining conditions are about reproducing the stored
+/// value at each later use, not about whether the store is observed.
 fn inline_straight_line_scalar_definitions(
     statements: &[rumoca_core::Statement],
     following: &[&[rumoca_core::Statement]],
@@ -981,14 +989,7 @@ fn inline_straight_line_scalar_definitions(
     {
         return statements.to_vec();
     }
-    let removable = scalar_locals
-        .iter()
-        .filter(|name| {
-            !statement_segments_read_incoming_name(following, name)
-                && !statements_read_nonrewritable_name(statements, name)
-        })
-        .cloned()
-        .collect::<HashSet<_>>();
+    let unobserved = liveness::prove_unobserved_stores(scalar_locals, statements, following);
     let mut substitutions = HashMap::new();
     let mut inlined = Vec::with_capacity(statements.len());
     for (ordinal, statement) in statements.iter().enumerate() {
@@ -1001,13 +1002,8 @@ fn inline_straight_line_scalar_definitions(
         let rewritten_value = rewriter.rewrite_expression(value);
         let rewritten_comp = rewriter.rewrite_component_reference(comp);
         let target = comp.to_var_name();
-        let scalar_definition = comp
-            .parts()
-            .as_ref()
-            .first()
-            .is_some_and(|part| comp.parts().len() == 1 && part.subs.is_empty());
-        if scalar_definition
-            && removable.contains(&target)
+        if let Some(witness) =
+            scalar_assignment_target(comp).and_then(|written| unobserved.get(&written))
             && !statements_partially_assign_name(&statements[ordinal + 1..], &target)
             && (!preserve_shared
                 || statements_read_count(&statements[ordinal + 1..], &target) <= 1)
@@ -1018,7 +1014,7 @@ fn inline_straight_line_scalar_definitions(
             // forward in the algorithm's order (MLS §11.1).
             && !expression_dependencies_change(&rewritten_value, &statements[ordinal + 1..])
         {
-            substitutions.insert(target, rewritten_value);
+            substitutions.insert(witness.name().clone(), rewritten_value);
             continue;
         }
         substitutions.remove(&target);
