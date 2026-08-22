@@ -2226,3 +2226,151 @@ fn embedded_c_unrepresentable_declared_ranges_fail_closed() {
         );
     }
 }
+
+// ===========================================================================
+// Fixture 11 - a guarded element write whose subscript is a proven local.
+//
+// GALEC statically evaluates an assignment target's subscript (EG022), so a
+// function local may not stand there however well its range is proven. The
+// write therefore lowers to the statement form of the read path's bounded
+// selection: the value is bound once and one branch per candidate coordinate
+// stores it through a literal subscript.
+//
+// The fixture is the dense-solve shape that reaches it: an unconditional index
+// assignment, a guarded region around the write, and a nested loop supplying
+// the second axis. Every element receives a distinct value derived from both
+// axes, so a branch that stored through the wrong coordinate would land on a
+// value no leg can reproduce.
+//
+// The guard is false for the first two ticks and true afterwards, so the run
+// compares both the untaken path (the seeded zeros survive) and the taken one.
+// ===========================================================================
+
+const GUARDED_SCATTER: &str = r#"
+function reverseScatter
+  input Real u[6];
+  input Boolean enabled;
+  output Real y[6];
+protected
+  Integer row;
+algorithm
+  y := zeros(6);
+  for step in 1:3 loop
+    row := 4 - step;
+    if enabled then
+      for column in 1:2 loop
+        y[2 * (row - 1) + column] :=
+          u[2 * (row - 1) + column] + row + 10 * column;
+      end for;
+    end if;
+  end for;
+end reverseScatter;
+
+model GuardedScatterSmoke
+  constant Real samplePeriod = 0.1;
+  discrete Integer count(start = 0, fixed = true);
+  discrete output Real y[6](each start = 0.0);
+equation
+  when sample(0.0, samplePeriod) then
+    count = pre(count) + 1;
+    y = reverseScatter(
+      {count, 2.0 * count, 3.0 * count, 4.0 * count, 5.0 * count, 6.0 * count},
+      count >= 3);
+  end when;
+end GuardedScatterSmoke;
+"#;
+
+const GUARDED_SCATTER_DRIVER: &str = r#"#include <stdio.h>
+#include "GuardedScatterSmoke.h"
+static void row(const char *label, const GuardedScatterSmokeState *state) {
+    printf("%s,%d,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%lu\n",
+           label, (int)state->count,
+           (double)state->y[0], (double)state->y[1],
+           (double)state->y[2], (double)state->y[3],
+           (double)state->y[4], (double)state->y[5],
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    GuardedScatterSmokeState state;
+    char label[16];
+    GuardedScatterSmoke_startup(&state);
+    row("startup", &state);
+    GuardedScatterSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        GuardedScatterSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn embedded_c_guarded_dynamic_element_write_stores_every_coordinate_exactly() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let fields = [
+        Field {
+            name: "count",
+            kind: FieldKind::Integer,
+        },
+        Field {
+            name: "y[1]",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "y[2]",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "y[3]",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "y[4]",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "y[5]",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "y[6]",
+            kind: FieldKind::Real,
+        },
+    ];
+
+    let projection = project_embedded_c(dir.path(), "GuardedScatterSmoke", GUARDED_SCATTER);
+    write_rendered(&out_dir, "GuardedScatterSmoke", &projection.files);
+    let c_run = run_c_ticks(
+        &out_dir,
+        "GuardedScatterSmoke",
+        GUARDED_SCATTER_DRIVER,
+        fields.len(),
+    );
+    let ref_ticks = reference_ticks("GuardedScatterSmoke", GUARDED_SCATTER, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, "GuardedScatterSmoke", &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, "GuardedScatterSmoke");
+
+    assert_oracle_agrees(&oracle, &c_run, &ref_ticks, &fields, 0);
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+
+    // The untaken guard leaves the seeded zeros in place; the taken one stores
+    // `u[k] + row + 10 * column` at every one of the six coordinates.
+    assert_eq!(
+        c_run.steps[1].values,
+        vec![2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "the guard is still false at count = 2, so no element is written"
+    );
+    assert_eq!(
+        c_run.steps[4].values,
+        vec![5.0, 16.0, 31.0, 27.0, 42.0, 38.0, 53.0],
+        "each coordinate must carry the value its own axes select"
+    );
+    assert_eq!(
+        oracle.steps[4].values,
+        vec![5.0, 16.0, 31.0, 27.0, 42.0, 38.0, 53.0],
+        "the oracle must select the same six coordinates"
+    );
+}

@@ -47,6 +47,14 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     /// are affected: an index established before an inner loop and merely read
     /// inside it keeps its range, which is the ordinary shape of a back
     /// substitution walking its right-hand sides.
+    ///
+    /// The record is built in one forward pass, so the reach of this rule is
+    /// exactly that: a range the loop body itself establishes does not reach
+    /// the body's own entry, and a local the body writes therefore starts every
+    /// loop unproven even when each value it can hold lies inside one interval.
+    /// Widening the entry to the union over the back edge is what would prove
+    /// those, and it needs a second pass over the body; keeping the entry range
+    /// without that union is the unsound direction, so the pass drops instead.
     pub(super) fn forget_assigned_local_integer_bounds(&mut self, assigned: &HashSet<String>) {
         self.local_integer_bounds
             .retain(|name, _| !assigned.contains(name));

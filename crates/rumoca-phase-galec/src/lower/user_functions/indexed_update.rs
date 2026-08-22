@@ -538,17 +538,240 @@ fn lower_indexed_function_update_expression<'a, 'dae>(
             lowered_subscripts.push(index);
         }
         let value = coerce(lowerer.lower(value)?, scalar_type, span)?;
-        statements.push(gast::Spanned::new(
-            gast::Statement::Assignment {
-                target: gast::Reference::Local(gast::RefPart {
-                    name: value_name(target)?,
-                    subscripts: lowered_subscripts,
-                    span,
-                }),
+        statements.extend(lower_element_write(
+            lowerer,
+            ElementWrite {
+                target: value_name(target)?,
+                subscripts: &lowered_subscripts,
+                dimensions: target_type.dimensions(),
                 value,
+                scalar: scalar_type,
+                span,
             },
-            span,
-        ));
+        )?);
     }
     Ok(Some(statements))
+}
+
+/// One scalar element write of a function-local aggregate.
+struct ElementWrite<'a> {
+    target: gast::Name,
+    /// One lowered subscript per declared dimension, in declaration order.
+    subscripts: &'a [gast::Expression],
+    /// The target's declared extents, parallel to `subscripts`.
+    dimensions: &'a [u32],
+    value: gast::Expression,
+    scalar: gast::ScalarType,
+    span: Span,
+}
+
+/// The largest number of candidate coordinates one element write may enumerate.
+///
+/// The expansion emits one branch per candidate, so the emitted statement count
+/// is linear in this bound. A write whose dynamic axes span more coordinates is
+/// refused instead of expanded into an unreviewable branch chain.
+const MAX_WRITE_CANDIDATES: usize = 4096;
+
+/// Emit one element write, expanding a proven dynamic subscript into the form
+/// GALEC admits in an assignment target.
+///
+/// GALEC evaluates a target subscript at Production-Code-generation time
+/// (§3.2.6 L-2, `EG022`), so only a literal or a loop iterator may stand there;
+/// a function local may not, however well its range is proven. The read path
+/// answers that requirement with a bounded selection over the extent, and this
+/// is the statement form of the same answer: one branch per candidate
+/// coordinate of each dynamic axis, every branch naming its element with
+/// literals. The proven range is what makes the enumeration exhaustive, and
+/// `prove_dynamic_index` has already refused any subscript that lacks one, so
+/// the final candidate is the residual case and carries no condition of its own.
+///
+/// The value is bound to one local ahead of the branches: it is then evaluated
+/// once, at the write's own position in the statement order, and the emitted
+/// size stays linear in the candidate count rather than multiplying by it.
+fn lower_element_write(
+    lowerer: &mut ExpressionLowerer<'_, '_>,
+    write: ElementWrite<'_>,
+) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
+    let dynamic = write
+        .subscripts
+        .iter()
+        .enumerate()
+        .filter(|(_, index)| !lowerer.is_loop_index_expression(index))
+        .map(|(axis, _)| axis)
+        .collect::<Vec<_>>();
+    if dynamic.is_empty() {
+        return Ok(vec![element_assignment(
+            &write,
+            write.subscripts.to_vec(),
+            write.value.clone(),
+        )]);
+    }
+    let candidates = write_candidates(&dynamic, write.dimensions, write.span)?;
+    let Some((residual, guarded)) = candidates.split_last() else {
+        unreachable!("a dynamic axis contributes at least one candidate coordinate")
+    };
+    if guarded.is_empty() {
+        // A single candidate names the element outright, so the selection is
+        // the literal subscript list and needs neither a branch nor a binding.
+        return Ok(vec![element_assignment(
+            &write,
+            candidate_subscripts(&write, &dynamic, residual),
+            write.value.clone(),
+        )]);
+    }
+    let (binding, value) = lowerer.bind_element_write_value(&write);
+    let branches = guarded
+        .iter()
+        .map(|candidate| gast::IfBranch {
+            condition: gast::Condition::Expression(candidate_condition(
+                &write, &dynamic, candidate,
+            )),
+            body: vec![element_assignment(
+                &write,
+                candidate_subscripts(&write, &dynamic, candidate),
+                value.clone(),
+            )],
+            span: write.span,
+        })
+        .collect();
+    Ok(vec![
+        binding,
+        gast::Spanned::new(
+            gast::Statement::If(gast::IfStatement {
+                branches,
+                else_body: Some(vec![element_assignment(
+                    &write,
+                    candidate_subscripts(&write, &dynamic, residual),
+                    value,
+                )]),
+            }),
+            write.span,
+        ),
+    ])
+}
+
+impl ExpressionLowerer<'_, '_> {
+    /// Bind one element write's value to a local, and return the binding
+    /// statement together with the reference the branches store from.
+    ///
+    /// The binding is returned rather than queued as a prefix statement so it
+    /// stays at the write's own position: a chain of writes has its prefixes
+    /// hoisted ahead of all of them, which would compute a later write's value
+    /// before an earlier write has stored.
+    fn bind_element_write_value(
+        &mut self,
+        write: &ElementWrite<'_>,
+    ) -> (gast::Spanned<gast::Statement>, gast::Expression) {
+        let name = gast::Name::ident(format!(
+            "rumoca_{}_element_{}",
+            self.temporary_namespace, self.temporary_counter
+        ));
+        self.temporary_counter += 1;
+        self.temporary_locals.push(gast::VariableDeclaration {
+            ty: gast::TypeRef::Primitive(write.scalar),
+            name: name.clone(),
+            dimensions: Vec::new(),
+            range: gast::RangeAttributes::default(),
+            span: write.span,
+        });
+        let binding = gast::Spanned::new(
+            gast::Statement::Assignment {
+                target: gast::Reference::local(name.clone()),
+                value: write.value.clone(),
+            },
+            write.span,
+        );
+        (binding, gast::Expression::Ref(gast::Reference::local(name)))
+    }
+}
+
+fn element_assignment(
+    write: &ElementWrite<'_>,
+    subscripts: Vec<gast::Expression>,
+    value: gast::Expression,
+) -> gast::Spanned<gast::Statement> {
+    gast::Spanned::new(
+        gast::Statement::Assignment {
+            target: gast::Reference::Local(gast::RefPart {
+                name: write.target.clone(),
+                subscripts,
+                span: write.span,
+            }),
+            value,
+        },
+        write.span,
+    )
+}
+
+/// Every coordinate the dynamic axes of one write can name, in row-major order.
+fn write_candidates(
+    dynamic: &[usize],
+    dimensions: &[u32],
+    span: Span,
+) -> Result<Vec<Vec<i64>>, GalecTargetError> {
+    let extents = dynamic
+        .iter()
+        .map(|axis| dimensions[*axis])
+        .collect::<Vec<_>>();
+    let count = extents
+        .iter()
+        .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
+        .filter(|count| *count > 0 && *count <= MAX_WRITE_CANDIDATES)
+        .ok_or_else(|| {
+            unsupported(
+                "dynamic-array-element-write",
+                format!(
+                    "a dynamic element write spans more than {MAX_WRITE_CANDIDATES} candidate coordinates"
+                ),
+                span,
+            )
+        })?;
+    let mut candidates = Vec::with_capacity(count);
+    let mut current = vec![1i64; extents.len()];
+    loop {
+        candidates.push(current.clone());
+        let Some(axis) = (0..extents.len())
+            .rev()
+            .find(|axis| current[*axis] < i64::from(extents[*axis]))
+        else {
+            return Ok(candidates);
+        };
+        current[axis] += 1;
+        current[axis + 1..].fill(1);
+    }
+}
+
+/// The subscript list one candidate names: literals on the dynamic axes, the
+/// written subscript everywhere else.
+fn candidate_subscripts(
+    write: &ElementWrite<'_>,
+    dynamic: &[usize],
+    candidate: &[i64],
+) -> Vec<gast::Expression> {
+    let mut subscripts = write.subscripts.to_vec();
+    for (axis, coordinate) in dynamic.iter().zip(candidate) {
+        subscripts[*axis] = gast::Expression::Integer(*coordinate);
+    }
+    subscripts
+}
+
+/// The test that selects one candidate: every dynamic subscript equals the
+/// coordinate the candidate names on its axis.
+fn candidate_condition(
+    write: &ElementWrite<'_>,
+    dynamic: &[usize],
+    candidate: &[i64],
+) -> gast::Expression {
+    dynamic
+        .iter()
+        .zip(candidate)
+        .map(|(axis, coordinate)| {
+            gast::Expression::binary(
+                gast::BinaryOp::Eq,
+                write.subscripts[*axis].clone(),
+                gast::Expression::Integer(*coordinate),
+            )
+        })
+        .reduce(|lhs, rhs| gast::Expression::binary(gast::BinaryOp::And, lhs, rhs))
+        .expect("an expanded element write has at least one dynamic axis")
 }

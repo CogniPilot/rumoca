@@ -170,3 +170,104 @@ fn a_guarded_pivot_with_one_unproven_arm_is_refused() {
         .expect_err("a pivot with an unproven reaching definition is refused");
     assert!(error.contains("dynamic-array-index"), "{error}");
 }
+
+/// Every subscript list an assignment in `statements` stores through, walked
+/// into branches and loop bodies so no target of the tree is missed.
+fn stored_subscripts(statements: &[gast::Spanned<gast::Statement>]) -> Vec<Vec<gast::Expression>> {
+    let mut stored = Vec::new();
+    for statement in statements {
+        match &statement.node {
+            gast::Statement::Assignment { target, .. } => match target {
+                gast::Reference::Local(part) => stored.push(part.subscripts.clone()),
+                gast::Reference::State(parts) => {
+                    stored.extend(parts.iter().map(|part| part.subscripts.clone()));
+                }
+            },
+            gast::Statement::If(selection) => {
+                for branch in &selection.branches {
+                    stored.extend(stored_subscripts(&branch.body));
+                }
+                if let Some(fallback) = &selection.else_body {
+                    stored.extend(stored_subscripts(fallback));
+                }
+            }
+            gast::Statement::For(loop_statement) => {
+                stored.extend(stored_subscripts(&loop_statement.body));
+            }
+            gast::Statement::MultiAssignment { .. }
+            | gast::Statement::Call(_)
+            | gast::Statement::Limit(_)
+            | gast::Statement::Signal(_) => {}
+        }
+    }
+    stored
+}
+
+/// Whether `expression` reads the local named `lexeme` anywhere.
+fn reads_local(expression: &gast::Expression, lexeme: &str) -> bool {
+    match expression {
+        gast::Expression::Ref(gast::Reference::Local(part)) => {
+            part.name.lexeme() == lexeme
+                || part
+                    .subscripts
+                    .iter()
+                    .any(|index| reads_local(index, lexeme))
+        }
+        gast::Expression::Paren(inner) | gast::Expression::Not(inner) => reads_local(inner, lexeme),
+        gast::Expression::Binary { lhs, rhs, .. } => {
+            reads_local(lhs, lexeme) || reads_local(rhs, lexeme)
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn a_proven_dynamic_element_write_names_its_element_with_a_literal() {
+    // GALEC statically evaluates an assignment target's subscript, so the
+    // proven local may appear in the selection that picks the coordinate but
+    // never in the coordinate itself.
+    let lowered = lower_conditional_pivot(&GuardedPivot::InRange(4))
+        .expect("a pivot proven on both reaching definitions lowers");
+    let stored = stored_subscripts(&lowered[0].statements);
+    assert!(!stored.is_empty());
+    for subscripts in &stored {
+        assert!(
+            !subscripts
+                .iter()
+                .any(|index| reads_local(index, "pivotRow")),
+            "no assignment target may subscript by the proven local: {stored:#?}"
+        );
+    }
+    let literal_targets = stored
+        .iter()
+        .filter_map(|subscripts| match subscripts.as_slice() {
+            [gast::Expression::Integer(index)] => Some(*index),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for coordinate in 1..=4 {
+        assert!(
+            literal_targets.contains(&coordinate),
+            "the selection must be exhaustive over 1:4, missing {coordinate}: {stored:#?}"
+        );
+    }
+}
+
+#[test]
+fn an_expanded_element_write_evaluates_its_value_once() {
+    // One binding local carries the value into every branch, so the emitted
+    // size is linear in the candidate count and the value is evaluated at the
+    // write's own position rather than once per coordinate.
+    let lowered = lower_conditional_pivot(&GuardedPivot::InRange(4))
+        .expect("a pivot proven on both reaching definitions lowers");
+    let bindings = lowered[0]
+        .locals
+        .iter()
+        .filter(|local| local.name.lexeme().contains("_element_"))
+        .count();
+    assert_eq!(
+        bindings, 1,
+        "one element write binds exactly one value local: {:#?}",
+        lowered[0].locals
+    );
+}
