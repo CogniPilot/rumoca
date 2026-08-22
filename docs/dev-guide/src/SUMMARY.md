@@ -27,6 +27,7 @@
 # Architecture Reference
 
 - [Crate Map](./architecture/crate-boundaries.md)
+- [Totality Debt Audit, 2026-08-22](./architecture/totality-debt-audit-2026-08-22.md)
 
 # Tooling
 

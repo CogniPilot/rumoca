@@ -17,6 +17,7 @@ mod size_and_validation;
 mod solver_backend_boundary;
 mod source_comment_hygiene;
 mod string_hashing;
+mod totality_debt;
 
 use std::collections::BTreeSet;
 use std::fs;
