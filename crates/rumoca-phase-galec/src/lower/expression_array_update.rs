@@ -139,22 +139,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     ) -> Result<ArrayUpdateAxis, GalecTargetError> {
         match subscript {
             Some(dae::SubscriptView::Index { expression, .. }) => {
-                let selected = self.lower(expression)?;
-                Ok(
-                    match (
-                        constant_integer(&selected.expression),
-                        constant_integer(coordinate),
-                    ) {
-                        (Some(selected), Some(coordinate)) if selected == coordinate => {
-                            ArrayUpdateAxis::UpdatedIndex
-                        }
-                        (Some(_), Some(_)) => ArrayUpdateAxis::Historical,
-                        _ => {
-                            self.prove_dynamic_index(&selected.expression, extent, span)?;
-                            ArrayUpdateAxis::DynamicIndex(selected.expression)
-                        }
-                    },
-                )
+                self.array_update_index_axis(expression, coordinate, extent, span)
             }
             Some(dae::SubscriptView::Whole { .. }) | None => {
                 Ok(ArrayUpdateAxis::UpdatedValue(coordinate.clone()))
@@ -163,6 +148,41 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 self.array_update_slice_axis(expression, coordinate, extent)
             }
         }
+    }
+
+    /// Which side of the update one coordinate selects on an axis the update
+    /// names with a single index.
+    ///
+    /// Two coordinates the projection can prove equal select the update with no
+    /// guard at all. Both proofs are needed: a pair of literals settles the
+    /// static case, and [`user_functions::same_index`] settles the case where
+    /// both sides are one affine form over one atom, which is what a store and
+    /// a read that walk the same iterator look like after projection. Emitting
+    /// `i == i` instead would leave a dead branch, which the MISRA C:2023
+    /// profile in SPEC_0034 GAL-030 does not accept.
+    fn array_update_index_axis(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        coordinate: &gast::Expression,
+        extent: u32,
+        span: Span,
+    ) -> Result<ArrayUpdateAxis, GalecTargetError> {
+        let selected = self.lower(expression)?;
+        if let (Some(selected), Some(coordinate)) = (
+            constant_integer(&selected.expression),
+            constant_integer(coordinate),
+        ) {
+            return Ok(if selected == coordinate {
+                ArrayUpdateAxis::UpdatedIndex
+            } else {
+                ArrayUpdateAxis::Historical
+            });
+        }
+        self.prove_dynamic_index(&selected.expression, extent, span)?;
+        if user_functions::same_index(&selected.expression, coordinate) {
+            return Ok(ArrayUpdateAxis::UpdatedIndex);
+        }
+        Ok(ArrayUpdateAxis::DynamicIndex(selected.expression))
     }
 
     fn array_update_slice_axis(

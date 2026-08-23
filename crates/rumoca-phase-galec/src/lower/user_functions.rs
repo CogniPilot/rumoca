@@ -11,7 +11,8 @@ mod update_aliasing;
 
 use indexed_update::{lower_indexed_function_update, preserves_function_target};
 pub(super) use tensor_loops::{is_reorderable, nest_tensor_loops};
-use update_aliasing::UpdatedAggregate;
+pub(in crate::lower) use update_aliasing::same_index;
+use update_aliasing::{GroupDefinition, UpdatedAggregate, order_by_value_dependency};
 
 pub(super) fn lower_reachable<'dae>(
     view: dae::DaeView<'dae>,
@@ -484,10 +485,12 @@ fn lower_function_statement<'a, 'dae>(
                 )?;
             } else {
                 let group = definitions.iter().collect::<Vec<_>>();
-                let group = order_by_value_dependency(view, &group, |definition| GroupDefinition {
-                    target: definition.target(),
-                    value: definition.rhs(),
-                });
+                let group =
+                    order_by_value_dependency(view, &group, |definition| GroupDefinition {
+                        target: definition.target(),
+                        value: definition.rhs(),
+                        span: definition.provenance().span(),
+                    })?;
                 let outer = lowerer.carry_assigned_primitives(group.carried);
                 let lowered = group.ordered.into_iter().try_for_each(|definition| {
                     lower_function_assignment(view, definition, lowerer, statements)
@@ -563,8 +566,9 @@ fn lower_function_conditional_fallback<'a, 'dae>(
         GroupDefinition {
             target: definition.target(),
             value: fallback_values[definition_ordinal],
+            span: definition.provenance().span(),
         }
-    });
+    })?;
     let outer = lowerer.carry_assigned_primitives(arm.carried);
     let lowered =
         lower_arm_definitions(view, &arm.ordered, &fallback_values, lowerer, &mut fallback);
@@ -598,205 +602,6 @@ fn lower_arm_definitions<'a, 'dae>(
         )?;
     }
     Ok(())
-}
-
-/// One definition of an atomically committed group, as its emission order sees
-/// it: the value it assigns and the storage that assignment overwrites.
-#[derive(Clone, Copy)]
-struct GroupDefinition<'dae> {
-    target: dae::FunctionValueId<'dae>,
-    value: dae::ExprId<'dae>,
-}
-
-/// Order one atomically committed group of definitions so that no assignment
-/// expands a shared value the assignment itself invalidates while storing.
-///
-/// The definitions of one group are one shared expression DAG, and a node that
-/// two of them share is lowered once per definition: whichever definition is
-/// emitted first stores it into its own local, and the rest read that local
-/// ([`ExpressionLowerer::remember_primitive_assignment`]). Where the shared node
-/// reads function storage that one of those definitions overwrites, the reading
-/// order is semantic, because a GALEC assignment writes storage element by
-/// element rather than committing a value the whole right-hand side was
-/// evaluated against.
-///
-/// An elimination row is the witness. `factor := m[r, c] / m[c, c]` and
-/// `m[r, c:n] := m[r, c:n] - factor * m[c, c:n]` share the division, and the
-/// division reads `m`, which the second definition writes. Emitted in that
-/// order the division becomes a local before any store lands. Emitted the other
-/// way round, the division is expanded inside the element loop that overwrites
-/// `m[r, c]`, so from the pivot column on it divides the zero it just stored by
-/// the pivot and the row is never eliminated. Assigning the definition that
-/// materializes the shared node first leaves the element loop reading a local
-/// that its own stores cannot disturb: the unsound expansion has no remaining
-/// way to be formed.
-///
-/// Only that hazard constrains the order. A pair of definitions that share no
-/// node, or share one that reads nothing either of them writes, keeps its
-/// incoming order, so this reorders no group that was already sound.
-fn order_by_value_dependency<'dae, T: Copy>(
-    view: dae::DaeView<'dae>,
-    entries: &[T],
-    describe: impl Fn(T) -> GroupDefinition<'dae>,
-) -> GroupOrder<T> {
-    let group = entries
-        .iter()
-        .map(|entry| describe(*entry))
-        .collect::<Vec<_>>();
-    let GroupHazards {
-        predecessors,
-        carried,
-    } = group_hazards(view, &group);
-    let mut visited = vec![false; entries.len()];
-    let mut ordered = Vec::with_capacity(entries.len());
-    let mut pending: Vec<(usize, usize)> = Vec::new();
-    for start in 0..entries.len() {
-        if visited[start] {
-            continue;
-        }
-        visited[start] = true;
-        pending.push((start, 0));
-        while let Some((slot, cursor)) = pending.pop() {
-            let Some(earlier) = predecessors[slot].get(cursor).copied() else {
-                ordered.push(entries[slot]);
-                continue;
-            };
-            pending.push((slot, cursor + 1));
-            if !visited[earlier] {
-                visited[earlier] = true;
-                pending.push((earlier, 0));
-            }
-        }
-    }
-    GroupOrder { ordered, carried }
-}
-
-/// One group arm's emission order and the values its order exists to protect.
-struct GroupOrder<T> {
-    ordered: Vec<T>,
-    carried: HashSet<u32>,
-}
-
-/// The ordering obligations of one group and the shared values that raise them.
-struct GroupHazards {
-    predecessors: Vec<Vec<usize>>,
-    carried: HashSet<u32>,
-}
-
-/// For each definition of one group, the slots that must be assigned before it.
-///
-/// A slot `earlier` precedes a slot `later` when some value `earlier` stores
-/// also occurs inside `later`'s value and reads the storage `later` overwrites.
-/// Both halves are required: sharing alone is a common-subexpression fact with
-/// no ordering content, and reading `later`'s storage from `later`'s own value
-/// alone is `later`'s business.
-fn group_hazards<'dae>(view: dae::DaeView<'dae>, group: &[GroupDefinition<'dae>]) -> GroupHazards {
-    let stored = group
-        .iter()
-        .map(|definition| stored_values(view, definition.value))
-        .collect::<Vec<_>>();
-    let mut predecessors = vec![Vec::new(); group.len()];
-    let mut carried = HashSet::new();
-    for (later, definition) in group.iter().enumerate() {
-        let occurring = occurring_expressions(view, definition.value);
-        for (earlier, values) in stored.iter().enumerate() {
-            if earlier == later {
-                continue;
-            }
-            let shared = values
-                .iter()
-                .copied()
-                .filter(|value| {
-                    occurring.contains(&value.index())
-                        && reads_function_value(view, *value, definition.target)
-                })
-                .map(|value| value.index())
-                .collect::<Vec<_>>();
-            if shared.is_empty() {
-                continue;
-            }
-            predecessors[later].push(earlier);
-            carried.extend(shared);
-        }
-    }
-    GroupHazards {
-        predecessors,
-        carried,
-    }
-}
-
-/// Every value one definition stores into its target on some path.
-///
-/// A conditional assignment stores one branch value per path rather than the
-/// join, so it is the branch values that become locals and that a sibling can
-/// read by name. This mirrors the descent
-/// [`lower_conditional_function_value_assignment`] performs.
-fn stored_values<'dae>(
-    view: dae::DaeView<'dae>,
-    root: dae::ExprId<'dae>,
-) -> Vec<dae::ExprId<'dae>> {
-    let mut stored = Vec::new();
-    let mut pending = vec![root];
-    while let Some(value) = pending.pop() {
-        stored.push(value);
-        let Some(node) = view.expression(value) else {
-            continue;
-        };
-        let dae::ExpressionOperation::Conditional(operands) = node.operation() else {
-            continue;
-        };
-        pending.extend(
-            (1..operands.len())
-                .step_by(2)
-                .filter_map(|ordinal| operands.get(ordinal)),
-        );
-        pending.extend(
-            operands
-                .len()
-                .checked_sub(1)
-                .and_then(|fallback| operands.get(fallback)),
-        );
-    }
-    stored
-}
-
-/// The identities of every expression node reachable from one value.
-fn occurring_expressions<'dae>(view: dae::DaeView<'dae>, root: dae::ExprId<'dae>) -> HashSet<u32> {
-    let mut occurring = HashSet::new();
-    dae::for_each_expression(view, root, |expression, _| {
-        occurring.insert(expression.index());
-    });
-    occurring
-}
-
-/// Whether one expression reads the storage of `target` anywhere inside it.
-fn reads_function_value<'dae>(
-    view: dae::DaeView<'dae>,
-    root: dae::ExprId<'dae>,
-    target: dae::FunctionValueId<'dae>,
-) -> bool {
-    let mut reads = false;
-    dae::for_each_expression(view, root, |_, node| {
-        reads |= read_function_value(view, node.operation()) == Some(target);
-    });
-    reads
-}
-
-/// The function value one expression node reads, if it reads one.
-///
-/// A loop-carried read names its fold's target for the carried ordinal, which
-/// is the same function value the enclosing group assigns.
-fn read_function_value<'dae>(
-    view: dae::DaeView<'dae>,
-    operation: dae::ExpressionOperation<'dae>,
-) -> Option<dae::FunctionValueId<'dae>> {
-    let (fold, carried) = match operation {
-        dae::ExpressionOperation::FunctionValue { value, .. } => return Some(value),
-        dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. }
-        | dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => (fold, carried),
-        _ => return None,
-    };
-    view.function_fold(fold)?.targets().nth(carried as usize)
 }
 
 fn lower_function_conditional_group<'a, 'dae>(
@@ -865,8 +670,9 @@ fn lower_function_conditional_group<'a, 'dae>(
                 GroupDefinition {
                     target: definition.target(),
                     value: values[definition_ordinal],
+                    span: definition.provenance().span(),
                 }
-            });
+            })?;
         let outer = lowerer.carry_assigned_primitives(arm.carried);
         let lowered = lower_arm_definitions(view, &arm.ordered, &values, lowerer, &mut body);
         lowerer.carry_assigned_primitives(outer);

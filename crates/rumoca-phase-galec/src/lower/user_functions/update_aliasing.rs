@@ -1,19 +1,75 @@
-//! Whether a tensor assignment's own stores reach its own reads.
+//! Whether a function value's stores reach the reads that name what it held
+//! before them.
 //!
-//! A tensor assignment becomes an element loop that walks the target's
-//! coordinates and stores one element per iteration. MLS §11.4 gives the
-//! right-hand side value semantics: all of it is the value the target held
-//! *before* the assignment. An in-place loop realizes that only when no
-//! iteration reads an element an earlier iteration already stored, and
-//! `a[{i, j}, :] := a[{j, i}, :]` is exactly a shape where one does: the
-//! iteration storing row `j` reads row `i`, which the iteration storing row
-//! `i` has already overwritten.
+//! # The hazard this module owns
 //!
-//! [`SnapshotRewrite::stores_reach_the_reads`] asks the question and
-//! [`SnapshotRewrite::rewrite`] answers it: the aggregate is materialized into
-//! a snapshot local before the first store, and the reads that could not be
-//! placed read the snapshot, which is the pre-assignment value by
-//! construction.
+//! GALEC has statements, not values. Every checked function value the DAE
+//! commits becomes storage, and every read of that value becomes a read of the
+//! storage where the reading code sits. The DAE, by contrast, states each value
+//! against the content its own definition named, and it does not always give
+//! that content a name: a scratch a guard nest writes gets no total owner, so
+//! the checked conditional drops it from its target list and substitutes its
+//! right-hand side into every sibling of the group that reads it. Each of those
+//! siblings then *expands* that right-hand side at its own store.
+//!
+//! An expansion is faithful exactly when the storage it reads still holds what
+//! the definition it came from named. Everything below is that one question,
+//! asked wherever a store can land between a definition and an expansion of it.
+//! There are exactly two such places, because there are exactly two ways GALEC
+//! interleaves a store with a read:
+//!
+//! 1. **Inside one assignment.** A tensor assignment becomes an element loop
+//!    that stores one coordinate per iteration, so a later iteration can read
+//!    an element an earlier one already wrote. The per-axis placement proof
+//!    below decides it, and [`SnapshotRewrite::rewrite`] repairs it by
+//!    materializing the pre-assignment aggregate.
+//! 2. **Across the assignments of one group.** A checked group commits its
+//!    definitions atomically, and GALEC emits them one store at a time, so a
+//!    slot emitted later can read storage an earlier slot has replaced.
+//!    [`order_by_value_dependency`] decides it, repairs it by choosing an
+//!    emission order, and refuses the group when no order does.
+//!
+//! # Why those two places are all of them
+//!
+//! A read can only be stale if a store landed between the definition it names
+//! and the point it is expanded at. Function construction issues one definition
+//! per emitted assignment and threads reads to the definition current where the
+//! source read them, so a read whose definition is the one storage currently
+//! holds is not stale by construction. That leaves exactly the stores emitted
+//! between: the ones a single assignment's own element loop performs (1), and
+//! the ones its group siblings perform (2). Nothing else can intervene, because
+//! the substitution that makes a definition expandable at all is confined to
+//! one group: the checked conditional builds one branch-local value environment,
+//! consumes it while lowering that branch, and commits only the group's
+//! declared targets, so a value it drops cannot be read outside the group that
+//! dropped it.
+//!
+//! # Which test pins each instance
+//!
+//! Every instance of this class that has been found live is pinned by a
+//! three-leg differential fixture in `suite_galec_fmu::galec_equivalence`:
+//!
+//! * a shared elimination factor expanded into the row update that overwrites
+//!   its own divisor, repaired by emission order:
+//!   `embedded_c_elimination_assigns_the_shared_factor_before_the_row_it_overwrites`;
+//! * a whole-aggregate exchange whose element loop reads rows it has already
+//!   stored, repaired by the snapshot:
+//!   `embedded_c_exchanged_rows_read_the_value_the_assignment_started_from`;
+//! * a scratch a guard nest writes, expanded inside the update that overwrites
+//!   it and again in a second aggregate's update that follows it, spelled both
+//!   as a whole scalar and as an array element:
+//!   `embedded_c_expands_a_substituted_scratch_where_the_storage_it_reads_still_holds_it`.
+//!
+//! The last of these is why the decision lives in one module rather than in the
+//! analysis that hands out owners: whether a scratch keeps an owner depends on
+//! how the source spelled it, and this decision may not. It is stated over the
+//! stores GALEC actually emits, so it sees the expansion whatever produced it.
+//!
+//! The refusal has a witness of its own, because a decision that can fail
+//! closed is only worth trusting if the closed path is exercised: two
+//! eliminations whose scale factors cross leave each slot expanding a read of
+//! what the other stores, and `suite_galec_fmu::galec_store_order` pins that
+//! such a group is refused rather than emitted in one of the two wrong orders.
 //!
 //! # What places a read
 //!
@@ -603,7 +659,12 @@ struct AffineIndex<'a> {
 /// (`1 + ((i - 0 - 1) * 1)`), so the read that walks the stored axis coordinate
 /// for coordinate is not textually the store's subscript. Comparing the two as
 /// integer arithmetic is what recognizes them as one coordinate.
-fn same_index(left: &gast::Expression, right: &gast::Expression) -> bool {
+///
+/// The same question decides whether an element read of a tensor SSA update
+/// selects the updated value or the base it was stacked on, so
+/// [`ExpressionLowerer::lower_array_update_at`] asks it here rather than
+/// emitting `i == i` and leaving a dead branch in the generated code.
+pub(in crate::lower) fn same_index(left: &gast::Expression, right: &gast::Expression) -> bool {
     let (Some(left), Some(right)) = (affine_index(left), affine_index(right)) else {
         return false;
     };
@@ -801,4 +862,335 @@ pub(super) fn after_snapshot(
     before.append(&mut lowered.before);
     lowered.before = before;
     lowered
+}
+
+// ===========================================================================
+// Axis two: the stores of one group's slot against the reads of its siblings.
+// ===========================================================================
+
+/// One definition of an atomically committed group, as its emission order sees
+/// it: the value it assigns and the storage that assignment overwrites.
+#[derive(Clone, Copy)]
+pub(super) struct GroupDefinition<'dae> {
+    pub(super) target: dae::FunctionValueId<'dae>,
+    pub(super) value: dae::ExprId<'dae>,
+    /// Where the checked statement this definition comes from sits, so a group
+    /// no order discharges is reported at the source that wrote it.
+    pub(super) span: Span,
+}
+
+/// Order one atomically committed group of definitions so that no assignment
+/// stores over what a sibling still has to read.
+///
+/// The group's values are all stated against the storage the group found, so
+/// emitting them one store at a time is faithful exactly when every read still
+/// reaches that content where it runs. Two obligations say when it does not,
+/// and each names the order that discharges it:
+///
+/// * a node two definitions share is lowered once and then read from the local
+///   the first of them stored it in
+///   ([`ExpressionLowerer::remember_primitive_assignment`]); where that node
+///   reads storage this group overwrites, the slot that stores it has to go
+///   first, or the reader re-expands it after that storage has moved.
+///   `factor := m[r, c] / m[c, c]` beside `m[r, c:n] := m[r, c:n] - factor *
+///   m[c, c:n]` is that shape: emitted the other way round the division is
+///   expanded inside the loop that overwrites `m[r, c]`, so from the pivot
+///   column on it divides the zero it just stored;
+/// * a definition whose value reads a sibling's storage outside everything the
+///   group stores is reading what that storage held before the group, so it has
+///   to be emitted before the sibling stores. `y[r, c:n] := y[r, c:n] - factor
+///   * y[c, c:n]` beside `z[r, :] := z[r, :] - factor * z[c, :]` is that shape
+///   once `factor` has no owner of its own: `z`'s value carries its own
+///   expansion of the division, which reads `y`, so storing `y` first leaves
+///   `z` dividing by the zero the row update left.
+///
+/// Only these hazards constrain the order. A pair of definitions that share no
+/// node and read nothing the other writes keeps its incoming order, so this
+/// reorders no group that was already sound.
+///
+/// The order is checked against the obligations it was built from, and a group
+/// no order discharges is refused rather than emitted: see
+/// [`unplaced_group_store`].
+pub(super) fn order_by_value_dependency<'dae, T: Copy>(
+    view: dae::DaeView<'dae>,
+    entries: &[T],
+    describe: impl Fn(T) -> GroupDefinition<'dae>,
+) -> Result<GroupOrder<T>, GalecTargetError> {
+    let group = entries
+        .iter()
+        .map(|entry| describe(*entry))
+        .collect::<Vec<_>>();
+    let GroupHazards {
+        predecessors,
+        readers,
+        carried,
+    } = group_hazards(view, &group);
+    let mut visited = vec![false; entries.len()];
+    let mut ordered = Vec::with_capacity(entries.len());
+    let mut slots = Vec::with_capacity(entries.len());
+    let mut pending: Vec<(usize, usize)> = Vec::new();
+    for start in 0..entries.len() {
+        if visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        pending.push((start, 0));
+        while let Some((slot, cursor)) = pending.pop() {
+            let Some(earlier) = predecessors[slot].get(cursor).copied() else {
+                ordered.push(entries[slot]);
+                slots.push(slot);
+                continue;
+            };
+            pending.push((slot, cursor + 1));
+            if !visited[earlier] {
+                visited[earlier] = true;
+                pending.push((earlier, 0));
+            }
+        }
+    }
+    if let Some((_, reader)) = unplaced_group_store(&slots, &readers) {
+        return Err(unsupported(
+            "function-group-store-order",
+            "this assignment reads what a sibling assignment of the same \
+checked group overwrites, and the sibling in turn needs this one's store \
+first, so no emission order of the group keeps both reads"
+                .to_owned(),
+            group[reader].span,
+        ));
+    }
+    Ok(GroupOrder { ordered, carried })
+}
+
+/// The first slot pair the chosen order leaves unplaced.
+///
+/// `readers[stored]` names the slots whose values read `stored`'s storage from
+/// before the group. Emitting `stored` ahead of one of them is exactly the
+/// store that reaches that read, and nothing downstream can restore what it
+/// overwrote, so the pair is reported and the group is refused.
+fn unplaced_group_store(slots: &[usize], readers: &[Vec<usize>]) -> Option<(usize, usize)> {
+    let mut position = vec![usize::MAX; readers.len()];
+    for (index, slot) in slots.iter().enumerate() {
+        position[*slot] = index;
+    }
+    readers.iter().enumerate().find_map(|(stored, reading)| {
+        reading
+            .iter()
+            .find(|reader| position[stored] < position[**reader])
+            .map(|reader| (stored, *reader))
+    })
+}
+
+/// One arm's emission order and the values its order exists to protect.
+pub(super) struct GroupOrder<T> {
+    pub(super) ordered: Vec<T>,
+    pub(super) carried: HashSet<u32>,
+}
+
+/// The ordering obligations of one group and the shared values that raise them.
+struct GroupHazards {
+    /// Per slot, the slots that must be assigned before it.
+    predecessors: Vec<Vec<usize>>,
+    /// Per slot, the sibling slots whose values read the storage this slot
+    /// overwrites, from before the group committed anything.
+    readers: Vec<Vec<usize>>,
+    carried: HashSet<u32>,
+}
+
+/// For each definition of one group, the slots that must be assigned before it.
+///
+/// Both obligations of [`order_by_value_dependency`] are collected here, and
+/// they are two halves of one fact: a node one slot stores becomes that slot's
+/// local, so wherever a reader carries such a node the storing slot has to go
+/// first, and wherever it carries a read no slot stores the reader has to go
+/// before whoever overwrites it.
+///
+/// The producer obligation therefore needs a shared node that reads *some*
+/// slot's storage. Sharing alone is a common-subexpression fact with no
+/// ordering content; a shared node that reads nothing this group writes is
+/// evaluated to the same value whenever it runs. `pivot := covariance[r, c] -
+/// sum(lower[r, k] * lower[c, k])` is the shape the wider reading catches: the
+/// acceptance test beside it carries `pivot`'s value rather than `lower`'s, so
+/// the narrow reading saw no obligation, while `pivot` storing first is what
+/// lets that test read `pivot` by name instead of expanding it after `lower`
+/// has been written.
+///
+/// The pre-group-read obligation is then stated against everything the group
+/// stores, because the producer obligation is what makes each of those a name.
+fn group_hazards<'dae>(view: dae::DaeView<'dae>, group: &[GroupDefinition<'dae>]) -> GroupHazards {
+    let stored = group
+        .iter()
+        .map(|definition| stored_values(view, definition.value))
+        .collect::<Vec<_>>();
+    let mut predecessors = vec![Vec::new(); group.len()];
+    let mut readers = vec![Vec::new(); group.len()];
+    let mut carried = HashSet::new();
+    for (later, definition) in group.iter().enumerate() {
+        let occurring = occurring_expressions(view, definition.value);
+        let named = sibling_stored_values(&stored, later);
+        for (earlier, values) in stored.iter().enumerate() {
+            if earlier == later {
+                continue;
+            }
+            if reads_outside(view, definition.value, group[earlier].target, &named) {
+                predecessors[earlier].push(later);
+                readers[earlier].push(later);
+            }
+            let shared = values
+                .iter()
+                .copied()
+                .filter(|value| {
+                    occurring.contains(&value.index())
+                        && group
+                            .iter()
+                            .any(|slot| reads_function_value(view, *value, slot.target))
+                })
+                .map(|value| value.index())
+                .collect::<Vec<_>>();
+            if shared.is_empty() {
+                continue;
+            }
+            predecessors[later].push(earlier);
+            carried.extend(shared);
+        }
+    }
+    GroupHazards {
+        predecessors,
+        readers,
+        carried,
+    }
+}
+
+/// Everything the group's other slots store, which one slot's reader may take
+/// by name instead of expanding.
+///
+/// The slot's own stored values are left out: its root is one of them, and it
+/// is the value being walked rather than something a sibling names for it.
+fn sibling_stored_values<'dae>(
+    stored: &[Vec<dae::ExprId<'dae>>],
+    slot: usize,
+) -> Vec<dae::ExprId<'dae>> {
+    stored
+        .iter()
+        .enumerate()
+        .filter(|(ordinal, _)| *ordinal != slot)
+        .flat_map(|(_, values)| values.iter().copied())
+        .collect()
+}
+
+/// Every value one definition stores into its target on some path.
+///
+/// A conditional assignment stores one branch value per path rather than the
+/// join, so it is the branch values that become locals and that a sibling can
+/// read by name. This mirrors the descent
+/// [`lower_conditional_function_value_assignment`] performs.
+fn stored_values<'dae>(
+    view: dae::DaeView<'dae>,
+    root: dae::ExprId<'dae>,
+) -> Vec<dae::ExprId<'dae>> {
+    let mut stored = Vec::new();
+    let mut pending = vec![root];
+    while let Some(value) = pending.pop() {
+        stored.push(value);
+        let Some(node) = view.expression(value) else {
+            continue;
+        };
+        let dae::ExpressionOperation::Conditional(operands) = node.operation() else {
+            continue;
+        };
+        pending.extend(
+            (1..operands.len())
+                .step_by(2)
+                .filter_map(|ordinal| operands.get(ordinal)),
+        );
+        pending.extend(
+            operands
+                .len()
+                .checked_sub(1)
+                .and_then(|fallback| operands.get(fallback)),
+        );
+    }
+    stored
+}
+
+/// The identities of every expression node reachable from one value.
+fn occurring_expressions<'dae>(view: dae::DaeView<'dae>, root: dae::ExprId<'dae>) -> HashSet<u32> {
+    let mut occurring = HashSet::new();
+    dae::for_each_expression(view, root, |expression, _| {
+        occurring.insert(expression.index());
+    });
+    occurring
+}
+
+/// Whether one expression reads the storage of `target` anywhere inside it.
+fn reads_function_value<'dae>(
+    view: dae::DaeView<'dae>,
+    root: dae::ExprId<'dae>,
+    target: dae::FunctionValueId<'dae>,
+) -> bool {
+    let mut reads = false;
+    dae::for_each_expression(view, root, |_, node| {
+        reads |= read_function_value(view, node.operation()) == Some(target);
+    });
+    reads
+}
+
+/// Whether one value performs a read of `target`'s storage of its own.
+///
+/// The walk stops wherever the emitted form reads a *name* instead of expanding
+/// anything, because whatever that name's own right-hand side reads was read
+/// where the name was assigned, not here:
+///
+/// * a node that reads a function value. Projection lowers it to that value's
+///   own GALEC storage ([`ExpressionLowerer::lower_function_value`]), so the
+///   node is reported when it names `target` and is never descended into. This
+///   is what separates `ok := value > pivotThreshold`, whose `value` is a
+///   checked assignment of its own that reads `L` once ahead of the group, from
+///   a scratch with no owner, whose division over `y` is spliced into the
+///   reader's value and expanded again at the reader's store;
+/// * every node of `stored`, which is everything the group's *other* slots
+///   store. That whole node is lowered once by the slot that stores it, and
+///   every other occurrence of it reads the local that store leaves
+///   ([`ExpressionLowerer::remember_primitive_assignment`]); the producer
+///   obligation in [`group_hazards`] is what puts that store first, and it is
+///   raised for exactly the nodes that could matter here. Where the reader is
+///   emitted first anyway, it expands the node against storage that slot has
+///   not written yet, so stopping is right either way.
+///
+/// What remains is an expansion of the content the storage carried before the
+/// group, which only an emission order can place.
+fn reads_outside<'dae>(
+    view: dae::DaeView<'dae>,
+    root: dae::ExprId<'dae>,
+    target: dae::FunctionValueId<'dae>,
+    stored: &[dae::ExprId<'dae>],
+) -> bool {
+    let mut reads = false;
+    dae::for_each_expression_pruned(view, root, |expression, node| {
+        if stored.contains(&expression) {
+            return false;
+        }
+        let Some(read) = read_function_value(view, node.operation()) else {
+            return true;
+        };
+        reads |= read == target;
+        false
+    });
+    reads
+}
+
+/// The function value one expression node reads, if it reads one.
+///
+/// A loop-carried read names its fold's target for the carried ordinal, which
+/// is the same function value the enclosing group assigns.
+fn read_function_value<'dae>(
+    view: dae::DaeView<'dae>,
+    operation: dae::ExpressionOperation<'dae>,
+) -> Option<dae::FunctionValueId<'dae>> {
+    let (fold, carried) = match operation {
+        dae::ExpressionOperation::FunctionValue { value, .. } => return Some(value),
+        dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. }
+        | dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => (fold, carried),
+        _ => return None,
+    };
+    view.function_fold(fold)?.targets().nth(carried as usize)
 }

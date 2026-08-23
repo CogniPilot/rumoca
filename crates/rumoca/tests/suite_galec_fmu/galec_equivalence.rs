@@ -3021,3 +3021,291 @@ fn embedded_c_shifted_rows_read_the_value_the_assignment_started_from() {
         );
     }
 }
+
+// ===========================================================================
+// Fixture 13: a value the checked DAE substitutes into its siblings, instead
+// of giving it a name of its own, must be expanded where the storage its
+// definition reads still holds what that definition named.
+// ===========================================================================
+
+/// One elimination, written four ways around a scratch value that the checked
+/// DAE carries as an expression rather than as storage.
+///
+/// A scratch a guard nest writes has no total owner, so the checked function
+/// conditional drops it from its target list and substitutes its right-hand
+/// side into every sibling of the group that reads it. Each of those siblings
+/// then expands the division `y[row, column] / y[column, column]` at its own
+/// store, and the group is emitted one store at a time, so the expansion is
+/// faithful only while `y` still holds what the division named.
+///
+/// * `scratchIntoOwnUpdate` and `scratchNestedGuard` expand it inside the
+///   element loop that overwrites `y[row, column]` itself. The per-axis
+///   placement proof owns that hazard and materializes the pre-assignment
+///   aggregate, so both legs pin what the snapshot rewrite already
+///   established, at one guard and at two.
+/// * `scalarIntoSecondAggregate` and `elementIntoSecondAggregate` expand it a
+///   second time, in the accumulator update that follows the row update. That
+///   read is of `y` while the *row* update is what stores into `y`, so no
+///   per-axis proof about the accumulator's own loop sees it: it is placed
+///   only by emitting the accumulator's store ahead of the row's.
+///
+/// The two spellings of the scratch (a whole scalar and an array element)
+/// carry the same hazard, which is why both are here: recovering an owner for
+/// the scratch works for some spellings and not others, and the placement
+/// decision may not depend on which one the source used.
+const SUBSTITUTED_SCRATCH_ELIMINATION: &str = r#"
+function scratchIntoOwnUpdate
+  input Real m[3, 3];
+  input Integer mode;
+  output Real upperDiagonal[3];
+protected
+  Integer n = 3;
+  Real tmp[3];
+  Real y[3, 3];
+algorithm
+  y := m;
+  for column in 1:2 loop
+    if mode == 2 then
+      for row in column + 1:3 loop
+        tmp[row] := y[row, column] / y[column, column];
+        y[row, column:n] := y[row, column:n] - tmp[row] * y[column, column:n];
+      end for;
+    end if;
+  end for;
+  upperDiagonal := {y[1, 1], y[2, 2], y[3, 3]};
+end scratchIntoOwnUpdate;
+
+function scratchNestedGuard
+  input Real m[3, 3];
+  input Integer mode;
+  output Real upperDiagonal[3];
+protected
+  Integer n = 3;
+  Real tmp[3];
+  Real y[3, 3];
+algorithm
+  y := m;
+  for column in 1:2 loop
+    if mode == 2 then
+      for row in 2:3 loop
+        if row > column then
+          tmp[row] := y[row, column] / y[column, column];
+          y[row, column:n] := y[row, column:n] - tmp[row] * y[column, column:n];
+        end if;
+      end for;
+    end if;
+  end for;
+  upperDiagonal := {y[1, 1], y[2, 2], y[3, 3]};
+end scratchNestedGuard;
+
+function scalarIntoSecondAggregate
+  input Real m[3, 3];
+  input Real b[3, 3];
+  input Integer mode;
+  output Real upperDiagonal[3];
+  output Real inverseRow3[3];
+protected
+  Integer n = 3;
+  Real factor;
+  Real y[3, 3];
+  Real z[3, 3];
+algorithm
+  y := m;
+  z := b;
+  for column in 1:2 loop
+    if mode == 2 then
+      for row in 2:3 loop
+        if row > column then
+          factor := y[row, column] / y[column, column];
+          y[row, column:n] := y[row, column:n] - factor * y[column, column:n];
+          z[row, :] := z[row, :] - factor * z[column, :];
+        end if;
+      end for;
+    end if;
+  end for;
+  upperDiagonal := {y[1, 1], y[2, 2], y[3, 3]};
+  inverseRow3 := z[3, :];
+end scalarIntoSecondAggregate;
+
+function elementIntoSecondAggregate
+  input Real m[3, 3];
+  input Real b[3, 3];
+  input Integer mode;
+  output Real upperDiagonal[3];
+  output Real inverseRow3[3];
+protected
+  Integer n = 3;
+  Real tmp[3];
+  Real y[3, 3];
+  Real z[3, 3];
+algorithm
+  y := m;
+  z := b;
+  for column in 1:2 loop
+    if mode == 2 then
+      for row in 2:3 loop
+        if row > column then
+          tmp[row] := y[row, column] / y[column, column];
+          y[row, column:n] := y[row, column:n] - tmp[row] * y[column, column:n];
+          z[row, :] := z[row, :] - tmp[row] * z[column, :];
+        end if;
+      end for;
+    end if;
+  end for;
+  upperDiagonal := {y[1, 1], y[2, 2], y[3, 3]};
+  inverseRow3 := z[3, :];
+end elementIntoSecondAggregate;
+
+model SubstitutedScratchSmoke
+  constant Real samplePeriod = 0.1;
+  parameter Real m[3, 3] = [4.0, 2.0, 1.0; 4.0, 5.0, 3.0; 4.0, 7.0, 9.0];
+  parameter Real b[3, 3] = [1.0, 0.0, 0.0; 0.0, 1.0, 0.0; 0.0, 0.0, 1.0];
+  discrete Real scale(start = 0.0, fixed = true);
+  discrete output Real ownDiagonal[3](each start = 0.0);
+  discrete output Real nestedDiagonal[3](each start = 0.0);
+  discrete output Real scalarDiagonal[3](each start = 0.0);
+  discrete output Real scalarRow3[3](each start = 0.0);
+  discrete output Real elementDiagonal[3](each start = 0.0);
+  discrete output Real elementRow3[3](each start = 0.0);
+algorithm
+  when sample(0.0, samplePeriod) then
+    scale := pre(scale) + 1.0;
+    ownDiagonal := scratchIntoOwnUpdate(scale * m, 2);
+    nestedDiagonal := scratchNestedGuard(scale * m, 2);
+    (scalarDiagonal, scalarRow3) := scalarIntoSecondAggregate(scale * m, b, 2);
+    (elementDiagonal, elementRow3) := elementIntoSecondAggregate(scale * m, b, 2);
+  end when;
+end SubstitutedScratchSmoke;
+"#;
+
+const SUBSTITUTED_SCRATCH_DRIVER: &str = r#"#include <stdio.h>
+#include "SubstitutedScratchSmoke.h"
+static void row(const char *label, const SubstitutedScratchSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%lu\n",
+           label,
+           (double)state->ownDiagonal[0], (double)state->ownDiagonal[1],
+           (double)state->ownDiagonal[2],
+           (double)state->nestedDiagonal[0], (double)state->nestedDiagonal[1],
+           (double)state->nestedDiagonal[2],
+           (double)state->scalarDiagonal[0], (double)state->scalarDiagonal[1],
+           (double)state->scalarDiagonal[2],
+           (double)state->scalarRow3[0], (double)state->scalarRow3[1],
+           (double)state->scalarRow3[2],
+           (double)state->elementDiagonal[0], (double)state->elementDiagonal[1],
+           (double)state->elementDiagonal[2],
+           (double)state->elementRow3[0], (double)state->elementRow3[1],
+           (double)state->elementRow3[2],
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    SubstitutedScratchSmokeState state;
+    char label[16];
+    SubstitutedScratchSmoke_startup(&state);
+    row("startup", &state);
+    SubstitutedScratchSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        SubstitutedScratchSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+/// The compared channels, in the driver's column order: each leg's row-echelon
+/// diagonal, and the accumulator row of the two legs that keep one.
+const SUBSTITUTED_SCRATCH_FIELDS: [Field; 18] = [
+    substituted_scratch_field("ownDiagonal[1]"),
+    substituted_scratch_field("ownDiagonal[2]"),
+    substituted_scratch_field("ownDiagonal[3]"),
+    substituted_scratch_field("nestedDiagonal[1]"),
+    substituted_scratch_field("nestedDiagonal[2]"),
+    substituted_scratch_field("nestedDiagonal[3]"),
+    substituted_scratch_field("scalarDiagonal[1]"),
+    substituted_scratch_field("scalarDiagonal[2]"),
+    substituted_scratch_field("scalarDiagonal[3]"),
+    substituted_scratch_field("scalarRow3[1]"),
+    substituted_scratch_field("scalarRow3[2]"),
+    substituted_scratch_field("scalarRow3[3]"),
+    substituted_scratch_field("elementDiagonal[1]"),
+    substituted_scratch_field("elementDiagonal[2]"),
+    substituted_scratch_field("elementDiagonal[3]"),
+    substituted_scratch_field("elementRow3[1]"),
+    substituted_scratch_field("elementRow3[2]"),
+    substituted_scratch_field("elementRow3[3]"),
+];
+
+const fn substituted_scratch_field(name: &'static str) -> Field {
+    Field {
+        name,
+        kind: FieldKind::Real,
+    }
+}
+
+#[test]
+fn embedded_c_expands_a_substituted_scratch_where_the_storage_it_reads_still_holds_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let fields = SUBSTITUTED_SCRATCH_FIELDS;
+    let model = "SubstitutedScratchSmoke";
+
+    let projection = project_embedded_c(dir.path(), model, SUBSTITUTED_SCRATCH_ELIMINATION);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(&out_dir, model, SUBSTITUTED_SCRATCH_DRIVER, fields.len());
+    let ref_ticks = reference_ticks(model, SUBSTITUTED_SCRATCH_ELIMINATION, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    assert_oracle_agrees(&oracle, &c_run, &ref_ticks, &fields, 0);
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+
+    for tick in 0..5 {
+        let expected = expected_substituted_scratch_row((tick + 1) as f64);
+        assert_substituted_scratch_row("generated C", &c_run.steps[tick].values, &expected);
+        assert_substituted_scratch_row("galec oracle", &oracle.steps[tick].values, &expected);
+    }
+}
+
+/// The eighteen compared channels of the tick whose matrix is scaled by
+/// `scale`.
+///
+/// Every leg runs the elimination fixture 12 computes by hand, so all four
+/// diagonals are that diagonal scaled and both accumulator rows are that
+/// accumulator row. An expansion that reads `y` after the row update stores
+/// into it divides by the zero the update left, so every factor it computes is
+/// zero: the accumulator legs then report the untouched identity row
+/// `[0, 0, 1]` instead of `[2/3, -5/3, 1]`, and a diagonal leg reports
+/// `[4, 5, 9]` scaled.
+fn expected_substituted_scratch_row(scale: f64) -> Vec<f64> {
+    let mut expected = Vec::with_capacity(SUBSTITUTED_SCRATCH_FIELDS.len());
+    expected.extend(ELIMINATION_DIAGONAL.map(|value| scale * value));
+    expected.extend(ELIMINATION_DIAGONAL.map(|value| scale * value));
+    expected.extend(ELIMINATION_DIAGONAL.map(|value| scale * value));
+    expected.extend(ELIMINATION_ROW3);
+    expected.extend(ELIMINATION_DIAGONAL.map(|value| scale * value));
+    expected.extend(ELIMINATION_ROW3);
+    expected
+}
+
+/// Compare one leg's tick against the hand-computed elimination, at the
+/// float32 profile bound fixture 12 justifies.
+fn assert_substituted_scratch_row(leg: &str, got: &[f64], want: &[f64]) {
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "{leg}: compared {} channels, expected {}",
+        got.len(),
+        want.len()
+    );
+    for (field, (got, want)) in SUBSTITUTED_SCRATCH_FIELDS.iter().zip(got.iter().zip(want)) {
+        let (atol, rtol) = F32_PROFILE;
+        let bound = atol + rtol * want.abs();
+        let delta = (got - want).abs();
+        assert!(
+            delta <= bound,
+            "{leg} channel `{}`: {got} vs hand-computed {want}, delta {delta} exceeds {bound}",
+            field.name
+        );
+    }
+}
