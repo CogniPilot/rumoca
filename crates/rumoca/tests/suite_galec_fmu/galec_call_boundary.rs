@@ -341,3 +341,45 @@ fn an_oversized_folded_value_is_refused() {
         "the refusal must state the measured size:\n{plain}"
     );
 }
+
+/// A record-typed parameter carrying the Evaluate mark freezes its members
+/// too (MLS §18.6: the whole component is evaluated during translation), so
+/// a dependent parameter reading through the record folds exactly like one
+/// reading a scalar Evaluate parameter. This is the flight controller's
+/// allocation shape: the rotor geometry record is frozen and the wrench map
+/// folds to literals.
+const RECORD_FROZEN_FOLD: &str = "\
+model GalecRecordFrozenFold
+  record Geometry
+    Real arm = 0.25;
+    Real lever = arm / 2.0;
+  end Geometry;
+  function leverGain
+    input Real lever;
+    output Real gain[2];
+  algorithm
+    gain := {1.0 / (4.0 * lever), -1.0 / (4.0 * lever)};
+  end leverGain;
+  constant Real samplePeriod = 0.1;
+  parameter Geometry geometry = Geometry() annotation(Evaluate = true);
+  parameter Real gain[2] = leverGain(geometry.lever);
+  discrete output Real y(start = 0.0);
+equation
+  when sample(0.0, samplePeriod) then
+    y = gain[1] + pre(y);
+  end when;
+end GalecRecordFrozenFold;
+";
+
+#[test]
+fn an_evaluate_record_parameter_freezes_its_members_for_the_fold() {
+    let unit = compile_to_c("GalecRecordFrozenFold", RECORD_FROZEN_FOLD);
+    assert!(
+        !unit.contains("leverGain("),
+        "the folded call must not survive into the emitted C:\n{unit}"
+    );
+    assert!(
+        unit.contains("2.0") || unit.contains("2.0f") || unit.contains("2.00"),
+        "folded gain 1/(4*0.125) = 2 must appear:\n{unit}"
+    );
+}

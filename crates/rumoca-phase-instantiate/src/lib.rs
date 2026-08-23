@@ -232,6 +232,10 @@ struct InstantiationFrame {
 #[derive(Clone, Debug, Default)]
 struct ScopeFrame {
     variability: Option<rumoca_core::Variability>,
+    /// MLS section 18.6: the component or an enclosing one carries
+    /// annotation(Evaluate = true), so everything instantiated beneath it is
+    /// evaluated during translation, record members included.
+    evaluate: bool,
     causality: Option<rumoca_core::Causality>,
     flow: bool,
     stream: bool,
@@ -242,6 +246,7 @@ struct ScopeFrame {
 
 struct ScopeFrameInput<'a> {
     variability: &'a rumoca_core::Variability,
+    evaluate: bool,
     causality: &'a rumoca_core::Causality,
     flow: bool,
     stream: bool,
@@ -271,6 +276,7 @@ impl ScopeFrame {
 
         Self {
             variability,
+            evaluate: input.evaluate,
             causality,
             flow: input.flow,
             stream: input.stream,
@@ -590,6 +596,13 @@ impl InstantiateContext {
             .iter()
             .rev()
             .find_map(|frame| frame.causality.as_ref())
+    }
+
+    /// Whether any enclosing component carries annotation(Evaluate = true).
+    /// MLS §18.6: evaluating a record-typed parameter during translation
+    /// evaluates the whole component, so its members inherit the mark.
+    fn inherited_evaluate(&self) -> bool {
+        self.scope_frames.iter().any(|frame| frame.evaluate)
     }
 
     /// Push inherited scope metadata for nested class instantiation.
@@ -1387,7 +1400,7 @@ fn instantiate_component(
         binding_source_scope.as_ref(),
     );
     let causality = resolve_component_causality(comp, class_def, ctx.inherited_causality());
-    let evaluate = has_evaluate_annotation(comp);
+    let evaluate = has_evaluate_annotation(comp) || ctx.inherited_evaluate();
     let effective_variability = resolve_effective_variability(comp, ctx.inherited_variability());
     let (class_overrides, has_forwarding_class_redeclare, nested_type_overrides) =
         resolve_component_nested_type_overrides(
@@ -1780,6 +1793,7 @@ fn instantiate_nested_class(
 
     ctx.push_scope_frame(ScopeFrameInput {
         variability: effective_variability,
+        evaluate: has_evaluate_annotation(comp) || ctx.inherited_evaluate(),
         causality,
         flow,
         stream,

@@ -133,14 +133,46 @@
       "corpus": "flight-models",
       "model": "Vehicles.Rdd2.Controller",
       "entry_point": "Vehicles/package.mo",
-      "why": "Flight controller. Its dynamic write index is proven: the loop-entry integer ranges are solved as a fixpoint over the back edge, closing EGT017 for the back substitution in LinearAlgebra.solve. Two more refusals are closed: identity(4) reaching a Real[:, :] formal as Integer[:, :] (EG017) now lowers every call argument to the element type its formal declares, so MLS §6.7 Integer-to-Real conversion applies element by element; and a Startup call to a user function (EG028, with EG027 its reachability shadow) is emitted as its generation-time value whenever every input is fixed, taken from rumoca-eval-dae on the checked DAE rather than the lowered GALEC. What refuses it now is EGT023 on rateTask.wrenchToRotorThrust: that fold needs every input frozen, and Vehicles.Rdd2.RotorGeometry's leaf parameters armLength_m and rotorTorqueRatio_m are tunable, so freezing the allocation matrix would make Recalibrate ignore the very tuning it exists to apply. Declaring those two parameters annotation(Evaluate = true) is the model-side change that makes the fold legal; the compiler must not make it silently, because it would drop a tunable parameter from the block interface. The elimination in the emitted LinearAlgebra.solve is now correct: definitions in a conditional group are ordered by value-dependency hazard and the shared factor is assigned before the row update that overwrites its operand (galec_equivalence::embedded_c_elimination_assigns_the_shared_factor_before_the_row_it_overwrites runs both solve shapes on all three legs against a hand-computed elimination; measured A = [4,1,1; 1,5,1; 1,1,6] gives A*X = I to float32). The simultaneous pivot exchange is now correct too: matrix[{column, pivotRow}, :] := matrix[{pivotRow, column}, :] reads storage its own element loop had already overwritten, and the array-update lowering now materializes the aggregate into a snapshot local whenever a read cannot be proven to name either the element being stored or a coordinate the assignment never stores (galec_equivalence::embedded_c_exchanged_rows_read_the_value_the_assignment_started_from and its shifted-range sibling run the two shapes against hand-computed exchanges). Measured on A = [4 2 1; 4 5 3; 4 7 9], where the exchange fires at column 2: solve now returns accepted = true with X = [3/7, -11/56, 1/56; -3/7, 4/7, -1/7; 1/7, -5/14, 3/14] and A*X = I to 1.4e-7 in float32. Pinned as a refusal so the day it compiles is a reviewed diff; before this row becomes a success the model-side freeze must still land and the allocation matrix must still be checked numerically",
+      "why": "Flight controller, compiling since 2026-08-23 and pinned as a success. The road here, kept because each step is a regression class this row now guards: the dynamic write index is proven by the loop-entry bounds fixpoint (EGT017); call arguments lower to their formal's element type so MLS §6.7 Integer-to-Real conversion applies (EG017); a dependent parameter bound to a call folds to its generation-time value from rumoca-eval-dae when every input is frozen (EG028/EG027), which the model enables by declaring rotorGeometry annotation(Evaluate = true), a mark that propagates to record members per MLS §18.6 (galec_call_boundary::an_evaluate_record_parameter_freezes_its_members_for_the_fold); the emitted solve's elimination is hazard-ordered and its pivot exchange reads a snapshot, both pinned by galec_equivalence tests against hand math. The folded allocation matrix was checked numerically: 0.25 thrust share, +-1.4142135623730951 roll/pitch, +-15.625 yaw, matching the hand elimination of the rotor-effectiveness system, and the runtime artifact carries no solve call at all. Open frontier, tracked outside this row: the ARM cross-compile of this artifact trips -Wstringop-overread at two inlined call sites (the estimator compiles warning-free with the same emission), so the controller gets no embedded-budget row until that is resolved; the warning is suspected to be a gcc union-subobject false positive and is being run to ground rather than waived",
       "check": {
         "kind": "compile",
         "target": "galec-production"
       },
       "expect": {
-        "outcome": "refused",
-        "diagnostic": "EGT023"
+        "outcome": "succeeds",
+        "observations": [],
+        "artifacts": [
+          {
+            "path": "Vehicles_Rdd2_Controller/__content.xml",
+            "kind": "file",
+            "min_bytes": 256
+          },
+          {
+            "path": "Vehicles_Rdd2_Controller/AlgorithmCode/Vehicles_Rdd2_Controller.alg",
+            "kind": "file",
+            "min_bytes": 131072
+          },
+          {
+            "path": "Vehicles_Rdd2_Controller/ProductionCode/Vehicles_Rdd2_Controller.c",
+            "kind": "file",
+            "min_bytes": 196608
+          },
+          {
+            "path": "Vehicles_Rdd2_Controller/ProductionCode/Vehicles_Rdd2_Controller.h",
+            "kind": "file",
+            "min_bytes": 16384
+          },
+          {
+            "path": "Vehicles_Rdd2_Controller/ProductionCode/manifest.xml",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "Vehicles_Rdd2_Controller.efmu",
+            "kind": "efmu-container",
+            "min_bytes": 65536
+          }
+        ]
       }
     },
     {

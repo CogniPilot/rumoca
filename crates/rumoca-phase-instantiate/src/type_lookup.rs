@@ -162,7 +162,6 @@ pub(super) fn find_member_type_in_class<'a>(
     None
 }
 
-
 /// Check if inner and outer types are compatible using resolved identity.
 ///
 /// MLS §5.4: The inner declaration's type must be a subtype of the outer's type.
@@ -199,7 +198,6 @@ pub(super) fn is_type_compatible(
 ) -> bool {
     is_type_subtype(tree, inner_type, outer_type)
 }
-
 
 fn find_extends_redeclared_member_type<'a>(
     tree: &'a ast::ClassTree,
