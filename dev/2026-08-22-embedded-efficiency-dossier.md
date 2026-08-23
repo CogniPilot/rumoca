@@ -656,10 +656,17 @@ construction. Sections 2.2 and 2.3.
 
 ### R5. Treat index-conditional zeros as structure
 
-**Saving: 115425 instructions in `conjugateReset` alone, 4.3% of the step, measured;
-plus 675 MACs per GPS-position step and 225 per barometer step in the H construction;
-plus, if carried into the Joseph factor, about 2x on `F*P*F'` for corrections whose H is
-a selection.** Sections 4.1 and 4.3.
+**Landed 2026-08-23 as selector-axis loop splitting. Measured saving: about
+27000 executed instructions per corrected step (roughly 4 percent), by
+callgrind executed-instruction counting on identical x86 -Os builds, plus
+252 B of estimator flash and 2232 B of UKF flash.** The original figure here
+(115425 instructions) came from the per-line weighting model `data/byfn.pl`;
+callgrind ground truth on an identical build showed that model overstates
+absolute totals about 1.5x and loop-removal deltas about 3.3x, because the
+deleted identity iterations cost 8 Thumb-2 instructions each rather than the
+per-line average of the surviving expensive iterations. Weighted-attribution
+numbers elsewhere in this dossier should be read with that calibration;
+`loops2.pl` cannot see this class of saving at all. Original analysis below.
 
 The compiler already folds literal zeros: grepping the emitted source for `* 0.0f`,
 `0.0f *`, `* 1.0f`, `1.0f *`, `+ 0.0f`, `0.0f +` returns 2 hits, both inside conditional

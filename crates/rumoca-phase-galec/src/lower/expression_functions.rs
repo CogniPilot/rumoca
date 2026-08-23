@@ -944,10 +944,16 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             return Ok(gast::Expression::Ref(gast::Reference::local(name)));
         }
         self.pending_prefix_statements.extend(before);
-        self.pending_prefix_statements
-            .extend(user_functions::nest_tensor_loops(
-                body, &iterators, dimensions, call_span,
-            ));
+        let nest = user_functions::nest_tensor_loops(
+            body,
+            &iterators,
+            &expression_projection::AxisBounds {
+                extents: dimensions,
+                proven: &|index, extent| self.prove_dynamic_index(index, extent, call_span).is_ok(),
+            },
+            call_span,
+        );
+        self.pending_prefix_statements.extend(nest);
         Ok(gast::Expression::Ref(gast::Reference::local(name)))
     }
 

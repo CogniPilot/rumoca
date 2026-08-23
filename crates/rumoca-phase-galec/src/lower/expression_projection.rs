@@ -2,10 +2,12 @@
 
 mod contraction;
 mod contraction_fission;
+mod selector_axis;
 
 use super::*;
 use contraction::{TensorContraction, contraction_indices, sum_terms, tensor_contraction};
 use contraction_fission::{fission_contraction_body, subscript_carried_scalars};
+pub(in crate::lower) use selector_axis::{AxisBounds, collapse_selector_axes};
 
 /// The loop one materialized contraction runs over its contracted index.
 struct ContractionLoop<'a> {

@@ -1732,11 +1732,15 @@ fn lower_tensor_function_assignment<'a, 'dae>(
             nested: None,
         }));
     }
+    let span = assignment.span;
     let mut nest = nest_tensor_loops(
         body,
         &names,
-        assignment.target_type.dimensions(),
-        assignment.span,
+        &expression_projection::AxisBounds {
+            extents: assignment.target_type.dimensions(),
+            proven: &|index, extent| lowerer.prove_dynamic_index(index, extent, span).is_ok(),
+        },
+        span,
     );
     let outer = nest.pop().expect("tensor assignment has one outer loop");
     before.extend(nest);
