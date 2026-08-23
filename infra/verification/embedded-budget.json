@@ -10,11 +10,11 @@
       "why": "The artifact that flies: the RDD2 navigation estimator as GALEC-derived embedded C, linked into the Zephyr image on the vehicle's microcontroller. Its flash footprint and its single static allocation are acceptance criteria for that deployment, not diagnostics.",
       "budget": {
         "text_bytes": 65713,
-        "state_bytes": 61830,
+        "state_bytes": 42265,
         "measured": {
-          "text_bytes": 63186,
-          "state_bytes": 59452,
-          "comment": "Measured 2026-08-22 after the never-concurrent scratch overlay landed, with gcc-arm-embedded-15.2.rel1, under arm-none-eabi-gcc -Os -std=c99 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -ffunction-sections -c over both emitted translation units. text 63186 B = 63018 B model + 168 B shared kernels; ceiling 65713 B is +4.0%. state 59452 B, provably the floor for scratch-region overlay of this call graph; ceiling 61830 B is +4.0%. About 3.7 KB of that state is model state; the rest is scratch whose remaining reduction belongs to intra-function slot liveness or marshalling elimination, not region overlay."
+          "text_bytes": 63594,
+          "state_bytes": 40640,
+          "comment": "Measured 2026-08-22 after the arm overlay of branch-local scratch slots landed, with gcc-arm-embedded-15.2.rel1, under arm-none-eabi-gcc -Os -std=c99 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -ffunction-sections -c over both emitted translation units. state 40640 B, down 18812 B (31.6%) from the 59452 B region overlay alone reached: 17 arm overlays inside `step` hold 100 slots the checked placement proof confines to mutually exclusive arms of one conditional, so the region is sized for one arm instead of all eight. Ceiling 42265 B is +4.0%. text 63594 B = 63426 B model + 168 B shared kernels, up 408 B (0.6%): a smaller state struct moves every member offset, and the churn lands as a few bytes in each of about thirty functions rather than in the overlaid code. The text ceiling stays at 65713 B rather than being reset around the larger measurement, which leaves it +3.3%. The remaining state is about 3.7 KB of model state plus scratch whose next reduction belongs to triangular packing of symmetric matrices or to marshalling elimination, not to liveness."
         }
       }
     },
@@ -26,11 +26,11 @@
       "why": "The same estimator inside its eFMU Production Code container, the form the certification review reads. Its C bodies come from the same shared templates as the embedded-c-galec row, so the two rows are pinned to the same numbers on purpose: a divergence between them means the packaging track changed what gets compiled rather than only how it is wrapped, which is a finding either way.",
       "budget": {
         "text_bytes": 65713,
-        "state_bytes": 61830,
+        "state_bytes": 42265,
         "measured": {
-          "text_bytes": 63186,
-          "state_bytes": 59452,
-          "comment": "Measured 2026-08-22 after the never-concurrent scratch overlay landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It therefore carries that row's ceilings unchanged rather than its own four-percent band, so the two artifacts cannot drift apart without one of them going red."
+          "text_bytes": 63594,
+          "state_bytes": 40640,
+          "comment": "Measured 2026-08-22 after the arm overlay of branch-local scratch slots landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It therefore carries that row's ceilings unchanged rather than its own four-percent band, so the two artifacts cannot drift apart without one of them going red."
         }
       }
     },
@@ -41,12 +41,12 @@
       "target": "galec-production",
       "why": "The heaviest matrix-algebra model with an established eFMI target, and nearly as large as the navigation estimator despite being a smaller model: sigma-point work is where an unrolled kernel or a widened scratch region shows up first, so this row is the early warning for both ceilings.",
       "budget": {
-        "text_bytes": 64644,
-        "state_bytes": 47270,
+        "text_bytes": 64403,
+        "state_bytes": 43214,
         "measured": {
-          "text_bytes": 62158,
-          "state_bytes": 45452,
-          "comment": "Measured 2026-08-22 after the never-concurrent scratch overlay landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the NavigationEstimator rows. text 62158 B = 61990 B model + 168 B shared kernels; ceiling 64644 B is +4.0%. state 45452 B (struct EstimatorState), 5180 B below the pre-overlay measurement because exact reachability packs the sigma-point scratch tighter than call depth did; ceiling 47270 B is +4.0%."
+          "text_bytes": 61926,
+          "state_bytes": 41552,
+          "comment": "Measured 2026-08-22 after the arm overlay of branch-local scratch slots landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the NavigationEstimator rows. text 61926 B = 61758 B model + 168 B shared kernels, down 232 B; ceiling 64403 B is +4.0%. state 41552 B (struct EstimatorState), 3900 B below the region-overlay-only measurement of 45452 B: 9 arm overlays hold 36 slots the placement proof confines to single arms. Ceiling 43214 B is +4.0%. This row moves in the opposite direction from the NavigationEstimator rows on text, which is the point of keeping it: the same change costs a few hundred bytes of offset churn on one model and saves them on another."
         }
       }
     }

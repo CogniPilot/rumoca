@@ -24,10 +24,12 @@ application needs plain C rather than an eFMU container.
   value it gets was always arbitrary, but with the overlay it is now whatever
   the owner sharing that storage last left there rather than what the same owner
   left on its own previous activation. The three methods share one group, so a
-  `DoStep` local read before assignment can carry a value `Startup` wrote. It
-  takes a source defect to reach, and neither the old value nor the new one is
-  one the source asked for — but the arbitrary value CHANGED, so a test that
-  passed by accident on the old one may fail on this one.
+  `DoStep` local read before assignment can carry a value `Startup` wrote. The
+  arm overlay extends the same statement one level down: a local read before it
+  is written inside one arm of a conditional can carry what another arm's local
+  left there. It takes a source defect to reach, and neither the old value nor
+  the new one is one the source asked for, but the arbitrary value CHANGED, so
+  a test that passed by accident on the old one may fail on this one.
 - Working memory is **overlaid**: the regions of two owners share storage only
   where the checked projection has established that the owners can never be
   active at the same time. The block's calls form one stack, so that holds
@@ -40,6 +42,20 @@ application needs plain C rather than an eFMU container.
   prints it. The generated source reports the achieved total and the heaviest
   call chain, whose members are pairwise caller and callee and so give the floor
   no sound overlay can go below.
+- Slots **inside** one region are overlaid by a second, independent rule. A
+  region is exact at region granularity and blind below it: a body that is a
+  long `if/elseif` chain gets one region sized for the sum of every arm even
+  though one arm runs. Two slots of one region therefore share storage where the
+  checked placement analysis puts every use of each inside a different arm of
+  one conditional, and no loop encloses that conditional so it is entered at
+  most once per call. A slot named anywhere outside a single arm keeps storage
+  of its own, including a function's outputs, which the caller reads back by
+  name and cannot qualify by arm. The relation is proven in
+  `views/algorithm_code_slot_overlay.rs`, built from the scope paths in
+  `views/algorithm_code_scopes.rs` and out of permission values only that prover
+  can mint; the generated header spells each one as a `rumoca_galec_arm<n>`
+  union member of the region struct, and the generated source reports how many
+  there are and how many slots they hold.
 - GALEC Real values use C99 `float` storage and arithmetic for embedded
   deployment.
 - Tensor assignments preserve checked extents and deterministic row-major
@@ -115,6 +131,13 @@ external calls, random operations, and runtime event iteration fail closed.
   `views::algorithm_code_overlay::tests`, including the negative control, that
   a caller and its own callee are refused, and the projection is tested against
   an awkward call graph in `views::algorithm_code_typed::layout_tests`.
+- The same file executes a block whose `DoStep` is a three-armed correction
+  chain, where one buffer per arm shares storage and one buffer read in every
+  arm must not, so an arm overlay that took the spanning buffer produces a wrong
+  number on every path. The arm relation is tested in
+  `views::algorithm_code_slot_overlay::tests`, whose negative controls cover a
+  slot used in two arms, a slot whose home merely encloses the other's, arms of
+  two different conditionals, and arms of a conditional inside a loop.
 
 ## Example
 

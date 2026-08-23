@@ -14,6 +14,7 @@ use serde::Serialize;
 
 use super::algorithm_code_overlay::{self as overlay, CallGraph, Owner};
 use super::algorithm_code_scopes::{LocalPlacements, ScopePath, ScopeStep};
+use super::algorithm_code_slot_overlay::{self as slot_overlay, SlotHomes};
 use super::source_trace::{SourceTrace, SourceTraceResolver, TraceLegend};
 
 #[derive(Debug, Clone, Serialize)]
@@ -41,10 +42,12 @@ pub(super) struct TypedBlockView<'a> {
 /// The array intermediates one function or method owns inside the block's
 /// working memory.
 ///
-/// **Liveness.** Every owner gets its OWN slots — no two owners ever share a
-/// slot — so a slot's live range is exactly the enclosing call. Regions are
-/// nonetheless *overlaid*: see [`ScratchLayoutView`] for the one rule that
-/// decides which regions may share storage, and why it is sound.
+/// **Liveness.** Every owner gets its own slots (no two owners ever share a
+/// slot), so a slot's live range is contained in the enclosing call. Storage is
+/// nonetheless shared, by two separate rules over two separate relations:
+/// regions across owners, and slots within one owner across the arms of one
+/// conditional. See [`ScratchLayoutView`] for both, and the two prover modules
+/// it names for why each is sound.
 ///
 /// **Instancing.** The overlaid aggregate is a member of the caller-provided
 /// block state. Distinct block-state objects therefore own disjoint mutable
@@ -68,32 +71,76 @@ struct ScratchRegionView<'a> {
     /// this group and does no reasoning of its own about which group that is.
     group: usize,
     /// Slot storage this region needs, in bytes, under the model in
-    /// [`region_bytes`]. `None` when a slot's extent is not a literal — every
+    /// [`slot_bytes`]. `None` when a slot's extent is not a literal: every
     /// target that can print a region fails closed on such a slot long before
     /// this number is read.
     bytes: Option<usize>,
-    /// The declarations that live in this region, in declaration order:
-    /// reachable array locals, then the owner's output parameters.
+    /// What a target declares, in the order it declares it: the region's
+    /// declarations (reachable array locals, then the owner's output
+    /// parameters), with every set that shares storage collapsed into one
+    /// member. See [`ScratchMemberView`].
+    members: Vec<ScratchMemberView<'a>>,
+    /// The arm overlay each slot landed in, by **source** name, or `None` for a
+    /// slot that owns its storage. A reference names a slot, so this is how a
+    /// body spells the one it reads.
+    #[serde(skip)]
+    slot_overlays: HashMap<&'a str, Option<usize>>,
+}
+
+/// One member of a region's storage in the emitted C: either a slot on its own,
+/// or a set of slots that share one piece of storage because the arms they are
+/// local to are mutually exclusive.
+///
+/// The overlay decision behind a multi-slot member is taken by the prover in
+/// `algorithm_code_slot_overlay` and only printed here; see that module for the
+/// relation and the induction that keeps a class pairwise never-concurrent.
+#[derive(Debug, Clone, Serialize)]
+struct ScratchMemberView<'a> {
+    /// `None` for a slot that owns its storage, which a target prints as a
+    /// plain struct member. `Some(ordinal)` for a shared member, which a target
+    /// prints as a union and names by this ordinal.
+    overlay: Option<usize>,
+    /// Storage this member needs, in bytes, under the model in
+    /// [`slot_bytes`]: the largest of its slots. `None` when an extent is not a
+    /// literal, exactly as a region's own total is.
+    bytes: Option<usize>,
+    /// The slots sharing this member, in declaration order. Exactly one when
+    /// `overlay` is `None`, and at least two otherwise.
     slots: Vec<&'a ast::VariableDeclaration>,
 }
 
 impl<'a> ScratchRegionView<'a> {
-    fn new(owner: Owner<'a>, slots: Vec<&'a ast::VariableDeclaration>) -> Self {
+    fn new(
+        owner: Owner<'a>,
+        slots: &[&'a ast::VariableDeclaration],
+        placements: &LocalPlacements<'a>,
+    ) -> Self {
         let (function, method) = match owner {
             Owner::Function(name) => (Some(name), None),
             Owner::Method(spelling) => (None, Some(spelling)),
         };
+        let members = overlay_slots(slots, placements);
+        let slot_overlays = members
+            .iter()
+            .flat_map(|member| {
+                member
+                    .slots
+                    .iter()
+                    .map(move |slot| (slot.name.lexeme(), member.overlay))
+            })
+            .collect();
         Self {
             owner,
-            used: !slots.is_empty(),
+            used: !members.is_empty(),
             function,
             method,
             // Resolved from the block's call graph once every owner is
             // projected: the overlay is decided from region SIZES as well as
             // from the graph, so it cannot be taken before the regions exist.
             group: 0,
-            bytes: region_bytes(&slots),
-            slots,
+            bytes: total_bytes(members.iter().map(|member| member.bytes)),
+            members,
+            slot_overlays,
         }
     }
 
@@ -102,6 +149,62 @@ impl<'a> ScratchRegionView<'a> {
     fn owner(&self) -> &'a str {
         self.owner.name()
     }
+}
+
+/// Collapse a region's slots into the members a target declares.
+///
+/// The overlay ordinals come from the prover; this only groups the slots the
+/// prover put together and keeps declaration order, so a member appears where
+/// its earliest slot was declared and the emitted struct still reads in the
+/// order the projection produced.
+fn overlay_slots<'a>(
+    slots: &[&'a ast::VariableDeclaration],
+    placements: &LocalPlacements<'a>,
+) -> Vec<ScratchMemberView<'a>> {
+    let homes = SlotHomes::observed(
+        slots
+            .iter()
+            .filter_map(|slot| {
+                let name = slot.name.lexeme();
+                placements.home(name).map(|home| (name, home.to_vec()))
+            })
+            .collect(),
+    );
+    let sized: Vec<(&'a str, Option<usize>)> = slots
+        .iter()
+        .map(|slot| (slot.name.lexeme(), slot_bytes(slot)))
+        .collect();
+    let overlay = slot_overlay::plan(&homes, &sized);
+    let mut members: Vec<ScratchMemberView<'a>> = Vec::new();
+    let mut placed: BTreeMap<usize, usize> = BTreeMap::new();
+    for (index, slot) in slots.iter().enumerate() {
+        let Some(ordinal) = overlay.overlay_of(index) else {
+            members.push(ScratchMemberView {
+                overlay: None,
+                bytes: slot_bytes(slot),
+                slots: vec![slot],
+            });
+            continue;
+        };
+        match placed
+            .get(&ordinal)
+            .and_then(|position| members.get_mut(*position))
+        {
+            Some(member) => {
+                member.bytes = widest_bytes([member.bytes, slot_bytes(slot)]);
+                member.slots.push(slot);
+            }
+            None => {
+                placed.insert(ordinal, members.len());
+                members.push(ScratchMemberView {
+                    overlay: Some(ordinal),
+                    bytes: slot_bytes(slot),
+                    slots: vec![slot],
+                });
+            }
+        }
+    }
+    members
 }
 
 /// The block's whole working-memory decision: which regions share storage, in
@@ -130,11 +233,22 @@ impl<'a> ScratchRegionView<'a> {
 /// against is published beside it: the heaviest call chain, whose members are
 /// pairwise caller and callee and so may never share.
 ///
-/// This is deliberately NOT an interference analysis over *slots*. A cleverer
-/// overlay (one that observed that two array temporaries inside one function
-/// are live at disjoint moments) would need a liveness proof checked statement
-/// by statement, and a wrong overlay is a silent wrong-code defect. The unit
-/// here is the region, and the relation is a property of the call graph.
+/// # The second rule, one level down
+///
+/// A group is exact at region granularity and says nothing below it: a function
+/// whose body is a long `if/else if` chain gets one region sized for the sum of
+/// every arm even though one arm runs. Inside a region, slots are therefore
+/// overlaid a second time, by the separate prover in
+/// `algorithm_code_slot_overlay`, over a separate relation: two slots share when
+/// each is used in exactly one arm of one conditional, the arms exclude one
+/// another, and the conditional is entered at most once per activation.
+///
+/// This is still NOT a general interference analysis over slots. A liveness
+/// proof checked statement by statement is what a general one needs, and a wrong
+/// overlay is a silent wrong-code defect; the relation here is decided from the
+/// placement analysis's own scope paths and refuses everything it cannot read
+/// off them, including two slots in one arm, a slot that spans the conditional,
+/// and any conditional a loop encloses.
 #[derive(Debug, Clone, Serialize)]
 struct ScratchLayoutView<'a> {
     /// The groups, in declaration order; empty exactly when the block declares
@@ -146,7 +260,7 @@ struct ScratchLayoutView<'a> {
     /// its **source** name. A call site knows only the name it calls, so this
     /// is how it spells the callee's region when it reads results back.
     region_groups: BTreeMap<&'a str, usize>,
-    /// Total slot storage, in bytes, under the model in [`region_bytes`]: the
+    /// Total slot storage, in bytes, under the model in [`slot_bytes`]: the
     /// sum over groups of the largest region in each. Excludes whatever padding
     /// the target's own layout rules add, so it is a faithful account of the
     /// decision taken here and not a prediction of `sizeof`.
@@ -164,10 +278,21 @@ struct ScratchLayoutView<'a> {
     /// first.
     chain: Vec<&'a str>,
     chain_bytes: Option<usize>,
-    /// One line of prose stating the two facts above, for a target to print
+    /// How many arm overlays the regions hold between them, and how many slots
+    /// those overlays share. The saving is already inside `bytes`, so this is
+    /// what makes it visible: without it a reader sees a total and cannot tell
+    /// how much of it came from below region granularity.
+    arm_overlays: usize,
+    arm_overlay_slots: usize,
+    /// One line of prose stating the facts above, for a target to print
     /// verbatim above the declaration. Formatted here so that a target needs no
     /// conditional for the not-a-literal-extent case.
     summary: String,
+    /// The same, for the arm overlay. Its own line rather than a clause of
+    /// `summary`: the two decisions are taken by two provers over two different
+    /// relations, and a reader who wants to know why a region is the size it is
+    /// reads them one at a time.
+    arm_summary: String,
 }
 
 /// One overlay group: the regions that share a single piece of storage.
@@ -195,34 +320,39 @@ fn scalar_bytes(kind: ast::ScalarType) -> usize {
     }
 }
 
-/// Slot storage a set of region slots needs, or `None` if any extent is not a
-/// literal integer.
-fn region_bytes(slots: &[&ast::VariableDeclaration]) -> Option<usize> {
-    let mut total = 0usize;
-    for slot in slots {
-        let ast::TypeRef::Primitive(kind) = &slot.ty else {
-            // A compartment-typed slot has no target-neutral width. No target
-            // that prints regions accepts one; report nothing rather than
-            // inventing a number.
+/// Storage one region slot needs, or `None` if its extent is not a literal
+/// integer.
+fn slot_bytes(slot: &ast::VariableDeclaration) -> Option<usize> {
+    let ast::TypeRef::Primitive(kind) = &slot.ty else {
+        // A compartment-typed slot has no target-neutral width. No target that
+        // prints regions accepts one; report nothing rather than inventing a
+        // number.
+        return None;
+    };
+    let mut elements = 1usize;
+    for dimension in &slot.dimensions {
+        let ast::Dimension::Expr(ast::Expression::Integer(extent)) = dimension else {
             return None;
         };
-        let mut elements = 1usize;
-        for dimension in &slot.dimensions {
-            let ast::Dimension::Expr(ast::Expression::Integer(extent)) = dimension else {
-                return None;
-            };
-            elements = elements.checked_mul(usize::try_from(*extent).ok()?)?;
-        }
-        total = total.checked_add(elements.checked_mul(scalar_bytes(*kind))?)?;
+        elements = elements.checked_mul(usize::try_from(*extent).ok()?)?;
     }
-    Some(total)
+    elements.checked_mul(scalar_bytes(*kind))
 }
 
-/// Fold a group's or a chain's member sizes, propagating "not a literal".
+/// Fold a group's, a member's or a chain's part sizes, propagating "not a
+/// literal".
 fn total_bytes(parts: impl IntoIterator<Item = Option<usize>>) -> Option<usize> {
     parts
         .into_iter()
         .try_fold(0usize, |sum, part| sum.checked_add(part?))
+}
+
+/// The larger of two sizes, propagating "not a literal" rather than treating a
+/// missing size as a small one.
+fn widest_bytes(parts: impl IntoIterator<Item = Option<usize>>) -> Option<usize> {
+    parts
+        .into_iter()
+        .try_fold(0usize, |widest, part| Some(widest.max(part?)))
 }
 
 fn bytes_text(bytes: Option<usize>) -> String {
@@ -258,10 +388,7 @@ impl<'a> ScratchLayoutView<'a> {
                     .collect();
                 ScratchGroupView {
                     ordinal,
-                    bytes: members
-                        .iter()
-                        .map(|region| region.bytes)
-                        .try_fold(0usize, |widest, part| Some(widest.max(part?))),
+                    bytes: widest_bytes(members.iter().map(|region| region.bytes)),
                     regions: members,
                 }
             })
@@ -279,6 +406,20 @@ impl<'a> ScratchLayoutView<'a> {
                 .find(|region| region.owner() == *name)
                 .map_or(Some(0), |region| region.bytes)
         }));
+        let arm_members: Vec<&ScratchMemberView<'a>> = regions
+            .iter()
+            .flat_map(|region| &region.members)
+            .filter(|member| member.overlay.is_some())
+            .collect();
+        let arm_overlays = arm_members.len();
+        let arm_overlay_slots = arm_members.iter().map(|member| member.slots.len()).sum();
+        let arm_summary = match arm_overlays {
+            0 => "no arm overlay: no slot is provably local to one arm of a conditional".to_owned(),
+            _ => format!(
+                "{arm_overlays} arm overlay(s) hold {arm_overlay_slots} slots that are local to \
+                 mutually exclusive arms",
+            ),
+        };
         let summary = if groups.is_empty() {
             "no working memory: every intermediate fits in a frame".to_owned()
         } else {
@@ -302,7 +443,10 @@ impl<'a> ScratchLayoutView<'a> {
             least_bytes,
             chain,
             chain_bytes,
+            arm_overlays,
+            arm_overlay_slots,
             summary,
+            arm_summary,
         }
     }
 }
@@ -670,6 +814,11 @@ struct TypedReferenceView<'a> {
     /// `local` and `state`, and a target-specific storage decision must not
     /// change what the checked GALEC prints.
     context_resident: bool,
+    /// The arm overlay inside that region the slot is reached through, or
+    /// `None` for a slot that owns its storage and for a reference that is not
+    /// context-resident at all. A target names the overlay by this ordinal; it
+    /// takes no view of its own on which slots share one.
+    context_overlay: Option<usize>,
     /// The literal extents the reference's *final* declaration was declared
     /// with, before this reference's own subscripts are applied — so
     /// `Some([15, 15])` for both `P` and `P[i][j]` where `P` is a `[15, 15]`
@@ -1019,13 +1168,6 @@ fn output_parameters(function: &ast::UserFunction) -> impl Iterator<Item = &ast:
         .filter(|parameter| parameter.direction == ast::Direction::Output)
 }
 
-fn slot_names<'a>(slots: &[&'a ast::VariableDeclaration]) -> HashSet<&'a str> {
-    slots
-        .iter()
-        .map(|declaration| declaration.name.lexeme())
-        .collect()
-}
-
 /// Every function name a statement sequence calls, at any depth.
 ///
 /// # This walk is the overlay's single soundness input
@@ -1303,7 +1445,8 @@ impl<'a> BlockShapes<'a> {
                     && context_resident(declaration, false)
             })
             .collect::<Vec<_>>();
-        let scope = ScopeShapes::new(self, &method.locals, &slots);
+        let scratch = ScratchRegionView::new(Owner::Method(spelling), &slots, &placements);
+        let scope = ScopeShapes::new(self, &method.locals, &scratch);
         *self.context_reads.borrow_mut() = false;
         let mut statements = scope.statements(&method.statements, &placements, &mut Vec::new())?;
         let frame = frame_locals(&placements, &[]);
@@ -1313,7 +1456,7 @@ impl<'a> BlockShapes<'a> {
             signals: &method.signals,
             locals: &method.locals,
             c_locals: surviving_locals(frame, &absorbed),
-            scratch: ScratchRegionView::new(Owner::Method(spelling), slots),
+            scratch,
             uses_scratch,
             definite_state_writes: definite_state_writes(&method.statements)
                 .into_iter()
@@ -1336,7 +1479,9 @@ impl<'a> BlockShapes<'a> {
             })
             .chain(output_parameters(function).map(|parameter| &parameter.decl))
             .collect::<Vec<_>>();
-        let scope = ScopeShapes::for_function(self, function, &slots);
+        let scratch =
+            ScratchRegionView::new(Owner::Function(function.name.lexeme()), &slots, &placements);
+        let scope = ScopeShapes::for_function(self, function, &scratch);
         *self.context_reads.borrow_mut() = false;
         let mut statements =
             scope.statements(&function.statements, &placements, &mut Vec::new())?;
@@ -1352,7 +1497,7 @@ impl<'a> BlockShapes<'a> {
             input_parameters: input_parameters(function),
             locals: &function.locals,
             c_locals: surviving_locals(frame, &absorbed),
-            scratch: ScratchRegionView::new(Owner::Function(function.name.lexeme()), slots),
+            scratch,
             uses_scratch,
             statements,
         })
@@ -1476,15 +1621,18 @@ struct ScopeShapes<'a, 'block> {
     block: &'block BlockShapes<'a>,
     locals: HashMap<&'a str, &'a ast::VariableDeclaration>,
     iterators: HashSet<&'a str>,
-    /// The names the enclosing owner keeps in its context region.
-    context_names: HashSet<&'a str>,
+    /// The names the enclosing owner keeps in its context region, each with the
+    /// arm overlay it landed in. A reference names a slot and needs both facts:
+    /// whether the region holds it at all, and which member of the region it is
+    /// reached through.
+    context_slots: HashMap<&'a str, Option<usize>>,
 }
 
 impl<'a, 'block> ScopeShapes<'a, 'block> {
     fn new(
         block: &'block BlockShapes<'a>,
         locals: &'a [ast::VariableDeclaration],
-        slots: &[&'a ast::VariableDeclaration],
+        scratch: &ScratchRegionView<'a>,
     ) -> Self {
         Self {
             block,
@@ -1493,14 +1641,14 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 .map(|declaration| (declaration.name.lexeme(), declaration))
                 .collect(),
             iterators: HashSet::new(),
-            context_names: slot_names(slots),
+            context_slots: scratch.slot_overlays.clone(),
         }
     }
 
     fn for_function(
         block: &'block BlockShapes<'a>,
         function: &'a ast::UserFunction,
-        slots: &[&'a ast::VariableDeclaration],
+        scratch: &ScratchRegionView<'a>,
     ) -> Self {
         Self {
             block,
@@ -1516,7 +1664,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 )
                 .collect(),
             iterators: HashSet::new(),
-            context_names: slot_names(slots),
+            context_slots: scratch.slot_overlays.clone(),
         }
     }
 
@@ -1529,7 +1677,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             block: self.block,
             locals: self.locals.clone(),
             iterators,
-            context_names: self.context_names.clone(),
+            context_slots: self.context_slots.clone(),
         }
     }
 
@@ -1779,13 +1927,13 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
         // A `for` iterator shadows any declaration of the same name inside the
         // loop body, and an iterator is always an automatic scalar, so the
         // shadowing case has to be answered before the region is consulted.
-        let context_resident = match reference {
-            ast::Reference::Local(part) => {
-                !self.iterators.contains(part.name.lexeme())
-                    && self.context_names.contains(part.name.lexeme())
+        let slot = match reference {
+            ast::Reference::Local(part) if !self.iterators.contains(part.name.lexeme()) => {
+                self.context_slots.get(part.name.lexeme()).copied()
             }
-            ast::Reference::State(_) => false,
+            ast::Reference::Local(_) | ast::Reference::State(_) => None,
         };
+        let context_resident = slot.is_some();
         if context_resident {
             *self.block.context_reads.borrow_mut() = true;
         }
@@ -1794,6 +1942,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             extents: shape.extents,
             scalar: shape.scalar,
             context_resident,
+            context_overlay: slot.flatten(),
             declared_extents: self
                 .final_declaration(reference)
                 .and_then(|declaration| literal_extents(&declaration.dimensions)),
@@ -2807,6 +2956,7 @@ mod square_reduction_tests {
             extents: Some(Vec::new()),
             scalar: Some(ast::ScalarType::Real),
             context_resident: false,
+            context_overlay: None,
             declared_extents: None,
             node: TypedReferenceNodeView::Local(TypedRefPartView { name, subscripts }),
         }
@@ -3279,6 +3429,7 @@ mod kernelize_tests {
             extents: Some(Vec::new()),
             scalar: Some(ast::ScalarType::Real),
             context_resident: false,
+            context_overlay: None,
             declared_extents: None,
             node: TypedReferenceNodeView::Local(TypedRefPartView {
                 name,
@@ -3305,6 +3456,7 @@ mod kernelize_tests {
                 extents: Some(Vec::new()),
                 scalar: Some(ast::ScalarType::Real),
                 context_resident: false,
+                context_overlay: None,
                 declared_extents: Some(vec![3]),
                 node: TypedReferenceNodeView::Local(TypedRefPartView {
                     name,
@@ -3890,13 +4042,167 @@ mod layout_tests {
         assert!(error.contains("acyclic"), "{error}");
     }
 
+    /// `function <name>(input u[extent]) => (output y[extent])` whose body is a
+    /// two-armed conditional: `if c then a := u; y := a; else b := u; y := b;`.
+    ///
+    /// `a` and `b` are each named in exactly one arm; `y` is the OUTPUT
+    /// parameter, named in both.
+    fn branching_function(name: &str, extent: i64) -> ast::UserFunction {
+        let arm = |slot: &str| {
+            vec![
+                ast::Spanned::dummy(ast::Statement::Assignment {
+                    target: ast::Reference::local(ident(slot)),
+                    value: ast::Expression::Ref(ast::Reference::local(ident("u"))),
+                }),
+                ast::Spanned::dummy(ast::Statement::Assignment {
+                    target: ast::Reference::local(ident("y")),
+                    value: ast::Expression::Ref(ast::Reference::local(ident(slot))),
+                }),
+            ]
+        };
+        ast::UserFunction {
+            kind: ast::FunctionKind::Stateless,
+            name: ident(name),
+            signals: Vec::new(),
+            parameters: vec![
+                parameter(ast::Direction::Input, "u", extent),
+                parameter(ast::Direction::Output, "y", extent),
+            ],
+            locals: vec![array_local("a", extent), array_local("b", extent)],
+            statements: vec![ast::Spanned::dummy(ast::Statement::If(ast::IfStatement {
+                branches: vec![ast::IfBranch {
+                    condition: ast::Condition::Expression(ast::Expression::Bool(true)),
+                    body: arm("a"),
+                    span: rumoca_core::Span::DUMMY,
+                }],
+                else_body: Some(arm("b")),
+            }))],
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    /// The region one owner declared, by source name.
+    fn region_of<'view, 'a>(
+        layout: &'view ScratchLayoutView<'a>,
+        owner: &str,
+    ) -> &'view ScratchRegionView<'a> {
+        layout
+            .groups
+            .iter()
+            .flat_map(|group| &group.regions)
+            .find(|region| region.owner() == owner)
+            .unwrap_or_else(|| panic!("`{owner}` declares no region"))
+    }
+
+    /// The arm overlay a named slot landed in, `None` when it owns its storage.
+    fn overlay_of<'a>(region: &ScratchRegionView<'a>, slot: &str) -> Option<usize> {
+        region
+            .members
+            .iter()
+            .find(|member| member.slots.iter().any(|decl| decl.name.lexeme() == slot))
+            .and_then(|member| member.overlay)
+    }
+
+    /// What the arm overlay buys, as a layout property: two array temporaries
+    /// each confined to one arm of one conditional become one piece of storage,
+    /// and the region is sized for one of them rather than both.
+    #[test]
+    fn two_arm_local_slots_share_one_piece_of_region_storage() {
+        let block = block_of(vec![branching_function("branching", 8)], &["branching"]);
+        let sources = rumoca_core::SourceMap::new();
+        let resolved = layout(&block, &sources);
+        let region = region_of(&resolved, "branching");
+
+        let arm = overlay_of(region, "a").expect("`a` is confined to one arm");
+        assert_eq!(
+            overlay_of(region, "b"),
+            Some(arm),
+            "so is `b`, the other arm"
+        );
+        // 8 Reals of 4 bytes each: `a` and `b` cost 32 together, not 64, and
+        // `y` still costs its own 32.
+        assert_eq!(region.bytes, Some(64));
+        assert_eq!(resolved.arm_overlays, 1);
+        assert_eq!(resolved.arm_overlay_slots, 2);
+    }
+
+    /// NEGATIVE CONTROL. A function's OUTPUT is never given an arm overlay,
+    /// however arm-local its assignments look.
+    ///
+    /// This is what keeps the read-back sound. The caller copies a callee's
+    /// results out with `<callee region>.<output>`, and it knows only the name
+    /// it called and the output's name, and it cannot know which arm inside the
+    /// callee happened to write it, and there is no arm it could name that
+    /// would be right on every path. The refusal is structural rather than a
+    /// special case here: an output is not a body-placed local, so the
+    /// placement analysis gives it no home, and no home is a refusal.
+    #[test]
+    fn a_function_output_is_never_given_an_arm_overlay() {
+        let block = block_of(vec![branching_function("branching", 8)], &["branching"]);
+        let sources = rumoca_core::SourceMap::new();
+        let resolved = layout(&block, &sources);
+        let region = region_of(&resolved, "branching");
+
+        assert_eq!(
+            overlay_of(region, "y"),
+            None,
+            "a callee output must stay reachable as `<region>.<output>`"
+        );
+        assert!(
+            region.members.iter().any(|member| member.overlay.is_none()
+                && member.slots.iter().any(|d| d.name.lexeme() == "y")),
+            "`y` must be a member of its own"
+        );
+    }
+
+    /// NEGATIVE CONTROL. A slot named in more than one arm keeps its own
+    /// storage: the arms that would share it are exactly the arms that need it
+    /// intact.
+    #[test]
+    fn a_slot_named_in_two_arms_keeps_its_own_storage() {
+        let mut function = branching_function("branching", 8);
+        // Make `a` the slot both arms name: the else arm now reads it too, so
+        // its home rises to the whole body.
+        function.statements = vec![ast::Spanned::dummy(ast::Statement::If(ast::IfStatement {
+            branches: vec![ast::IfBranch {
+                condition: ast::Condition::Expression(ast::Expression::Bool(true)),
+                body: vec![ast::Spanned::dummy(ast::Statement::Assignment {
+                    target: ast::Reference::local(ident("a")),
+                    value: ast::Expression::Ref(ast::Reference::local(ident("u"))),
+                })],
+                span: rumoca_core::Span::DUMMY,
+            }],
+            else_body: Some(vec![ast::Spanned::dummy(ast::Statement::Assignment {
+                target: ast::Reference::local(ident("b")),
+                value: ast::Expression::Ref(ast::Reference::local(ident("a"))),
+            })]),
+        }))];
+        let block = block_of(vec![function], &["branching"]);
+        let sources = rumoca_core::SourceMap::new();
+        let resolved = layout(&block, &sources);
+        let region = region_of(&resolved, "branching");
+
+        assert_eq!(overlay_of(region, "a"), None, "`a` spans both arms");
+        assert_eq!(
+            overlay_of(region, "b"),
+            None,
+            "so nothing may share with it"
+        );
+        assert_eq!(
+            resolved.arm_overlays, 0,
+            "an overlay of one member is not an overlay"
+        );
+    }
+
     /// A slot whose extent is not a literal reports as unsizable rather than
     /// as zero: the number a reviewer reads must never be a guess.
     #[test]
     fn an_unsizable_extent_reports_nothing_rather_than_zero() {
         let mut derived = array_local("t", 4);
         derived.dimensions = vec![ast::Dimension::Derived];
-        assert_eq!(region_bytes(&[&derived]), None);
-        assert_eq!(region_bytes(&[&array_local("t", 4)]), Some(16));
+        assert_eq!(slot_bytes(&derived), None);
+        assert_eq!(slot_bytes(&array_local("t", 4)), Some(16));
+        assert_eq!(total_bytes([slot_bytes(&derived), Some(16)]), None);
+        assert_eq!(widest_bytes([slot_bytes(&derived), Some(16)]), None);
     }
 }

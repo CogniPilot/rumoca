@@ -32,6 +32,15 @@ enum Position {
 
 pub(super) struct LocalPlacements<'a> {
     by_scope: HashMap<ScopePath, Vec<&'a ast::VariableDeclaration>>,
+    /// The innermost scope that contains **every** use of a declaration, by
+    /// name: the same path [`LocalPlacements::at`] is keyed by, read back per
+    /// declaration instead of per scope.
+    ///
+    /// This is what an arm-exclusivity argument needs. [`record_use`] truncates
+    /// a declaration's path to the common prefix of its uses, so a home that
+    /// ends inside one arm of a conditional is positive evidence that nothing
+    /// outside that arm ever names the declaration.
+    home: HashMap<&'a str, ScopePath>,
     placed: HashSet<&'a str>,
     read: HashSet<&'a str>,
 }
@@ -67,17 +76,29 @@ impl<'a> LocalPlacements<'a> {
         collect_statements(statements, &mut Vec::new(), &names, &mut uses, &mut read);
         let mut by_scope = HashMap::<ScopePath, Vec<_>>::new();
         let mut placed = HashSet::new();
+        let mut home = HashMap::new();
         for declaration in declarations {
             if let Some(path) = uses.remove(declaration.name.lexeme()) {
                 placed.insert(declaration.name.lexeme());
+                home.insert(declaration.name.lexeme(), path.clone());
                 by_scope.entry(path).or_default().push(declaration);
             }
         }
         Self {
             by_scope,
+            home,
             placed,
             read,
         }
+    }
+
+    /// The innermost scope containing every use of `name`, or `None` for a
+    /// declaration this body never reaches.
+    ///
+    /// An absent answer is no evidence, never a claim that the declaration is
+    /// unconstrained: a caller that reasons about liveness must refuse on it.
+    pub(super) fn home(&self, name: &str) -> Option<&[ScopeStep]> {
+        self.home.get(name).map(Vec::as_slice)
     }
 
     pub(super) fn at(&self, path: &[ScopeStep]) -> Vec<&'a ast::VariableDeclaration> {
@@ -358,6 +379,22 @@ mod tests {
             }])),
             ["branch_value"]
         );
+        // The same fact read per declaration, which is what an arm-exclusivity
+        // argument consults: `branch_value` is named only inside branch 0, and
+        // `shared_value` is written there but read outside, so its home is the
+        // whole body and no arm may claim its storage.
+        assert_eq!(
+            placements.home("branch_value"),
+            Some(
+                [ScopeStep::IfBranch {
+                    statement: 0,
+                    branch: 0,
+                }]
+                .as_slice()
+            )
+        );
+        assert_eq!(placements.home("shared_value"), Some([].as_slice()));
+        assert_eq!(placements.home("never_declared"), None);
     }
 
     #[test]

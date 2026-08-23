@@ -9,6 +9,12 @@
 //! which put a caller and its callee on the same storage produces a *different
 //! answer*, not merely different text — a test that only checked that the unit
 //! still compiles would be worthless for this change.
+//!
+//! The second half of the file does the same job for the ARM overlay, which
+//! shares storage between slots inside one region. Its fixture is a correction
+//! chain with one buffer per arm and one buffer every arm reads: an overlay that
+//! took the second buffer gets a wrong number on every path through the chain.
+//! The arm relation itself is tested in `views::algorithm_code_slot_overlay`.
 
 use std::fs;
 use std::process::Command;
@@ -179,10 +185,50 @@ fn write_kernel_library(directory: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn render(block: &CheckedAlgorithmBlock, path: &str) -> String {
+    render_as(block, path, MODEL)
+}
+
+fn render_as(block: &CheckedAlgorithmBlock, path: &str, model: &str) -> String {
     let template =
         templates::builtin_template_source("embedded-c-galec", path).expect("built-in template");
-    render_checked_algorithm_block_template_with_artifact(block, &json!({}), template, MODEL)
+    render_checked_algorithm_block_template_with_artifact(block, &json!({}), template, model)
         .expect("working-memory fixture must render")
+}
+
+/// Compile a generated model beside the shared kernel library and a driver, run
+/// it, and return the driver's exit status and output.
+fn run_generated(model: &str, source: &str, header: &str, driver: &str) -> (bool, String) {
+    let directory = tempdir().expect("temporary generated-C directory");
+    let header_path = directory.path().join(format!("{model}.h"));
+    let source_path = directory.path().join(format!("{model}.c"));
+    let driver_path = directory.path().join("main.c");
+    let executable = directory.path().join("harness");
+    fs::write(&header_path, header).expect("write generated header");
+    fs::write(&source_path, source).expect("write generated source");
+    fs::write(&driver_path, driver).expect("write generated-C driver");
+    let kernels_path = write_kernel_library(directory.path());
+
+    let compile = Command::new("cc")
+        .args(STRICT)
+        .arg(&driver_path)
+        .arg(&source_path)
+        .arg(&kernels_path)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("run C compiler");
+    assert!(
+        compile.status.success(),
+        "strict generated-C compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&executable)
+        .output()
+        .expect("execute generated-C harness");
+    (
+        run.status.success(),
+        String::from_utf8_lossy(&run.stdout).into_owned(),
+    )
 }
 
 const DRIVER: &str = "\
@@ -274,37 +320,10 @@ fn overlaid_working_memory_preserves_values_across_calls() {
     let header = render(&block, "model.h.jinja");
     let source = render(&block, "model.c.jinja");
 
-    let directory = tempdir().expect("temporary generated-C directory");
-    let header_path = directory.path().join(format!("{MODEL}.h"));
-    let source_path = directory.path().join(format!("{MODEL}.c"));
-    let driver_path = directory.path().join("main.c");
-    let executable = directory.path().join("working-memory");
-    fs::write(&header_path, &header).expect("write generated header");
-    fs::write(&source_path, &source).expect("write generated source");
-    fs::write(&driver_path, DRIVER).expect("write generated-C driver");
-    let kernels_path = write_kernel_library(directory.path());
-
-    let compile = Command::new("cc")
-        .args(STRICT)
-        .arg(&driver_path)
-        .arg(&source_path)
-        .arg(&kernels_path)
-        .arg("-o")
-        .arg(&executable)
-        .output()
-        .expect("run C compiler");
+    let (passed, output) = run_generated(MODEL, &source, &header, DRIVER);
     assert!(
-        compile.status.success(),
-        "strict generated-C compile failed:\n{}",
-        String::from_utf8_lossy(&compile.stderr)
-    );
-    let run = Command::new(&executable)
-        .output()
-        .expect("execute working-memory harness");
-    assert!(
-        run.status.success(),
-        "overlaid working memory changed the block's values:\n{}",
-        String::from_utf8_lossy(&run.stdout)
+        passed,
+        "overlaid working memory changed the block's values:\n{output}"
     );
 }
 
@@ -375,6 +394,13 @@ fn the_overlay_and_its_cost_are_stated_in_the_generated_source() {
              regions can use"
         ),
         "the achieved total must be stated against the floor:\n{source}"
+    );
+    // The arm overlay is a second, independent decision and is reported on its
+    // own line, including where it saved nothing: silence would read as "not
+    // considered". This fixture's bodies have no conditional at all.
+    assert!(
+        source.contains("no arm overlay: no slot is provably local to one arm"),
+        "the arm-overlay decision must be reported even when it is empty:\n{source}"
     );
 }
 
@@ -454,4 +480,192 @@ fn the_production_code_manifest_describes_no_working_memory() {
         "{manifest}"
     );
     assert!(manifest.contains("TD_STATE"), "{manifest}");
+}
+
+// ---------------------------------------------------------------------------
+// Arm overlay: slots that share storage INSIDE one region.
+// ---------------------------------------------------------------------------
+
+const ARM_MODEL: &str = "ArmOverlay";
+
+fn boolean_input(name: &str) -> galec::InterfaceVariable {
+    galec::InterfaceVariable {
+        kind: galec::InterfaceKind::Input,
+        decl: galec::VariableDeclaration::scalar(
+            galec::ScalarType::Boolean,
+            galec::Name::ident(name),
+        ),
+        start: None,
+    }
+}
+
+fn branch(
+    condition: galec::Expression,
+    body: Vec<galec::Spanned<galec::Statement>>,
+) -> galec::IfBranch {
+    galec::IfBranch {
+        condition: galec::Condition::Expression(condition),
+        body,
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn arm_body(slot: &str, factor: f64) -> Vec<galec::Spanned<galec::Statement>> {
+    vec![
+        assign(local_ref(slot), scaled(state("a"), factor)),
+        assign(state_ref("result"), sum(local("spanning"), local(slot))),
+    ]
+}
+
+/// A block whose `DoStep` is a correction chain: one buffer per arm, plus one
+/// buffer that every arm reads and no arm owns.
+///
+/// ```text
+/// DoStep : spanning := a;
+///          if mode then      arm_a := 2*a;  result := spanning + arm_a   -> 3*a
+///          elseif other then arm_b := 3*a;  result := spanning + arm_b   -> 4*a
+///          else              arm_c := 4*a;  result := spanning + arm_c   -> 5*a
+///          end if
+/// ```
+///
+/// `arm_a`, `arm_b` and `arm_c` are what the arm overlay is for: at most one of
+/// them is ever touched, so one piece of storage holds whichever it is.
+/// `spanning` is the counterexample in the same fixture: it is written outside
+/// the chain and read inside every arm, so it is live across the chain. If it
+/// were given an arm's storage, that arm's assignment would overwrite it before
+/// the `spanning + arm_x` that reads it, and the answer would come out twice
+/// the arm's factor instead of one plus it. That is what the driver checks.
+fn arm_fixture() -> CheckedAlgorithmBlock {
+    let mut block = galec::Block::new(galec::Name::ident(ARM_MODEL));
+    block.interface = vec![
+        interface(galec::InterfaceKind::Input, "a"),
+        boolean_input("mode"),
+        boolean_input("other"),
+        interface(galec::InterfaceKind::Output, "result"),
+    ];
+    block.do_step.locals = vec![
+        array("spanning"),
+        array("arm_a"),
+        array("arm_b"),
+        array("arm_c"),
+    ];
+    block.do_step.statements = vec![
+        assign(local_ref("spanning"), state("a")),
+        galec::Spanned::dummy(galec::Statement::If(galec::IfStatement {
+            branches: vec![
+                branch(state("mode"), arm_body("arm_a", 2.0)),
+                branch(state("other"), arm_body("arm_b", 3.0)),
+            ],
+            else_body: Some(arm_body("arm_c", 4.0)),
+        })),
+    ];
+    CheckedAlgorithmBlock::construct(block).expect("arm-overlay fixture must be valid GALEC")
+}
+
+const ARM_DRIVER: &str = "\
+#include <stdio.h>
+#include \"ArmOverlay.h\"
+
+static int check(ArmOverlayState *state, bool mode, bool other, float factor) {
+    state->mode = mode;
+    state->other = other;
+    ArmOverlay_dostep(state);
+    for (int32_t i = 0; i < 4; ++i) {
+        const float expected = (1.0f + factor) * (float)(i + 1);
+        if (state->result[i] != expected) {
+            printf(\"mode=%d other=%d result[%d] = %f, expected %f\\n\",
+                   (int)mode, (int)other, (int)i,
+                   (double)state->result[i], (double)expected);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int main(void) {
+    ArmOverlayState state = {0};
+    for (int32_t i = 0; i < 4; ++i) {
+        state.a[i] = (float)(i + 1);
+    }
+    /* Every arm, twice around, so a value one arm left behind is read by the
+       next arm rather than by a fresh instance. */
+    for (int32_t round = 0; round < 2; ++round) {
+        if (check(&state, true, false, 2.0f) != 0) {
+            return 1;
+        }
+        if (check(&state, false, true, 3.0f) != 0) {
+            return 2;
+        }
+        if (check(&state, false, false, 4.0f) != 0) {
+            return 3;
+        }
+    }
+    return 0;
+}
+";
+
+/// The arm overlay computes the same numbers, in real compiled C, on every path
+/// through the chain.
+///
+/// The fixture is built so a WRONG overlay produces a different answer, not
+/// merely different text: `spanning` is live across the chain, so an overlay
+/// that gave it an arm's storage would have that arm's assignment clobber it
+/// before the sum that reads it.
+#[test]
+fn arm_overlaid_slots_compute_the_same_values_on_every_arm() {
+    let block = arm_fixture();
+    let header = render_as(&block, "model.h.jinja", ARM_MODEL);
+    let source = render_as(&block, "model.c.jinja", ARM_MODEL);
+
+    let (passed, output) = run_generated(ARM_MODEL, &source, &header, ARM_DRIVER);
+    assert!(
+        passed,
+        "the arm overlay changed the block's values:\n{output}"
+    );
+}
+
+/// NEGATIVE CONTROL, in the emitted C. The three arm-local buffers land in one
+/// union; the buffer that is live across the chain keeps its own storage.
+///
+/// This is the layout claim the runtime test above depends on: without it that
+/// test would pass for the uninteresting reason that nothing was overlaid.
+#[test]
+fn a_slot_live_across_the_chain_is_refused_an_arm_overlay() {
+    let header = render_as(&arm_fixture(), "model.h.jinja", ARM_MODEL);
+    let source = render_as(&arm_fixture(), "model.c.jinja", ARM_MODEL);
+
+    let overlay = header
+        .split("typedef union ArmOverlayScratchArm0_dostepTag {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .unwrap_or_default();
+    for slot in ["arm_a", "arm_b", "arm_c"] {
+        assert!(
+            overlay.contains(&format!("float {slot}[4];")),
+            "`{slot}` is local to one arm and belongs in the overlay:\n{header}"
+        );
+    }
+    assert!(
+        !overlay.contains("float spanning[4];"),
+        "`spanning` is read in every arm and must keep its own storage:\n{header}"
+    );
+    assert!(
+        header.contains("    float spanning[4];"),
+        "`spanning` stays a plain member of the region:\n{header}"
+    );
+    // And the bodies address each slot through the storage it was given.
+    assert!(
+        source.contains("ctx->rumoca_galec_arm0.arm_a"),
+        "an overlaid slot is reached through its overlay:\n{source}"
+    );
+    assert!(
+        source.contains("ctx->spanning"),
+        "a slot that owns its storage is reached directly:\n{source}"
+    );
+    // Three arm-local buffers of 16 bytes collapse to one, and `spanning` is
+    // still counted once: four slots of 16 bytes become 32 bytes, not 64.
+    assert!(
+        header.contains("RUMOCA_ARMOVERLAY_CHECKED_SCRATCH_SLOT_BYTES UINT32_C(32)"),
+        "the arm overlay must show up in the checked slot budget:\n{header}"
+    );
 }

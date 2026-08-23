@@ -67,9 +67,17 @@
 {#- A `local` reference is spelled against whichever storage the view says it
     got: `ctx->` names a slot in the enclosing owner's block-context region,
     a bare identifier an object still in the frame. The two are the same C
-    lvalue in every other respect, so subscripting is shared. -#}
+    lvalue in every other respect, so subscripting is shared.
+
+    A region slot that shares an arm overlay with other slots is reached through
+    that overlay's member. Which slots share one, and which overlay each landed
+    in, is decided in the checked projection; this prints the ordinal it was
+    given and takes no view of its own. -#}
+{%- macro local_storage(value) -%}
+{%- if value.context_resident %}ctx->{% if value.context_overlay is not none %}rumoca_galec_arm{{ value.context_overlay }}.{% endif %}{% endif -%}
+{%- endmacro -%}
 {%- macro reference(value) -%}
-{%- if value.kind == "local" -%}{% if value.context_resident %}ctx->{% endif %}{{ symbol(c_symbols, name_text(value.value.name)) }}{% for index in value.value.subscripts %}{{ subscript(index) }}{% endfor %}
+{%- if value.kind == "local" -%}{{ local_storage(value) }}{{ symbol(c_symbols, name_text(value.value.name)) }}{% for index in value.value.subscripts %}{{ subscript(index) }}{% endfor %}
 {%- elif value.kind == "state" -%}
 {%- for part in value.value -%}
 {%- if loop.first -%}self->{{ state_symbol(part) }}{%- else -%}.{{ symbol(c_symbols, name_text(part.name)) }}{%- endif -%}
@@ -79,7 +87,7 @@
 {%- endmacro -%}
 {%- macro bounded_reference(value) -%}
 {%- if value.reference.kind == "local" -%}
-{% if value.reference.context_resident %}ctx->{% endif %}{{ symbol(c_symbols, name_text(value.reference.value.name)) }}{% for index in value.reference.value.subscripts %}[rumoca_galec_bounded_index({{ expr(index) }}, {{ value.extents[loop.index0] }})]{% endfor %}
+{{ local_storage(value.reference) }}{{ symbol(c_symbols, name_text(value.reference.value.name)) }}{% for index in value.reference.value.subscripts %}[rumoca_galec_bounded_index({{ expr(index) }}, {{ value.extents[loop.index0] }})]{% endfor %}
 {%- elif value.reference.kind == "state" and value.reference.value|length == 1 -%}
 self->{{ state_symbol(value.reference.value[0]) }}{% for index in value.reference.value[0].subscripts %}[rumoca_galec_bounded_index({{ expr(index) }}, {{ value.extents[loop.index0] }})]{% endfor %}
 {%- else -%}{{ fail_closed_bounded_reference_kind }}{%- endif -%}
@@ -1098,7 +1106,7 @@ static void rumoca_galec_limit_startup({{ c_model }}State *self) {
  * {{ c_model }}State but are NOT GALEC LogicalData: no manifest consumer binds
  * to a function's intermediate row buffer.
  *
- * Regions are OVERLAID. Each union below is one group, and two regions share a
+ * Regions are OVERLAID. Each group union is one group, and two regions share a
  * group only where the checked projection has established that their owners can
  * never be active at the same time: the block's calls form one stack and
  * neither owner reaches the other through it, so no activation of either is
@@ -1106,6 +1114,14 @@ static void rumoca_galec_limit_startup({{ c_model }}State *self) {
  * prints it. Nothing keeps a pointer into another owner's region across a call:
  * `ctx` is declared once per body and names that body's own region.
  *
- * {{ scratch_layout.summary }} */
+ * Slots INSIDE one region are overlaid too, by a second and independent proof.
+ * A `rumoca_galec_arm<n>` union holds slots the projection established are each
+ * used in exactly one arm of one conditional, where the arms exclude one another
+ * and the conditional is entered at most once per call, so at most one of those
+ * slots is ever touched. A slot read or written anywhere outside a single arm
+ * keeps storage of its own.
+ *
+ * {{ scratch_layout.summary }}
+ * {{ scratch_layout.arm_summary }} */
 {%- endif %}
 {{- body_text }}

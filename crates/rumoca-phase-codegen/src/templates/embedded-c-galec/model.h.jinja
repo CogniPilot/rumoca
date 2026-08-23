@@ -42,7 +42,10 @@
 {% if scratch_layout.groups|length > 0 %}
 /* Instance-owned working memory. Regions are overlaid only where the checked
  * call-graph proof says their owners cannot be active together: neither owner
- * reaches the other through the block's calls. These slots
+ * reaches the other through the block's calls. Slots inside one region are
+ * overlaid into a `rumoca_galec_arm<n>` union only where the checked placement
+ * proof says each is used in exactly one arm of one conditional and those arms
+ * exclude one another. These slots
  * are execution storage, not GALEC LogicalData; no manifest consumer binds to
  * them. Distinct State objects therefore have disjoint mutable storage and may
  * execute concurrently. Calls on the same State still require ordinary
