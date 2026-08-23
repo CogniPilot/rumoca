@@ -153,12 +153,31 @@ fn mnemonic(line: &str) -> Option<&str> {
     (!mnemonic.is_empty()).then_some(mnemonic)
 }
 
+/// Whether an ARM mnemonic's dot-separated suffix list names the `.f32` width
+/// tag at any position. A named boundary parser with this module as its narrow
+/// owner: the input is disassembler text, never a Modelica name.
+fn suffix_list_names_f32(suffixes: &str) -> bool {
+    let mut rest = suffixes;
+    loop {
+        match rest.find('.') {
+            Some(dot) => {
+                if &rest[..dot] == "f32" {
+                    return true;
+                }
+                rest = &rest[dot + 1..];
+            }
+            None => return rest == "f32",
+        }
+    }
+}
+
 /// Classify one mnemonic as written by the disassembler.
 pub(crate) fn classify(mnemonic: &str) -> Class {
-    let Some((stem, suffixes)) = mnemonic.split_once('.') else {
+    let Some(dot) = mnemonic.find('.') else {
         return Class::Untyped;
     };
-    if !suffixes.split('.').any(|suffix| suffix == "f32") {
+    let (stem, suffixes) = (&mnemonic[..dot], &mnemonic[dot + 1..]);
+    if !suffix_list_names_f32(suffixes) {
         return Class::Untyped;
     }
     let stem = stem.to_ascii_lowercase();

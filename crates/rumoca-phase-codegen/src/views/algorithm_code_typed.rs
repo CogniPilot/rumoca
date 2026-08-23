@@ -21,7 +21,6 @@ use super::source_trace::{SourceTrace, SourceTraceResolver, TraceLegend};
 /// under `views`: it reads this view's statement, reference and kernel types in
 /// full, and those are this module's own vocabulary rather than an interface
 /// the rest of the crate has any use for.
-#[path = "algorithm_code_marshalling.rs"]
 mod marshalling;
 
 #[derive(Debug, Clone, Serialize)]
