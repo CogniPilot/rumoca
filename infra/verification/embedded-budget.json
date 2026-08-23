@@ -14,10 +14,10 @@
         "state_bytes": 32680,
         "fp_ops": 1184,
         "measured": {
-          "text_bytes": 59092,
-          "state_bytes": 31424,
+          "text_bytes": 59384,
+          "state_bytes": 31980,
           "fp_ops": 1144,
-          "comment": "Measured 2026-08-22 after call-boundary marshalling elimination landed on top of the arm overlay of branch-local scratch slots, with gcc-arm-embedded-15.2.rel1, under arm-none-eabi-gcc -Os -std=c99 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -ffunction-sections -c over both emitted translation units. state 31424 B, down 9216 B (22.7%) from 40640 B: a staged actual whose only definition is a whole-array copy of an aggregate the caller already holds now names that aggregate at the call, and a result whose only use is a whole-array copy into another aggregate is read back into that aggregate directly, so the temporary between them leaves the region and the arm overlay has fewer slots to place. Ceiling 32680 B is +4.0%. text 59344 B = 59176 B model + 168 B shared kernels, down 4926 B, because every eliminated copy was an emitted loop or kernel call. Ceiling 61717 B is +4.0%, so the text ceiling is finally reset around its own measurement rather than around the pre-overlay one. fp_ops 1142 is unchanged, which is the expected shape of this change: it removes data movement and no arithmetic at all, and the emitted state is bit-identical over a 240-step multi-source schedule. The remaining state is about 3.7 KB of model state plus scratch whose next reduction belongs to triangular packing of symmetric matrices. Selector-axis loop splitting then removed the identity iterations of the conjugation kernels: text falls 252 B more and the executed instruction count per worst-case step falls by about 27000, measured by executed-instruction counting on identical sources rather than per-line weighting, roughly 4 percent of the step."
+          "comment": "Re-measured 2026-08-23 after overlay bound equalization landed, with gcc-arm-embedded-15.2.rel1 under arm-none-eabi-gcc -Os -std=c99 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -ffunction-sections -c over both emitted translation units. Both size numbers ROSE and the ceilings stand where they were, so the headroom this row carries is now smaller: state 31980 B, up 556 B (1.8%) from 31424 B, and text 59384 B, up 292 B (0.5%) from 59092 B. The cause is a layout decision, not new work. An overlay group is a union, so two regions' slots can start at one offset holding arrays of different lengths; a C compiler that value-numbers two same-address pointers together keeps one access path and reads the object size off it, and where the surviving path is the shorter array and the address is handed to a longer declared parameter bound, it reports a read past the end of an object that no execution performs. The layout pass declares every array sharing such a call-boundary address long enough for the bound that address is handed to, except where that array's own address is handed to a shorter bound, which stays as the block declared it (the wider rule was tried and reintroduced a report at SO3_Quat_product); both reports are gone on both cross targets and under the strict host preflight, measured. Only leading extents move, so no element changes address; the text growth is the shifted member offsets re-encoding in load and store immediates. fp_ops 1144 is unchanged, and the whole single-precision instruction MIX is identical mnemonic for mnemonic before and after, which is the expected shape of a change that moves no arithmetic. Outputs are identical: an ASan+UBSan differential over a 240-call multi-config dostep schedule with interleaved recalibrate digests every declared output after every call to 0xa42f1c5d395ecec7 on both emissions, with no sanitizer report on either. The 1184 fp ceiling predates the 1144 measurement and is deliberately left where it is."
         }
       }
     },
@@ -32,10 +32,10 @@
         "state_bytes": 32680,
         "fp_ops": 1184,
         "measured": {
-          "text_bytes": 59092,
-          "state_bytes": 31424,
+          "text_bytes": 59384,
+          "state_bytes": 31980,
           "fp_ops": 1144,
-          "comment": "Measured 2026-08-22 after call-boundary marshalling elimination landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It therefore carries that row's ceilings unchanged rather than its own four-percent band, so the two artifacts cannot drift apart without one of them going red."
+          "comment": "Re-measured 2026-08-23 after overlay bound equalization landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It therefore carries that row's ceilings unchanged rather than its own four-percent band, so the two artifacts cannot drift apart without one of them going red."
         }
       }
     },
@@ -50,10 +50,46 @@
         "state_bytes": 32485,
         "fp_ops": 1374,
         "measured": {
-          "text_bytes": 56880,
-          "state_bytes": 31236,
+          "text_bytes": 56962,
+          "state_bytes": 31292,
           "fp_ops": 1322,
-          "comment": "Measured 2026-08-22 after call-boundary marshalling elimination landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the NavigationEstimator rows. text 59112 B = 58944 B model + 168 B shared kernels, down 2786 B; ceiling 61476 B is +4.0%. state 31236 B (struct EstimatorState), down 10316 B (24.8%) from 41552 B, a deeper cut than the NavigationEstimator rows take: sigma-point work stages whole matrices per call site, so proportionally more of this model's region was marshalling temporaries. Ceiling 32485 B is +4.0%. fp_ops 1369 is unchanged here too. This row keeps earning its place by moving differently from the NavigationEstimator rows under the same change."
+          "comment": "Re-measured 2026-08-23 after overlay bound equalization landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the NavigationEstimator rows. state 31292 B, up 56 B (0.2%) from 31236 B, and text 56962 B, up 82 B (0.1%) from 56880 B; the ceilings stand. This row keeps earning its place by moving differently from the NavigationEstimator rows under the same change: the equalization costs it a tenth of what it costs them, because its regions' first members are already the wide sigma-point matrices, so most of the widening it does is absorbed by a union that was that size anyway. fp_ops 1322 is unchanged and the single-precision instruction mix is identical mnemonic for mnemonic. Outputs are identical: the same ASan+UBSan 240-call multi-config differential digests every declared output to 0xe4c41840b2631740 on both emissions, with no sanitizer report on either."
+        }
+      }
+    },
+    {
+      "id": "flight-controller/embedded-c-galec",
+      "model": "Vehicles.Rdd2.Controller",
+      "entry_point": "Vehicles/package.mo",
+      "target": "embedded-c-galec",
+      "why": "The other artifact that flies, and the one on the fast loop: the RDD2 attitude and rate controller as GALEC-derived embedded C, running beside the navigation estimator on the same microcontroller and against a shorter period. It is gated from the day its cross-compile is warning-free on both targets, because a controller that fits only when the estimator happens to be small is not a deployment anyone can plan; its own ceilings say so independently. It is also the corpus's densest user of the Lie-group function library, so a region overlay or a call-boundary decision that regresses on nested small functions shows up here before it shows up on the estimators.",
+      "budget": {
+        "text_bytes": 20579,
+        "state_bytes": 4014,
+        "fp_ops": 349,
+        "measured": {
+          "text_bytes": 19788,
+          "state_bytes": 3860,
+          "fp_ops": 336,
+          "comment": "Measured 2026-08-23, the first measurement this artifact carries, with gcc-arm-embedded-15.2.rel1 under arm-none-eabi-gcc -Os -std=c99 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -ffunction-sections -c over both emitted translation units. text 19788 B = 19620 B model + 168 B shared kernels; state 3860 B (struct ControllerState), of which 3136 B is checked working-memory slot storage across six overlay groups. Ceilings are +4.0% on each. The row could not exist before this date: the cross compile reported two -Wstringop-overread false positives, proven false by a sanitizer differential and by hand against the Lie-group math, and a budget row taken from an artifact its own toolchain warns about would have certified the warning along with the numbers. Both are retired by overlay bound equalization, which cost this artifact 40 B of state and 16 B of text against the pre-pass emission (3820 B and 19772 B): the union absorbs most of the widening, and what survives is one group's largest region growing. fp_ops 336 is what the pass does NOT touch, and the single-precision instruction mix is identical mnemonic for mnemonic before and after. Outputs are identical: an ASan+UBSan differential over a 240-call multi-config dostep schedule with interleaved recalibrate digests every declared output after every call to 0x22e160245e3afbfe on both emissions, every value finite, with no sanitizer report on either. The artifact also passes the strict host assurance preflight (-O2 -pedantic -Wall -Wextra -Wconversion -Wsign-conversion -Wshadow -Wundef -Wcast-qual -Wstrict-prototypes -Wmissing-prototypes) with -Werror."
+        }
+      }
+    },
+    {
+      "id": "flight-controller/galec-production",
+      "model": "Vehicles.Rdd2.Controller",
+      "entry_point": "Vehicles/package.mo",
+      "target": "galec-production",
+      "why": "The same controller inside its eFMU Production Code container, pinned against the embedded-c-galec row's numbers for the reason the two NavigationEstimator rows are pinned against each other: the C bodies come from the same shared templates, so a divergence means the packaging track changed what gets compiled rather than only how it is wrapped.",
+      "budget": {
+        "text_bytes": 20579,
+        "state_bytes": 4014,
+        "fp_ops": 349,
+        "measured": {
+          "text_bytes": 19788,
+          "state_bytes": 3860,
+          "fp_ops": 336,
+          "comment": "Measured 2026-08-23 with gcc-arm-embedded-15.2.rel1 under the same flags as the flight-controller/embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It therefore carries that row's ceilings unchanged rather than its own four-percent band, so the two artifacts cannot drift apart without one of them going red."
         }
       }
     }

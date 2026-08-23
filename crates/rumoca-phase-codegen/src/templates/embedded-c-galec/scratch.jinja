@@ -7,11 +7,22 @@
 {%- macro region_name(region, c_symbols) -%}
 {%- if region.function is not none -%}{{ symbol(c_symbols, region.function) }}{%- else -%}{{ region.method }}{%- endif -%}
 {%- endmacro -%}
-{%- macro region_dimensions(value) -%}
-{%- for dimension in value %}{% if dimension.kind == "expr" and dimension.value.kind == "integer" %}[{{ dimension.value.value }}]{% else %}{{ fail("unsupported-feature:embedded-c-scratch-dimension") }}{% endif %}{% endfor -%}
+{#- The extents come from the checked view, which owns them: they are the
+    block's own declared extents except where the bound equalization widened a
+    leading one so that two union siblings starting at one offset cannot be read
+    as objects of different sizes. A slot the view could not size has no
+    extents at all, and this target fails closed on it. -#}
+{%- macro region_dimensions(slot) -%}
+{%- if slot.extents is none %}{{ fail("unsupported-feature:embedded-c-scratch-dimension") }}{% else %}{% for extent in slot.extents %}[{{ extent }}]{% endfor %}{% endif -%}
+{%- endmacro -%}
+{#- A widened leading extent is annotated where it is declared. Without this the
+    header states a bound the Modelica source does not, and the only way to find
+    out why is to know this pass exists. -#}
+{%- macro equalization_note(slot) -%}
+{%- if slot.equalized_from is not none %} /* declared [{{ slot.equalized_from }}]; widened so this address carries one bound across the overlay */{% endif -%}
 {%- endmacro -%}
 {%- macro slot_declaration(slot, c_symbols) -%}
-{{ c_type(slot.ty.value.kind) }} {{ symbol(c_symbols, slot.name.value[0]) }}{{ region_dimensions(slot.dimensions) }};
+{%- if slot.scalar is none %}{{ fail_closed_scalar_type }}{% else %}{{ c_type(slot.scalar.kind) }} {{ symbol(c_symbols, slot.name.value[0]) }}{{ region_dimensions(slot) }};{{ equalization_note(slot) }}{% endif -%}
 {%- endmacro -%}
 {#- An arm overlay: the slots of one region that the checked projection proved
     live in mutually exclusive arms of one conditional. Declared as its own

@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use rumoca_ir_galec::ast;
 use serde::Serialize;
 
+use super::algorithm_code_bound_equalization::{self as bound_equalization, SlotBounds};
 use super::algorithm_code_overlay::{self as overlay, CallGraph, Owner};
 use super::algorithm_code_scopes::{LocalPlacements, ScopePath, ScopeStep};
 use super::algorithm_code_slot_overlay::{self as slot_overlay, SlotHomes};
@@ -112,7 +113,116 @@ struct ScratchMemberView<'a> {
     bytes: Option<usize>,
     /// The slots sharing this member, in declaration order. Exactly one when
     /// `overlay` is `None`, and at least two otherwise.
-    slots: Vec<&'a ast::VariableDeclaration>,
+    slots: Vec<ScratchSlotView<'a>>,
+}
+
+/// One slot as a target declares it: a name, a scalar, and the extents.
+///
+/// The extents are carried here rather than read back off the checked
+/// declaration because they are a *layout* decision this view owns. They are
+/// the block's own declared extents everywhere except at a call-boundary
+/// bound-clash address, where `algorithm_code_bound_equalization` widens the
+/// leading one; see that module for the rule and for why widening the leading
+/// extent moves no element.
+#[derive(Debug, Clone, Serialize)]
+struct ScratchSlotView<'a> {
+    /// The slot's source name. A target allocates a C identifier from it with
+    /// its own symbol policy; nothing here spells one.
+    name: &'a ast::Name,
+    /// The scalar the slot holds, or `None` for a compartment-typed slot: no
+    /// target that prints regions accepts one, and this is what it fails on.
+    scalar: Option<ast::ScalarType>,
+    /// The extents a target declares, outermost first. `None` when a declared
+    /// dimension is not a literal integer, which is the same condition
+    /// [`slot_bytes`] refuses to size.
+    extents: Option<Vec<usize>>,
+    /// The leading extent the checked block declared, present only where this
+    /// slot's was widened. A reader of the emitted header sees the widened
+    /// bound; this is what says it was a layout decision and not the model's.
+    equalized_from: Option<usize>,
+    /// Storage this slot needs, in bytes, under the model in [`slot_bytes`],
+    /// after any widening. `None` exactly where `extents` is.
+    bytes: Option<usize>,
+}
+
+impl<'a> ScratchSlotView<'a> {
+    fn new(slot: &'a ast::VariableDeclaration) -> Self {
+        let shape = slot_shape(slot);
+        Self {
+            name: &slot.name,
+            scalar: shape.as_ref().map(|(kind, _)| *kind),
+            extents: shape.as_ref().map(|(_, extents)| extents.clone()),
+            equalized_from: None,
+            bytes: shape.as_ref().and_then(|(kind, extents)| {
+                extents
+                    .iter()
+                    .try_fold(scalar_bytes(*kind), |bytes, extent| {
+                        bytes.checked_mul(*extent)
+                    })
+            }),
+        }
+    }
+
+    /// The slot's own name, for the maps that key on it.
+    fn lexeme(&self) -> &'a str {
+        self.name.lexeme()
+    }
+
+    /// Declare this slot with `leading` in its outermost dimension.
+    ///
+    /// Only ever called by [`equalize_bounds`], and only with a value the
+    /// equalization derived from this slot's own stride, so the recomputed size
+    /// cannot overflow where the declared one did not.
+    fn widen_leading_to(&mut self, leading: usize) {
+        let (Some(extents), Some(kind)) = (self.extents.as_mut(), self.scalar) else {
+            return;
+        };
+        let Some(first) = extents.first_mut() else {
+            return;
+        };
+        if leading <= *first {
+            return;
+        }
+        self.equalized_from = Some(*first);
+        *first = leading;
+        self.bytes = extents
+            .iter()
+            .try_fold(scalar_bytes(kind), |bytes, extent| {
+                bytes.checked_mul(*extent)
+            });
+    }
+
+    /// How this slot enters the bound equalization, or `None` for a slot the
+    /// projection cannot size, which makes its whole group unequalizable.
+    ///
+    /// `call_boundary_bytes` is filled in by the caller, which is the only
+    /// place that knows which addresses the emitted code hands to a declared
+    /// parameter bound.
+    fn bounds(&self) -> Option<SlotBounds> {
+        let (extents, kind) = (self.extents.as_ref()?, self.scalar?);
+        let align = scalar_bytes(kind);
+        let stride = extents
+            .iter()
+            .skip(1)
+            .try_fold(align, |bytes, extent| bytes.checked_mul(*extent))?;
+        // A zero extent would make the stride zero and the equalization's
+        // division meaningless. Nothing this compiler emits declares one, and
+        // refusing is cheaper than reasoning about it.
+        if stride == 0 {
+            return None;
+        }
+        let leading = extents.first().copied().unwrap_or(1);
+        if leading == 0 {
+            return None;
+        }
+        Some(SlotBounds {
+            align,
+            stride,
+            leading,
+            is_array: !extents.is_empty(),
+            call_boundary_bytes: None,
+        })
+    }
 }
 
 impl<'a> ScratchRegionView<'a> {
@@ -132,7 +242,7 @@ impl<'a> ScratchRegionView<'a> {
                 member
                     .slots
                     .iter()
-                    .map(move |slot| (slot.name.lexeme(), member.overlay))
+                    .map(move |slot| (slot.lexeme(), member.overlay))
             })
             .collect();
         Self {
@@ -184,11 +294,12 @@ fn overlay_slots<'a>(
     let mut members: Vec<ScratchMemberView<'a>> = Vec::new();
     let mut placed: BTreeMap<usize, usize> = BTreeMap::new();
     for (index, slot) in slots.iter().enumerate() {
+        let view = ScratchSlotView::new(slot);
         let Some(ordinal) = overlay.overlay_of(index) else {
             members.push(ScratchMemberView {
                 overlay: None,
-                bytes: slot_bytes(slot),
-                slots: vec![slot],
+                bytes: view.bytes,
+                slots: vec![view],
             });
             continue;
         };
@@ -197,15 +308,15 @@ fn overlay_slots<'a>(
             .and_then(|position| members.get_mut(*position))
         {
             Some(member) => {
-                member.bytes = widest_bytes([member.bytes, slot_bytes(slot)]);
-                member.slots.push(slot);
+                member.bytes = widest_bytes([member.bytes, view.bytes]);
+                member.slots.push(view);
             }
             None => {
                 placed.insert(ordinal, members.len());
                 members.push(ScratchMemberView {
                     overlay: Some(ordinal),
-                    bytes: slot_bytes(slot),
-                    slots: vec![slot],
+                    bytes: view.bytes,
+                    slots: vec![view],
                 });
             }
         }
@@ -329,20 +440,32 @@ fn scalar_bytes(kind: ast::ScalarType) -> usize {
 /// Storage one region slot needs, or `None` if its extent is not a literal
 /// integer.
 fn slot_bytes(slot: &ast::VariableDeclaration) -> Option<usize> {
+    let (kind, extents) = slot_shape(slot)?;
+    extents
+        .iter()
+        .try_fold(scalar_bytes(kind), |bytes, extent| {
+            bytes.checked_mul(*extent)
+        })
+}
+
+/// The scalar a slot holds and the literal extents it was declared with.
+///
+/// `None` where the projection has no answer, which is the same condition
+/// [`slot_bytes`] refuses on: a compartment-typed slot has no target-neutral
+/// width, and a dimension that is not a literal integer has no extent. Every
+/// target that prints regions fails closed on such a slot.
+fn slot_shape(slot: &ast::VariableDeclaration) -> Option<(ast::ScalarType, Vec<usize>)> {
     let ast::TypeRef::Primitive(kind) = &slot.ty else {
-        // A compartment-typed slot has no target-neutral width. No target that
-        // prints regions accepts one; report nothing rather than inventing a
-        // number.
         return None;
     };
-    let mut elements = 1usize;
+    let mut extents = Vec::with_capacity(slot.dimensions.len());
     for dimension in &slot.dimensions {
         let ast::Dimension::Expr(ast::Expression::Integer(extent)) = dimension else {
             return None;
         };
-        elements = elements.checked_mul(usize::try_from(*extent).ok()?)?;
+        extents.push(usize::try_from(*extent).ok()?);
     }
-    elements.checked_mul(scalar_bytes(*kind))
+    Some((*kind, extents))
 }
 
 /// Fold a group's, a member's or a chain's part sizes, propagating "not a
@@ -999,6 +1122,14 @@ pub(super) fn block<'a>(
                 .map(|function| &mut function.scratch),
         ),
     );
+    equalize_block_bounds(
+        &shapes.functions,
+        [&mut startup, &mut recalibrate, &mut do_step],
+        protected_functions
+            .iter_mut()
+            .chain(&mut public_functions)
+            .collect(),
+    );
     let semantic_uses = shapes.semantic_uses.borrow().clone();
     let regions: Vec<_> = protected_functions
         .iter()
@@ -1111,6 +1242,318 @@ fn place_regions<'a, 'view>(
         // given, founding a group where none admits it.
         region.group = plan.class_of(region.owner).unwrap_or_default();
     }
+}
+
+/// Every context-region slot the emitted bodies hand to a **declared array
+/// parameter**, with the bytes that parameter declares, keyed by the owner
+/// whose region the slot belongs to.
+///
+/// # Why this reads the projected statements
+///
+/// The question the bound equalization asks is "which addresses does the
+/// generated code pass to which bounds", and the only faithful answer is the
+/// statement list a target prints. So this walks that list: it follows the
+/// marshalling rewrite where one landed, and skips a statement a kernel
+/// absorbed, because those are exactly the statements that do and do not reach
+/// the file. Reading the checked AST instead would answer for a call the
+/// rewrite has since retargeted, and grepping the emitted C would put a second
+/// decision procedure beside the emitter that can disagree with it.
+///
+/// Only a *whole* context-resident local counts. A subscripted reference names
+/// an element, not the slot's address; a state reference is not overlaid
+/// storage at all; and a formal with no declared dimensions carries no bound
+/// for a compiler to check an object size against.
+fn call_boundary_bounds<'a, 'view>(
+    functions: &HashMap<&'a str, &'a ast::UserFunction>,
+    owners: impl Iterator<Item = (Owner<'a>, &'view [TypedSpannedStatement<'a>])>,
+) -> BTreeMap<Owner<'a>, BTreeMap<&'a str, usize>>
+where
+    'a: 'view,
+{
+    owners
+        .map(|(owner, statements)| {
+            let mut found = BTreeMap::new();
+            boundaries_in_statements(statements, functions, &mut found);
+            (owner, found)
+        })
+        .collect()
+}
+
+fn boundaries_in_statements<'a>(
+    statements: &[TypedSpannedStatement<'a>],
+    functions: &HashMap<&'a str, &'a ast::UserFunction>,
+    found: &mut BTreeMap<&'a str, usize>,
+) {
+    for statement in statements {
+        match &statement.kernel {
+            // Absorbed into a neighbour's kernel call: a target emits nothing
+            // at all for it, so it hands no address to anything.
+            Some(KernelStatementView::Absorbed) => {}
+            // The marshalling rewrite's replacement is the statement that
+            // reaches the file; the node beside it is not printed.
+            Some(KernelStatementView::Marshalled { statement }) => {
+                boundaries_in_statement(statement, functions, found);
+            }
+            // The remaining kernels replace an assignment with a call into the
+            // shared array library, whose parameters declare no bound. The node
+            // is still the statement's own arithmetic, and a user call inside
+            // it would still be emitted, so it is walked.
+            _ => boundaries_in_statement(&statement.node, functions, found),
+        }
+    }
+}
+
+fn boundaries_in_statement<'a>(
+    statement: &TypedStatementView<'a>,
+    functions: &HashMap<&'a str, &'a ast::UserFunction>,
+    found: &mut BTreeMap<&'a str, usize>,
+) {
+    match statement {
+        TypedStatementView::Assignment { value, .. } => {
+            boundaries_in_expression(value, functions, found);
+        }
+        TypedStatementView::MultiAssignment { call, .. } | TypedStatementView::Call(call) => {
+            boundaries_in_call(call, functions, found);
+        }
+        TypedStatementView::If(conditional) => {
+            for branch in &conditional.branches {
+                if let TypedConditionView::Expression(condition) = &branch.condition {
+                    boundaries_in_expression(condition, functions, found);
+                }
+                boundaries_in_statements(&branch.body, functions, found);
+            }
+            if let Some(body) = &conditional.else_body {
+                boundaries_in_statements(body, functions, found);
+            }
+        }
+        TypedStatementView::For(loop_) => {
+            boundaries_in_expression(&loop_.start, functions, found);
+            if let Some(step) = &loop_.step {
+                boundaries_in_expression(step, functions, found);
+            }
+            boundaries_in_expression(&loop_.stop, functions, found);
+            boundaries_in_statements(&loop_.body, functions, found);
+        }
+        TypedStatementView::Limit(_) | TypedStatementView::Signal(_) => {}
+    }
+}
+
+fn boundaries_in_call<'a>(
+    call: &TypedCallView<'a>,
+    functions: &HashMap<&'a str, &'a ast::UserFunction>,
+    found: &mut BTreeMap<&'a str, usize>,
+) {
+    for argument in &call.arguments {
+        boundaries_in_expression(argument, functions, found);
+    }
+    if !call.user_function {
+        return;
+    }
+    let Some(callee) = functions.get(call.function.lexeme()) else {
+        return;
+    };
+    let inputs = callee
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.direction == ast::Direction::Input);
+    for (parameter, argument) in inputs.zip(&call.arguments) {
+        // A formal with no declared dimensions is a scalar: nothing declares a
+        // bound at the address, so nothing can be diagnosed against one.
+        if parameter.decl.dimensions.is_empty() {
+            continue;
+        }
+        let (Some(bytes), Some(slot)) = (slot_bytes(&parameter.decl), whole_region_slot(argument))
+        else {
+            continue;
+        };
+        let entry = found.entry(slot).or_insert(bytes);
+        *entry = (*entry).max(bytes);
+    }
+}
+
+fn boundaries_in_expression<'a>(
+    value: &TypedExpressionView<'a>,
+    functions: &HashMap<&'a str, &'a ast::UserFunction>,
+    found: &mut BTreeMap<&'a str, usize>,
+) {
+    match &value.node {
+        TypedExpressionNodeView::Call(call) => boundaries_in_call(call, functions, found),
+        TypedExpressionNodeView::Paren(inner) | TypedExpressionNodeView::Not(inner) => {
+            boundaries_in_expression(inner, functions, found);
+        }
+        TypedExpressionNodeView::Binary { lhs, rhs, .. } => {
+            boundaries_in_expression(lhs, functions, found);
+            boundaries_in_expression(rhs, functions, found);
+        }
+        TypedExpressionNodeView::If(conditional) => {
+            for (condition, branch) in &conditional.branches {
+                boundaries_in_expression(condition, functions, found);
+                boundaries_in_expression(branch, functions, found);
+            }
+            boundaries_in_expression(&conditional.else_value, functions, found);
+        }
+        TypedExpressionNodeView::BoundedSelection(selection) => {
+            for (condition, branch) in &selection.galec.branches {
+                boundaries_in_expression(condition, functions, found);
+                boundaries_in_expression(branch, functions, found);
+            }
+            boundaries_in_expression(&selection.galec.else_value, functions, found);
+        }
+        TypedExpressionNodeView::Array(elements) => {
+            for element in elements {
+                boundaries_in_expression(element, functions, found);
+            }
+        }
+        TypedExpressionNodeView::Size { dimension, .. } => {
+            boundaries_in_expression(dimension, functions, found);
+        }
+        TypedExpressionNodeView::Bool(_)
+        | TypedExpressionNodeView::Integer(_)
+        | TypedExpressionNodeView::Real(_)
+        | TypedExpressionNodeView::Ref(_)
+        | TypedExpressionNodeView::Neg(_) => {}
+    }
+}
+
+/// The region slot an argument names *as a whole object*, or `None` for
+/// anything else: a subscripted reference names an element, a state reference
+/// is not overlaid storage, and a computed argument has no address at all.
+fn whole_region_slot<'a>(argument: &TypedExpressionView<'a>) -> Option<&'a str> {
+    let TypedExpressionNodeView::Ref(reference) = &argument.node else {
+        return None;
+    };
+    if !reference.context_resident {
+        return None;
+    }
+    let TypedReferenceNodeView::Local(part) = &reference.node else {
+        return None;
+    };
+    part.subscripts.is_empty().then(|| part.name.lexeme())
+}
+
+/// Read the block's call-boundary addresses off its projected bodies and widen
+/// the layout for them.
+///
+/// Runs after placement, because a bound-clash address is a property of a
+/// GROUP: two regions' slots meeting at one offset. Placement itself is
+/// untouched: the equalization only widens declarations and never moves a
+/// region between groups, so the never-concurrent proof is the same one either
+/// way.
+fn equalize_block_bounds<'a>(
+    functions: &HashMap<&'a str, &'a ast::UserFunction>,
+    methods: [&mut TypedMethodView<'a>; 3],
+    mut user_functions: Vec<&mut TypedFunctionView<'a>>,
+) {
+    const SPELLINGS: [&str; 3] = ["startup", "recalibrate", "dostep"];
+    let owners: Vec<(Owner<'a>, &[TypedSpannedStatement<'a>])> = SPELLINGS
+        .iter()
+        .zip(&methods)
+        .map(|(spelling, method)| (Owner::Method(spelling), method.statements.as_slice()))
+        .chain(user_functions.iter().map(|function| {
+            (
+                Owner::Function(function.name.lexeme()),
+                function.statements.as_slice(),
+            )
+        }))
+        .collect();
+    let boundaries = call_boundary_bounds(functions, owners.into_iter());
+    equalize_bounds(
+        methods
+            .into_iter()
+            .map(|method| &mut method.scratch)
+            .chain(user_functions.iter_mut().map(|f| &mut f.scratch)),
+        &boundaries,
+    );
+}
+
+/// Declare every array sharing a call-boundary bound-clash address wide enough
+/// for the bound that address is handed to.
+///
+/// Group by group, because a clash is between the slots of two regions that
+/// share one union. See `algorithm_code_bound_equalization` for the rule; this
+/// only assembles its input, applies its answer, and re-adds the sizes.
+///
+/// A group holding one slot this projection cannot size is skipped whole: an
+/// offset model over an unsizable member would be a guess, and every target
+/// that prints regions fails closed on such a slot anyway.
+fn equalize_bounds<'a, 'view>(
+    regions: impl Iterator<Item = &'view mut ScratchRegionView<'a>>,
+    boundaries: &BTreeMap<Owner<'a>, BTreeMap<&'a str, usize>>,
+) where
+    'a: 'view,
+{
+    let mut regions: Vec<&'view mut ScratchRegionView<'a>> =
+        regions.filter(|region| region.used).collect();
+    let groups: BTreeSet<usize> = regions.iter().map(|region| region.group).collect();
+    for group in groups {
+        let members: Vec<usize> = regions
+            .iter()
+            .enumerate()
+            .filter(|(_, region)| region.group == group)
+            .map(|(index, _)| index)
+            .collect();
+        let Some(bounds) = group_bounds(&regions, &members, boundaries) else {
+            continue;
+        };
+        let extents = bound_equalization::equalize(&bounds);
+        for (position, index) in members.into_iter().enumerate() {
+            adopt_extents(regions[index], &extents[position]);
+        }
+    }
+}
+
+/// One group's slots in the shape the equalization takes them, or `None` where
+/// any of them cannot be sized.
+fn group_bounds<'a>(
+    regions: &[&mut ScratchRegionView<'a>],
+    members: &[usize],
+    boundaries: &BTreeMap<Owner<'a>, BTreeMap<&'a str, usize>>,
+) -> Option<bound_equalization::GroupBounds> {
+    members
+        .iter()
+        .map(|index| region_bounds(&*regions[*index], boundaries))
+        .collect()
+}
+
+fn region_bounds<'a>(
+    region: &ScratchRegionView<'a>,
+    boundaries: &BTreeMap<Owner<'a>, BTreeMap<&'a str, usize>>,
+) -> Option<Vec<Vec<SlotBounds>>> {
+    let handed = boundaries.get(&region.owner);
+    region
+        .members
+        .iter()
+        .map(|member| {
+            member
+                .slots
+                .iter()
+                .map(|slot| bounds_of(slot, handed))
+                .collect()
+        })
+        .collect()
+}
+
+/// One slot's shape, carrying the largest declared parameter bound the emitted
+/// code hands this slot's address to.
+fn bounds_of<'a>(
+    slot: &ScratchSlotView<'a>,
+    handed: Option<&BTreeMap<&'a str, usize>>,
+) -> Option<SlotBounds> {
+    let mut bounds = slot.bounds()?;
+    bounds.call_boundary_bytes = handed.and_then(|handed| handed.get(slot.lexeme()).copied());
+    Some(bounds)
+}
+
+/// Declare one region's slots with the extents the equalization chose, and
+/// re-add the sizes that follow from them.
+fn adopt_extents(region: &mut ScratchRegionView<'_>, extents: &[Vec<usize>]) {
+    for (member, leading) in region.members.iter_mut().zip(extents) {
+        for (slot, leading) in member.slots.iter_mut().zip(leading) {
+            slot.widen_leading_to(*leading);
+        }
+        member.bytes = widest_bytes(member.slots.iter().map(|slot| slot.bytes));
+    }
+    region.bytes = total_bytes(region.members.iter().map(|member| member.bytes));
 }
 
 /// Whether a declaration is delivered through the owner's context region
