@@ -31,9 +31,11 @@
 //!
 //! Closing the remaining gap means reading the disassembly for `.f64`
 //! instructions rather than the symbol table. The flight artifacts contain none
-//! today, so that check would be green if it existed; adding it would widen the
-//! toolchain this gate demands, which is a decision for review rather than a
-//! silent extension of the contract.
+//! today, so that check would be green if it existed. The disassembly is now in
+//! reach, since the floating-point budget already runs `objdump` over these
+//! objects and classifies every mnemonic it sees; what is missing is the
+//! decision to make an inline `.f64` a finding, which is a policy change for
+//! review rather than a silent extension of this contract.
 //!
 //! # Why a name list rather than a suffix rule
 //!

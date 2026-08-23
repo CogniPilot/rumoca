@@ -15,6 +15,13 @@
 //! of which reach the flash. `.text` per translation unit, summed over the
 //! artifact, is the number an integrator has to find room for, and it is what
 //! `arm-none-eabi-size` reports in its first column.
+//!
+//! # Why the disassembly is read off the same objects
+//!
+//! The floating-point count is a property of the very bytes that were weighed,
+//! so it is taken from the objects this module already compiled rather than
+//! from a second build. A separate compile could differ in a flag and would
+//! then report a count for code nobody is shipping.
 
 use anyhow::{Context, Result, bail, ensure};
 use std::fs;
@@ -22,9 +29,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::emit::{Emission, combined, describe, indent, tail};
+use super::fp_ops;
 use super::symbols::{ObjectSymbols, parse_undefined};
 use super::toolchain::{ArmToolchain, CROSS_COMPILE_FLAGS};
-use super::verdict::Sizes;
+use super::verdict::Metrics;
 
 /// The name the sizeof probe's storage is given. Long and namespaced so it
 /// cannot collide with anything the generated header declares.
@@ -32,14 +40,14 @@ const PROBE_SYMBOL: &str = "rumoca_embedded_budget_state_probe";
 
 /// Everything measured off one row's cross-compiled objects.
 pub(crate) struct Measurement {
-    pub(crate) sizes: Sizes,
+    pub(crate) metrics: Metrics,
     pub(crate) undefined: Vec<ObjectSymbols>,
     /// The cross-compile command line, for the report and for reproduction.
     pub(crate) cross_command_line: String,
 }
 
-/// Build every emitted source, size it, probe the state struct, and read the
-/// undefined-symbol set.
+/// Build every emitted source, size it, count its arithmetic, probe the state
+/// struct, and read the undefined-symbol set.
 pub(crate) fn measure(
     emission: &Emission,
     toolchain: &ArmToolchain,
@@ -49,11 +57,16 @@ pub(crate) fn measure(
         .with_context(|| format!("failed to create {}", work_dir.display()))?;
     let cross_command_line = compile(&emission.sources, emission, toolchain, work_dir)?;
     let objects = object_paths(&emission.sources, work_dir)?;
-    let units = size_units(&objects, toolchain)?;
+    let text_units = size_units(&objects, toolchain)?;
+    let fp_units = fp_op_units(&objects, toolchain)?;
     let state_bytes = probe_state_size(emission, toolchain, work_dir)?;
     let undefined = read_undefined(&objects, toolchain)?;
     Ok(Measurement {
-        sizes: Sizes { units, state_bytes },
+        metrics: Metrics {
+            text_units,
+            state_bytes,
+            fp_units,
+        },
         undefined,
         cross_command_line,
     })
@@ -133,6 +146,28 @@ fn size_units(objects: &[PathBuf], toolchain: &ArmToolchain) -> Result<Vec<(Stri
     objects
         .iter()
         .map(|object| Ok((object_name(object), text_size(object, toolchain)?)))
+        .collect()
+}
+
+/// The single-precision arithmetic instruction count of each object, from its
+/// disassembly.
+///
+/// Fail-closed twice over. An object `objdump` refuses fails the row naming the
+/// command, because a row whose arithmetic could not be read certifies nothing
+/// about the step rate; and a listing that parses to no instruction at all is
+/// a failed measurement rather than a count of zero, which is the reading an
+/// operator would otherwise see as "the arithmetic went away".
+fn fp_op_units(objects: &[PathBuf], toolchain: &ArmToolchain) -> Result<Vec<(String, u64)>> {
+    objects
+        .iter()
+        .map(|object| {
+            let mut command = Command::new(toolchain.objdump());
+            command.arg("-d").arg(object);
+            let command_line = describe(&command);
+            let listing = run_capturing(&mut command)?;
+            let tally = fp_ops::tally(&listing, &format!("`{command_line}`"))?;
+            Ok((object_name(object), tally.arithmetic))
+        })
         .collect()
 }
 

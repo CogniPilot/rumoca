@@ -15,11 +15,13 @@ use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
 /// Executables the gate drives. `gcc` cross-compiles, `size` reads `.text`,
-/// `nm` reads the undefined-symbol set and the state probe's size.
-pub(crate) const REQUIRED_TOOLS: [&str; 3] = [
+/// `nm` reads the undefined-symbol set and the state probe's size, and
+/// `objdump` disassembles for the floating-point instruction count.
+pub(crate) const REQUIRED_TOOLS: [&str; 4] = [
     "arm-none-eabi-gcc",
     "arm-none-eabi-size",
     "arm-none-eabi-nm",
+    "arm-none-eabi-objdump",
 ];
 
 /// The exact cross-compile the measured baseline was taken with, minus the
@@ -100,6 +102,10 @@ impl ArmToolchain {
 
     pub(crate) fn nm(&self) -> PathBuf {
         self.tool("arm-none-eabi-nm")
+    }
+
+    pub(crate) fn objdump(&self) -> PathBuf {
+        self.tool("arm-none-eabi-objdump")
     }
 
     fn tool(&self, name: &str) -> PathBuf {

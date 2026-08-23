@@ -98,7 +98,7 @@ into an inner loop.
 
 Per row of `infra/verification/embedded-budget.json` the gate compiles the
 model with the workspace compiler, cross-compiles every emitted `.c` at `-Os`
-for Cortex-M7 hard float, and then enforces four things:
+for Cortex-M7 hard float, and then enforces five things:
 
 - **No warnings.** The generated C advertises warning-free compilation, so any
   output from the cross compiler fails the row.
@@ -107,6 +107,17 @@ for Cortex-M7 hard float, and then enforces four things:
   by a probe translation unit rather than computed.
 - **No forbidden undefined symbol**: no allocator, no `__aeabi_d*` soft-float
   helper, no double-precision libm entry point where the `f` form was required.
+- **A floating-point ceiling**, on the single-precision arithmetic
+  instructions in those same objects, read from `arm-none-eabi-objdump -d`.
+  The counted set is the products and fused products, the sums, and the divide
+  and square root; moves, loads, stores, compares, conversions, sign flips,
+  selections and roundings are traffic and are excluded. Bytes say whether the
+  artifact fits, this says whether the step makes its rate. The set has one
+  owner, `crates/xtask/src/verify_cmd/embedded/fp_ops.rs`, and a
+  single-precision mnemonic in neither its counted nor its excluded list fails
+  the row instead of being counted as free. An object that cannot be
+  disassembled, or whose listing parses to no instruction at all, is a failed
+  measurement rather than a count of zero.
 
 Both roots are named on argv and neither has a fallback:
 
@@ -117,7 +128,8 @@ cargo xtask verify embedded \
 ```
 
 The toolchain root is the directory whose `bin/` holds `arm-none-eabi-gcc`,
-`-size`, and `-nm`. It is required rather than searched for on `PATH` because a
+`-size`, `-nm`, and `-objdump`. It is required rather than searched for on
+`PATH` because a
 size ceiling is a statement about one compiler: a run that quietly used a
 different `arm-none-eabi-gcc` would compare its bytes against a ceiling
 measured elsewhere and call the difference a regression.
@@ -130,7 +142,10 @@ Ceilings are fall-only in spirit. When size work lands, lower the ceiling in
 the same change that lands the saving, so the saving cannot be quietly spent
 again. Raising one is not forbidden but is never routine: it needs a reviewed
 justification recorded in that row's `budget.measured.comment`, which is also
-where the toolchain each ceiling was measured with is named.
+where the toolchain each ceiling was measured with is named. The floating-point
+ceiling follows the same rule under a sharper deadline: when contraction work
+lands, `fp_ops` comes down in the same change, so a later lowering that
+reintroduces the arithmetic goes red at the gate rather than on the vehicle.
 
 ## During Development
 

@@ -24,8 +24,9 @@ use std::path::{Path, PathBuf};
 pub(crate) const MANIFEST_PATH: &str = "infra/verification/embedded-budget.json";
 
 /// Bumped whenever a field changes meaning. A manifest written for another
-/// version is refused rather than reinterpreted.
-pub(crate) const MANIFEST_SCHEMA_VERSION: u32 = 1;
+/// version is refused rather than reinterpreted. Version 2 added the
+/// floating-point instruction ceiling beside the two size ceilings.
+pub(crate) const MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 /// The whole gated budget.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -36,6 +37,11 @@ pub(crate) struct BudgetManifest {
     /// direction it is allowed to move. Prose for the reviewer, never parsed,
     /// but required to be present so the rule travels with the file it governs.
     pub(crate) ceiling_policy: String,
+    /// The same for the floating-point ceiling: what `fp_ops` counts and where
+    /// the counted instruction set is written down. Its own field rather than a
+    /// paragraph appended to [`BudgetManifest::ceiling_policy`], so the rule
+    /// about arithmetic and the rule about bytes can be edited independently.
+    pub(crate) fp_ops_policy: String,
     pub(crate) entries: Vec<BudgetEntry>,
 }
 
@@ -70,6 +76,11 @@ pub(crate) struct Budget {
     /// the single allocation the integrator has to find room for, so it is
     /// gated separately from code size.
     pub(crate) state_bytes: u64,
+    /// Ceiling on the single-precision arithmetic instructions summed over
+    /// every emitted translation unit. Bytes say whether the artifact fits;
+    /// this says whether it runs in time, and it is the number the step-rate
+    /// work moves.
+    pub(crate) fp_ops: u64,
     pub(crate) measured: Measured,
 }
 
@@ -83,6 +94,7 @@ pub(crate) struct Budget {
 pub(crate) struct Measured {
     pub(crate) text_bytes: u64,
     pub(crate) state_bytes: u64,
+    pub(crate) fp_ops: u64,
     /// When, with which cross compiler, and under which flags. Prose for the
     /// reviewer: a ceiling is a statement about one toolchain, and this field
     /// is where that toolchain is named.
@@ -122,6 +134,11 @@ pub(crate) fn validate(manifest: &BudgetManifest) -> Result<()> {
     ensure!(
         !manifest.ceiling_policy.trim().is_empty(),
         "ceiling_policy must state which direction a ceiling is allowed to move"
+    );
+    ensure!(
+        !manifest.fp_ops_policy.trim().is_empty(),
+        "fp_ops_policy must say what the floating-point ceiling counts and where the counted \
+         instruction set is defined"
     );
     ensure!(
         !manifest.entries.is_empty(),
@@ -171,9 +188,20 @@ fn validate_budget(budget: &Budget) -> Result<()> {
          permanently red row, not a budget"
     );
     ensure!(
+        budget.fp_ops > 0,
+        "fp_ops must be a positive ceiling; an artifact that does no floating-point arithmetic \
+         is not one of these rows, and a zero ceiling would be permanently red"
+    );
+    ensure!(
         budget.measured.text_bytes > 0 && budget.measured.state_bytes > 0,
         "measured sizes must be positive: a ceiling recorded against a zero measurement \
          states no headroom at all"
+    );
+    ensure!(
+        budget.measured.fp_ops > 0,
+        "measured.fp_ops must be positive: a floating-point ceiling recorded against a zero \
+         count states no headroom at all, and a zero count is what an unreadable disassembly \
+         looks like"
     );
     ensure!(
         !budget.measured.comment.trim().is_empty(),

@@ -4,12 +4,14 @@
 //! # What this gate is for
 //!
 //! The sibling corpus gate proves the flight models still compile. This one
-//! proves the C that comes out still fits on the microcontroller it flies on.
-//! Those are different failures: a projection change can keep every row of the
-//! corpus pin green while doubling the scratch struct, or while letting one
-//! `double` back into an inner loop, and neither shows up as a compile error.
-//! Size and precision are acceptance criteria for this target, so they are
-//! gated like any other correctness property.
+//! proves the C that comes out still fits on the microcontroller it flies on,
+//! and still runs in the time the block declares. Those are different
+//! failures: a projection change can keep every row of the corpus pin green
+//! while doubling the scratch struct, while letting one `double` back into an
+//! inner loop, or while turning a contracted product back into a quartic nest,
+//! and none of them shows up as a compile error. Size, precision and
+//! arithmetic count are acceptance criteria for this target, so they are gated
+//! like any other correctness property.
 //!
 //! # The contract, per row
 //!
@@ -24,6 +26,11 @@
 //!    `__aeabi_d*` soft-float helper, no double-precision libm entry point.
 //!    Any of those means the artifact stopped being the statically allocated
 //!    single-precision thing it claims to be.
+//! 6. The single-precision arithmetic instructions in the objects, counted from
+//!    the disassembly, are at or under their ceiling. Bytes say whether the
+//!    artifact fits; this number is what says whether the step makes its rate,
+//!    and it is the one the step-rate work moves. The counted instruction set
+//!    is defined once, in [`fp_ops`].
 //!
 //! # Fail-closed
 //!
@@ -44,6 +51,7 @@
 
 mod cross;
 mod emit;
+mod fp_ops;
 mod manifest;
 mod symbols;
 #[cfg(test)]
@@ -76,9 +84,10 @@ pub(crate) struct VerifyEmbeddedArgs {
     #[arg(long, value_name = "PATH")]
     models_root: PathBuf,
     /// Root of the ARM cross toolchain, the directory whose `bin/` holds
-    /// `arm-none-eabi-gcc`, `-size`, and `-nm`. Required and authoritative: a
-    /// ceiling is a statement about one compiler, so the gate refuses rather
-    /// than measuring with whichever one happens to be on `PATH`.
+    /// `arm-none-eabi-gcc`, `-size`, `-nm`, and `-objdump`. Required and
+    /// authoritative: a ceiling is a statement about one compiler, so the gate
+    /// refuses rather than measuring with whichever one happens to be on
+    /// `PATH`.
     #[arg(long, value_name = "PATH")]
     arm_toolchain: PathBuf,
     /// Manifest to gate against (default: the checked-in embedded budget).
@@ -149,7 +158,7 @@ fn measure_row(entry: &BudgetEntry, context: &RowContext<'_>) -> Verdict {
     match measure(entry, context) {
         Ok((measurement, reproduce)) => verdict::judge(
             entry,
-            measurement.sizes,
+            measurement.metrics,
             &measurement.undefined,
             started.elapsed().as_secs_f64(),
             reproduce,
@@ -287,9 +296,14 @@ struct SummaryRow {
     passed: bool,
     text_bytes: Option<u64>,
     state_bytes: Option<u64>,
+    /// Single-precision arithmetic instructions summed over the row's objects.
+    fp_ops: Option<u64>,
     /// `.text` per emitted translation unit, so a review of a size change can
     /// see which unit moved without re-running the gate.
     unit_text_bytes: Vec<(String, u64)>,
+    /// The same breakdown for the arithmetic count, so a step-rate change can
+    /// be attributed to a translation unit without re-running the gate.
+    unit_fp_ops: Vec<(String, u64)>,
     elapsed_seconds: f64,
     command: String,
     findings: Vec<String>,
@@ -310,9 +324,9 @@ fn report(
     wall_seconds: f64,
 ) -> Result<()> {
     for (entry, judged) in entries.iter().zip(verdicts) {
-        let detail = judged.sizes.as_ref().map_or_else(
+        let detail = judged.metrics.as_ref().map_or_else(
             || "not measured".to_string(),
-            |sizes| verdict::headroom(&entry.budget, sizes),
+            |metrics| verdict::headroom(&entry.budget, metrics),
         );
         println!(
             "  {} {:<44} {:>6.1}s  {detail}",
@@ -352,12 +366,18 @@ fn write_summary(root: &Path, verdicts: &[Verdict], wall_seconds: f64) -> Result
             .map(|judged| SummaryRow {
                 id: judged.id.clone(),
                 passed: judged.passed(),
-                text_bytes: judged.sizes.as_ref().map(verdict::Sizes::text_bytes),
-                state_bytes: judged.sizes.as_ref().map(|sizes| sizes.state_bytes),
+                text_bytes: judged.metrics.as_ref().map(verdict::Metrics::text_bytes),
+                state_bytes: judged.metrics.as_ref().map(|metrics| metrics.state_bytes),
+                fp_ops: judged.metrics.as_ref().map(verdict::Metrics::fp_ops),
                 unit_text_bytes: judged
-                    .sizes
+                    .metrics
                     .as_ref()
-                    .map(|sizes| sizes.units.clone())
+                    .map(|metrics| metrics.text_units.clone())
+                    .unwrap_or_default(),
+                unit_fp_ops: judged
+                    .metrics
+                    .as_ref()
+                    .map(|metrics| metrics.fp_units.clone())
                     .unwrap_or_default(),
                 elapsed_seconds: judged.elapsed_seconds,
                 command: judged.command_line.clone(),

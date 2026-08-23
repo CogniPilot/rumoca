@@ -1,6 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "ceiling_policy": "A ceiling is a statement about one artifact built by one cross toolchain, and the toolchain it was taken with is named in each row's budget.measured.comment. `text_bytes` is the summed .text of every emitted translation unit; `state_bytes` is sizeof(<Model>State) for the target ABI; both are bytes. Ceilings are fall-only in spirit: when size work lands, lower the ceiling in the same change that lands the saving, so the saving cannot be quietly spent again. Raising a ceiling is not forbidden but is never routine, and needs a reviewed justification recorded in the row's comment saying what grew and why the growth is worth the flash. The initial ceilings sit about four percent above the measurement recorded beside them: real headroom for ordinary churn, still tight enough that a five percent regression is red.",
+  "fp_ops_policy": "`fp_ops` is the number of single-precision floating-point arithmetic instructions in a row's compiled objects, read from `arm-none-eabi-objdump -d` and summed over every emitted translation unit. It counts work, not traffic: the products and fused products, the sums, and the divide and square root. Moves, loads, stores, compares, conversions, sign flips, selections and roundings are excluded. The exact counted set has one owner, the gate's `fp_ops` module, and a single-precision mnemonic in neither its counted nor its excluded list fails the row rather than being counted as free. Bytes say whether the artifact fits; this number is what says whether the step makes its rate on a 600 MHz Cortex-M7 against a 1 ms period, so it is fall-only in the same sense as the size ceilings and for a sharper reason: when contraction work lands, these ceilings come down severalfold in the same change, and a later lowering that reintroduces quartic arithmetic is then red here instead of on the vehicle. The initial ceilings sit about four percent above the measurement recorded beside them.",
   "entries": [
     {
       "id": "navigation-estimator/embedded-c-galec",
@@ -11,10 +12,12 @@
       "budget": {
         "text_bytes": 65713,
         "state_bytes": 42265,
+        "fp_ops": 1184,
         "measured": {
-          "text_bytes": 63594,
+          "text_bytes": 64270,
           "state_bytes": 40640,
-          "comment": "Measured 2026-08-22 after the arm overlay of branch-local scratch slots landed, with gcc-arm-embedded-15.2.rel1, under arm-none-eabi-gcc -Os -std=c99 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -ffunction-sections -c over both emitted translation units. state 40640 B, down 18812 B (31.6%) from the 59452 B region overlay alone reached: 17 arm overlays inside `step` hold 100 slots the checked placement proof confines to mutually exclusive arms of one conditional, so the region is sized for one arm instead of all eight. Ceiling 42265 B is +4.0%. text 63594 B = 63426 B model + 168 B shared kernels, up 408 B (0.6%): a smaller state struct moves every member offset, and the churn lands as a few bytes in each of about thirty functions rather than in the overlaid code. The text ceiling stays at 65713 B rather than being reset around the larger measurement, which leaves it +3.3%. The remaining state is about 3.7 KB of model state plus scratch whose next reduction belongs to triangular packing of symmetric matrices or to marshalling elimination, not to liveness."
+          "fp_ops": 1142,
+          "comment": "Measured 2026-08-22 after the arm overlay of branch-local scratch slots landed, with gcc-arm-embedded-15.2.rel1, under arm-none-eabi-gcc -Os -std=c99 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -ffunction-sections -c over both emitted translation units. state 40640 B, down 18812 B (31.6%) from the 59452 B region overlay alone reached: 17 arm overlays inside `step` hold 100 slots the checked placement proof confines to mutually exclusive arms of one conditional, so the region is sized for one arm instead of all eight. Ceiling 42265 B is +4.0%. text 64270 B = 64102 B model + 168 B shared kernels, including the contraction fission temporaries: a smaller state struct moves every member offset, and the churn lands as a few bytes in each of about thirty functions rather than in the overlaid code. The text ceiling stays at 65713 B rather than being reset around the larger measurement, which leaves it +2.2%. The remaining state is about 3.7 KB of model state plus scratch whose next reduction belongs to triangular packing of symmetric matrices or to marshalling elimination, not to liveness."
         }
       }
     },
@@ -27,9 +30,11 @@
       "budget": {
         "text_bytes": 65713,
         "state_bytes": 42265,
+        "fp_ops": 1184,
         "measured": {
-          "text_bytes": 63594,
+          "text_bytes": 64270,
           "state_bytes": 40640,
+          "fp_ops": 1142,
           "comment": "Measured 2026-08-22 after the arm overlay of branch-local scratch slots landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It therefore carries that row's ceilings unchanged rather than its own four-percent band, so the two artifacts cannot drift apart without one of them going red."
         }
       }
@@ -43,10 +48,12 @@
       "budget": {
         "text_bytes": 64403,
         "state_bytes": 43214,
+        "fp_ops": 1425,
         "measured": {
-          "text_bytes": 61926,
+          "text_bytes": 61898,
           "state_bytes": 41552,
-          "comment": "Measured 2026-08-22 after the arm overlay of branch-local scratch slots landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the NavigationEstimator rows. text 61926 B = 61758 B model + 168 B shared kernels, down 232 B; ceiling 64403 B is +4.0%. state 41552 B (struct EstimatorState), 3900 B below the region-overlay-only measurement of 45452 B: 9 arm overlays hold 36 slots the placement proof confines to single arms. Ceiling 43214 B is +4.0%. This row moves in the opposite direction from the NavigationEstimator rows on text, which is the point of keeping it: the same change costs a few hundred bytes of offset churn on one model and saves them on another."
+          "fp_ops": 1369,
+          "comment": "Measured 2026-08-22 after the arm overlay of branch-local scratch slots landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the NavigationEstimator rows. text 61898 B = 61730 B model + 168 B shared kernels, down 260 B; ceiling 64403 B is +4.0%. state 41552 B (struct EstimatorState), 3900 B below the region-overlay-only measurement of 45452 B: 9 arm overlays hold 36 slots the placement proof confines to single arms. Ceiling 43214 B is +4.0%. This row moves in the opposite direction from the NavigationEstimator rows on text, which is the point of keeping it: the same change costs a few hundred bytes of offset churn on one model and saves them on another."
         }
       }
     }
