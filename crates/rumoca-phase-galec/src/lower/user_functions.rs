@@ -2369,6 +2369,14 @@ fn split_loop_invariant_guard(
     if !has_before || !has_body {
         return None;
     }
+    if splits_a_target(
+        &before_branches,
+        before_else.as_deref(),
+        &body_branches,
+        body_else.as_deref(),
+    ) {
+        return None;
+    }
     let before = gast::Spanned::new(
         gast::Statement::If(gast::IfStatement {
             branches: before_branches,
@@ -2387,6 +2395,55 @@ fn split_loop_invariant_guard(
         before: Some(before),
         body: Some(body),
     })
+}
+
+/// Whether splitting this guard would distribute one variable's assignments
+/// over the two halves.
+///
+/// The split copies the guard's conditions into two conditionals and sends each
+/// branch's loop-invariant statements to the first and the rest to the second.
+/// When one branch assigns a target with a loop-invariant value and another
+/// assigns the same target with a loop-dependent one, the two assignments land
+/// in different conditionals: the target is then still assigned on every path,
+/// but no single conditional shows it, because the proof now needs the two
+/// guards to agree and nothing in the emitted C says they must.
+///
+/// That is a real cost even though the values are unchanged. A C compiler
+/// reading the result sees a variable that some path may leave unset -- the
+/// generated code sits between the two guards, so it cannot assume the second
+/// test repeats the first -- and reports it. Under the assurance preflight,
+/// which is `-Werror`, the report is a build failure rather than a note, so a
+/// hoist that saves nothing here costs the whole translation unit.
+///
+/// Refusing the split keeps the original conditional, where every branch
+/// assigns the target in the branch that produces it and definite assignment is
+/// visible in one statement. Nothing else about the guard changes, and a guard
+/// whose halves assign disjoint targets still splits.
+fn splits_a_target(
+    before_branches: &[gast::IfBranch],
+    before_else: Option<&[gast::Spanned<gast::Statement>]>,
+    body_branches: &[gast::IfBranch],
+    body_else: Option<&[gast::Spanned<gast::Statement>]>,
+) -> bool {
+    let before = assigned_targets(before_branches, before_else);
+    let body = assigned_targets(body_branches, body_else);
+    before.iter().any(|name| body.contains(name))
+}
+
+/// Every local a half of a split guard assigns, over all of its branches.
+fn assigned_targets(
+    branches: &[gast::IfBranch],
+    else_body: Option<&[gast::Spanned<gast::Statement>]>,
+) -> Vec<gast::Name> {
+    let mut names = Vec::new();
+    for statement in branches
+        .iter()
+        .flat_map(|branch| &branch.body)
+        .chain(else_body.into_iter().flatten())
+    {
+        collect_defined_names(statement, &mut names);
+    }
+    names
 }
 
 fn repeatable_loop_invariant_condition(

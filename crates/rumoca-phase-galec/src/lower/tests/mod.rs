@@ -863,6 +863,65 @@ fn tensor_prefix_partition_hoists_work_from_an_invariant_guard() {
     ));
 }
 
+/// A guard whose branches assign one target with a loop-invariant value on one
+/// side and a loop-dependent value on the other must survive whole.
+///
+/// Splitting it would put the two assignments in two conditionals that repeat
+/// the same test, and the target would then be assigned on every path without
+/// any one statement showing it. The generated C is what pays: a compiler
+/// cannot assume the second test repeats the first across the statements
+/// between them, so it reports a variable that may be used uninitialized, and
+/// the assurance preflight compiles with `-Werror`.
+#[test]
+fn tensor_prefix_partition_keeps_a_guard_that_splits_one_target() {
+    let outer = gast::Name::ident("outer");
+    let selected = gast::Name::ident("selected");
+    let dependent = gast::Spanned::dummy(gast::Statement::Assignment {
+        target: gast::Reference::local(selected.clone()),
+        value: gast::Expression::Ref(gast::Reference::Local(gast::RefPart {
+            name: gast::Name::ident("correction"),
+            subscripts: vec![gast::Expression::Ref(gast::Reference::local(outer.clone()))],
+            span: Span::DUMMY,
+        })),
+    });
+    let invariant = gast::Spanned::dummy(gast::Statement::Assignment {
+        target: gast::Reference::local(selected.clone()),
+        value: gast::Expression::Real(0.0),
+    });
+    let guarded = gast::Spanned::dummy(gast::Statement::If(gast::IfStatement {
+        branches: vec![gast::IfBranch {
+            condition: gast::Condition::Expression(gast::Expression::Ref(gast::Reference::local(
+                gast::Name::ident("engaged"),
+            ))),
+            body: vec![dependent],
+            span: Span::DUMMY,
+        }],
+        else_body: Some(vec![invariant]),
+    }));
+
+    let (before, body) = user_functions::partition_tensor_prefixes(
+        vec![guarded.clone()],
+        std::slice::from_ref(&outer),
+    );
+
+    assert!(
+        before.is_empty(),
+        "a guard that assigns one target on both sides must not be split"
+    );
+    assert_eq!(body, vec![guarded]);
+    let gast::Statement::If(kept) = &body[0].node else {
+        panic!("the guard must survive as one conditional")
+    };
+    assert!(matches!(
+        kept.branches[0].body[0].node,
+        gast::Statement::Assignment { .. }
+    ));
+    assert!(matches!(
+        kept.else_body.as_ref().expect("the fallback arm survives")[0].node,
+        gast::Statement::Assignment { .. }
+    ));
+}
+
 fn guarded_tensor_fixture() -> (
     Vec<gast::Spanned<gast::Statement>>,
     Vec<gast::Spanned<gast::Statement>>,
