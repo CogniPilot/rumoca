@@ -1,9 +1,45 @@
 //! Scalar tensor, array, builtin, and coordinate projection into GALEC.
 
 mod contraction;
+mod contraction_fission;
 
 use super::*;
 use contraction::{TensorContraction, contraction_indices, sum_terms, tensor_contraction};
+use contraction_fission::{fission_contraction_body, subscript_carried_scalars};
+
+/// The loop one materialized contraction runs over its contracted index.
+struct ContractionLoop<'a> {
+    iterator: &'a gast::Name,
+    contracted: &'a gast::Expression,
+    extent: u32,
+    span: Span,
+}
+
+fn contraction_loop(
+    body: Vec<gast::Spanned<gast::Statement>>,
+    shape: &ContractionLoop<'_>,
+) -> gast::Spanned<gast::Statement> {
+    gast::Spanned::new(
+        gast::Statement::For(gast::ForLoop {
+            iterator: Some(shape.iterator.clone()),
+            start: gast::Expression::Integer(1),
+            step: None,
+            stop: gast::Expression::Integer(i64::from(shape.extent)),
+            body,
+        }),
+        shape.span,
+    )
+}
+
+fn additive_identity(scalar_type: gast::ScalarType) -> gast::Expression {
+    match scalar_type {
+        gast::ScalarType::Real => gast::Expression::Real(0.0),
+        gast::ScalarType::Integer => gast::Expression::Integer(0),
+        gast::ScalarType::Boolean => {
+            unreachable!("checked tensor contractions are numeric")
+        }
+    }
+}
 
 pub(super) struct SelectionValue {
     pub(super) prefix: Vec<gast::Spanned<gast::Statement>>,
@@ -551,13 +587,58 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         scalar_type: gast::ScalarType,
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
-        let accumulator = gast::Name::ident(format!(
-            "rumoca_{}_contraction_{}",
+        let accumulator = self.declare_contraction_accumulator(scalar_type, span);
+        let iterator = gast::Name::ident(format!(
+            "rumoca_{}_contracted_{}",
             self.temporary_namespace, self.temporary_counter
         ));
         self.temporary_counter += 1;
-        let iterator = gast::Name::ident(format!(
-            "rumoca_{}_contracted_{}",
+        self.pending_prefix_statements.push(gast::Spanned::new(
+            gast::Statement::Assignment {
+                target: gast::Reference::local(accumulator.clone()),
+                value: additive_identity(scalar_type),
+            },
+            span,
+        ));
+
+        let contracted = gast::Expression::Ref(gast::Reference::local(iterator.clone()));
+        let (lhs_indices, rhs_indices) = contraction_indices(&contraction, contracted.clone());
+        self.loop_index_bounds.push(LoopIndexBound {
+            name: iterator.clone(),
+            minimum: 1,
+            maximum: i64::from(contraction.extent),
+        });
+        let body_start = self.pending_prefix_statements.len();
+        let lhs = self.lower_at(lhs, &lhs_indices);
+        let rhs = self.lower_at(rhs, &rhs_indices);
+        self.loop_index_bounds.pop();
+        let mut product =
+            lower_binary(dae::BinaryOperator::Multiply, lhs?, rhs?, scalar_type, span)?;
+        let prefixes = self.pending_prefix_statements.split_off(body_start);
+        let (before, body) =
+            user_functions::partition_tensor_prefixes(prefixes, std::slice::from_ref(&iterator));
+        self.pending_prefix_statements.extend(before);
+        let shape = ContractionLoop {
+            iterator: &iterator,
+            contracted: &contracted,
+            extent: contraction.extent,
+            span,
+        };
+        let body = self.hoist_outer_invariant_half(body, &contraction, &mut product, &shape);
+        self.emit_contraction_loop(body, &accumulator, product, &shape);
+        Ok(TypedExpression {
+            expression: gast::Expression::Ref(gast::Reference::local(accumulator)),
+            scalar_type,
+        })
+    }
+
+    fn declare_contraction_accumulator(
+        &mut self,
+        scalar_type: gast::ScalarType,
+        span: Span,
+    ) -> gast::Name {
+        let accumulator = gast::Name::ident(format!(
+            "rumoca_{}_contraction_{}",
             self.temporary_namespace, self.temporary_counter
         ));
         self.temporary_counter += 1;
@@ -568,37 +649,71 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             range: gast::RangeAttributes::default(),
             span,
         });
-        let zero = match scalar_type {
-            gast::ScalarType::Real => gast::Expression::Real(0.0),
-            gast::ScalarType::Integer => gast::Expression::Integer(0),
-            gast::ScalarType::Boolean => {
-                unreachable!("checked tensor contractions are numeric")
-            }
-        };
-        self.pending_prefix_statements.push(gast::Spanned::new(
-            gast::Statement::Assignment {
-                target: gast::Reference::local(accumulator.clone()),
-                value: zero,
-            },
-            span,
-        ));
+        accumulator
+    }
 
-        let contracted = gast::Expression::Ref(gast::Reference::local(iterator.clone()));
-        let (lhs_indices, rhs_indices) = contraction_indices(&contraction, contracted);
-        self.loop_index_bounds.push(LoopIndexBound {
-            name: iterator.clone(),
-            minimum: 1,
-            maximum: i64::from(contraction.extent),
-        });
-        let body_start = self.pending_prefix_statements.len();
-        let lhs = self.lower_at(lhs, &lhs_indices);
-        let rhs = self.lower_at(rhs, &rhs_indices);
-        self.loop_index_bounds.pop();
-        let product = lower_binary(dae::BinaryOperator::Multiply, lhs?, rhs?, scalar_type, span)?;
-        let prefixes = self.pending_prefix_statements.split_off(body_start);
-        let (before, mut body) =
-            user_functions::partition_tensor_prefixes(prefixes, std::slice::from_ref(&iterator));
-        self.pending_prefix_statements.extend(before);
+    /// Give the half of the contraction body that the outer tensor index
+    /// cannot change its own loop over the contracted index, and return the
+    /// half that stays with the accumulation.
+    ///
+    /// The hoisted loop is emitted beside the accumulating one rather than
+    /// inside it, so the enclosing tensor nest lifts it out of every axis it
+    /// does not read. The body is returned unsplit whenever the split is not
+    /// available.
+    fn hoist_outer_invariant_half(
+        &mut self,
+        body: Vec<gast::Spanned<gast::Statement>>,
+        contraction: &TensorContraction,
+        product: &mut gast::Expression,
+        shape: &ContractionLoop<'_>,
+    ) -> Vec<gast::Spanned<gast::Statement>> {
+        let Some(mut fission) = fission_contraction_body(&body, &contraction.rhs_outer, product)
+        else {
+            return body;
+        };
+        let mut widened = product.clone();
+        if !subscript_carried_scalars(&mut fission, &mut widened, shape.contracted) {
+            return body;
+        }
+        if !self.widen_carried_accumulators(&fission.carried, shape.extent) {
+            return body;
+        }
+        self.pending_prefix_statements
+            .push(contraction_loop(fission.produced, shape));
+        *product = widened;
+        fission.consumed
+    }
+
+    /// Widen each carried scalar temporary into an array over the contracted
+    /// index, reporting whether every one of them was a scalar this pass owns.
+    fn widen_carried_accumulators(&mut self, carried: &[gast::Name], extent: u32) -> bool {
+        let positions = carried
+            .iter()
+            .map(|name| {
+                self.temporary_locals
+                    .iter()
+                    .position(|local| local.name == *name && local.dimensions.is_empty())
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(positions) = positions else {
+            return false;
+        };
+        let dimensions = user_functions::dimensions(&[extent]);
+        for position in positions {
+            if let Some(local) = self.temporary_locals.get_mut(position) {
+                local.dimensions.clone_from(&dimensions);
+            }
+        }
+        true
+    }
+
+    fn emit_contraction_loop(
+        &mut self,
+        mut body: Vec<gast::Spanned<gast::Statement>>,
+        accumulator: &gast::Name,
+        product: gast::Expression,
+        shape: &ContractionLoop<'_>,
+    ) {
         body.push(gast::Spanned::new(
             gast::Statement::Assignment {
                 target: gast::Reference::local(accumulator.clone()),
@@ -608,22 +723,10 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                     product,
                 ),
             },
-            span,
+            shape.span,
         ));
-        self.pending_prefix_statements.push(gast::Spanned::new(
-            gast::Statement::For(gast::ForLoop {
-                iterator: Some(iterator),
-                start: gast::Expression::Integer(1),
-                step: None,
-                stop: gast::Expression::Integer(i64::from(contraction.extent)),
-                body,
-            }),
-            span,
-        ));
-        Ok(TypedExpression {
-            expression: gast::Expression::Ref(gast::Reference::local(accumulator)),
-            scalar_type,
-        })
+        self.pending_prefix_statements
+            .push(contraction_loop(body, shape));
     }
 
     pub(super) fn lower_index_at(

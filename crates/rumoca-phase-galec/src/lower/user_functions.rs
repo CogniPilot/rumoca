@@ -6,8 +6,10 @@
 use super::*;
 
 mod indexed_update;
+mod tensor_loops;
 
 use indexed_update::{lower_indexed_function_update, preserves_function_target};
+pub(super) use tensor_loops::{is_reorderable, nest_tensor_loops};
 
 pub(super) fn lower_reachable<'dae>(
     view: dae::DaeView<'dae>,
@@ -1417,7 +1419,8 @@ fn lower_tensor_function_assignment<'a, 'dae>(
         value,
         scalar,
     } = lower_tensor_element_value(&assignment, lowerer)?;
-    let (before, mut body) = partition_tensor_prefixes(lowerer.drain_prefix_statements(), &names);
+    let (mut before, mut body) =
+        partition_tensor_prefixes(lowerer.drain_prefix_statements(), &names);
     if body.is_empty()
         && let Some(source) = whole_array_move::provable_whole_array_move(
             lowerer,
@@ -1461,21 +1464,17 @@ fn lower_tensor_function_assignment<'a, 'dae>(
             nested: None,
         }));
     }
-    for (name, &extent) in names.iter().zip(assignment.target_type.dimensions()).rev() {
-        body = vec![gast::Spanned::new(
-            gast::Statement::For(gast::ForLoop {
-                iterator: Some(name.clone()),
-                start: gast::Expression::Integer(1),
-                step: None,
-                stop: gast::Expression::Integer(i64::from(extent)),
-                body,
-            }),
-            assignment.span,
-        )];
-    }
+    let mut nest = nest_tensor_loops(
+        body,
+        &names,
+        assignment.target_type.dimensions(),
+        assignment.span,
+    );
+    let outer = nest.pop().expect("tensor assignment has one outer loop");
+    before.extend(nest);
     Ok(Some(LoweredTensorAssignment {
         before,
-        nested: Some(body.pop().expect("tensor assignment has one outer loop")),
+        nested: Some(outer),
     }))
 }
 
@@ -1896,6 +1895,23 @@ pub(super) fn partition_tensor_prefixes(
     Vec<gast::Spanned<gast::Statement>>,
 ) {
     let statements = split_loop_invariant_guards(statements, outer_indices);
+    partition_by_dependence(statements, outer_indices)
+}
+
+/// Split `statements` into those whose values cannot change with
+/// `outer_indices` and those that can, leaving every statement intact.
+///
+/// A statement joins the dependent side as soon as it reads or writes a
+/// dependent name, and its own targets become dependent in turn, so an
+/// accumulator reset whose value is a literal still travels with the loop that
+/// updates the accumulator.
+pub(super) fn partition_by_dependence(
+    statements: Vec<gast::Spanned<gast::Statement>>,
+    outer_indices: &[gast::Name],
+) -> (
+    Vec<gast::Spanned<gast::Statement>>,
+    Vec<gast::Spanned<gast::Statement>>,
+) {
     let mut dependent_names = outer_indices.to_vec();
     let mut dependent = vec![false; statements.len()];
     loop {
@@ -2041,7 +2057,10 @@ fn repeatable_loop_invariant_condition(
     }
 }
 
-fn collect_defined_names(statement: &gast::Spanned<gast::Statement>, names: &mut Vec<gast::Name>) {
+pub(super) fn collect_defined_names(
+    statement: &gast::Spanned<gast::Statement>,
+    names: &mut Vec<gast::Name>,
+) {
     match &statement.node {
         gast::Statement::Assignment { target, .. } => collect_defined_reference(target, names),
         gast::Statement::MultiAssignment { targets, .. } => {

@@ -920,20 +920,10 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             return Ok(gast::Expression::Ref(gast::Reference::local(name)));
         }
         self.pending_prefix_statements.extend(before);
-        for (iterator, &extent) in iterators.iter().zip(dimensions).rev() {
-            body = vec![gast::Spanned::new(
-                gast::Statement::For(gast::ForLoop {
-                    iterator: Some(iterator.clone()),
-                    start: gast::Expression::Integer(1),
-                    step: None,
-                    stop: gast::Expression::Integer(i64::from(extent)),
-                    body,
-                }),
-                call_span,
-            )];
-        }
         self.pending_prefix_statements
-            .push(body.pop().expect("tensor argument has one outer loop"));
+            .extend(user_functions::nest_tensor_loops(
+                body, &iterators, dimensions, call_span,
+            ));
         Ok(gast::Expression::Ref(gast::Reference::local(name)))
     }
 
