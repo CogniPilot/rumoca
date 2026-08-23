@@ -598,7 +598,14 @@ self->{{ symbol(c_state_symbols, variable.name) }}{% for index in indices %}[{{ 
 {% endif -%}
 {%- set trace_state.previous = trace_current -%}
 {%- set emitted.any = true -%}
-{%- set value = wrapped.node -%}
+{#- A call whose marshalling copies were dropped prints the operands the view
+    decided on, not the ones the checked GALEC spells: the temporary a copy used
+    to stage into, or read a result back out of, is gone from the region and its
+    place at the call is taken by the aggregate the copy touched. The decision
+    is the view's, taken in `views::algorithm_code_marshalling` and carried in
+    the same sibling slot every other emission decision uses, so `model.alg`
+    still prints the checked statement and the copy beside it. -#}
+{%- set value = wrapped.kernel.statement if (wrapped.kernel is not none and wrapped.kernel.kind == "marshalled") else wrapped.node -%}
 {#- One contraction group's surviving statement: the whole reduction, including
     the loop and the accumulator that are gone from this scope, is the call. -#}
 {%- if wrapped.kernel is not none and wrapped.kernel.kind == "dot" -%}

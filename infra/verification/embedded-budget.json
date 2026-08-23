@@ -10,14 +10,14 @@
       "target": "embedded-c-galec",
       "why": "The artifact that flies: the RDD2 navigation estimator as GALEC-derived embedded C, linked into the Zephyr image on the vehicle's microcontroller. Its flash footprint and its single static allocation are acceptance criteria for that deployment, not diagnostics.",
       "budget": {
-        "text_bytes": 65713,
-        "state_bytes": 42265,
+        "text_bytes": 61717,
+        "state_bytes": 32680,
         "fp_ops": 1184,
         "measured": {
-          "text_bytes": 64270,
-          "state_bytes": 40640,
+          "text_bytes": 59344,
+          "state_bytes": 31424,
           "fp_ops": 1142,
-          "comment": "Measured 2026-08-22 after the arm overlay of branch-local scratch slots landed, with gcc-arm-embedded-15.2.rel1, under arm-none-eabi-gcc -Os -std=c99 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -ffunction-sections -c over both emitted translation units. state 40640 B, down 18812 B (31.6%) from the 59452 B region overlay alone reached: 17 arm overlays inside `step` hold 100 slots the checked placement proof confines to mutually exclusive arms of one conditional, so the region is sized for one arm instead of all eight. Ceiling 42265 B is +4.0%. text 64270 B = 64102 B model + 168 B shared kernels, including the contraction fission temporaries: a smaller state struct moves every member offset, and the churn lands as a few bytes in each of about thirty functions rather than in the overlaid code. The text ceiling stays at 65713 B rather than being reset around the larger measurement, which leaves it +2.2%. The remaining state is about 3.7 KB of model state plus scratch whose next reduction belongs to triangular packing of symmetric matrices or to marshalling elimination, not to liveness."
+          "comment": "Measured 2026-08-22 after call-boundary marshalling elimination landed on top of the arm overlay of branch-local scratch slots, with gcc-arm-embedded-15.2.rel1, under arm-none-eabi-gcc -Os -std=c99 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -ffunction-sections -c over both emitted translation units. state 31424 B, down 9216 B (22.7%) from 40640 B: a staged actual whose only definition is a whole-array copy of an aggregate the caller already holds now names that aggregate at the call, and a result whose only use is a whole-array copy into another aggregate is read back into that aggregate directly, so the temporary between them leaves the region and the arm overlay has fewer slots to place. Ceiling 32680 B is +4.0%. text 59344 B = 59176 B model + 168 B shared kernels, down 4926 B, because every eliminated copy was an emitted loop or kernel call. Ceiling 61717 B is +4.0%, so the text ceiling is finally reset around its own measurement rather than around the pre-overlay one. fp_ops 1142 is unchanged, which is the expected shape of this change: it removes data movement and no arithmetic at all, and the emitted state is bit-identical over a 240-step multi-source schedule. The remaining state is about 3.7 KB of model state plus scratch whose next reduction belongs to triangular packing of symmetric matrices."
         }
       }
     },
@@ -28,14 +28,14 @@
       "target": "galec-production",
       "why": "The same estimator inside its eFMU Production Code container, the form the certification review reads. Its C bodies come from the same shared templates as the embedded-c-galec row, so the two rows are pinned to the same numbers on purpose: a divergence between them means the packaging track changed what gets compiled rather than only how it is wrapped, which is a finding either way.",
       "budget": {
-        "text_bytes": 65713,
-        "state_bytes": 42265,
+        "text_bytes": 61717,
+        "state_bytes": 32680,
         "fp_ops": 1184,
         "measured": {
-          "text_bytes": 64270,
-          "state_bytes": 40640,
+          "text_bytes": 59344,
+          "state_bytes": 31424,
           "fp_ops": 1142,
-          "comment": "Measured 2026-08-22 after the arm overlay of branch-local scratch slots landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It therefore carries that row's ceilings unchanged rather than its own four-percent band, so the two artifacts cannot drift apart without one of them going red."
+          "comment": "Measured 2026-08-22 after call-boundary marshalling elimination landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It therefore carries that row's ceilings unchanged rather than its own four-percent band, so the two artifacts cannot drift apart without one of them going red."
         }
       }
     },
@@ -46,14 +46,14 @@
       "target": "galec-production",
       "why": "The heaviest matrix-algebra model with an established eFMI target, and nearly as large as the navigation estimator despite being a smaller model: sigma-point work is where an unrolled kernel or a widened scratch region shows up first, so this row is the early warning for both ceilings.",
       "budget": {
-        "text_bytes": 64403,
-        "state_bytes": 43214,
+        "text_bytes": 61476,
+        "state_bytes": 32485,
         "fp_ops": 1425,
         "measured": {
-          "text_bytes": 61898,
-          "state_bytes": 41552,
+          "text_bytes": 59112,
+          "state_bytes": 31236,
           "fp_ops": 1369,
-          "comment": "Measured 2026-08-22 after the arm overlay of branch-local scratch slots landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the NavigationEstimator rows. text 61898 B = 61730 B model + 168 B shared kernels, down 260 B; ceiling 64403 B is +4.0%. state 41552 B (struct EstimatorState), 3900 B below the region-overlay-only measurement of 45452 B: 9 arm overlays hold 36 slots the placement proof confines to single arms. Ceiling 43214 B is +4.0%. This row moves in the opposite direction from the NavigationEstimator rows on text, which is the point of keeping it: the same change costs a few hundred bytes of offset churn on one model and saves them on another."
+          "comment": "Measured 2026-08-22 after call-boundary marshalling elimination landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the NavigationEstimator rows. text 59112 B = 58944 B model + 168 B shared kernels, down 2786 B; ceiling 61476 B is +4.0%. state 31236 B (struct EstimatorState), down 10316 B (24.8%) from 41552 B, a deeper cut than the NavigationEstimator rows take: sigma-point work stages whole matrices per call site, so proportionally more of this model's region was marshalling temporaries. Ceiling 32485 B is +4.0%. fp_ops 1369 is unchanged here too. This row keeps earning its place by moving differently from the NavigationEstimator rows under the same change."
         }
       }
     }

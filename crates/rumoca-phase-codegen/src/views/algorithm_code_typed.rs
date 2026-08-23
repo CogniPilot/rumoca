@@ -17,6 +17,13 @@ use super::algorithm_code_scopes::{LocalPlacements, ScopePath, ScopeStep};
 use super::algorithm_code_slot_overlay::{self as slot_overlay, SlotHomes};
 use super::source_trace::{SourceTrace, SourceTraceResolver, TraceLegend};
 
+/// The call-boundary marshalling rewrite. A child module rather than a sibling
+/// under `views`: it reads this view's statement, reference and kernel types in
+/// full, and those are this module's own vocabulary rather than an interface
+/// the rest of the crate has any use for.
+#[path = "algorithm_code_marshalling.rs"]
+mod marshalling;
+
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TypedBlockView<'a> {
     name: &'a ast::Name,
@@ -691,6 +698,19 @@ enum KernelStatementView<'a> {
     /// prints, and a C-family target emits nothing at all for it — not even its
     /// trace comment, which the surviving statement of the group carries.
     Absorbed,
+    /// A call whose marshalling temporaries were dropped: the statement a
+    /// C-family target prints in place of the one beside it, with each retired
+    /// temporary replaced by the aggregate its copy touched.
+    ///
+    /// Carried here rather than written back over the node for the reason every
+    /// other decision in this enum is: `model.alg.jinja` never reads this
+    /// field, so the checked Algorithm Code still prints the call and the copy
+    /// exactly as the block spells them. See
+    /// [`super::algorithm_code_marshalling`] for the proof each replacement
+    /// needs.
+    Marshalled {
+        statement: Box<TypedStatementView<'a>>,
+    },
     /// A whole-array assignment whose every element receives the same literal.
     /// The target's loop nest is still printed down to its innermost dimension,
     /// which becomes one `rumoca_galec_fill_*` call over that run.
@@ -1111,6 +1131,26 @@ fn context_resident(declaration: &ast::VariableDeclaration, is_output: bool) -> 
     is_output || !declaration.dimensions.is_empty()
 }
 
+/// The declarations the marshalling rewrite may remove from a region: the
+/// owner's own locals, and nothing else.
+///
+/// The owner is projected once per answer this returns, because the region, the
+/// arm overlay inside it and every reference that names a slot are all derived
+/// from the surviving slot set. A projection carrying a retired slot would
+/// place it, size the region for it and hand every reference an overlay ordinal
+/// chosen with it present, so the only way to see the layout without it is to
+/// derive the layout again. The set grows monotonically and is bounded by the
+/// declaration list, so the loop that does this terminates; in practice it
+/// settles on the second projection, because a forwarding decision reads only
+/// the statement structure and the declared shapes, neither of which the first
+/// answer changed.
+fn retirable_locals(locals: &[ast::VariableDeclaration]) -> HashSet<&str> {
+    locals
+        .iter()
+        .map(|declaration| declaration.name.lexeme())
+        .collect()
+}
+
 /// The frame declarations at one scope, each carrying whether the target still
 /// owes it an unused-entity marker.
 ///
@@ -1437,70 +1477,97 @@ impl<'a> BlockShapes<'a> {
         spelling: &'static str,
     ) -> Result<TypedMethodView<'a>, String> {
         let placements = LocalPlacements::derive(&method.locals, &method.statements);
-        let slots = method
-            .locals
-            .iter()
-            .filter(|declaration| {
-                placements.is_placed(declaration.name.lexeme())
-                    && context_resident(declaration, false)
-            })
-            .collect::<Vec<_>>();
-        let scratch = ScratchRegionView::new(Owner::Method(spelling), &slots, &placements);
-        let scope = ScopeShapes::new(self, &method.locals, &scratch);
-        *self.context_reads.borrow_mut() = false;
-        let mut statements = scope.statements(&method.statements, &placements, &mut Vec::new())?;
-        let frame = frame_locals(&placements, &[]);
-        let absorbed = kernelize(&mut statements, &frame);
-        let uses_scratch = *self.context_reads.borrow();
-        Ok(TypedMethodView {
-            signals: &method.signals,
-            locals: &method.locals,
-            c_locals: surviving_locals(frame, &absorbed),
-            scratch,
-            uses_scratch,
-            definite_state_writes: definite_state_writes(&method.statements)
-                .into_iter()
-                .collect(),
-            statements,
-        })
+        let retirable = retirable_locals(&method.locals);
+        let mut retired = HashSet::new();
+        loop {
+            let slots = method
+                .locals
+                .iter()
+                .filter(|declaration| {
+                    placements.is_placed(declaration.name.lexeme())
+                        && context_resident(declaration, false)
+                        && !retired.contains(declaration.name.lexeme())
+                })
+                .collect::<Vec<_>>();
+            let scratch = ScratchRegionView::new(Owner::Method(spelling), &slots, &placements);
+            let scope = ScopeShapes::new(self, &method.locals, &scratch);
+            *self.context_reads.borrow_mut() = false;
+            let mut statements =
+                scope.statements(&method.statements, &placements, &mut Vec::new())?;
+            let frame = frame_locals(&placements, &[]);
+            let absorbed = kernelize(&mut statements, &frame);
+            let forwarded = marshalling::forward(&mut statements, &retirable);
+            if !forwarded.is_subset(&retired) {
+                retired.extend(forwarded);
+                continue;
+            }
+            let uses_scratch = *self.context_reads.borrow();
+            return Ok(TypedMethodView {
+                signals: &method.signals,
+                locals: &method.locals,
+                c_locals: surviving_locals(frame, &absorbed),
+                scratch,
+                uses_scratch,
+                definite_state_writes: definite_state_writes(&method.statements)
+                    .into_iter()
+                    .collect(),
+                statements,
+            });
+        }
     }
 
     fn function(&self, function: &'a ast::UserFunction) -> Result<TypedFunctionView<'a>, String> {
         let placements = LocalPlacements::derive(&function.locals, &function.statements);
-        // Declaration order inside the region: reachable array locals, then
-        // the outputs. Both are addressed by name, so the order is only about
-        // producing the same struct from the same block every time.
-        let slots = function
-            .locals
-            .iter()
-            .filter(|declaration| {
-                placements.is_placed(declaration.name.lexeme())
-                    && context_resident(declaration, false)
-            })
-            .chain(output_parameters(function).map(|parameter| &parameter.decl))
-            .collect::<Vec<_>>();
-        let scratch =
-            ScratchRegionView::new(Owner::Function(function.name.lexeme()), &slots, &placements);
-        let scope = ScopeShapes::for_function(self, function, &scratch);
-        *self.context_reads.borrow_mut() = false;
-        let mut statements =
-            scope.statements(&function.statements, &placements, &mut Vec::new())?;
-        let frame = frame_locals(&placements, &[]);
-        let absorbed = kernelize(&mut statements, &frame);
-        let uses_scratch = *self.context_reads.borrow();
-        Ok(TypedFunctionView {
-            kind: function.kind,
-            name: &function.name,
-            trace: self.traces.trace(&function.span),
-            signals: &function.signals,
-            parameters: &function.parameters,
-            input_parameters: input_parameters(function),
-            locals: &function.locals,
-            c_locals: surviving_locals(frame, &absorbed),
-            scratch,
-            uses_scratch,
-            statements,
-        })
+        // Only a local is retirable. An output parameter is a slot the caller
+        // reads back after this function returns, and no analysis of this body
+        // can see that use.
+        let retirable = retirable_locals(&function.locals);
+        let mut retired = HashSet::new();
+        loop {
+            // Declaration order inside the region: reachable array locals, then
+            // the outputs. Both are addressed by name, so the order is only
+            // about producing the same struct from the same block every time.
+            let slots = function
+                .locals
+                .iter()
+                .filter(|declaration| {
+                    placements.is_placed(declaration.name.lexeme())
+                        && context_resident(declaration, false)
+                        && !retired.contains(declaration.name.lexeme())
+                })
+                .chain(output_parameters(function).map(|parameter| &parameter.decl))
+                .collect::<Vec<_>>();
+            let scratch = ScratchRegionView::new(
+                Owner::Function(function.name.lexeme()),
+                &slots,
+                &placements,
+            );
+            let scope = ScopeShapes::for_function(self, function, &scratch);
+            *self.context_reads.borrow_mut() = false;
+            let mut statements =
+                scope.statements(&function.statements, &placements, &mut Vec::new())?;
+            let frame = frame_locals(&placements, &[]);
+            let absorbed = kernelize(&mut statements, &frame);
+            let forwarded = marshalling::forward(&mut statements, &retirable);
+            if !forwarded.is_subset(&retired) {
+                retired.extend(forwarded);
+                continue;
+            }
+            let uses_scratch = *self.context_reads.borrow();
+            return Ok(TypedFunctionView {
+                kind: function.kind,
+                name: &function.name,
+                trace: self.traces.trace(&function.span),
+                signals: &function.signals,
+                parameters: &function.parameters,
+                input_parameters: input_parameters(function),
+                locals: &function.locals,
+                c_locals: surviving_locals(frame, &absorbed),
+                scratch,
+                uses_scratch,
+                statements,
+            });
+        }
     }
 
     fn state_reference_shape(&self, parts: &[ast::RefPart]) -> Result<ShapeEvidence, String> {
