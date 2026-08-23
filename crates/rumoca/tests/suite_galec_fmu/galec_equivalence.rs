@@ -2374,3 +2374,280 @@ fn embedded_c_guarded_dynamic_element_write_stores_every_coordinate_exactly() {
         "the oracle must select the same six coordinates"
     );
 }
+
+// ===========================================================================
+// Fixture 12 — a scalar local two array updates read is assigned before the
+// update that overwrites what its own right-hand side reads.
+// ===========================================================================
+
+/// Gaussian elimination in the two shapes `LinearAlgebra.solve` is written in.
+///
+/// `factor` is one scalar local that both row updates read, and the second of
+/// them overwrites `y[row, column]`, which `factor`'s own right-hand side
+/// divides. Assigning `factor` after that update, with its right-hand side
+/// expanded into the update, makes the division re-read the zero the same
+/// element loop has just stored: every column past the pivot then scales by
+/// zero, only the pivot column is ever eliminated, and the emitted block still
+/// reports a clear `ErrorSignalStatus`.
+///
+/// `eliminatePlain` puts the three statements directly under the guard.
+/// `eliminateGuarded` puts the row loop inside the guard, which is the shape
+/// `LinearAlgebra.solve` has: the three values then reach the projection as one
+/// correlated group of conditional values instead of three plain ones, and only
+/// carrying the assigned local back into its own branch lets the second update
+/// read it.
+const ELIMINATION_ORDER: &str = r#"
+function eliminatePlain
+  input Real m[3, 3];
+  input Real b[3, 3];
+  output Real upperDiagonal[3];
+  output Real inverseRow3[3];
+protected
+  Integer n = 3;
+  Real factor;
+  Real y[3, 3];
+  Real z[3, 3];
+algorithm
+  y := m;
+  z := b;
+  for column in 1:2 loop
+    for row in 2:3 loop
+      if row > column then
+        factor := y[row, column] / y[column, column];
+        z[row, :] := z[row, :] - factor * z[column, :];
+        y[row, column:n] := y[row, column:n] - factor * y[column, column:n];
+      end if;
+    end for;
+  end for;
+  upperDiagonal := {y[1, 1], y[2, 2], y[3, 3]};
+  inverseRow3 := z[3, :];
+end eliminatePlain;
+
+function eliminateGuarded
+  input Real m[3, 3];
+  input Real b[3, 3];
+  output Real upperDiagonal[3];
+  output Real inverseRow3[3];
+protected
+  Integer n = 3;
+  Real factor;
+  Real pivotMagnitude;
+  Boolean accepted;
+  Real y[3, 3];
+  Real z[3, 3];
+algorithm
+  y := m;
+  z := b;
+  accepted := true;
+  for column in 1:2 loop
+    pivotMagnitude := abs(y[column, column]);
+    if pivotMagnitude <= 1e-12 then
+      accepted := false;
+    elseif accepted then
+      for row in column + 1:3 loop
+        factor := y[row, column] / y[column, column];
+        z[row, :] := z[row, :] - factor * z[column, :];
+        y[row, column:n] := y[row, column:n] - factor * y[column, column:n];
+      end for;
+    end if;
+  end for;
+  upperDiagonal := {y[1, 1], y[2, 2], y[3, 3]};
+  inverseRow3 := z[3, :];
+end eliminateGuarded;
+
+model EliminationOrderSmoke
+  constant Real samplePeriod = 0.1;
+  parameter Real m[3, 3] = [4.0, 2.0, 1.0; 4.0, 5.0, 3.0; 4.0, 7.0, 9.0];
+  parameter Real b[3, 3] = [1.0, 0.0, 0.0; 0.0, 1.0, 0.0; 0.0, 0.0, 1.0];
+  discrete Real scale(start = 0.0, fixed = true);
+  discrete output Real plainDiagonal[3](each start = 0.0);
+  discrete output Real plainRow3[3](each start = 0.0);
+  discrete output Real guardedDiagonal[3](each start = 0.0);
+  discrete output Real guardedRow3[3](each start = 0.0);
+algorithm
+  when sample(0.0, samplePeriod) then
+    scale := pre(scale) + 1.0;
+    (plainDiagonal, plainRow3) := eliminatePlain(scale * m, b);
+    (guardedDiagonal, guardedRow3) := eliminateGuarded(scale * m, b);
+  end when;
+end EliminationOrderSmoke;
+"#;
+
+const ELIMINATION_ORDER_DRIVER: &str = r#"#include <stdio.h>
+#include "EliminationOrderSmoke.h"
+static void row(const char *label, const EliminationOrderSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%lu\n",
+           label,
+           (double)state->plainDiagonal[0], (double)state->plainDiagonal[1],
+           (double)state->plainDiagonal[2],
+           (double)state->plainRow3[0], (double)state->plainRow3[1],
+           (double)state->plainRow3[2],
+           (double)state->guardedDiagonal[0], (double)state->guardedDiagonal[1],
+           (double)state->guardedDiagonal[2],
+           (double)state->guardedRow3[0], (double)state->guardedRow3[1],
+           (double)state->guardedRow3[2],
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    EliminationOrderSmokeState state;
+    char label[16];
+    EliminationOrderSmoke_startup(&state);
+    row("startup", &state);
+    EliminationOrderSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        EliminationOrderSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+/// The compared channels, in the driver's column order: each function's
+/// row-echelon diagonal, then its third accumulator row.
+const ELIMINATION_ORDER_FIELDS: [Field; 12] = [
+    Field {
+        name: "plainDiagonal[1]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "plainDiagonal[2]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "plainDiagonal[3]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "plainRow3[1]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "plainRow3[2]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "plainRow3[3]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "guardedDiagonal[1]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "guardedDiagonal[2]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "guardedDiagonal[3]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "guardedRow3[1]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "guardedRow3[2]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "guardedRow3[3]",
+        kind: FieldKind::Real,
+    },
+];
+
+/// Gaussian elimination of
+/// `[4 2 1; 4 5 3; 4 7 9]` against the identity, by hand and without pivoting,
+/// exactly as the fixture's loops run it on the first tick, where `scale` is 1.
+///
+/// Column 1. Row 2: `factor = 4/4 = 1`, so row 2 becomes `[0 3 2]` and
+/// accumulator row 2 becomes `[-1 1 0]`. Row 3: `factor = 4/4 = 1`, so row 3
+/// becomes `[0 5 8]` and accumulator row 3 becomes `[-1 0 1]`.
+/// Column 2. Row 3: `factor = 5/3`, so row 3 becomes `[0 0 8 - 10/3]` and
+/// accumulator row 3 becomes `[-1 + 5/3, -5/3, 1]`.
+///
+/// The diagonal is therefore `[4, 3, 14/3]` and the third accumulator row is
+/// `[2/3, -5/3, 1]`. Scheduling `factor` after the row update instead yields
+/// `[4, 5, 9]` and `[0.4, -1.4, 1]`: with `factor` re-read as zero past the
+/// pivot, only column 1 is ever eliminated, `y[2,2]` and `y[3,2]` keep their
+/// input values, and column 2 then eliminates with `7/5` instead of `5/3`.
+///
+/// Tick j scales the matrix by j, which scales the row-echelon diagonal by j
+/// and leaves the accumulator alone: every factor is a ratio of two scaled
+/// entries. That is what makes the first compared channel advance, so the
+/// harness's non-vacuity check sees a block that actually recomputes.
+const ELIMINATION_DIAGONAL: [f64; 3] = [4.0, 3.0, 14.0 / 3.0];
+const ELIMINATION_ROW3: [f64; 3] = [2.0 / 3.0, -5.0 / 3.0, 1.0];
+
+#[test]
+fn embedded_c_elimination_assigns_the_shared_factor_before_the_row_it_overwrites() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let fields = ELIMINATION_ORDER_FIELDS;
+
+    let projection = project_embedded_c(dir.path(), "EliminationOrderSmoke", ELIMINATION_ORDER);
+    write_rendered(&out_dir, "EliminationOrderSmoke", &projection.files);
+    let c_run = run_c_ticks(
+        &out_dir,
+        "EliminationOrderSmoke",
+        ELIMINATION_ORDER_DRIVER,
+        fields.len(),
+    );
+    let ref_ticks = reference_ticks(
+        "EliminationOrderSmoke",
+        ELIMINATION_ORDER,
+        &fields,
+        0.0,
+        0.1,
+        5,
+    );
+    let oracle = oracle_ticks(&projection.package, "EliminationOrderSmoke", &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, "EliminationOrderSmoke");
+
+    assert_oracle_agrees(&oracle, &c_run, &ref_ticks, &fields, 0);
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+
+    for tick in 0..5 {
+        let scale = (tick + 1) as f64;
+        let expected = expected_elimination_row(scale);
+        assert_elimination_row("generated C", &c_run.steps[tick].values, &expected);
+        assert_elimination_row("galec oracle", &oracle.steps[tick].values, &expected);
+    }
+}
+
+/// The twelve compared channels of the tick whose matrix is scaled by `scale`,
+/// in the driver's column order: both functions must produce the same pair.
+fn expected_elimination_row(scale: f64) -> Vec<f64> {
+    let mut expected = Vec::with_capacity(ELIMINATION_ORDER_FIELDS.len());
+    for _ in 0..2 {
+        expected.extend(ELIMINATION_DIAGONAL.map(|value| scale * value));
+        expected.extend(ELIMINATION_ROW3);
+    }
+    expected
+}
+
+/// Compare one leg's tick against the hand-computed elimination.
+///
+/// The bound is the float32 profile bound, because the generated C carries
+/// these values as `float`; it is far tighter than the gap to the misscheduled
+/// answer, whose first wrong channel is `3` against `5`.
+fn assert_elimination_row(leg: &str, got: &[f64], want: &[f64]) {
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "{leg}: compared {} channels, expected {}",
+        got.len(),
+        want.len()
+    );
+    for (field, (got, want)) in ELIMINATION_ORDER_FIELDS.iter().zip(got.iter().zip(want)) {
+        let (atol, rtol) = F32_PROFILE;
+        let bound = atol + rtol * want.abs();
+        let delta = (got - want).abs();
+        assert!(
+            delta <= bound,
+            "{leg} channel `{}`: {got} vs hand-computed {want}, delta {delta} exceeds {bound}",
+            field.name
+        );
+    }
+}

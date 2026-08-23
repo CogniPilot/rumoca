@@ -5,6 +5,7 @@
 //! by their current-tick dependencies; `pre(x)` becomes a protected
 //! `'previous(x)'` state committed after all assignments.
 
+mod assigned_primitives;
 mod causal_outputs;
 mod clock_schedule;
 mod clocked_assignments;
@@ -32,6 +33,10 @@ use crate::diagnostic::GalecTargetError;
 use crate::input::{GalecInput, GalecOptions};
 use rumoca_ir_galec::package::AlgorithmCodePackage;
 
+use assigned_primitives::{
+    AssignedPrimitiveSnapshot, AssignedPrimitives, ConditionalActivationKey,
+    ConditionalActivationKind,
+};
 use clock_schedule::lower_clock_schedule;
 use expression_helpers::*;
 use local_integer_bounds::{ConditionalIntegerBounds, LocalIntegerBounds, LoopIntegerBounds};
@@ -1183,13 +1188,9 @@ struct ExpressionLowerer<'a, 'dae> {
     /// bounds every value a reader can observe, and a local read before its
     /// assignment simply has no entry and is refused.
     local_integer_bounds: LocalIntegerBounds,
-    /// Primitive expression values already committed to a function local.
-    ///
-    /// Function construction returns the current RHS expression for a later
-    /// sequential read. This map preserves the intervening assignment as a
-    /// value boundary instead of re-expanding that RHS and its lazy branch
-    /// producers at every consumer.
-    assigned_primitive_expressions: HashMap<u32, gast::Name>,
+    /// Primitive expression values already committed to a function local
+    /// ([`AssignedPrimitives`]).
+    assigned_primitive_expressions: AssignedPrimitives,
     called_user_functions: HashSet<u32>,
     function_scope: Option<dae::FunctionId<'dae>>,
     temporary_locals: Vec<gast::VariableDeclaration>,
@@ -1288,29 +1289,12 @@ impl MaterializedFunctionCallKey {
 
 type SharedMaterializedFunctionCalls = HashMap<MaterializedFunctionCallKey, Vec<gast::Name>>;
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct ConditionalActivationKey {
-    kind: ConditionalActivationKind,
-    operands: Vec<u32>,
-    branch: u32,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum ConditionalActivationKind {
-    ConditionalScalar,
-    ConditionalRecord,
-    FunctionConditional,
-    ArraySelection,
-    ArrayUpdate,
-    Concatenation,
-}
-
 #[derive(Clone)]
 struct ConditionalMaterializationSnapshot {
     function_values: HashMap<MaterializedFunctionValueKey, gast::Name>,
     fold_outputs: HashMap<FunctionFoldOutputKey, TypedExpression>,
     seen_assertions: HashSet<FunctionAssertionCallKey>,
-    assigned_primitive_expressions: HashMap<u32, gast::Name>,
+    assigned_primitive_expressions: AssignedPrimitiveSnapshot,
 }
 
 struct MaterializedConditional<'a, 'dae> {
@@ -1408,7 +1392,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             materialized_shared_record_fields: HashMap::new(),
             array_update_index_locals: HashMap::new(),
             local_integer_bounds: LocalIntegerBounds::new(),
-            assigned_primitive_expressions: HashMap::new(),
+            assigned_primitive_expressions: AssignedPrimitives::default(),
             called_user_functions: HashSet::new(),
             function_scope: None,
             temporary_locals: Vec::new(),
@@ -1477,7 +1461,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             function_values: self.materialized_function_values.clone(),
             fold_outputs: self.function_fold_output_cache.clone(),
             seen_assertions: self.seen_assertion_calls.clone(),
-            assigned_primitive_expressions: self.assigned_primitive_expressions.clone(),
+            assigned_primitive_expressions: self.assigned_primitive_expressions.snapshot(),
         }
     }
 
@@ -1492,8 +1476,14 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         self.seen_assertion_calls
             .clone_from(&snapshot.seen_assertions);
         self.assigned_primitive_expressions
-            .clone_from(&snapshot.assigned_primitive_expressions);
+            .restore(&snapshot.assigned_primitive_expressions);
         self.scalar_projection_cache.clear();
+    }
+
+    /// Name the values whose assigned locals survive a branch boundary, and
+    /// return the previous naming so one group can restore it.
+    fn carry_assigned_primitives(&mut self, carried: HashSet<u32>) -> HashSet<u32> {
+        self.assigned_primitive_expressions.carry(carried)
     }
 
     fn drain_prefix_statements(&mut self) -> Vec<gast::Spanned<gast::Statement>> {
@@ -1514,11 +1504,23 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         std::mem::take(&mut self.temporary_locals)
     }
 
+    /// Record the store of `expression` into `target`.
     fn remember_primitive_assignment(&mut self, expression: u32, target: gast::Name) {
-        self.assigned_primitive_expressions
-            .retain(|_, assigned| assigned != &target);
-        self.assigned_primitive_expressions
-            .insert(expression, target);
+        self.assigned_primitive_expressions.remember(
+            expression,
+            target,
+            &self.conditional_activation_path,
+        );
+        self.scalar_projection_cache.clear();
+    }
+
+    /// Record that `target` holds a joined value its branches already stored.
+    fn remember_joined_assignment(&mut self, expression: u32, target: gast::Name) {
+        self.assigned_primitive_expressions.remember_joined(
+            expression,
+            target,
+            &self.conditional_activation_path,
+        );
         self.scalar_projection_cache.clear();
     }
 
@@ -1605,10 +1607,13 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             "<expression>",
             node.provenance().span(),
         )?;
-        if let Some(name) = self.assigned_primitive_expressions.get(&id.index()) {
+        if let Some(name) = self
+            .assigned_primitive_expressions
+            .read(id.index(), &self.conditional_activation_path)
+        {
             return Ok(TypedExpression {
                 expression: self.lower_local_reference(
-                    name.clone(),
+                    name,
                     node.value_type().dimensions(),
                     indices,
                     node.provenance().span(),
