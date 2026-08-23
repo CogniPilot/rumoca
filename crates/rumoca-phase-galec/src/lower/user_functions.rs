@@ -1707,8 +1707,8 @@ fn flatten_total_guard(statement: &gast::Spanned<gast::Statement>) -> Option<Tot
 
 /// Merge `statement` into the newest earlier guard it can legally join.
 ///
-/// A merge is legal only when the guards are equivalent and every statement
-/// between them commutes with `statement`, so the move cannot change order of
+/// A merge is legal only when the guards are equivalent and `statement` may
+/// cross every statement between them, so the move cannot change order of
 /// effects. Returns whether `statement` was consumed.
 fn merge_into_equivalent_guard(
     merged: &mut [gast::Spanned<gast::Statement>],
@@ -1718,7 +1718,7 @@ fn merge_into_equivalent_guard(
         if !equivalent_total_guards(&merged[destination], statement)
             || !merged[destination + 1..]
                 .iter()
-                .all(|middle| statements_commute(statement, middle))
+                .all(|middle| guard_crosses(statement, middle))
         {
             continue;
         }
@@ -1726,6 +1726,159 @@ fn merge_into_equivalent_guard(
         return true;
     }
     false
+}
+
+/// Whether the reorderable guard `guard` may move to a position before
+/// `middle`.
+///
+/// Two statements that commute may be exchanged, which is the general answer
+/// and the one [`statements_commute`] gives. It requires both statements to be
+/// reorderable, and a call is not: a call cannot be moved, because moving it
+/// past another call would reorder two callees' error signals.
+///
+/// But "may this call move" is not the question a merge asks. The question is
+/// whether a *guard* may move across the call, and for that the call's own
+/// mobility is irrelevant. What matters is what the two can observe of each
+/// other. A reorderable guard reads and writes named locals only: it carries no
+/// call, no `limit`, no `signal`, and no signal-check condition, so the block's
+/// error signal status is neither read nor written by it, provided it raises
+/// no signal of its own, which is [`raises_signal`]'s clause. Such a guard is
+/// invisible to a callee, so crossing one call leaves only the value flow, and
+/// the value flow is what the dependence test below decides.
+///
+/// The crossing is admitted for a multi-assignment and nothing else. That is
+/// the one call form whose written and read names are both complete in the
+/// statement: its targets are the names it writes and its arguments are the
+/// names it reads. `Call`, `limit` and `signal` state their effects elsewhere,
+/// so a dependence test over them would be reading a name set that is not the
+/// whole story, and they keep the conservative answer.
+///
+/// # Why this matters
+///
+/// One checked DAE conditional reaches GALEC once per value read out of it, so
+/// a conditional whose arms define two values that are consumed at two points
+/// is projected as two guards repeating one test. When a call stands between
+/// them and an arm of the first guard materialized a value the matching arm of
+/// the second reads, the two are still total and the read is still guarded by
+/// the condition that produced it, but no single emitted statement says so,
+/// and a C compiler reading the result reports a local that may be used
+/// uninitialized. Under the assurance preflight, which is `-Werror`, that is a
+/// build failure. Merging the two guards puts the definition and the use in one
+/// arm of one conditional, where definite assignment is visible.
+fn guard_crosses(
+    guard: &gast::Spanned<gast::Statement>,
+    middle: &gast::Spanned<gast::Statement>,
+) -> bool {
+    if statements_commute(guard, middle) {
+        return true;
+    }
+    let gast::Statement::MultiAssignment { targets, .. } = &middle.node else {
+        return false;
+    };
+    // Stated here rather than inherited from the caller: the argument above is
+    // about what a *reorderable* guard can observe, and a function that assumed
+    // the premise instead of checking it would answer the wrong question if it
+    // ever gained a second caller.
+    reorderable_guard(guard)
+        && targets
+            .iter()
+            .all(|target| matches!(target, gast::Reference::Local(_)))
+        && !raises_signal(guard)
+        && independent(guard, middle)
+}
+
+/// Whether neither statement reads or writes a local the other writes.
+fn independent(lhs: &gast::Spanned<gast::Statement>, rhs: &gast::Spanned<gast::Statement>) -> bool {
+    let mut lhs_definitions = Vec::new();
+    let mut rhs_definitions = Vec::new();
+    collect_defined_names(lhs, &mut lhs_definitions);
+    collect_defined_names(rhs, &mut rhs_definitions);
+    !statement_depends_on(lhs, &rhs_definitions) && !statement_depends_on(rhs, &lhs_definitions)
+}
+
+/// Whether executing `statement` can raise an error signal.
+///
+/// Deliberately coarse in one direction: every comparison counts, though only a
+/// comparison with a Real operand signals in the emitted C, because a GALEC
+/// statement carries no scalar type and this projection would have to guess
+/// one. A refusal here costs a guard merge; a wrong answer would move a signal
+/// raise across a callee that can read the status, so the guess is refused.
+///
+/// The other signalling forms (`limit`, `signal`, and the `integer` builtin)
+/// need no clause of their own: [`reorderable_statement`] already refuses the
+/// first two outright and refuses any expression carrying a call, which is what
+/// `integer` is. This function is only ever asked about a statement that test
+/// has already accepted.
+fn raises_signal(statement: &gast::Spanned<gast::Statement>) -> bool {
+    match &statement.node {
+        gast::Statement::Assignment { value, .. } => expression_compares(value),
+        gast::Statement::If(value) => {
+            value.branches.iter().any(|branch| {
+                matches!(&branch.condition, gast::Condition::Expression(condition)
+                    if expression_compares(condition))
+                    || branch.body.iter().any(raises_signal)
+            }) || value
+                .else_body
+                .as_ref()
+                .is_some_and(|body| body.iter().any(raises_signal))
+        }
+        gast::Statement::For(value) => {
+            expression_compares(&value.start)
+                || value.step.as_ref().is_some_and(expression_compares)
+                || expression_compares(&value.stop)
+                || value.body.iter().any(raises_signal)
+        }
+        gast::Statement::MultiAssignment { .. }
+        | gast::Statement::Call(_)
+        | gast::Statement::Limit(_)
+        | gast::Statement::Signal(_) => true,
+    }
+}
+
+/// Whether the expression applies a comparison operator anywhere.
+fn expression_compares(expression: &gast::Expression) -> bool {
+    match expression {
+        gast::Expression::Bool(_) | gast::Expression::Integer(_) | gast::Expression::Real(_) => {
+            false
+        }
+        gast::Expression::Ref(reference) | gast::Expression::Neg(reference) => {
+            reference_compares(reference)
+        }
+        gast::Expression::Size { array, dimension } => {
+            reference_compares(array) || expression_compares(dimension)
+        }
+        gast::Expression::Call(call) => call.arguments.iter().any(expression_compares),
+        gast::Expression::Paren(value) | gast::Expression::Not(value) => expression_compares(value),
+        gast::Expression::If(value) => {
+            value.branches.iter().any(|(condition, branch)| {
+                expression_compares(condition) || expression_compares(branch)
+            }) || expression_compares(&value.else_value)
+        }
+        gast::Expression::Array(values) => values.iter().any(expression_compares),
+        gast::Expression::Binary { op, lhs, rhs } => {
+            matches!(
+                op,
+                gast::BinaryOp::Lt
+                    | gast::BinaryOp::Gt
+                    | gast::BinaryOp::Le
+                    | gast::BinaryOp::Ge
+                    | gast::BinaryOp::Eq
+                    | gast::BinaryOp::Ne
+            ) || expression_compares(lhs)
+                || expression_compares(rhs)
+        }
+    }
+}
+
+fn reference_compares(reference: &gast::Reference) -> bool {
+    let parts = match reference {
+        gast::Reference::Local(part) => std::slice::from_ref(part),
+        gast::Reference::State(parts) => parts,
+    };
+    parts
+        .iter()
+        .flat_map(|part| &part.subscripts)
+        .any(expression_compares)
 }
 
 fn guarded_tensor_branch(
@@ -1869,11 +2022,7 @@ fn statements_commute(
     if !reorderable_statement(lhs) || !reorderable_statement(rhs) {
         return false;
     }
-    let mut lhs_definitions = Vec::new();
-    let mut rhs_definitions = Vec::new();
-    collect_defined_names(lhs, &mut lhs_definitions);
-    collect_defined_names(rhs, &mut rhs_definitions);
-    !statement_depends_on(lhs, &rhs_definitions) && !statement_depends_on(rhs, &lhs_definitions)
+    independent(lhs, rhs)
 }
 
 fn reorderable_guard(statement: &gast::Spanned<gast::Statement>) -> bool {
