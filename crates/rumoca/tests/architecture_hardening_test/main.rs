@@ -152,8 +152,8 @@ fn test_ir_flat_dag_boundary_no_ast_dependency() {
     let content = fs::read_to_string(&cargo_toml).expect("read ir-flat Cargo.toml");
 
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-ir-ast"),
-        "ir-flat must not depend on rumoca-ir-ast in [dependencies]; \
+        !manifest_declares_production_dependency(&content, "rumoca-ir-ast"),
+        "ir-flat must not depend on rumoca-ir-ast in any production scope; \
 AST->Flat conversion belongs in rumoca-phase-flatten"
     );
 }
@@ -165,7 +165,7 @@ fn test_cli_uses_facades_not_phase_crates() {
 
     for phase_dep in ["rumoca-phase-dae", "rumoca-phase-solve"] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", phase_dep),
+            !manifest_declares_production_dependency(&content, phase_dep),
             "CLI production dependencies must go through rumoca-compile/rumoca-sim facades; \
 found direct dependency on {phase_dep}"
         );
@@ -318,15 +318,15 @@ fn test_eval_crates_follow_ir_layer_mapping() {
         "eval-ast must depend on rumoca-core for foundation primitives (SPEC_0029 §3a)"
     );
     assert!(
-        !section_contains_dependency(&eval_ast, "dependencies", "rumoca-ir-flat"),
+        !manifest_declares_production_dependency(&eval_ast, "rumoca-ir-flat"),
         "eval-ast must not depend on rumoca-ir-flat"
     );
     assert!(
-        !section_contains_dependency(&eval_ast, "dependencies", "rumoca-ir-dae"),
+        !manifest_declares_production_dependency(&eval_ast, "rumoca-ir-dae"),
         "eval-ast must not depend on rumoca-ir-dae"
     );
     assert!(
-        !section_contains_dependency(&eval_ast, "dependencies", "rumoca-phase-typecheck"),
+        !manifest_declares_production_dependency(&eval_ast, "rumoca-phase-typecheck"),
         "eval-ast must own AST eval logic directly; do not depend on rumoca-phase-typecheck"
     );
 
@@ -341,11 +341,11 @@ fn test_eval_crates_follow_ir_layer_mapping() {
         "eval-flat must depend on rumoca-core for foundation primitives (SPEC_0029 §3a)"
     );
     assert!(
-        !section_contains_dependency(&eval_flat, "dependencies", "rumoca-ir-ast"),
+        !manifest_declares_production_dependency(&eval_flat, "rumoca-ir-ast"),
         "eval-flat must not depend on rumoca-ir-ast"
     );
     assert!(
-        !section_contains_dependency(&eval_flat, "dependencies", "rumoca-ir-dae"),
+        !manifest_declares_production_dependency(&eval_flat, "rumoca-ir-dae"),
         "eval-flat must not depend on rumoca-ir-dae"
     );
 }
@@ -370,7 +370,7 @@ fn test_bind_wasm_keeps_simulation_optional() {
         "rumoca-ir-dae",
     ] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
+            !manifest_declares_production_dependency(&content, banned),
             "rumoca-bind-wasm must not depend on {banned}; \
 Author reminder: bind-wasm should route through session/tool crates."
         );
@@ -432,7 +432,7 @@ Author reminder: route formatting/lint through tool crates, compile context thro
     // the owning crate directly rather than route through an intermediate.
     for banned in ["rumoca-phase-parse", "rumoca-ir-ast"] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
+            !manifest_declares_production_dependency(&content, banned),
             "rumoca-tool-lsp must not depend directly on {banned}; \
 Author reminder: use rumoca-compile facade APIs instead."
         );
@@ -451,7 +451,7 @@ fn test_tool_fmt_uses_session_facade() {
 
     let banned = "rumoca-phase-parse";
     assert!(
-        !section_contains_dependency(&content, "dependencies", banned),
+        !manifest_declares_production_dependency(&content, banned),
         "rumoca-tool-fmt must not depend directly on {banned}; \
 Author reminder: use rumoca-compile parsing/session APIs."
     );
@@ -469,7 +469,7 @@ fn test_tool_lint_uses_session_facade() {
 
     let banned = "rumoca-phase-parse";
     assert!(
-        !section_contains_dependency(&content, "dependencies", banned),
+        !manifest_declares_production_dependency(&content, banned),
         "rumoca-tool-lint must not depend directly on {banned}; \
 Author reminder: use rumoca-compile parsing/session APIs."
     );
@@ -511,7 +511,7 @@ fn test_tool_dev_uses_session_facade() {
         "rumoca-phase-parse",
     ] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
+            !manifest_declares_production_dependency(&content, banned),
             "xtask must not depend directly on {banned}; \
 Author reminder: use rumoca-compile facade APIs instead."
         );
@@ -533,7 +533,7 @@ fn test_session_is_compile_only() {
         "rumoca-transport-websocket",
     ] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
+            !manifest_declares_production_dependency(&content, banned),
             "rumoca-compile must not depend on {banned}; runtime/app contracts belong outside the compile/session facade"
         );
     }
@@ -546,23 +546,23 @@ fn test_session_is_compile_only() {
         "rumoca-compile must depend on rumoca-phase-codegen for explicit codegen helpers"
     );
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-solver-diffsol"),
+        !manifest_declares_production_dependency(&content, "rumoca-solver-diffsol"),
         "rumoca-compile must not depend on rumoca-solver-diffsol; concrete runtime backends belong outside the compile/session facade"
     );
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-web"),
+        !manifest_declares_production_dependency(&content, "rumoca-web"),
         "rumoca-compile must not depend on rumoca-web; visualization belongs outside the compile/session facade"
     );
     assert!(
-        !section_contains_dependency(&content, "dependencies", "diffsol"),
+        !manifest_declares_production_dependency(&content, "diffsol"),
         "rumoca-compile must not depend directly on the concrete `diffsol` package; \
 Author reminder: keep backend-specific packages below the session facade."
     );
 
     let banned = "rumoca-phase-solve";
     assert!(
-        !section_contains_dependency(&content, "dependencies", banned),
-        "rumoca-compile must not depend directly on {banned} in [dependencies]; \
+        !manifest_declares_production_dependency(&content, banned),
+        "rumoca-compile must not depend directly on {banned} in any production scope; \
 Author reminder: keep evaluation/runtime internals out of rumoca-compile."
     );
 }
@@ -571,7 +571,7 @@ Author reminder: keep evaluation/runtime internals out of rumoca-compile."
 fn test_session_has_no_direct_eval_dependencies() {
     let cargo_toml = workspace_root().join("crates/rumoca-compile/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-compile Cargo.toml");
-    let deps = section_dependency_names(&content, "dependencies");
+    let deps = production_dependency_names(&content);
 
     let direct_eval_deps: Vec<_> = deps
         .into_iter()
@@ -591,21 +591,21 @@ fn test_sim_contract_crate_has_no_backend_dependency() {
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-solver Cargo.toml");
 
     assert!(
-        !section_contains_dependency(&content, "dependencies", "diffsol"),
+        !manifest_declares_production_dependency(&content, "diffsol"),
         "rumoca-solver must not depend on the concrete diffsol backend package"
     );
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-phase-codegen"),
+        !manifest_declares_production_dependency(&content, "rumoca-phase-codegen"),
         "rumoca-solver must not depend on rumoca-phase-codegen; \
 Author reminder: keep codegen/template rendering outside the runtime-contract crate."
     );
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-web"),
+        !manifest_declares_production_dependency(&content, "rumoca-web"),
         "rumoca-solver must not depend on rumoca-web; \
 Author reminder: keep visualization assets outside the runtime-contract crate."
     );
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-solver"),
+        !manifest_declares_production_dependency(&content, "rumoca-solver"),
         "rumoca-solver owns backend-neutral solver contracts directly; do not reintroduce a tiny rumoca-solver interface crate"
     );
     assert!(
@@ -630,7 +630,7 @@ Author reminder: keep visualization assets outside the runtime-contract crate."
         "rumoca-phase-solve",
     ] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
+            !manifest_declares_production_dependency(&content, banned),
             "rumoca-solver must not depend on {banned}; DAE/phase preparation belongs upstream of the runtime-contract crate"
         );
     }
@@ -726,7 +726,7 @@ fn test_non_codegen_phase_crates_do_not_own_target_encoder_dependencies() {
         let cargo_toml = path.join("Cargo.toml");
         let cargo_content = fs::read_to_string(&cargo_toml).expect("read phase Cargo.toml");
         for banned in banned_deps {
-            if section_contains_dependency(&cargo_content, "dependencies", banned)
+            if manifest_declares_production_dependency(&cargo_content, banned)
                 || section_contains_dependency(&cargo_content, "dev-dependencies", banned)
                 || section_contains_dependency(&cargo_content, "build-dependencies", banned)
             {
@@ -779,7 +779,7 @@ fn test_solver_diffsol_crate_owns_backend_dependency() {
 importer/host contract"
     );
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-sim"),
+        !manifest_declares_production_dependency(&content, "rumoca-sim"),
         "rumoca-solver-diffsol must not depend on the rumoca-sim facade"
     );
     assert!(
@@ -793,13 +793,13 @@ importer/host contract"
         "rumoca-phase-solve",
     ] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
+            !manifest_declares_production_dependency(&content, banned),
             "rumoca-solver-diffsol must not depend on {banned}; \
 DAE-to-Solve lowering belong upstream in rumoca-phase-solve"
         );
     }
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-web"),
+        !manifest_declares_production_dependency(&content, "rumoca-web"),
         "rumoca-solver-diffsol must not depend on rumoca-web"
     );
 
@@ -808,7 +808,7 @@ DAE-to-Solve lowering belong upstream in rumoca-phase-solve"
         let manifest = fs::read_to_string(&manifest).expect("read concrete solver Cargo.toml");
         for banned in ["rumoca-ir-solve", "rumoca-eval-solve"] {
             assert!(
-                !section_contains_dependency(&manifest, "dependencies", banned),
+                !manifest_declares_production_dependency(&manifest, banned),
                 "{crate_name} reached the SPEC_0041 final gate: production {banned} must not \
 return; concrete solver backends consume only the opaque FMI ME contract"
             );
@@ -1314,11 +1314,11 @@ fn test_solver_rk45_crate_owns_second_backend_without_diffsol_dependency() {
         "rumoca-solver-rk45 must depend on rumoca-solver for shared runtime helpers"
     );
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-sim"),
+        !manifest_declares_production_dependency(&content, "rumoca-sim"),
         "rumoca-solver-rk45 must not depend on the rumoca-sim facade"
     );
     assert!(
-        !section_contains_dependency(&content, "dependencies", "diffsol"),
+        !manifest_declares_production_dependency(&content, "diffsol"),
         "rumoca-solver-rk45 must stay pure Rust and must not depend on diffsol"
     );
     for banned in [
@@ -1328,13 +1328,13 @@ fn test_solver_rk45_crate_owns_second_backend_without_diffsol_dependency() {
         "rumoca-phase-solve",
     ] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
+            !manifest_declares_production_dependency(&content, banned),
             "rumoca-solver-rk45 must not depend on {banned}; \
 DAE-to-Solve lowering belong upstream in rumoca-phase-solve"
         );
     }
     assert!(
-        !section_contains_dependency(&content, "dependencies", "rumoca-web"),
+        !manifest_declares_production_dependency(&content, "rumoca-web"),
         "rumoca-solver-rk45 must not depend on rumoca-web"
     );
 }
@@ -1354,7 +1354,7 @@ fn test_io_contract_crate_is_runtime_and_visualization_free() {
         "tungstenite",
     ] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
+            !manifest_declares_production_dependency(&content, banned),
             "rumoca-codec must not depend on {banned}; \
 Author reminder: keep the generic lockstep I/O contract transport-free and solver-free."
         );
@@ -1459,7 +1459,7 @@ fn test_codec_flatbuffers_crate_is_protocol_only() {
         "signal-hook",
     ] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
+            !manifest_declares_production_dependency(&content, banned),
             "rumoca-codec-flatbuffers must not depend on {banned}; \
 Author reminder: keep FlatBuffer IO support protocol-only."
         );
@@ -1481,7 +1481,7 @@ fn test_input_crate_is_device_adapter_free() {
         "crossterm",
     ] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
+            !manifest_declares_production_dependency(&content, banned),
             "rumoca-input must not depend on {banned}; \
 Author reminder: rumoca-input owns the vocabulary and engine — adapter crates depend on it, not the other way around. \
 The Devices runtime factory belongs in rumoca-sim."
@@ -1498,7 +1498,7 @@ The Devices runtime factory belongs in rumoca-sim."
             "{adapter} must depend on rumoca-input for shared vocabulary"
         );
         assert!(
-            !section_contains_dependency(&adapter_toml, "dependencies", "rumoca-input-types"),
+            !manifest_declares_production_dependency(&adapter_toml, "rumoca-input-types"),
             "{adapter} must not depend on the removed rumoca-input-types crate"
         );
     }
@@ -1571,8 +1571,8 @@ Author reminder: rumoca CLI delegates fmt/lint via tool crates and compile/runti
 
     for banned in ["rumoca-ir-ast", "rumoca-ir-flat", "rumoca-ir-dae"] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
-            "rumoca must not depend directly on {banned} in [dependencies]; \
+            !manifest_declares_production_dependency(&content, banned),
+            "rumoca must not depend directly on {banned} in any production scope; \
 Author reminder: use rumoca-compile facade types/APIs instead."
         );
     }
@@ -1599,8 +1599,8 @@ Author reminder: compile/session and runtime ownership should be explicit."
     // the owning crate directly rather than route through an intermediate.
     for banned in ["rumoca", "rumoca-ir-dae", "rumoca-phase-solve"] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
-            "rumoca-test-msl must not depend directly on {banned} in [dependencies]; \
+            !manifest_declares_production_dependency(&content, banned),
+            "rumoca-test-msl must not depend directly on {banned} in any production scope; \
 Author reminder: use rumoca-compile::compile plus explicit runtime crates."
         );
     }
@@ -1676,8 +1676,8 @@ fn test_contracts_use_session_facade() {
 
     for banned in ["rumoca-phase-parse", "rumoca-phase-solve", "rumoca-ir-ast"] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
-            "rumoca-contracts must not depend directly on {banned} in [dependencies]; \
+            !manifest_declares_production_dependency(&content, banned),
+            "rumoca-contracts must not depend directly on {banned} in any production scope; \
 Author reminder: use rumoca-compile facade APIs instead."
         );
     }
@@ -1893,7 +1893,7 @@ fn test_exec_crates_do_not_depend_on_eval_dae() {
             let cargo_toml = path.join("Cargo.toml");
             let content = fs::read_to_string(&cargo_toml).ok()?;
             let has_runtime_dep =
-                section_contains_dependency(&content, "dependencies", "rumoca-eval-dae");
+                manifest_declares_production_dependency(&content, "rumoca-eval-dae");
             let has_dev_dep =
                 section_contains_dependency(&content, "dev-dependencies", "rumoca-eval-dae");
             (has_runtime_dep || has_dev_dep).then(|| cargo_toml.display().to_string())
@@ -1918,7 +1918,7 @@ fn test_exec_wasm_consumes_solve_ir_not_dae_or_lowering_phase() {
     );
     for banned in ["rumoca-ir-dae", "rumoca-phase-solve"] {
         assert!(
-            !section_contains_dependency(&content, "dependencies", banned),
+            !manifest_declares_production_dependency(&content, banned),
             "rumoca-exec-wasm must not depend on {banned}; DAE-to-Solve lowering belongs upstream"
         );
     }
@@ -1938,7 +1938,7 @@ fn test_concrete_solver_crates_do_not_depend_on_eval_dae() {
             let cargo_toml = root.join(format!("crates/{crate_name}/Cargo.toml"));
             let content = fs::read_to_string(&cargo_toml).ok()?;
             let has_runtime_dep =
-                section_contains_dependency(&content, "dependencies", "rumoca-eval-dae");
+                manifest_declares_production_dependency(&content, "rumoca-eval-dae");
             let has_dev_dep =
                 section_contains_dependency(&content, "dev-dependencies", "rumoca-eval-dae");
             (has_runtime_dep || has_dev_dep).then(|| cargo_toml.display().to_string())
