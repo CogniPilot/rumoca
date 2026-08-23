@@ -1294,6 +1294,15 @@ fn a_chain_whose_first_branch_is_true_at_the_start_reaches_its_second() {
 /// Refusal is preferable to compiling a model whose result can depend on which
 /// projection a backend happens to execute.
 ///
+/// The proof the refusal names is *exact periodic-clock activation*, not "one
+/// periodic clock": an eligible transaction owns a set of clock owners and
+/// needs a clock-level final definition for every target under them, so the
+/// count of clocks was never the property being checked. The chain here is
+/// refused one step earlier than either wording, because no branch of it has a
+/// periodic clock at all, and the assertion pins the proof by name so a
+/// refusal that stopped naming it, or that arrived from some unrelated
+/// failure, would still be red.
+///
 /// omc establishes the future positive oracle: `y = 0` through `t = 0.25`, `1`
 /// from `t = 0.3`, and `2` from `t = 0.7`.
 #[test]
@@ -1314,7 +1323,7 @@ fn an_algorithm_section_chain_without_an_activation_owner_is_rejected() {
     .expect_err("a relational algorithm transaction has no checked activation program yet");
     assert!(
         error.to_string().contains(
-            "model-event transaction has no construction-issued final definition for every target under one periodic clock"
+            "model-event transaction has no construction-issued final definition for every target under exact periodic-clock activation"
         ),
         "the rejection must identify the missing construction proof: {error}"
     );

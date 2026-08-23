@@ -108,6 +108,103 @@ fn fmi_inventory_promotes_a_state_dependent_deadline_to_an_indicator() {
     );
 }
 
+/// A root that reads `time` and nothing else stays in the indicator inventory.
+///
+/// The inventory keeps the rows that can change value between events, and it
+/// reads that from solver-`Y` dependencies. `Y` does not describe `time`, so a
+/// relation over `time` alone has an *empty* dependency set (vacuously a
+/// subset of the statically-caused rows), and a `Y`-only reading files it with
+/// the rows that cannot move. It moves: it is the clock.
+///
+/// The shape is not hypothetical. `when time > 0` keeps a root rather than a
+/// scheduled instant, because MLS §8.5 fixes every relation's buffered value at
+/// the start and a stop scheduled there would find nothing changed
+/// (`time_event_instant`, `instant <= 0.0`). Dropping it left that activation
+/// with no event surface at all: no indicator to cross, and no announced
+/// instant either, so `when time > 0` never fired where OpenModelica fires it
+/// once at the start's right limit.
+/// `suite_core::time_event_when_activation::an_activation_at_the_start_instant_fires_exactly_once`
+/// pins the behaviour; this pins the inventory it needs.
+#[test]
+fn fmi_inventory_keeps_a_time_only_root_as_an_indicator() {
+    let source = TestSource::new("Real x; der(x) = -1; when time > 0 then end when;");
+    let declaration = source.at(0, 6);
+    let equation_owner = source.at(8, 19);
+    let relation_owner = source.at(26, 34);
+    let when_owner = source.at(21, 48);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let start = model.expressions(|expressions| {
+            expressions
+                .at(declaration)
+                .literal(dae::DaeLiteral::Real(0.0))
+        })?;
+        let state = model.variables(|variables| {
+            variables.state(
+                VarName::new("x"),
+                real,
+                declaration,
+                dae::VariableAttributes {
+                    start: Some(start),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        let (residual, relation_expression) = model.expressions(|expressions| {
+            let derivative = expressions
+                .at(equation_owner)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let negative_one = expressions
+                .at(equation_owner)
+                .literal(dae::DaeLiteral::Real(-1.0))?;
+            let residual = expressions.at(equation_owner).binary(
+                dae::BinaryOperator::Subtract,
+                derivative,
+                negative_one,
+            )?;
+            let time = expressions
+                .at(relation_owner)
+                .coordinate(dae::CoordinateInput::Time)?;
+            let zero = expressions
+                .at(relation_owner)
+                .literal(dae::DaeLiteral::Real(0.0))?;
+            let relation =
+                expressions
+                    .at(relation_owner)
+                    .binary(dae::BinaryOperator::Greater, time, zero)?;
+            Ok((residual, relation))
+        })?;
+        model.continuous(|continuous| continuous.value_equation(equation_owner, residual))?;
+        let (relation, activation) = model.conditions(|conditions| {
+            let relation = conditions.relation(relation_expression, relation_owner)?;
+            let activation = conditions.reserve(when_owner)?;
+            conditions.define(
+                activation,
+                dae::ConditionInput::Relation(relation),
+                relation_owner,
+            )?;
+            Ok((relation, activation))
+        })?;
+        model.conditions(|conditions| conditions.root(relation, activation, when_owner))?;
+        Ok(())
+    })
+    .expect("a time relation registered as a root is valid by construction");
+
+    let component = crate::fmi::lower_to_fmi_component(&model, &std::collections::HashMap::new())
+        .expect("FMI lowering constructs the checked indicator inventory");
+    assert_eq!(
+        component.event_indicators().sources(),
+        [rumoca_ir_solve::fmi::FmiEventIndicatorSource::RootCondition { index: 0 }],
+        "a `time`-only root owns an FMI event indicator"
+    );
+}
+
 /// SOLVE-C12 maps the typed DAE terminal coordinate to one runtime P-slot and
 /// marks the event partition so the driver activates that slot only at stop
 /// time. The action program therefore remains a pure load from `(y, p, t)`.
