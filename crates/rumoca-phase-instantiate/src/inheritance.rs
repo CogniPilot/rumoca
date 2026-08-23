@@ -20,6 +20,7 @@ use rumoca_ir_ast::{
     components_are_semantically_compatible as components_are_compatible,
 };
 
+mod component_order;
 mod duplicate_identity;
 mod redeclaration;
 
@@ -29,6 +30,10 @@ use crate::traversal_adapter::{
     walk_nested_classes,
 };
 use crate::type_overrides::find_nested_class_in_hierarchy;
+use component_order::{
+    ComponentOrderCache, ordered_effective_component_names_with_cache,
+    reorder_components_by_declaration,
+};
 use duplicate_identity::{
     inherited_components_are_identical, merged_declared_names, merged_element_names,
 };
@@ -1793,6 +1798,15 @@ pub fn get_effective_components_with_cache(
     for (name, comp) in &class.components {
         inherited.components.insert(name.clone(), comp.clone());
     }
+
+    // MLS §5.6.1: place inherited members where their `extends` clause sits in
+    // the derived class's source, so an `extends Base` produces the same flat
+    // variable order as declaring Base's members inline. The merge above builds
+    // the correct set and values but leaves all inherited members ahead of the
+    // own ones, which reorders the flat model relative to the inline form.
+    let mut order_cache = ComponentOrderCache::default();
+    let order = ordered_effective_component_names_with_cache(tree, class, &mut order_cache)?;
+    reorder_components_by_declaration(&mut inherited.components, &order);
 
     // MLS §7.1/§7.3: local class names (including inherited replaceable classes)
     // are valid type names for component declarations in the effective class scope.
