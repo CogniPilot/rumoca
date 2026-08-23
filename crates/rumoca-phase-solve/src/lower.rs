@@ -48,6 +48,7 @@ pub(crate) fn lower_solve_problem(
     let clocks = clocks::lower_clocks(view, &lowered)?;
     let structural = structural_matching(view, structural.as_ref())?;
     clocks::reject_clocked_continuous_feedback(view, &clocks, &structural)?;
+    clocks::reject_cross_clock_coincident_cycle(view, &clocks, &structural)?;
     let derivatives = index_derivative_rows(view, &structural.rows)?;
     let continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
     let initialization = lower_initialization(view, &lowered, &derivatives, pins)?;

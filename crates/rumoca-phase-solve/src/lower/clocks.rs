@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
@@ -149,6 +149,126 @@ pub(super) fn reject_clocked_continuous_feedback<'dae>(
     if view.variable_count() == 0 || view.clock_count() == 0 {
         return Ok(());
     }
+    let definitions = collect_clocked_definitions(view, clocks)?;
+    let dependencies = build_instantaneous_dependencies(view, structural, &definitions);
+    for definition in &definitions {
+        for operand in instantaneous_variables(view, [definition.value]) {
+            if operand != definition.target
+                && dependencies.reaches(definition.target, operand, definition.clock)
+            {
+                return Err(feedback_error(
+                    view,
+                    definition.target,
+                    operand,
+                    definition.clock,
+                    definition.span,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Cross-partition companion to [`reject_clocked_continuous_feedback`].
+///
+/// The same-clock owner tags each clocked definition edge with its own clock
+/// and follows only edges of that one clock, so it never sees a loop closed
+/// through a *second* clock's definition. That blind spot is exactly the
+/// coincident-tick case: two or more commensurate periodic clocks whose
+/// producers read each other (through exact algebraic aliases, the only
+/// DAE-admissible cross-partition read) at a tick where they all fire. On such
+/// a tick every producer's row is issued together, so `a` reading `b` reading
+/// back `a` is a discrete algebraic loop with no schedule.
+///
+/// Only genuine same-tick loops are rejected, never a blanket cross-clock ban:
+/// * `pre(..)`/`previous(..)`/state reads carry a value from a strictly earlier
+///   instant and are excluded by [`instantaneous_variables`], so a producer
+///   that reads `pre(other)` breaks the cycle and is admitted;
+/// * a cross-read that is not cyclic contributes no returning path and is
+///   admitted;
+/// * clocks that never share a tick (incommensurate periods, or the same period
+///   at an offset phase) can never issue their rows together, so their rows are
+///   never placed in one dependency graph here.
+///
+/// Two same-anchor periodic clocks share a tick exactly when the difference of
+/// their phases is an integer multiple of the gcd of their periods
+/// ([`clocks_share_a_tick`]); a set of clocks fires together exactly when every
+/// pair in it shares a tick (generalized CRT), so the coincident firing sets
+/// are the maximal cliques of that pairwise relation.
+pub(super) fn reject_cross_clock_coincident_cycle<'dae>(
+    view: dae::DaeView<'dae>,
+    clocks: &LoweredClocks<'dae>,
+    structural: &StructuralMatching<'dae>,
+) -> Result<(), LowerError> {
+    if view.variable_count() == 0 || view.clock_count() < 2 {
+        return Ok(());
+    }
+    let definitions = collect_clocked_definitions(view, clocks)?;
+    let active_clocks: BTreeSet<usize> = definitions.iter().map(|def| def.clock).collect();
+    if active_clocks.len() < 2 {
+        return Ok(());
+    }
+    let dependencies = build_instantaneous_dependencies(view, structural, &definitions);
+    for clique in coincident_clock_cliques(&clocks.partition, &active_clocks) {
+        if clique.len() < 2 {
+            continue;
+        }
+        if let Some(error) = first_cross_clock_loop(view, &definitions, &dependencies, &clique) {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// The first same-tick loop closed among the definitions owned by `clique`, or
+/// `None` if every one of them reaches only outside the clique.
+///
+/// A definition `target := value` closes a loop when some same-instant operand
+/// of `value` is reachable back from `target` using only continuous edges and
+/// the clocked edges of `clique` (the clocks that fire on the coincident tick).
+fn first_cross_clock_loop<'dae>(
+    view: dae::DaeView<'dae>,
+    definitions: &[ClockedDefinition<'dae>],
+    dependencies: &InstantaneousDependencies,
+    clique: &BTreeSet<usize>,
+) -> Option<LowerError> {
+    for definition in definitions {
+        if !clique.contains(&definition.clock) {
+            continue;
+        }
+        for operand in instantaneous_variables(view, [definition.value]) {
+            if operand != definition.target
+                && dependencies.reaches_within_clocks(definition.target, operand, clique)
+            {
+                return Some(cross_clock_loop_error(
+                    view,
+                    definition.target,
+                    operand,
+                    definition.span,
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// One clocked definition `target := value` owned by periodic clock `clock`.
+///
+/// Sampled owners are excluded: their left-limit boundary keeps them out of the
+/// same-tick reach entirely (MLS §16.5.1).
+struct ClockedDefinition<'dae> {
+    target: usize,
+    value: dae::ExprId<'dae>,
+    clock: usize,
+    span: rumoca_core::Span,
+}
+
+/// Collect every non-sampled clocked definition (B.1b discrete Reals and B.1c
+/// discrete values) with the periodic clock that owns it.
+fn collect_clocked_definitions<'dae>(
+    view: dae::DaeView<'dae>,
+    clocks: &LoweredClocks<'dae>,
+) -> Result<Vec<ClockedDefinition<'dae>>, LowerError> {
     let real_definitions = super::events::resolve_discrete_real_definitions(view)?;
     let mut rows = Vec::new();
     for (definition, equation) in real_definitions
@@ -178,18 +298,7 @@ pub(super) fn reject_clocked_continuous_feedback<'dae>(
             }
         }
     }
-    let mut dependencies = InstantaneousDependencies::of_continuous_system(view, structural);
-    for &(target, value, _) in &rows {
-        if clocks.variable_is_sampled(target) {
-            continue;
-        }
-        if let Some(clock) = clocks
-            .variable_owner(target)
-            .map(|(_, clock)| clock.index())
-        {
-            dependencies.add_definition(view, target.index() as usize, value, clock);
-        }
-    }
+    let mut definitions = Vec::new();
     for (target, value, span) in rows {
         if clocks.variable_is_sampled(target) {
             continue;
@@ -200,14 +309,28 @@ pub(super) fn reject_clocked_continuous_feedback<'dae>(
         else {
             continue;
         };
-        let target_index = target.index() as usize;
-        for operand in instantaneous_variables(view, [value]) {
-            if operand != target_index && dependencies.reaches(target_index, operand, clock) {
-                return Err(feedback_error(view, target_index, operand, clock, span));
-            }
-        }
+        definitions.push(ClockedDefinition {
+            target: target.index() as usize,
+            value,
+            clock,
+            span,
+        });
     }
-    Ok(())
+    Ok(definitions)
+}
+
+/// Build the same-instant dependency graph of the continuous system and overlay
+/// every clocked definition's edges, each tagged with its owning clock.
+fn build_instantaneous_dependencies<'dae>(
+    view: dae::DaeView<'dae>,
+    structural: &StructuralMatching<'dae>,
+    definitions: &[ClockedDefinition<'dae>],
+) -> InstantaneousDependencies {
+    let mut dependencies = InstantaneousDependencies::of_continuous_system(view, structural);
+    for definition in definitions {
+        dependencies.add_definition(view, definition.target, definition.value, definition.clock);
+    }
+    dependencies
 }
 
 fn feedback_error(
@@ -217,22 +340,173 @@ fn feedback_error(
     clock: usize,
     span: rumoca_core::Span,
 ) -> LowerError {
-    let name = |index| {
-        view.variable_id(index)
-            .and_then(|id| view.variable(id))
-            .map(|variable| variable.name().to_string())
-            .unwrap_or_else(|| "<unknown>".to_string())
-    };
     LowerError::unsupported(
         format!(
             "periodic clock {clock} definition of `{}` reads `{}`, which is causally reachable \
              from that same target during the tick; MLS 16.5.1 gives an explicit sample(u) its \
              left-limit delay, but this ordinary periodic definition has no such boundary",
-            name(target),
-            name(operand)
+            variable_name(view, target),
+            variable_name(view, operand)
         ),
         span,
     )
+}
+
+fn cross_clock_loop_error(
+    view: dae::DaeView<'_>,
+    target: usize,
+    operand: usize,
+    span: rumoca_core::Span,
+) -> LowerError {
+    LowerError::unsupported(
+        format!(
+            "coincident periodic clocks form a discrete same-tick algebraic loop: the clocked \
+             definition of `{}` reads `{}`, whose own clocked definition is reachable back to \
+             `{}` at a tick where the clocks fire together, following exact algebraic aliases; \
+             MLS 16.5.1 gives an explicit sample(u) its left-limit delay, but these ordinary \
+             periodic definitions across coincident clocks have no such boundary",
+            variable_name(view, target),
+            variable_name(view, operand),
+            variable_name(view, target)
+        ),
+        span,
+    )
+}
+
+fn variable_name(view: dae::DaeView<'_>, index: usize) -> String {
+    view.variable_id(index)
+        .and_then(|id| view.variable(id))
+        .map(|variable| variable.name().to_string())
+        .unwrap_or_else(|| "<unknown>".to_string())
+}
+
+/// The maximal sets of clocks that fire on a common tick, over `active_clocks`.
+///
+/// A set of same-anchor periodic clocks is jointly coincident exactly when it is
+/// pairwise coincident (generalized CRT for the congruences `t ≡ phase_i (mod
+/// period_i)`), so the coincident firing sets are the maximal cliques of the
+/// pairwise "share a tick" relation.
+fn coincident_clock_cliques(
+    partition: &solve::SolveClockPartition,
+    active_clocks: &BTreeSet<usize>,
+) -> Vec<BTreeSet<usize>> {
+    let clocks: Vec<usize> = active_clocks.iter().copied().collect();
+    let mut adjacency: BTreeMap<usize, BTreeSet<usize>> = clocks
+        .iter()
+        .map(|&clock| (clock, BTreeSet::new()))
+        .collect();
+    for (position, &left) in clocks.iter().enumerate() {
+        for &right in &clocks[position + 1..] {
+            if clocks_share_a_tick(partition, left, right) {
+                adjacency.entry(left).or_default().insert(right);
+                adjacency.entry(right).or_default().insert(left);
+            }
+        }
+    }
+    let mut cliques = Vec::new();
+    bron_kerbosch(
+        BTreeSet::new(),
+        active_clocks.clone(),
+        BTreeSet::new(),
+        &adjacency,
+        &mut cliques,
+    );
+    cliques
+}
+
+/// Bron-Kerbosch maximal-clique enumeration over the small coincidence graph.
+fn bron_kerbosch(
+    chosen: BTreeSet<usize>,
+    mut candidates: BTreeSet<usize>,
+    mut excluded: BTreeSet<usize>,
+    adjacency: &BTreeMap<usize, BTreeSet<usize>>,
+    cliques: &mut Vec<BTreeSet<usize>>,
+) {
+    if candidates.is_empty() && excluded.is_empty() {
+        cliques.push(chosen);
+        return;
+    }
+    let empty = BTreeSet::new();
+    for vertex in candidates.iter().copied().collect::<Vec<_>>() {
+        let neighbors = adjacency.get(&vertex).unwrap_or(&empty);
+        let mut next_chosen = chosen.clone();
+        next_chosen.insert(vertex);
+        let next_candidates = candidates.intersection(neighbors).copied().collect();
+        let next_excluded = excluded.intersection(neighbors).copied().collect();
+        bron_kerbosch(
+            next_chosen,
+            next_candidates,
+            next_excluded,
+            adjacency,
+            cliques,
+        );
+        candidates.remove(&vertex);
+        excluded.insert(vertex);
+    }
+}
+
+/// Whether two periodic clocks ever tick at the same instant.
+///
+/// Clocks anchored differently (absolute versus simulation-start) cannot be
+/// compared without the resolved start instant, so they are treated as never
+/// coincident here rather than rejected on an unproven overlap. Same-anchor
+/// clocks share a tick when `phase_b - phase_a` is an integer multiple of the
+/// gcd of their periods; a phase difference of zero (the common phase-aligned
+/// case) is always such a multiple.
+fn clocks_share_a_tick(partition: &solve::SolveClockPartition, left: usize, right: usize) -> bool {
+    let (Some(a), Some(b)) = (
+        partition.periodic_event_schedules.get(left),
+        partition.periodic_event_schedules.get(right),
+    ) else {
+        return false;
+    };
+    if a.anchor() != b.anchor() {
+        return false;
+    }
+    let (lattice_a, lattice_b) = (a.lattice(), b.lattice());
+    let Ok(phase_delta) = lattice_b.phase().checked_sub(lattice_a.phase()) else {
+        return false;
+    };
+    if phase_delta.is_zero() {
+        return true;
+    }
+    let Some(period_gcd) = rational_gcd(lattice_a.period(), lattice_b.period()) else {
+        return false;
+    };
+    match phase_delta.checked_div(period_gcd) {
+        Ok(ratio) => ratio.denominator() == 1,
+        Err(_) => false,
+    }
+}
+
+/// The gcd of two positive rationals: the generator of the additive subgroup
+/// they span, `gcd(numerators over a common denominator) / that denominator`.
+fn rational_gcd(
+    left: rumoca_core::ClockRational,
+    right: rumoca_core::ClockRational,
+) -> Option<rumoca_core::ClockRational> {
+    let (left_denominator, right_denominator) = (left.denominator(), right.denominator());
+    let denominator_gcd = gcd_i128(left_denominator, right_denominator);
+    let common_denominator = (left_denominator / denominator_gcd).checked_mul(right_denominator)?;
+    let left_numerator = left
+        .numerator()
+        .checked_mul(right_denominator / denominator_gcd)?;
+    let right_numerator = right
+        .numerator()
+        .checked_mul(left_denominator / denominator_gcd)?;
+    let numerator_gcd = gcd_i128(left_numerator, right_numerator);
+    rumoca_core::ClockRational::new(numerator_gcd, common_denominator).ok()
+}
+
+fn gcd_i128(mut left: i128, mut right: i128) -> i128 {
+    left = left.abs();
+    right = right.abs();
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
 }
 
 /// Variables an expression set reads *at the same instant*.
@@ -411,6 +685,51 @@ impl InstantaneousDependencies {
         }
         false
     }
+
+    /// Same-instant reachability using continuous edges plus the clocked edges
+    /// of any clock in `allowed` (a coincident firing set), rather than the
+    /// single owning clock of [`Self::reaches`].
+    fn reaches_within_clocks(&self, start: usize, goal: usize, allowed: &BTreeSet<usize>) -> bool {
+        let mut visited = vec![false; self.successors.len()];
+        let mut frontier = VecDeque::from([start]);
+        visited[start] = true;
+        while let Some(variable) = frontier.pop_front() {
+            if self.enqueue_successors_within_clocks(
+                variable,
+                goal,
+                allowed,
+                &mut visited,
+                &mut frontier,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn enqueue_successors_within_clocks(
+        &self,
+        variable: usize,
+        goal: usize,
+        allowed: &BTreeSet<usize>,
+        visited: &mut [bool],
+        frontier: &mut VecDeque<usize>,
+    ) -> bool {
+        for edge in self.successors[variable].iter().copied() {
+            let Some(successor) = edge.target_in_clocks(allowed) else {
+                continue;
+            };
+            if successor == goal {
+                return true;
+            }
+            if visited[successor] {
+                continue;
+            }
+            visited[successor] = true;
+            frontier.push_back(successor);
+        }
+        false
+    }
 }
 
 impl DependencyEdge {
@@ -421,6 +740,14 @@ impl DependencyEdge {
                 clock: owner,
                 target,
             } if owner == clock => Some(target),
+            Self::Clocked { .. } => None,
+        }
+    }
+
+    fn target_in_clocks(self, allowed: &BTreeSet<usize>) -> Option<usize> {
+        match self {
+            Self::Continuous(target) => Some(target),
+            Self::Clocked { clock, target } if allowed.contains(&clock) => Some(target),
             Self::Clocked { .. } => None,
         }
     }

@@ -1392,6 +1392,45 @@ fn sim_010_cross_clock_coincident_same_tick_cycle_is_rejected_at_construction() 
 }
 
 #[test]
+fn sim_010_cross_clock_coincident_pre_read_is_not_a_cycle_and_simulates() {
+    // SOLVE-C57 §4 row 3 (cycle), negative control for the cross-partition
+    // rejection: the same two commensurate coincident clocks and the same
+    // cross-partition algebraic-alias read as
+    // `sim_010_cross_clock_coincident_same_tick_cycle_is_rejected_at_construction`,
+    // but the 0.1 clock reads `pre(b)` instead of `b`. That left-limit read
+    // carries the previous tick's value, so it is not a same-tick edge and the
+    // loop is broken: the model is schedulable and must simulate, proving the
+    // construction check rejects only a genuine same-tick cycle and is not a
+    // blanket cross-clock ban.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            discrete Real a(start = 0, fixed = true);
+            discrete Real b(start = 0, fixed = true);
+            Real aAlias;
+            Real x(start = 0, fixed = true);
+        equation
+            der(x) = 1;
+            aAlias = a;
+            when sample(0.0, 0.1) then
+                a = pre(b) + 1.0;
+            end when;
+            when sample(0.0, 0.2) then
+                b = aAlias + 1.0;
+            end when;
+        end M;
+    "#,
+        "M",
+        0.35,
+    );
+    // The 0.1 clock ticks at t = 0, 0.1, 0.2, 0.3; the 0.2 clock at t = 0, 0.2.
+    // `a = pre(b) + 1` reads b's held value, then (on a coincident tick)
+    // `b = a + 1` reads this tick's a: a = 1, 3, 3, 5 and b = 2, 2, 4, 4.
+    assert_eq!(trace.final_value("a"), 5.0);
+    assert_eq!(trace.final_value("b"), 4.0);
+}
+
+#[test]
 fn sim_010_inactive_narrower_guard_holds_and_its_same_tick_reader_sees_the_held_value() {
     // SOLVE-C57 §4 row 1: an `And(clock, predicate)` producer whose predicate
     // is false on a tick does not define its target; the target holds
