@@ -9,6 +9,7 @@
 mod cc_support;
 mod cli_support;
 mod cli_target_embedded_c_galec;
+mod galec_call_boundary;
 mod galec_enumeration_status;
 mod galec_equivalence;
 

@@ -10,6 +10,7 @@ mod causal_outputs;
 mod clock_schedule;
 mod clocked_assignments;
 mod conditionals;
+mod dependent_folding;
 mod expression_array_update;
 mod expression_function_folds;
 mod expression_functions;
@@ -99,6 +100,11 @@ struct ProjectionParts {
     /// User functions reached from dependent-parameter bindings.
     startup_called_user_functions: HashSet<u32>,
     do_step_locals: Vec<gast::VariableDeclaration>,
+    /// Generation-time value of each dependent parameter, by DAE variable
+    /// index, which is what a folded binding is emitted as.
+    dependent_starts: HashMap<u32, gast::Expression>,
+    /// Dependent parameters emitted as folded values rather than as calls.
+    constant_folded: Vec<rumoca_ir_galec::package::ConstantFoldedParameter>,
 }
 
 impl ProjectionParts {
@@ -222,11 +228,13 @@ fn lower_view<'dae>(
             .map_err(single)?;
     block.do_step.locals = parts.do_step_locals;
     block.do_step.statements = do_step;
-    AlgorithmCodePackage::construct(block, parts.nominals, &period_ref).map_err(|error| {
-        vec![GalecTargetError::LoweringInternal {
-            detail: format!("lowering produced an invalid Algorithm Code package: {error}"),
-        }]
-    })
+    AlgorithmCodePackage::construct(block, parts.nominals, &period_ref)
+        .map(|package| package.with_constant_folded_parameters(parts.constant_folded))
+        .map_err(|error| {
+            vec![GalecTargetError::LoweringInternal {
+                detail: format!("lowering produced an invalid Algorithm Code package: {error}"),
+            }]
+        })
 }
 
 fn build_variable_parts<'dae>(
@@ -249,25 +257,21 @@ fn build_variable_parts<'dae>(
         startup_locals: Vec::new(),
         startup_called_user_functions: HashSet::new(),
         do_step_locals: Vec::new(),
+        dependent_starts: HashMap::new(),
+        constant_folded: Vec::new(),
     };
     for variable in classified.as_slice() {
         append_variable(view, variable, &mut evaluator, &mut parts)?;
     }
-    for id in &classified.dependent_parameter_order {
-        let variable = by_id.get(id).ok_or_else(|| {
-            vec![GalecTargetError::LoweringInternal {
-                detail: format!("dependent parameter variable #{id} is absent from classification"),
-            }]
-        })?;
-        let lowered =
-            dependent_assignment(view, definitions, variable, by_id, pre_names).map_err(single)?;
-        parts.startup.extend(lowered.statements.iter().cloned());
-        parts.recalibrate.extend(lowered.statements);
-        parts.startup_locals.extend(lowered.locals);
-        parts
-            .startup_called_user_functions
-            .extend(lowered.called_user_functions);
-    }
+    dependent_folding::append_dependent_parameters(
+        view,
+        definitions,
+        &classified.dependent_parameter_order,
+        by_id,
+        pre_names,
+        &mut parts,
+    )
+    .map_err(single)?;
     append_previous_states(
         view,
         referenced_pre,
@@ -317,6 +321,9 @@ fn append_variable<'dae>(
             parts.startup.push(initial_assignment(classified, start));
         }
         VariableClass::DependentParameter => {
+            parts
+                .dependent_starts
+                .insert(classified.id.index(), start.clone());
             parts.protected.push(gast::ProtectedEntity {
                 kind: gast::ProtectedKind::DependentParameter,
                 decl: declaration,

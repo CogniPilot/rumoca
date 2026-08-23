@@ -525,7 +525,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 .value_type(parameter.value_type())
                 .expect("checked direct function parameter type resolves");
             if !parameter_type.is_record() {
-                lowered.push(self.lower_function_argument(argument, span)?);
+                let formal_scalar = scalar_type(
+                    parameter_type.scalar_type(),
+                    parameter.name().as_str(),
+                    parameter.declaration().span(),
+                )?;
+                lowered.push(self.lower_function_argument(argument, formal_scalar, span)?);
                 continue;
             }
             for field in 0..parameter_type.record_field_count() {
@@ -540,9 +545,22 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         Ok(lowered)
     }
 
+    /// Lower one actual argument to the element type its formal parameter
+    /// declares.
+    ///
+    /// MLS §10.6.13 makes Integer-to-Real conversion implicit wherever a Real
+    /// is expected, and §6.7 applies that conversion element by element when
+    /// the expected type is an array. The element target therefore comes from
+    /// the formal, never from the actual: `identity(4)` is Integer[4, 4] and a
+    /// Real[:, :] formal accepts it, while GALEC itself has no implicit
+    /// conversion and needs the `real(...)` applied per element. `coerce` is
+    /// the one place that decides which conversions exist, so scalars and
+    /// aggregates both route through it and both refuse a Real actual reaching
+    /// an Integer formal.
     fn lower_function_argument(
         &mut self,
         argument: dae::ExprId<'dae>,
+        formal_scalar: gast::ScalarType,
         call_span: Span,
     ) -> Result<gast::Expression, GalecTargetError> {
         let node = self
@@ -550,22 +568,28 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .expression(argument)
             .expect("checked function argument resolves");
         if node.value_type().dimensions().is_empty() {
-            return self.lower(argument).map(|value| value.expression);
+            let value = self.lower(argument)?;
+            return coerce(value, formal_scalar, node.provenance().span());
         }
-        if let Some(reference) = self.direct_whole_aggregate_reference(argument)? {
-            return Ok(reference);
-        }
-        let scalar_type = scalar_type(
+        let actual_scalar = scalar_type(
             node.value_type().scalar_type(),
             "<function-argument>",
             node.provenance().span(),
         )?;
+        // Storage may be handed over unchanged only when it already holds the
+        // formal's element type. A converted aggregate is a new value, so it
+        // needs its own bounded copy.
+        if actual_scalar == formal_scalar
+            && let Some(reference) = self.direct_whole_aggregate_reference(argument)?
+        {
+            return Ok(reference);
+        }
         if expression_contains_array(self.view, argument) {
-            let value = self.lower_aggregate_expression_as(argument, scalar_type)?;
+            let value = self.lower_aggregate_expression_as(argument, formal_scalar)?;
             return self.materialize_aggregate_function_argument(
                 value,
                 node.value_type().dimensions(),
-                scalar_type,
+                formal_scalar,
                 call_span,
             );
         }
@@ -573,7 +597,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             argument,
             None,
             node.value_type().dimensions(),
-            scalar_type,
+            formal_scalar,
             call_span,
         )
     }

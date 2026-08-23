@@ -46,6 +46,25 @@ impl CheckedAlgorithmBlock {
     }
 }
 
+/// One dependent parameter whose defining call was evaluated while the code
+/// was generated and emitted as a literal.
+///
+/// SPEC_0034 GAL-017 lets `Startup` call builtins only, so a parameter bound
+/// to a Modelica function call reaches the block as a value rather than as the
+/// call that produced it. The call is then absent from every emitted artifact,
+/// which is why the correlation is recorded here: the package states which
+/// block variable was folded and which function it was folded from, without
+/// any generated code having to carry a comment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConstantFoldedParameter {
+    /// Block variable the folded value is assigned to.
+    pub variable: String,
+    /// Modelica function whose call the value was folded from.
+    pub folded_from: String,
+    /// Scalars the folded value carries.
+    pub scalars: usize,
+}
+
 /// Checked GALEC block plus target-neutral projection correlations.
 #[derive(Debug, Clone, Serialize)]
 pub struct AlgorithmCodePackage {
@@ -53,6 +72,7 @@ pub struct AlgorithmCodePackage {
     variable_nominals: Vec<Option<f64>>,
     /// One-based ordinal in the block declaration order.
     clock_variable_ordinal: usize,
+    constant_folded_parameters: Vec<ConstantFoldedParameter>,
 }
 
 impl AlgorithmCodePackage {
@@ -80,7 +100,18 @@ impl AlgorithmCodePackage {
             block,
             variable_nominals,
             clock_variable_ordinal,
+            constant_folded_parameters: Vec::new(),
         })
+    }
+
+    /// Record which dependent parameters reached the block as folded values.
+    #[must_use]
+    pub fn with_constant_folded_parameters(
+        mut self,
+        parameters: Vec<ConstantFoldedParameter>,
+    ) -> Self {
+        self.constant_folded_parameters = parameters;
+        self
     }
 
     #[must_use]
@@ -101,6 +132,11 @@ impl AlgorithmCodePackage {
     #[must_use]
     pub const fn clock_variable_ordinal(&self) -> usize {
         self.clock_variable_ordinal
+    }
+
+    #[must_use]
+    pub fn constant_folded_parameters(&self) -> &[ConstantFoldedParameter] {
+        &self.constant_folded_parameters
     }
 }
 

@@ -170,6 +170,22 @@ pub enum GalecTargetError {
     #[error("start expressions form a dependency cycle through `{through}`")]
     StartDependencyCycle { through: String },
 
+    /// GAL-017: `Startup` may call builtins only, so a dependent parameter
+    /// bound to a Modelica function call has to be folded to a value. The
+    /// fold needs every input frozen when the code is generated; `reason`
+    /// says which requirement this binding does not meet.
+    #[error(
+        "dependent parameter `{variable}` is bound to a call to `{function}`, which \
+         Startup may not make, and the call could not be folded while the code was \
+         generated: {reason}"
+    )]
+    DependentParameterNotFoldable {
+        variable: String,
+        function: String,
+        reason: String,
+        span: Option<Span>,
+    },
+
     /// GAL-007: a DAE construct outside the currently lowerable subset.
     /// `feature` is the stable feature id of the `unsupported-feature:`
     /// namespace; rejections that reflect projection scope use the GAL-025
@@ -262,6 +278,7 @@ impl GalecTargetError {
             Self::LoweringTypeMismatch { .. } => "EGT020",
             Self::InitialEquations { .. } => "EGT021",
             Self::InitialDiscreteValues { .. } => "EGT022",
+            Self::DependentParameterNotFoldable { .. } => "EGT023",
         }
     }
 
@@ -278,6 +295,7 @@ impl GalecTargetError {
             | Self::AttributeTypeMismatch { span, .. }
             | Self::UnsupportedFeature { span, .. }
             | Self::UnknownVariableReference { span, .. }
+            | Self::DependentParameterNotFoldable { span, .. }
             | Self::LoweringTypeMismatch { span, .. } => span.filter(|span| !span.is_dummy()),
             Self::ContinuousDynamics { .. }
             | Self::RuntimeEvents { .. }
