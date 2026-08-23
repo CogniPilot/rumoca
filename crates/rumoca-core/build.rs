@@ -34,8 +34,8 @@ fn main() {
         }
     }
 
-    let identity = commit_identity()
-        .map_or_else(|| "None".to_owned(), |value| format!("Some(\"{value}\")"));
+    let identity =
+        commit_identity().map_or_else(|| "None".to_owned(), |value| format!("Some(\"{value}\")"));
     let generated = format!("pub(crate) const BUILD_IDENTITY: Option<&str> = {identity};\n");
 
     let out_dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR for build scripts");

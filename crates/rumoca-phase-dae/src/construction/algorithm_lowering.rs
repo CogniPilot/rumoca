@@ -424,7 +424,10 @@ fn lower_algorithm_assignment_statement<'dae>(
 ) -> Result<(), dae::DaeConstructionError> {
     let AlgorithmAssignment { comp, value, span } = assignment;
     let context = algorithm_statement_context(environment, owner, values);
-    if let Some(plan) = environment.function_calls.and_then(|plans| plans.get(&span)) {
+    if let Some(plan) = environment
+        .function_calls
+        .and_then(|plans| plans.get(&span))
+    {
         let Expression::FunctionCall { name, args, .. } = value else {
             unreachable!("event call proof is issued only for direct call assignments")
         };

@@ -390,7 +390,6 @@ fn register_lex_contracts(runner: &mut TestRunner) {
         "String escapes should work",
     );
 
-
     // LEX-006/007/008/009 assert more than "parses or not", so they register
     // the same checks their standalone tests make rather than a parse-outcome
     // case. Every SPEC_0022 lexical contract must reach the runner: the
@@ -426,10 +425,7 @@ fn register_lex_contracts(runner: &mut TestRunner) {
     });
 
     runner.register_test("LEX-009", || {
-        if is_rejected(
-            "model Test Real x; equation x := 1; end Test;",
-            "Test",
-        ) {
+        if is_rejected("model Test Real x; equation x := 1; end Test;", "Test") {
             Ok(())
         } else {
             Err("Assignment in an equation section should be rejected".into())

@@ -20,6 +20,7 @@ mod liveness_differential_tests;
 mod liveness_join_tests;
 #[cfg(test)]
 mod loop_carry_tests;
+mod loop_local_substitution;
 /// The executable preservation theorem for this pass.
 ///
 /// [`preservation_differential_tests`] runs every corpus program twice, once as
@@ -35,7 +36,6 @@ mod preservation_interpreter;
 mod preservation_programs;
 #[cfg(test)]
 mod preservation_values;
-mod loop_local_substitution;
 
 use accumulator_reductions::compact_accumulator_loops;
 use dependent_domains::{integer_range, rectangularize_dependent_loops};

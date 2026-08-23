@@ -6,9 +6,8 @@ mod formatter;
 
 pub use format_errors::FormatError;
 pub use format_options::{
-    CONFIG_FILE_NAMES, FormatOptions, FormatProfile, LineEnding, PartialFormatOptions,
-    find_config, load_config, load_config_from_dir, load_config_overrides,
-    load_config_overrides_from_dir,
+    CONFIG_FILE_NAMES, FormatOptions, FormatProfile, LineEnding, PartialFormatOptions, find_config,
+    load_config, load_config_from_dir, load_config_overrides, load_config_overrides_from_dir,
 };
 pub use formatter::{
     FormatCoverageCategory, FormatCoverageCategoryReport, FormatCoverageReport, format,

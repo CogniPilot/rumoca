@@ -168,7 +168,9 @@ impl<'a> MeModelSource<'a> {
         })
     }
 
-    pub(crate) fn into_parts(self) -> Result<MeModelParts<'a>, rumoca_ir_solve::fmi::FmiComponentError> {
+    pub(crate) fn into_parts(
+        self,
+    ) -> Result<MeModelParts<'a>, rumoca_ir_solve::fmi::FmiComponentError> {
         match self.0 {
             MeModelSourceInner::Correlated(view) => {
                 let configuration = match view.configuration_capability() {

@@ -448,7 +448,6 @@ pub enum ClockPartitionStep {
     Intermediate { row: usize },
 }
 
-
 /// One compact mutable-storage destination for a guarded assignment result.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct GuardedAssignmentTargetRange {
