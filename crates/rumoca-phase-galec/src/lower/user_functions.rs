@@ -7,9 +7,11 @@ use super::*;
 
 mod indexed_update;
 mod tensor_loops;
+mod update_aliasing;
 
 use indexed_update::{lower_indexed_function_update, preserves_function_target};
 pub(super) use tensor_loops::{is_reorderable, nest_tensor_loops};
+use update_aliasing::UpdatedAggregate;
 
 pub(super) fn lower_reachable<'dae>(
     view: dae::DaeView<'dae>,
@@ -1249,6 +1251,7 @@ fn materialize_shared_record<'a, 'dae>(
                 target_type: field_type,
                 expression,
                 record_field: Some(ordinal),
+                aggregate: None,
                 span,
             },
             lowerer,
@@ -1330,6 +1333,7 @@ fn lower_record_function_field<'a, 'dae>(
             target_type: field_view,
             expression,
             record_field: Some(ordinal),
+            aggregate: None,
             span,
         },
         lowerer,
@@ -1396,6 +1400,10 @@ fn lower_primitive_function_assignment<'a, 'dae>(
             target_type,
             expression,
             record_field: None,
+            aggregate: Some(UpdatedAggregate {
+                value: target,
+                rank: target_type.dimensions().len(),
+            }),
             span,
         },
         lowerer,
@@ -1542,6 +1550,11 @@ struct TensorAssignment<'a, 'dae> {
     target_type: &'a dae::ValueType,
     expression: dae::ExprId<'dae>,
     record_field: Option<usize>,
+    /// The storage the emitted element loop writes, when `target` names a
+    /// whole function value and the right-hand side is that value's own
+    /// assignment. `None` where the target is a materialization local, whose
+    /// storage no right-hand side can name and which therefore cannot alias.
+    aggregate: Option<UpdatedAggregate<'dae>>,
     span: Span,
 }
 
@@ -1658,6 +1671,54 @@ fn materialize_eager_aggregate_calls<'a, 'dae>(
     Ok(())
 }
 
+/// The assignment whose right-hand side is already one whole aggregate, moved
+/// without an element loop.
+///
+/// A whole-array assignment reads its source in full before it stores, so a
+/// source that is the target itself is a self-copy and needs no snapshot.
+fn lower_direct_aggregate_move<'a, 'dae>(
+    assignment: &TensorAssignment<'_, 'dae>,
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
+) -> Result<Option<LoweredTensorAssignment>, GalecTargetError> {
+    let direct = match assignment.record_field {
+        Some(field) => lowerer.direct_aggregate_record_field(assignment.expression, field)?,
+        None => lowerer.direct_whole_aggregate_reference(assignment.expression)?,
+    };
+    Ok(direct.map(|value| LoweredTensorAssignment {
+        before: lowerer.drain_prefix_statements(),
+        nested: Some(gast::Spanned::new(
+            gast::Statement::Assignment {
+                target: gast::Reference::local(assignment.target.clone()),
+                value,
+            },
+            assignment.span,
+        )),
+    }))
+}
+
+/// Which axes of the target this assignment stores at a single coordinate.
+///
+/// This is the one fact the emitted statements no longer carry: projection
+/// replaces the source subscripts with coordinate arithmetic over the loop
+/// iterators, so it is read off the checked DAE. The reads it exempts are
+/// counted after projection instead, where the ones hoisted out of the loop
+/// have already left.
+///
+/// A target without a named aggregate gets no exemption and is proven through
+/// the identity rule alone: the region walk is stated over one whole function
+/// value, so a record field's own region is not among the things it can name,
+/// and a materialization local is not storage any right-hand side can name at
+/// all.
+fn stored_single_coordinate_axes<'dae>(
+    assignment: &TensorAssignment<'_, 'dae>,
+    view: dae::DaeView<'dae>,
+) -> Vec<bool> {
+    assignment.aggregate.as_ref().map_or_else(
+        || vec![false; assignment.target_type.dimensions().len()],
+        |aggregate| update_aliasing::single_coordinate_axes(view, aggregate, assignment.expression),
+    )
+}
+
 fn lower_tensor_function_assignment<'a, 'dae>(
     assignment: TensorAssignment<'_, 'dae>,
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
@@ -1665,30 +1726,32 @@ fn lower_tensor_function_assignment<'a, 'dae>(
     if assignment.target_type.dimensions().is_empty() {
         return Ok(None);
     }
-    let direct = match assignment.record_field {
-        Some(field) => lowerer.direct_aggregate_record_field(assignment.expression, field)?,
-        None => lowerer.direct_whole_aggregate_reference(assignment.expression)?,
-    };
-    if let Some(value) = direct {
-        return Ok(Some(LoweredTensorAssignment {
-            before: lowerer.drain_prefix_statements(),
-            nested: Some(gast::Spanned::new(
-                gast::Statement::Assignment {
-                    target: gast::Reference::local(assignment.target),
-                    value,
-                },
-                assignment.span,
-            )),
-        }));
+    if let Some(moved) = lower_direct_aggregate_move(&assignment, lowerer)? {
+        return Ok(Some(moved));
     }
+    let single_coordinate = stored_single_coordinate_axes(&assignment, lowerer.view);
     let TensorElementValue {
         names,
         indices,
-        value,
+        mut value,
         scalar,
     } = lower_tensor_element_value(&assignment, lowerer)?;
     let (mut before, mut body) =
         partition_tensor_prefixes(lowerer.drain_prefix_statements(), &names);
+    let prologue = update_aliasing::snapshot_prologue(
+        lowerer,
+        &update_aliasing::SnapshotRewrite {
+            target: &assignment.target,
+            indices: &indices,
+            single_coordinate: &single_coordinate,
+        },
+        update_aliasing::SnapshotShape {
+            extents: assignment.target_type.dimensions(),
+            scalar,
+            span: assignment.span,
+        },
+        (&mut value, &mut body),
+    );
     if body.is_empty()
         && let Some(source) = whole_array_move::provable_whole_array_move(
             lowerer,
@@ -1698,16 +1761,19 @@ fn lower_tensor_function_assignment<'a, 'dae>(
             scalar,
         )
     {
-        return Ok(Some(LoweredTensorAssignment {
-            before,
-            nested: Some(gast::Spanned::new(
-                gast::Statement::Assignment {
-                    target: gast::Reference::local(assignment.target),
-                    value: gast::Expression::Ref(source),
-                },
-                assignment.span,
-            )),
-        }));
+        return Ok(Some(update_aliasing::after_snapshot(
+            prologue,
+            LoweredTensorAssignment {
+                before,
+                nested: Some(gast::Spanned::new(
+                    gast::Statement::Assignment {
+                        target: gast::Reference::local(assignment.target),
+                        value: gast::Expression::Ref(source),
+                    },
+                    assignment.span,
+                )),
+            },
+        )));
     }
     body.push(gast::Spanned::new(
         gast::Statement::Assignment {
@@ -1727,10 +1793,13 @@ fn lower_tensor_function_assignment<'a, 'dae>(
         assignment.target_type.dimensions(),
         assignment.span,
     ) {
-        return Ok(Some(LoweredTensorAssignment {
-            before: fused,
-            nested: None,
-        }));
+        return Ok(Some(update_aliasing::after_snapshot(
+            prologue,
+            LoweredTensorAssignment {
+                before: fused,
+                nested: None,
+            },
+        )));
     }
     let span = assignment.span;
     let mut nest = nest_tensor_loops(
@@ -1744,10 +1813,13 @@ fn lower_tensor_function_assignment<'a, 'dae>(
     );
     let outer = nest.pop().expect("tensor assignment has one outer loop");
     before.extend(nest);
-    Ok(Some(LoweredTensorAssignment {
-        before,
-        nested: Some(outer),
-    }))
+    Ok(Some(update_aliasing::after_snapshot(
+        prologue,
+        LoweredTensorAssignment {
+            before,
+            nested: Some(outer),
+        },
+    )))
 }
 
 pub(super) fn fuse_guarded_tensor_loop(

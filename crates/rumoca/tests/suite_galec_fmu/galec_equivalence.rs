@@ -2651,3 +2651,373 @@ fn assert_elimination_row(leg: &str, got: &[f64], want: &[f64]) {
         );
     }
 }
+
+// ===========================================================================
+// A simultaneous array exchange keeps MLS §11.4 value semantics: the whole
+// right-hand side is the value the target held before the assignment, so the
+// element loop that realizes it must not read what it has already stored.
+// ===========================================================================
+
+/// The two simultaneous-assignment shapes whose target appears on its own
+/// right-hand side under subscripts that overlap the ones being stored.
+///
+/// `exchangeRows` is the row swap `LinearAlgebra.solve` pivots with. Its index
+/// lists name the same two rows on both sides with the pairing crossed, so an
+/// in-place element loop stores row 1 from row `pivotRow` and then reads row 1
+/// back for row `pivotRow`: with the input `[1 2 3; 4 5 6; 7 8 9]` and
+/// `pivotRow = 3` that answers `[7 8 9; 4 5 6; 7 8 9]` instead of the exchange
+/// `[7 8 9; 4 5 6; 1 2 3]`.
+///
+/// `shiftRowsDown` is the same defect through a range subscript rather than an
+/// index list: `y[2:3, :] := y[1:2, :]` stores row 2 from row 1 and then reads
+/// row 2 back for row 3, answering `[1 2 3]` twice instead of rows 1 and 2.
+/// Its stored region and the region it reads overlap in exactly one row, which
+/// is the smallest overlap the value semantics can be broken on.
+///
+/// `eliminateRow` is the neighbouring shape that must NOT be materialized: it
+/// stores one row and reads that row and one other, so every read is either
+/// the element being stored or an element in a row this assignment never
+/// stores. It shares the fixture so a proof that stopped placing those reads
+/// would show up as an emitted-code change here rather than only in a
+/// corpus-wide byte comparison.
+const EXCHANGE_ROWS: &str = r#"
+function exchangeRows
+  input Real m[3, 3];
+  input Integer pivotRow;
+  output Real firstRow[3];
+  output Real lastRow[3];
+protected
+  Real y[3, 3];
+algorithm
+  y := m;
+  y[{1, pivotRow}, :] := y[{pivotRow, 1}, :];
+  firstRow := y[1, :];
+  lastRow := y[3, :];
+end exchangeRows;
+
+model ExchangeRowsSmoke
+  constant Real samplePeriod = 0.1;
+  parameter Real m[3, 3] = [1.0, 2.0, 3.0; 4.0, 5.0, 6.0; 7.0, 8.0, 9.0];
+  discrete Real scale(start = 0.0, fixed = true);
+  discrete output Real exchangedFirst[3](each start = 0.0);
+  discrete output Real exchangedLast[3](each start = 0.0);
+algorithm
+  when sample(0.0, samplePeriod) then
+    scale := pre(scale) + 1.0;
+    (exchangedFirst, exchangedLast) := exchangeRows(scale * m, 3);
+  end when;
+end ExchangeRowsSmoke;
+"#;
+
+const SHIFT_ROWS: &str = r#"
+function shiftRowsDown
+  input Real m[3, 3];
+  output Real secondRow[3];
+  output Real lastRow[3];
+protected
+  Real y[3, 3];
+algorithm
+  y := m;
+  y[2:3, :] := y[1:2, :];
+  secondRow := y[2, :];
+  lastRow := y[3, :];
+end shiftRowsDown;
+
+function eliminateRow
+  input Real m[3, 3];
+  output Real secondRow[3];
+  output Real lastRow[3];
+protected
+  Real y[3, 3];
+  Real factor;
+algorithm
+  y := m;
+  for column in 1:2 loop
+    for row in 2:3 loop
+      if row > column then
+        factor := y[row, column] / y[column, column];
+        y[row, :] := y[row, :] - factor * y[column, :];
+      end if;
+    end for;
+  end for;
+  secondRow := y[2, :];
+  lastRow := y[3, :];
+end eliminateRow;
+
+model ShiftRowsSmoke
+  constant Real samplePeriod = 0.1;
+  parameter Real m[3, 3] = [1.0, 2.0, 3.0; 4.0, 5.0, 6.0; 7.0, 8.0, 9.0];
+  parameter Real e[3, 3] = [4.0, 2.0, 1.0; 4.0, 5.0, 3.0; 4.0, 7.0, 9.0];
+  discrete Real scale(start = 0.0, fixed = true);
+  discrete output Real shiftedSecond[3](each start = 0.0);
+  discrete output Real shiftedLast[3](each start = 0.0);
+  discrete output Real eliminatedSecond[3](each start = 0.0);
+  discrete output Real eliminatedLast[3](each start = 0.0);
+algorithm
+  when sample(0.0, samplePeriod) then
+    scale := pre(scale) + 1.0;
+    (shiftedSecond, shiftedLast) := shiftRowsDown(scale * m);
+    (eliminatedSecond, eliminatedLast) := eliminateRow(scale * e);
+  end when;
+end ShiftRowsSmoke;
+"#;
+
+const EXCHANGE_ROWS_DRIVER: &str = r#"#include <stdio.h>
+#include "ExchangeRowsSmoke.h"
+static void row(const char *label, const ExchangeRowsSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%lu\n",
+           label,
+           (double)state->exchangedFirst[0], (double)state->exchangedFirst[1],
+           (double)state->exchangedFirst[2],
+           (double)state->exchangedLast[0], (double)state->exchangedLast[1],
+           (double)state->exchangedLast[2],
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    ExchangeRowsSmokeState state;
+    char label[16];
+    ExchangeRowsSmoke_startup(&state);
+    row("startup", &state);
+    ExchangeRowsSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        ExchangeRowsSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+const SHIFT_ROWS_DRIVER: &str = r#"#include <stdio.h>
+#include "ShiftRowsSmoke.h"
+static void row(const char *label, const ShiftRowsSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%lu\n",
+           label,
+           (double)state->shiftedSecond[0], (double)state->shiftedSecond[1],
+           (double)state->shiftedSecond[2],
+           (double)state->shiftedLast[0], (double)state->shiftedLast[1],
+           (double)state->shiftedLast[2],
+           (double)state->eliminatedSecond[0], (double)state->eliminatedSecond[1],
+           (double)state->eliminatedSecond[2],
+           (double)state->eliminatedLast[0], (double)state->eliminatedLast[1],
+           (double)state->eliminatedLast[2],
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    ShiftRowsSmokeState state;
+    char label[16];
+    ShiftRowsSmoke_startup(&state);
+    row("startup", &state);
+    ShiftRowsSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        ShiftRowsSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+const EXCHANGE_ROWS_FIELDS: [Field; 6] = [
+    Field {
+        name: "exchangedFirst[1]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "exchangedFirst[2]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "exchangedFirst[3]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "exchangedLast[1]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "exchangedLast[2]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "exchangedLast[3]",
+        kind: FieldKind::Real,
+    },
+];
+
+const SHIFT_ROWS_FIELDS: [Field; 12] = [
+    Field {
+        name: "shiftedSecond[1]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "shiftedSecond[2]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "shiftedSecond[3]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "shiftedLast[1]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "shiftedLast[2]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "shiftedLast[3]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "eliminatedSecond[1]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "eliminatedSecond[2]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "eliminatedSecond[3]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "eliminatedLast[1]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "eliminatedLast[2]",
+        kind: FieldKind::Real,
+    },
+    Field {
+        name: "eliminatedLast[3]",
+        kind: FieldKind::Real,
+    },
+];
+
+/// The exchange by hand, on tick `scale`.
+///
+/// `y` starts as `scale * [1 2 3; 4 5 6; 7 8 9]`, and
+/// `y[{1, 3}, :] := y[{3, 1}, :]` gives row 1 the old row 3 and row 3 the old
+/// row 1, so the compared pair is `scale * [7 8 9]` then `scale * [1 2 3]`.
+/// The in-place answer this pins against repeats `scale * [7 8 9]`.
+fn expected_exchange_row(scale: f64) -> Vec<f64> {
+    let mut expected = Vec::with_capacity(EXCHANGE_ROWS_FIELDS.len());
+    expected.extend([7.0, 8.0, 9.0].map(|value: f64| scale * value));
+    expected.extend([1.0, 2.0, 3.0].map(|value: f64| scale * value));
+    expected
+}
+
+/// Both shift shapes by hand, on tick `scale`.
+///
+/// `shiftRowsDown` moves rows 1 and 2 of `scale * [1 2 3; 4 5 6; 7 8 9]` down
+/// one place at once, so row 2 becomes `scale * [1 2 3]` and row 3 becomes
+/// `scale * [4 5 6]`. The in-place answer repeats `scale * [1 2 3]`.
+///
+/// `eliminateRow` runs Gaussian elimination without pivoting on
+/// `scale * [4 2 1; 4 5 3; 4 7 9]`. Column 1 gives factor `4/4 = 1` for both
+/// rows, so row 2 becomes `scale * [0 3 2]` and row 3 `scale * [0 5 8]`;
+/// column 2 gives factor `5/3` and row 3 becomes `scale * [0 0 8 - 10/3]`.
+fn expected_shift_row(scale: f64) -> Vec<f64> {
+    let mut expected = Vec::with_capacity(SHIFT_ROWS_FIELDS.len());
+    expected.extend([1.0, 2.0, 3.0].map(|value: f64| scale * value));
+    expected.extend([4.0, 5.0, 6.0].map(|value: f64| scale * value));
+    expected.extend([0.0, 3.0, 2.0].map(|value: f64| scale * value));
+    expected.extend([0.0, 0.0, 8.0 - 10.0 / 3.0].map(|value: f64| scale * value));
+    expected
+}
+
+/// Compare one leg's tick against hand-computed values.
+///
+/// The bound is the float32 profile bound, because the generated C carries
+/// these values as `float`. It is far tighter than the gap to the in-place
+/// answer, whose first wrong channel differs by a whole row.
+fn assert_hand_row(leg: &str, fields: &[Field], got: &[f64], want: &[f64]) {
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "{leg}: compared {} channels, expected {}",
+        got.len(),
+        want.len()
+    );
+    for (field, (got, want)) in fields.iter().zip(got.iter().zip(want)) {
+        let (atol, rtol) = F32_PROFILE;
+        let bound = atol + rtol * want.abs();
+        let delta = (got - want).abs();
+        assert!(
+            delta <= bound,
+            "{leg} channel `{}`: {got} vs hand-computed {want}, delta {delta} exceeds {bound}",
+            field.name
+        );
+    }
+}
+
+/// The index-list exchange, on the two executing legs and against hand values.
+///
+/// `simulate_dae` is not a leg here: an index-list array update is refused by
+/// the Solve IR's typed aggregate projection (`EL005`, `rumoca-ir-solve`), so
+/// the Modelica reference cannot execute this fixture at all. Its sibling
+/// [`embedded_c_shifted_rows_read_the_value_the_assignment_started_from`]
+/// carries the same defect through a range subscript, which the reference does
+/// execute, and keeps all three legs on it.
+#[test]
+fn embedded_c_exchanged_rows_read_the_value_the_assignment_started_from() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let fields = EXCHANGE_ROWS_FIELDS;
+
+    let projection = project_embedded_c(dir.path(), "ExchangeRowsSmoke", EXCHANGE_ROWS);
+    write_rendered(&out_dir, "ExchangeRowsSmoke", &projection.files);
+    let c_run = run_c_ticks(
+        &out_dir,
+        "ExchangeRowsSmoke",
+        EXCHANGE_ROWS_DRIVER,
+        fields.len(),
+    );
+    let oracle = oracle_ticks(&projection.package, "ExchangeRowsSmoke", &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, "ExchangeRowsSmoke");
+
+    assert_executing_legs_agree(&oracle, &c_run, &fields, 0);
+    for tick in 0..5 {
+        let expected = expected_exchange_row((tick + 1) as f64);
+        assert_hand_row("generated C", &fields, &c_run.steps[tick].values, &expected);
+        assert_hand_row(
+            "galec oracle",
+            &fields,
+            &oracle.steps[tick].values,
+            &expected,
+        );
+    }
+}
+
+/// The overlapping-range shift on all three legs, beside the one-row
+/// elimination that must stay in place.
+#[test]
+fn embedded_c_shifted_rows_read_the_value_the_assignment_started_from() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let fields = SHIFT_ROWS_FIELDS;
+
+    let projection = project_embedded_c(dir.path(), "ShiftRowsSmoke", SHIFT_ROWS);
+    write_rendered(&out_dir, "ShiftRowsSmoke", &projection.files);
+    let c_run = run_c_ticks(&out_dir, "ShiftRowsSmoke", SHIFT_ROWS_DRIVER, fields.len());
+    let ref_ticks = reference_ticks("ShiftRowsSmoke", SHIFT_ROWS, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, "ShiftRowsSmoke", &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, "ShiftRowsSmoke");
+
+    assert_oracle_agrees(&oracle, &c_run, &ref_ticks, &fields, 0);
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+    for tick in 0..5 {
+        let expected = expected_shift_row((tick + 1) as f64);
+        assert_hand_row("generated C", &fields, &c_run.steps[tick].values, &expected);
+        assert_hand_row(
+            "galec oracle",
+            &fields,
+            &oracle.steps[tick].values,
+            &expected,
+        );
+    }
+}
