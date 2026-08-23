@@ -48,13 +48,9 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     /// inside it keeps its range, which is the ordinary shape of a back
     /// substitution walking its right-hand sides.
     ///
-    /// The record is built in one forward pass, so the reach of this rule is
-    /// exactly that: a range the loop body itself establishes does not reach
-    /// the body's own entry, and a local the body writes therefore starts every
-    /// loop unproven even when each value it can hold lies inside one interval.
-    /// Widening the entry to the union over the back edge is what would prove
-    /// those, and it needs a second pass over the body; keeping the entry range
-    /// without that union is the unsound direction, so the pass drops instead.
+    /// This is the answer a loop keeps when [`LoopIntegerBounds`] cannot solve
+    /// its entry ranges: dropping a range costs an export and never an access
+    /// outside an extent, so it is the direction to fall back to.
     pub(super) fn forget_assigned_local_integer_bounds(&mut self, assigned: &HashSet<String>) {
         self.local_integer_bounds
             .retain(|name, _| !assigned.contains(name));
@@ -120,15 +116,186 @@ impl ConditionalIntegerBounds {
     }
 }
 
+/// The ranges a loop leaves proven at its entry and at its exit.
+///
+/// A loop body reads what the previous iteration left, so the ranges holding
+/// where the body begins are not the ranges that held before the loop: they are
+/// the union of those with the ranges every iteration can leave behind. That
+/// union is a fixpoint, and it is solved by lowering the body speculatively from
+/// a candidate entry, joining what the body leaves into the candidate, and
+/// repeating until the candidate stops moving.
+///
+/// The equation solved is `entry = before join body(entry)`, and it is checked
+/// by equality rather than assumed: a candidate is accepted only when one more
+/// pass reproduces it exactly. That check carries the whole soundness argument
+/// and asks no monotonicity of the body's transfer. Every value reaching the
+/// body is covered by induction over the iteration count: the first iteration
+/// starts from the ranges before the loop, which the union covers, and an
+/// iteration starting inside `entry` leaves a value inside `body(entry)`, which
+/// the union covers too. The value observed after the loop is covered by those
+/// same two cases, so `entry` bounds the exit as well.
+///
+/// Non-convergence is not an approximation to settle for but a reason to refuse
+/// the ranges: a hull can widen without limit, since `k := k + 1` moves its
+/// upper end on every pass. The solver therefore stops after a fixed number of
+/// attempts and drops every range the body writes.
+pub(super) struct LoopIntegerBounds {
+    /// The ranges proven before the loop.
+    before: LocalIntegerBounds,
+    /// The solved entry ranges, or `None` when the loop keeps the drop rule.
+    carried: Option<LocalIntegerBounds>,
+    /// The names the body may assign, dropped whenever nothing is carried.
+    assigned: HashSet<String>,
+    /// Whether the emitted loop nest runs its body at least once.
+    runs_body: bool,
+}
+
+/// How many speculative passes a loop gets before its ranges are dropped.
+///
+/// Every shape that matters here settles in two: one pass to learn what the body
+/// leaves, one to confirm the union reproduces itself. The rest of the budget
+/// covers a range that travels through a chain of locals before it settles, and
+/// the budget exists at all because a widening hull need never settle.
+const LOOP_BOUNDS_PASS_BUDGET: usize = 8;
+
+/// Iterate `entry = before join body(entry)` until it reproduces itself.
+///
+/// `body_exit` answers the ranges one pass over the body leaves when it starts
+/// from the ranges it is given, and `None` when that pass cannot be made, which
+/// leaves the exit unknown and so admits no entry.
+///
+/// Answers `None` when the loop writes no range that held before it, since the
+/// union carries only what both sides prove and dropping already gives that
+/// answer; and `None` when the budget runs out, which is the fail-closed
+/// direction for a hull that keeps widening.
+fn solve_loop_entry(
+    before: &LocalIntegerBounds,
+    assigned: &HashSet<String>,
+    mut body_exit: impl FnMut(&LocalIntegerBounds) -> Option<LocalIntegerBounds>,
+) -> Option<LocalIntegerBounds> {
+    if !assigned.iter().any(|name| before.contains_key(name)) {
+        return None;
+    }
+    let mut entry = before.clone();
+    for _ in 0..LOOP_BOUNDS_PASS_BUDGET {
+        let exit = body_exit(&entry)?;
+        let joined = join_bounds(before, &exit);
+        if joined == entry {
+            return Some(entry);
+        }
+        entry = joined;
+    }
+    None
+}
+
+/// The union of two sets of proven ranges, keeping only what both prove.
+fn join_bounds(left: &LocalIntegerBounds, right: &LocalIntegerBounds) -> LocalIntegerBounds {
+    let mut joined = Some(left.clone());
+    fold_reaching_arm(&mut joined, right);
+    joined.unwrap_or_default()
+}
+
+impl LoopIntegerBounds {
+    /// Solve the loop's entry ranges and install them for the body's real pass.
+    ///
+    /// `trial` lowers the body into a throwaway buffer on a lowerer the solver
+    /// clones from the real one, so a speculative pass emits nothing and caches
+    /// nothing. A trial that fails to lower leaves the exit ranges unknown, so
+    /// the loop keeps the drop rule and the real pass reports whatever
+    /// diagnostic the body raises on its own.
+    pub(super) fn enter<'a, 'dae>(
+        lowerer: &mut ExpressionLowerer<'a, 'dae>,
+        assigned: HashSet<String>,
+        runs_body: bool,
+        mut trial: impl FnMut(&mut ExpressionLowerer<'a, 'dae>) -> Result<(), GalecTargetError>,
+    ) -> Self {
+        let mut solved = Self {
+            before: lowerer.local_integer_bounds.clone(),
+            carried: None,
+            assigned,
+            runs_body,
+        };
+        solved.carried = solved.solve(lowerer, &mut trial);
+        match &solved.carried {
+            Some(entry) => lowerer.local_integer_bounds.clone_from(entry),
+            None => lowerer.forget_assigned_local_integer_bounds(&solved.assigned),
+        }
+        solved
+    }
+
+    /// Solve the entry ranges, lowering each speculative pass on a clone.
+    ///
+    /// A pass that fails to lower leaves the exit ranges unknown, which stops
+    /// the iteration and drops the loop's ranges.
+    fn solve<'a, 'dae>(
+        &self,
+        lowerer: &ExpressionLowerer<'a, 'dae>,
+        trial: &mut impl FnMut(&mut ExpressionLowerer<'a, 'dae>) -> Result<(), GalecTargetError>,
+    ) -> Option<LocalIntegerBounds> {
+        solve_loop_entry(&self.before, &self.assigned, |entry| {
+            let mut speculative = lowerer.clone();
+            speculative.local_integer_bounds.clone_from(entry);
+            trial(&mut speculative).ok()?;
+            Some(speculative.local_integer_bounds)
+        })
+    }
+
+    /// Install the ranges that hold after the loop.
+    ///
+    /// A loop whose emitted nest always runs its body leaves exactly what the
+    /// last iteration left, so the real pass's own exit ranges stand. A loop
+    /// that may run zero times leaves the ranges from before it untouched, and
+    /// the solved entry covers that case as well as the body's exit.
+    ///
+    /// The solved entry was verified against a speculative pass, so the real
+    /// pass over the same body from the same ranges leaves the same ones.
+    /// Checking that is cheap, and it is the one place where a silent divergence
+    /// between the two passes would matter, so a mismatch refuses the model
+    /// rather than emitting a body whose indices were proven against ranges the
+    /// body does not actually maintain.
+    pub(super) fn commit(
+        mut self,
+        lowerer: &mut ExpressionLowerer<'_, '_>,
+        span: Span,
+    ) -> Result<(), GalecTargetError> {
+        let Some(entry) = self.carried.take() else {
+            lowerer.forget_assigned_local_integer_bounds(&self.assigned);
+            return Ok(());
+        };
+        if join_bounds(&self.before, &lowerer.local_integer_bounds) != entry {
+            return Err(unsupported(
+                "loop-integer-bounds",
+                "the loop body left ranges its verified entry does not cover".to_owned(),
+                span,
+            ));
+        }
+        if !self.runs_body {
+            lowerer.local_integer_bounds = entry;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{LocalIntegerBounds, fold_reaching_arm};
+    use std::collections::HashSet;
+
+    use super::{LOOP_BOUNDS_PASS_BUDGET, LocalIntegerBounds, fold_reaching_arm, solve_loop_entry};
 
     fn bounds(entries: &[(&str, (i64, i64))]) -> LocalIntegerBounds {
         entries
             .iter()
             .map(|(name, range)| ((*name).to_owned(), *range))
             .collect()
+    }
+
+    fn written(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    /// The range a body leaves for `row`, whatever it was given.
+    fn leaves(exit: (i64, i64)) -> impl FnMut(&LocalIntegerBounds) -> Option<LocalIntegerBounds> {
+        move |_| Some(bounds(&[("row", exit)]))
     }
 
     fn join(arms: &[LocalIntegerBounds]) -> LocalIntegerBounds {
@@ -172,10 +339,83 @@ mod tests {
     #[test]
     fn a_local_no_arm_writes_keeps_its_range() {
         let entry = bounds(&[("column", (1, 4))]);
-        let mut written = entry.clone();
-        written.insert("row".to_owned(), (2, 2));
-        let joined = join(&[written, entry]);
+        let mut assigned_arm = entry.clone();
+        assigned_arm.insert("row".to_owned(), (2, 2));
+        let joined = join(&[assigned_arm, entry]);
         assert_eq!(joined.get("column"), Some(&(1, 4)));
         assert_eq!(joined.get("row"), None);
+    }
+
+    #[test]
+    fn the_entry_spans_the_range_before_the_loop_and_the_one_the_body_leaves() {
+        let before = bounds(&[("row", (1, 1))]);
+        let entry = solve_loop_entry(&before, &written(&["row"]), leaves((1, 3)));
+        assert_eq!(entry, Some(bounds(&[("row", (1, 3))])));
+    }
+
+    #[test]
+    fn an_entry_the_body_reproduces_settles_on_the_first_pass() {
+        let before = bounds(&[("row", (1, 4))]);
+        let mut passes = 0;
+        let entry = solve_loop_entry(&before, &written(&["row"]), |given| {
+            passes += 1;
+            Some(given.clone())
+        });
+        assert_eq!(entry, Some(bounds(&[("row", (1, 4))])));
+        assert_eq!(passes, 1);
+    }
+
+    #[test]
+    fn a_range_absent_before_the_loop_is_never_carried_into_it() {
+        let before = bounds(&[("column", (1, 4))]);
+        let mut passes = 0;
+        let entry = solve_loop_entry(&before, &written(&["row"]), |given| {
+            passes += 1;
+            Some(given.clone())
+        });
+        assert_eq!(entry, None);
+        assert_eq!(passes, 0);
+    }
+
+    #[test]
+    fn a_range_the_body_leaves_unproven_settles_on_dropping_it() {
+        let before = bounds(&[("row", (1, 1))]);
+        let entry = solve_loop_entry(&before, &written(&["row"]), |_| {
+            Some(LocalIntegerBounds::new())
+        });
+        assert_eq!(entry, Some(LocalIntegerBounds::new()));
+    }
+
+    #[test]
+    fn a_hull_that_keeps_widening_spends_its_budget_and_drops() {
+        let before = bounds(&[("row", (0, 0))]);
+        let mut passes = 0;
+        let entry = solve_loop_entry(&before, &written(&["row"]), |given| {
+            passes += 1;
+            let (_, maximum) = *given.get("row")?;
+            Some(bounds(&[("row", (maximum + 1, maximum + 1))]))
+        });
+        assert_eq!(entry, None);
+        assert_eq!(passes, LOOP_BOUNDS_PASS_BUDGET);
+    }
+
+    #[test]
+    fn a_pass_that_cannot_be_made_drops_the_ranges() {
+        let before = bounds(&[("row", (1, 1))]);
+        let entry = solve_loop_entry(&before, &written(&["row"]), |_| None);
+        assert_eq!(entry, None);
+    }
+
+    #[test]
+    fn a_settled_entry_covers_the_range_before_the_loop() {
+        let before = bounds(&[("row", (7, 9))]);
+        let entry = solve_loop_entry(&before, &written(&["row"]), leaves((2, 3)))
+            .expect("a body leaving a constant range settles");
+        let (minimum, maximum) = entry["row"];
+        assert!(
+            minimum <= 7 && maximum >= 9,
+            "entry {entry:?} misses before"
+        );
+        assert!(minimum <= 2 && maximum >= 3, "entry {entry:?} misses exit");
     }
 }

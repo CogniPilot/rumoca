@@ -34,7 +34,7 @@ use rumoca_ir_galec::package::AlgorithmCodePackage;
 
 use clock_schedule::lower_clock_schedule;
 use expression_helpers::*;
-use local_integer_bounds::{ConditionalIntegerBounds, LocalIntegerBounds};
+use local_integer_bounds::{ConditionalIntegerBounds, LocalIntegerBounds, LoopIntegerBounds};
 use pre_references::referenced_pre_variables;
 use start::{StartShape, StartValues};
 
@@ -1146,6 +1146,9 @@ fn combine_action_guards<'dae>(
     })
 }
 
+/// A speculative pass over a loop body clones the whole lowerer, so the trial
+/// leaves no temporary, cache entry or emitted statement behind.
+#[derive(Clone)]
 struct ExpressionLowerer<'a, 'dae> {
     view: dae::DaeView<'dae>,
     by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
@@ -1202,6 +1205,7 @@ struct ExpressionLowerer<'a, 'dae> {
     state_shapes_by_name: Option<HashMap<String, (Vec<u32>, gast::ScalarType)>>,
 }
 
+#[derive(Clone)]
 struct CallFrame<'dae> {
     call: dae::ExprId<'dae>,
     function: dae::FunctionId<'dae>,
@@ -1222,11 +1226,13 @@ struct FunctionAssertionCallSite {
     span: Span,
 }
 
+#[derive(Clone)]
 struct ComprehensionFrame {
     domain: u32,
     binders: Vec<gast::Expression>,
 }
 
+#[derive(Clone)]
 struct LoopIndexBound {
     name: gast::Name,
     minimum: i64,

@@ -255,6 +255,91 @@ algorithm
 end GalecProdGuardedTensorContraction;
 ";
 
+/// A back substitution whose guard the DAE pushes into the loops.
+///
+/// `if accepted then for ... end if` becomes a guard on each statement inside
+/// the loop, so the write index is assigned under a guard while the loop entry
+/// carries the value the previous iteration left. Proving the write in range
+/// therefore needs the loop-entry range to be the union over the back edge, not
+/// just the range established before the loop.
+const PUSHED_GUARD_BACK_SUBSTITUTION_FIXTURE: &str = "\
+function backSubstitution
+  input Real rightHandSide[3, 2];
+  input Boolean accepted;
+  output Real x[3, 2];
+protected
+  Integer n = 3;
+  Integer rightHandSides = 2;
+  Integer pivotRow;
+algorithm
+  x := zeros(n, rightHandSides);
+  pivotRow := 1;
+  for reverseIndex in 1:n loop
+    if accepted then
+      pivotRow := n - reverseIndex + 1;
+    end if;
+    for rhsIndex in 1:rightHandSides loop
+      if accepted then
+        x[pivotRow, rhsIndex] := rightHandSide[pivotRow, rhsIndex];
+      end if;
+    end for;
+  end for;
+end backSubstitution;
+
+model GalecProdPushedGuardBackSubstitution
+  constant Real dt = 0.02;
+  discrete output Real y(start = 0.0);
+protected
+  discrete Real solution[3, 2];
+algorithm
+  when sample(0.0, dt) then
+    solution := backSubstitution([1.0, 2.0; 3.0, 4.0; 5.0, 6.0], true);
+    y := solution[1, 1] + solution[3, 2];
+  end when;
+end GalecProdPushedGuardBackSubstitution;
+";
+
+/// The same shape with the write index carrying no range into the loop.
+///
+/// `pivotRow` holds its declared default where the loop begins, so the union
+/// over the back edge spans zero as well as the guarded assignment's range, and
+/// zero is outside the extent. Only the correlation between the two guards
+/// would rule it out, and that correlation is not modeled, so the write is
+/// refused. Pinned so the day it is admitted is a reviewed diff.
+const UNSEEDED_GUARD_BACK_SUBSTITUTION_FIXTURE: &str = "\
+function backSubstitution
+  input Real rightHandSide[3, 2];
+  input Boolean accepted;
+  output Real x[3, 2];
+protected
+  Integer n = 3;
+  Integer rightHandSides = 2;
+  Integer pivotRow;
+algorithm
+  x := zeros(n, rightHandSides);
+  if accepted then
+    for reverseIndex in 1:n loop
+      pivotRow := n - reverseIndex + 1;
+      for rhsIndex in 1:rightHandSides loop
+        x[pivotRow, rhsIndex] := rightHandSide[pivotRow, rhsIndex];
+      end for;
+    end for;
+  end if;
+end backSubstitution;
+
+model GalecProdUnseededGuardBackSubstitution
+  constant Real dt = 0.02;
+  discrete output Real y(start = 0.0);
+protected
+  discrete Real solution[3, 2];
+algorithm
+  when sample(0.0, dt) then
+    solution := backSubstitution([1.0, 2.0; 3.0, 4.0; 5.0, 6.0], true);
+    y := solution[1, 1] + solution[3, 2];
+  end when;
+end GalecProdUnseededGuardBackSubstitution;
+";
+
 const UNSUPPORTED_GALEC_BUILTIN_FIXTURE: &str = "\
 model GalecProdUnsupportedBuiltin
   constant Real dt = 0.02;
@@ -524,6 +609,49 @@ fn guarded_tensor_contractions_compile_as_strict_c99_without_eager_out_of_bounds
         String::from_utf8_lossy(&compile.stderr),
         fs::read_to_string(source).expect("read generated source")
     );
+}
+
+#[test]
+fn a_guard_pushed_into_a_loop_keeps_the_write_index_proven_across_the_back_edge() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "GalecProdPushedGuardBackSubstitution";
+    let file = write_fixture(dir.path(), model, PUSHED_GUARD_BACK_SUBSTITUTION_FIXTURE);
+    let output = run_compile_galec_production(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "a guard pushed into a loop should keep its write index proven.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let alg = fs::read_to_string(
+        out_dir
+            .join(model)
+            .join("AlgorithmCode")
+            .join(format!("{model}.alg")),
+    )
+    .expect("read generated Algorithm Code");
+    // The write is dispatched over the proven range, so the last arm carries no
+    // test of its own: that arm is only reachable for an index inside it.
+    assert!(alg.contains("if pivotRow == 1 then"), "{alg}");
+    assert!(alg.contains("elseif pivotRow == 2 then"), "{alg}");
+}
+
+#[test]
+fn a_write_index_the_loop_entry_cannot_bound_is_still_refused() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "GalecProdUnseededGuardBackSubstitution";
+    let file = write_fixture(dir.path(), model, UNSEEDED_GUARD_BACK_SUBSTITUTION_FIXTURE);
+    let output = run_compile_galec_production(&file, &out_dir);
+    assert!(
+        !output.status.success(),
+        "an index whose loop entry spans zero must not be admitted"
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(stderr.contains("EGT017"), "{stderr}");
+    assert!(stderr.contains("dynamic-array-index"), "{stderr}");
 }
 
 #[test]

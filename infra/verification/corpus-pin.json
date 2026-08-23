@@ -133,14 +133,14 @@
       "corpus": "flight-models",
       "model": "Vehicles.Rdd2.Controller",
       "entry_point": "Vehicles/package.mo",
-      "why": "Flight controller; pinned as a refusal until GALEC lowering supports its dynamic index, so the day it compiles is a reviewed diff",
+      "why": "Flight controller. Its dynamic write index is now proven: the loop-entry integer ranges are solved as a fixpoint over the back edge, which closes EGT017 for the back substitution in LinearAlgebra.solve. What refuses it now is the allocation matrix, a dependent parameter bound to a call: Startup may call builtins only (EG028), a function only Startup calls is unreachable from DoStep (EG027), and identity(4) reaches a Real[:, :] formal as Integer[:, :] (EG017). Pinned as a refusal so the day it compiles is a reviewed diff. Compiling is not enough to flip this row: the emitted LinearAlgebra.solve is currently wrong, because the scalar local `factor` is scheduled after the two array updates that consume it and its right-hand side is substituted into them, so the matrix update re-reads matrix[row, column] after that element has been zeroed and eliminates only the pivot column. solve then returns a matrix that is not the inverse while reporting accepted = true. That defect predates this pin and is not about integer ranges; the allocation matrix must be checked numerically before this row becomes a success",
       "check": {
         "kind": "compile",
         "target": "galec-production"
       },
       "expect": {
         "outcome": "refused",
-        "diagnostic": "EGT017"
+        "diagnostic": "EG017"
       }
     },
     {

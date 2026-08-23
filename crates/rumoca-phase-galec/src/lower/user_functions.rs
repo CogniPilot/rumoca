@@ -500,13 +500,30 @@ fn lower_function_statement<'a, 'dae>(
             statements: body,
             provenance,
         } => {
-            // A range proven before the loop does not hold inside it, and one
-            // proven inside does not survive a loop that may not run, but only
-            // for the locals the body actually writes.
+            // The ranges a reader finds inside the body are the union of what
+            // held before the loop with what one iteration can leave behind, so
+            // the entry ranges are solved as a fixpoint over speculative passes.
+            let span = provenance.span();
             let assigned = assigned_local_names(view, body.clone());
-            lowerer.forget_assigned_local_integer_bounds(&assigned);
-            lower_function_for(view, fold, body, provenance.span(), lowerer, statements)?;
-            lowerer.forget_assigned_local_integer_bounds(&assigned);
+            let speculative_body = body.clone();
+            let carried = LoopIntegerBounds::enter(
+                lowerer,
+                assigned,
+                function_loop_runs_body(view, fold),
+                |speculative| {
+                    let mut discarded = Vec::new();
+                    lower_function_for(
+                        view,
+                        fold,
+                        speculative_body.clone(),
+                        span,
+                        speculative,
+                        &mut discarded,
+                    )
+                },
+            );
+            lower_function_for(view, fold, body, span, lowerer, statements)?;
+            carried.commit(lowerer, span)?;
             lowerer.finish_statement_group();
         }
     }
@@ -1225,6 +1242,32 @@ fn lower_function_for<'a, 'dae>(
     lowerer.loop_index_bounds.truncate(bounds_depth);
     statements.extend(wrap_function_loops(domain, names, lowered_body, span));
     Ok(())
+}
+
+/// Whether the loop nest emitted for one fold always runs its body.
+///
+/// Every binder is emitted with a literal start, stop and step, so the nest runs
+/// its body exactly when each binder's range holds at least one value. A fold
+/// with no binder emits no loop at all and so runs its body once.
+fn function_loop_runs_body<'dae>(
+    view: dae::DaeView<'dae>,
+    fold: dae::FunctionFoldId<'dae>,
+) -> bool {
+    let Some(fold_view) = view.function_fold(fold) else {
+        return false;
+    };
+    let Some(domain) = view.domain(fold_view.domain()) else {
+        return false;
+    };
+    domain
+        .structured()
+        .binders
+        .iter()
+        .all(|binder| match binder.step.signum() {
+            1 => binder.lower <= binder.upper,
+            -1 => binder.lower >= binder.upper,
+            _ => false,
+        })
 }
 
 fn function_loop_names(
