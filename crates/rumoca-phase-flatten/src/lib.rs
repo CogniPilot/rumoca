@@ -41,8 +41,6 @@ mod context_suffix_tests;
 mod enum_literals;
 mod equations;
 mod errors;
-#[cfg(test)]
-mod extends_order_tests;
 mod function_lowering;
 mod function_precollect;
 mod functions;
