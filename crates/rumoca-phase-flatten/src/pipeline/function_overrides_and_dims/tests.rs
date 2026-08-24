@@ -16,6 +16,7 @@ mod inherited_alias_rewrite;
 mod package_alias_calls;
 mod package_member_scope;
 mod redeclare_modifier_actuals;
+mod redeclared_slot_selection;
 mod reference_capture_guards;
 mod selection_diagnostics;
 
@@ -68,6 +69,7 @@ fn override_target_with_active(
         class_type,
         active,
         modifier_args: Vec::new(),
+        function_slot: FunctionSlot::Unrelated,
     }
 }
 

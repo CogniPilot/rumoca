@@ -414,6 +414,24 @@ pub enum FlattenError {
         #[label("assertion condition is false at every initialization")]
         span: Span,
     },
+
+    /// A validated `redeclare` of a replaceable function cannot be honored.
+    ///
+    /// The compiler's obligation is to preserve the redeclared meaning or to
+    /// refuse; silently calling the declared default is never acceptable.
+    #[error("unsupported replaceable-function redeclare for `{function}`: {reason}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF031),
+        help(
+            "this redeclare shape was validated but cannot be honored yet; the compiler refuses rather than silently calling the declared default implementation"
+        )
+    )]
+    UnhonoredFunctionRedeclare {
+        function: String,
+        reason: String,
+        #[label("call would silently use the declared default")]
+        span: Span,
+    },
 }
 
 impl FlattenError {
@@ -514,6 +532,18 @@ impl FlattenError {
         Self::InconsistentFunctionCallKind {
             function: function.into(),
             instance: instance.index(),
+            span,
+        }
+    }
+
+    pub fn unhonored_function_redeclare(
+        function: impl Into<String>,
+        reason: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::UnhonoredFunctionRedeclare {
+            function: function.into(),
+            reason: reason.into(),
             span,
         }
     }
@@ -713,6 +743,7 @@ impl PhaseError for FlattenError {
             | Self::MissingResolvedClassMetadata { span, .. }
             | Self::InconsistentFunctionReference { span, .. }
             | Self::MissingFunctionSelectionIdentity { span, .. }
+            | Self::UnhonoredFunctionRedeclare { span, .. }
             | Self::UnsupportedExpandableConnectorAugmentation { span, .. }
             | Self::CyclicConstantBinding { span, .. }
             | Self::InvalidConnectionGraph { span, .. }

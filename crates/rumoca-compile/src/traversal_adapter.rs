@@ -160,6 +160,23 @@ impl<'tree, 'index, 'name> ClassDependencyCollector<'tree, 'index, 'name> {
         if let Some(constrainedby) = &class.constrainedby {
             self.visit_type_name(constrainedby, TypeNameContext::ClassConstrainedBy)?;
         }
+        // An element redeclare (`redeclare function F = X;`, MLS §7.3) is
+        // selected through the inherited slot it replaces, never by its own
+        // name, so reference-based reachability cannot see it. It is part of
+        // its parent's meaning: retain it (and what it aliases) whenever the
+        // parent is retained, or strict pruning silently reverts the
+        // redeclare to the declared default.
+        for nested in class.classes.values().filter(|nested| nested.is_redeclare) {
+            let retained = nested.def_id.into_iter().chain(
+                nested
+                    .extends
+                    .iter()
+                    .filter_map(|extend| extend.base_def_id),
+            );
+            for def_id in retained {
+                self.add_class_dep_by_def_id(def_id);
+            }
+        }
         for extend in &class.extends {
             self.collect_extend(extend)?;
         }

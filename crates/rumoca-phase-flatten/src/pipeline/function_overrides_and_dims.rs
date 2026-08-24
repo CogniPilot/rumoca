@@ -67,7 +67,7 @@ pub(crate) use override_scope::{
 };
 pub(crate) use override_target::{ComponentOverrideMap, OverrideTarget};
 use override_target::{
-    FunctionModifierArg, OverrideContext, OverrideFunctionMap, ResolvedClassRef,
+    FunctionModifierArg, FunctionSlot, OverrideContext, OverrideFunctionMap, ResolvedClassRef,
     function_modifier_arg_from_ast, is_receiver_alias_type, resolved_class_ref_for_def_id,
 };
 pub(crate) use package_chain::{
@@ -76,8 +76,10 @@ pub(crate) use package_chain::{
 };
 use package_chain::{package_chain_contains_def_id, resolve_member_in_package_chain_exposed};
 use predefined_callables::PredefinedCallableIds;
-use redeclare_aliases::collect_extends_redeclare_aliases_for_class;
 pub(crate) use redeclare_aliases::extends_class_redeclare_target;
+use redeclare_aliases::{
+    collect_element_redeclare_aliases_for_class, collect_extends_redeclare_aliases_for_class,
+};
 use replaceable_modifiers::{append_replaceable_function_modifier_args, single_component_ref_name};
 pub(crate) use rewrite_context::FunctionOverrideRewriteContext;
 use scoped_member_name::scoped_override_component_member_name;

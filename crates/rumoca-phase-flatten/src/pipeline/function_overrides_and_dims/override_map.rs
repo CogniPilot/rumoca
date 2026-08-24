@@ -33,6 +33,12 @@ fn component_overrides_with_cache(
                 overrides.get(&class_override.alias),
                 &target_ref,
             );
+            let function_slot =
+                if target_ref.class_def.class_type == rumoca_core::ClassType::Function {
+                    FunctionSlot::Exact(class_override.alias_def_id)
+                } else {
+                    FunctionSlot::Unrelated
+                };
             overrides.insert(
                 class_override.alias.clone(),
                 OverrideTarget::from_resolved_with_modifier_args(
@@ -40,7 +46,8 @@ fn component_overrides_with_cache(
                     target_ref,
                     active,
                     class_override_modifier_args(&class_override.modifier_args),
-                ),
+                )
+                .with_function_slot(function_slot),
             );
         }
     }

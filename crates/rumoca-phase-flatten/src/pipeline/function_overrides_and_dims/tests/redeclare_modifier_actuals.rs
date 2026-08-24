@@ -77,6 +77,7 @@ fn flow_characteristic_fixture() -> FlowCharacteristicFixture {
             def_id: quadratic_def,
             class_type: ClassType::Function,
             active: true,
+            function_slot: FunctionSlot::Unrelated,
             modifier_args: vec![FunctionModifierArg {
                 name: "V_flow_nominal".to_string(),
                 value: resolved_ast_var(&[("V_flow_op", volume_flow_operating_point_def)]),

@@ -290,6 +290,16 @@ fn rewritten_selected_function_reference(
         CallOccurrenceIdentity::SelectedImplementation => rewrite.selection.implementation,
         CallOccurrenceIdentity::ExposedDeclaration => rewrite.selection.exposure,
     };
+    if rewrite.spell_exact_target
+        && let Some(respelled) = retarget_qualified_function_reference(
+            original,
+            &rewrite.display_name,
+            target_def_id,
+            class_index,
+        )
+    {
+        return respelled;
+    }
     if let Some((package_name, package_def_id)) = &rewrite.exposed_package {
         return retarget_exposed_function_reference(
             original,
@@ -301,6 +311,47 @@ fn rewritten_selected_function_reference(
         );
     }
     retarget_function_reference(original, rewrite.display_name.clone(), target_def_id)
+}
+
+/// Respell `original` as the qualified class path of `target_def_id`
+/// (enclosing classes outermost first, each segment carrying its exact
+/// `DefId`). Returns `None` unless the rebuilt spelling is exactly
+/// `display_name`, so an inconsistent occurrence identity can never be
+/// minted here.
+fn retarget_qualified_function_reference(
+    original: &rumoca_core::Reference,
+    display_name: &str,
+    target_def_id: rumoca_core::DefId,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+) -> Option<rumoca_core::Reference> {
+    let original_ref = original.component_ref()?;
+    let leaf_span = original_ref.parts().last()?.span;
+    let mut chain = vec![target_def_id];
+    let mut parent = class_index.parent_def_id(target_def_id);
+    while let Some(parent_def_id) = parent {
+        chain.push(parent_def_id);
+        parent = class_index.parent_def_id(parent_def_id);
+    }
+    chain.reverse();
+    let mut parts = Vec::with_capacity(chain.len());
+    for def_id in chain {
+        let class_def = class_index.get(def_id)?;
+        parts.push(rumoca_core::ComponentRefPart {
+            ident: class_def.name.text.to_string(),
+            span: leaf_span,
+            subs: Vec::new(),
+            def_id,
+        });
+    }
+    let component_ref = original_ref.with_replaced_parts(parts).ok()?;
+    if component_ref.to_var_name().as_str() != display_name {
+        return None;
+    }
+    Some(
+        original
+            .with_rewritten_component_reference(display_name.to_string(), component_ref)
+            .without_resolved_function(),
+    )
 }
 
 pub(super) fn retarget_function_reference(

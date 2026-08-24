@@ -471,6 +471,7 @@ fn inherited_exposure_and_explicit_redeclare_use_exact_precedence() {
             def_id: implementation,
             class_type: ClassType::Function,
             active: true,
+            function_slot: FunctionSlot::Unrelated,
             modifier_args: vec![FunctionModifierArg {
                 name: "g0".to_string(),
                 value: rumoca_ir_ast::Expression::Terminal {

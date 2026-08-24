@@ -23,6 +23,8 @@ pub(super) fn collect_extends_redeclare_aliases_for_class(
                 continue;
             };
             if is_receiver_alias_type(&target_ref.class_def.class_type) {
+                let function_slot =
+                    extends_function_slot(class_index, class_scope, ext, &alias, &target_ref);
                 let active_redeclare = leaf_segment(&target_ref.name) != alias;
                 overrides.insert(
                     alias.clone(),
@@ -31,10 +33,76 @@ pub(super) fn collect_extends_redeclare_aliases_for_class(
                         target_ref,
                         active_redeclare,
                         redeclare_value_modifier_args(value),
-                    ),
+                    )
+                    .with_function_slot(function_slot),
                 );
             }
         }
+    }
+}
+
+/// Resolve the replaceable function declaration slot that an
+/// `extends Base(redeclare F = X)` modification fills: the nested function
+/// class named `alias` exposed by `Base`'s inheritance chain. Redeclares
+/// whose target is not a function carry no function slot.
+fn extends_function_slot(
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    class_scope: &str,
+    ext: &rumoca_ir_ast::Extend,
+    alias: &str,
+    target_ref: &ResolvedClassRef<'_>,
+) -> FunctionSlot {
+    if target_ref.class_def.class_type != rumoca_core::ClassType::Function {
+        return FunctionSlot::Unrelated;
+    }
+    let base_def_id = ext.base_def_id.or(ext.base_name.def_id).or_else(|| {
+        resolve_class_in_scope_indexed(class_index, &ext.base_name.to_string(), class_scope)
+            .0
+            .and_then(|class_def| class_def.def_id)
+    });
+    let Some(base_def_id) = base_def_id else {
+        return FunctionSlot::Unresolved;
+    };
+    match exact_package_function_exposure(
+        class_index,
+        base_def_id,
+        alias,
+        &mut FxHashSet::default(),
+    ) {
+        Ok(Some(slot_def_id)) => FunctionSlot::Exact(slot_def_id),
+        Ok(None) | Err(_) => FunctionSlot::Unresolved,
+    }
+}
+
+/// Collect element redeclares written in `class_def`'s own body
+/// (`redeclare function F = X;`, MLS §7.3): nested function classes marked
+/// `redeclare`, keyed by the inherited replaceable slot they replace.
+pub(super) fn collect_element_redeclare_aliases_for_class(
+    tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    class_def: &rumoca_ir_ast::ClassDef,
+    overrides: &mut rustc_hash::FxHashMap<String, OverrideTarget>,
+) {
+    for (alias, nested) in &class_def.classes {
+        if !nested.is_redeclare || nested.class_type != rumoca_core::ClassType::Function {
+            continue;
+        }
+        let Some(nested_def_id) = nested.def_id else {
+            continue;
+        };
+        let Some(target_ref) = resolved_class_ref_for_def_id(tree, class_index, nested_def_id)
+        else {
+            continue;
+        };
+        let function_slot = match nested.redeclare_target_def_id {
+            Some(slot_def_id) => FunctionSlot::Exact(slot_def_id),
+            None => FunctionSlot::Unresolved,
+        };
+        overrides.insert(
+            alias.clone(),
+            OverrideTarget::from_resolved(alias.clone(), target_ref, true)
+                .with_function_slot(function_slot),
+        );
     }
 }
 

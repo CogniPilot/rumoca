@@ -48,6 +48,36 @@ pub(crate) fn rewrite_function_overrides_in_when_equation_with_ctx(
     Ok(())
 }
 
+/// Scope of a flat when chain: the component path of the first variable it
+/// assigns or reinitializes. When-chain equations belong to exactly one class
+/// instance, so every target shares that instance's flat prefix; a chain with
+/// no targeted variable rewrites under the root scope.
+fn when_chain_scope_path(chain: &rumoca_ir_flat::WhenChain) -> ComponentPath {
+    fn equation_target(eq: &rumoca_ir_flat::WhenEquation) -> Option<&rumoca_core::VarName> {
+        match eq {
+            flat::WhenEquation::Assign { target, .. } => Some(target),
+            flat::WhenEquation::Reinit { state, .. } => Some(state),
+            flat::WhenEquation::FunctionCallOutputs { outputs, .. } => outputs.first(),
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => branches
+                .iter()
+                .flat_map(|(_, equations)| equations.iter())
+                .chain(else_branch.iter().flatten())
+                .find_map(equation_target),
+            flat::WhenEquation::Assert { .. } | flat::WhenEquation::Terminate { .. } => None,
+        }
+    }
+    chain
+        .branches()
+        .flat_map(|branch| branch.equations.iter())
+        .find_map(equation_target)
+        .map(|target| ComponentPath::from_flat_path(target.as_str()))
+        .unwrap_or_else(ComponentPath::root)
+}
+
 fn rewrite_function_overrides_in_when_branch_with_ctx(
     branch: &mut rumoca_ir_flat::WhenBranch,
     ctx: &FunctionOverrideRewriteContext<'_>,
@@ -307,8 +337,24 @@ pub(crate) fn rewrite_function_overrides_in_flat_model(
             rewrite_function_overrides_in_statement_with_ctx(stmt, &root_ctx)?;
         }
     }
+    let mut when_contexts = rustc_hash::FxHashMap::<ComponentPath, OverrideContext>::default();
     for chain in &mut flat.when_chains {
-        rewrite_function_overrides_in_when_chain_with_ctx(chain, &root_ctx)?;
+        let scope_path = when_chain_scope_path(chain);
+        let cache_key = override_context_cache_key(&scope_path, component_override_map);
+        let (override_packages, override_functions) = when_contexts
+            .entry(cache_key.clone())
+            .or_insert_with_key(|scope| {
+                override_context_for_component_path(scope, component_override_map)
+            });
+        let ctx = FunctionOverrideRewriteContext::new(
+            tree,
+            class_index,
+            override_packages,
+            override_functions,
+        )
+        .with_active_scope(cache_key)
+        .with_component_member_scope(component_members);
+        rewrite_function_overrides_in_when_chain_with_ctx(chain, &ctx)?;
     }
     rewrite_function_overrides_in_flat_functions(
         flat,
@@ -798,6 +844,7 @@ pub(super) fn function_package_override_chain(
         class_type: class_def.class_type.clone(),
         active: false,
         modifier_args: Vec::new(),
+        function_slot: FunctionSlot::Unrelated,
     }])
 }
 

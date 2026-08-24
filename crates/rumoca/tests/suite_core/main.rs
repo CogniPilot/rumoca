@@ -87,6 +87,7 @@ mod override_promoted_array_mask;
 mod periodic_source_counter_regression;
 mod pipeline_test;
 mod prepared_vectors_refresh;
+mod replaceable_function_redeclare;
 mod semi_linear_zero_flow;
 // quadrotor_se23_regression_test.rs lives in `suite_heavy_solve`
 // (required-features = ["heavy-solve-tests"]): until the compact Solve

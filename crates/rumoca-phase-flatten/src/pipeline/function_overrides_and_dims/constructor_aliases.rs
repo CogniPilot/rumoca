@@ -96,6 +96,7 @@ pub(crate) fn collect_component_constructor_aliases_for_class(
         class_scope,
         overrides,
     );
+    collect_element_redeclare_aliases_for_class(tree, class_index, class_def, overrides);
 
     for (component_name, component) in &class_def.components {
         let Some(target_ref) =
