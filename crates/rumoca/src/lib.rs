@@ -53,6 +53,7 @@ pub(crate) mod packaging;
 pub(crate) mod sim_bench;
 #[cfg(feature = "scheduled-sim")]
 pub(crate) mod sim_inspect;
+pub(crate) mod standard_modelica;
 pub(crate) mod target_manifest;
 #[cfg(feature = "scheduled-sim")]
 pub(crate) mod targets_cmd;

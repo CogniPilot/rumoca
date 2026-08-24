@@ -249,6 +249,12 @@ const ALLOWED_PHASE_TO_PHASE_DEPENDENCIES: &[(&str, &str, &str)] = &[
         "rumoca-phase-structural",
         "structural analysis is a shared prerequisite consumed by both lowering targets",
     ),
+    (
+        "rumoca-phase-autodiff",
+        "rumoca-phase-parse",
+        "Jacobian synthesis emits Modelica text and reads it back through the one parser, so \
+parsing is a prerequisite service here and not a lowering stage",
+    ),
 ];
 
 #[test]

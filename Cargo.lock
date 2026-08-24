@@ -4231,6 +4231,7 @@ dependencies = [
  "rumoca-ir-flat",
  "rumoca-ir-galec",
  "rumoca-ir-solve",
+ "rumoca-phase-autodiff",
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
@@ -4367,6 +4368,7 @@ dependencies = [
  "rumoca-ir-dae",
  "rumoca-ir-flat",
  "rumoca-ir-solve",
+ "rumoca-phase-autodiff",
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
@@ -4593,6 +4595,15 @@ dependencies = [
  "rumoca-sim",
  "rumoca-solver",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rumoca-phase-autodiff"
+version = "0.10.0"
+dependencies = [
+ "rumoca-core",
+ "rumoca-ir-ast",
+ "rumoca-phase-parse",
 ]
 
 [[package]]

@@ -221,7 +221,14 @@ impl Session {
         let revision = self.bump_revision();
         record_document_parse();
         let parse_started = maybe_start_timer();
-        let parsed = match rumoca_phase_parse::parse_to_ast(content, uri) {
+        // The stored text is the expanded text: a document's spans are offsets
+        // into the text it carries, so the expansion has to happen before the
+        // parse that mints them.
+        let content = crate::parse::expanded_document_source(content, uri).map_err(|refusal| {
+            record_document_parse_error();
+            anyhow::Error::new(refusal)
+        })?;
+        let parsed = match crate::parse::parse_source_to_ast(&content, uri) {
             Ok(parsed) => parsed,
             Err(error) => {
                 if let Some(elapsed) = maybe_elapsed_duration(parse_started) {
@@ -238,7 +245,7 @@ impl Session {
         self.insert_document(
             Document::new(
                 uri.to_string(),
-                content.to_string(),
+                content.into_owned(),
                 crate::parse::SyntaxFile::from_parsed(parsed),
             ),
             revision,

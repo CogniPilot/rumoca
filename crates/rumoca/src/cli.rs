@@ -305,6 +305,13 @@ pub struct CompileArgs {
     #[arg(long, value_name = "TARGET")]
     pub target: Option<String>,
 
+    /// Write the portable standard Modelica this source expands to: every
+    /// `jacobian(f(a, b), a)` replaced by the generated function it mints. The
+    /// result carries no extension construct, so any Modelica tool elaborates
+    /// exactly what this compiler compiled.
+    #[arg(long, conflicts_with_all = ["emit", "target", "inspect"])]
+    pub emit_standard_modelica: bool,
+
     /// Pick which IR a raw template `--target` receives (default dae). Only
     /// meaningful when --target is a `.jinja` file, e.g. `--target my.jinja
     /// --phase flat`.
@@ -1053,6 +1060,9 @@ fn run_config_init() -> Result<()> {
 
 fn run_compile(args: CompileArgs) -> Result<()> {
     init_debug_tracing(&args.diagnostics)?;
+    if args.emit_standard_modelica {
+        return crate::standard_modelica::run(&args.input.model_file, args.output.as_deref());
+    }
     invalidate_previous_compile_output(&args)?;
     if let Some(emit) = args.emit
         && matches!(emit.phase(), CompilePhase::Ast | CompilePhase::Flat)
@@ -1178,7 +1188,7 @@ fn invalidate_previous_compile_output(args: &CompileArgs) -> Result<()> {
     Ok(())
 }
 
-fn output_names_input_file(output: &Path, input: &Path) -> Result<bool> {
+pub(crate) fn output_names_input_file(output: &Path, input: &Path) -> Result<bool> {
     let output = if output.exists() {
         std::fs::canonicalize(output)
             .with_context(|| format!("Resolve output path '{}'", output.display()))?

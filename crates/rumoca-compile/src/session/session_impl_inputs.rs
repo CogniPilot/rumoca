@@ -256,8 +256,15 @@ impl Session {
             .and_then(|doc| doc.parsed().cloned());
         record_document_parse();
         let parse_started = maybe_start_timer();
-        let syntax = crate::parse::parse_source_to_syntax(content, uri)
-            .with_fallback_parsed(previous_parsed.clone());
+        // A refused expansion keeps the document's own text and reports the
+        // refusal where a parse error would go: the stored text and the stored
+        // tree always describe the same program.
+        let (content, refusal) = match crate::parse::expanded_document_source(content, uri) {
+            Ok(expanded) => (expanded, None),
+            Err(refusal) => (std::borrow::Cow::Borrowed(content), Some(refusal)),
+        };
+        let syntax =
+            expanded_syntax(&content, uri, refusal).with_fallback_parsed(previous_parsed.clone());
         if let Some(elapsed) = maybe_elapsed_duration(parse_started) {
             record_document_parse_duration(elapsed);
         }
@@ -270,7 +277,7 @@ impl Session {
             true
         };
         let parse_error = syntax.parse_error().map(ToString::to_string);
-        let document = Document::new(uri.to_string(), content.to_string(), syntax);
+        let document = Document::new(uri.to_string(), content.into_owned(), syntax);
         let source_root_edit_invalidation = self.classify_source_root_edit_invalidation(
             uri,
             &document,
@@ -386,4 +393,23 @@ fn accumulate_qualified_name_ancestors(
         };
         current = parent;
     }
+}
+
+/// Parse a document's stored text, carrying a refused expansion as this
+/// file's error instead of a parse failure it did not have.
+fn expanded_syntax(
+    content: &str,
+    uri: &str,
+    refusal: Option<rumoca_phase_autodiff::Refusal>,
+) -> crate::parse::SyntaxFile {
+    let syntax = crate::parse::parse_source_to_syntax(content, uri);
+    let Some(refusal) = refusal else {
+        return syntax;
+    };
+    crate::parse::SyntaxFile::from_recovered(
+        syntax.best_effort().clone(),
+        vec![crate::parse::refusal_parse_error(&refusal, uri)],
+        Some(refusal.to_string()),
+        None,
+    )
 }

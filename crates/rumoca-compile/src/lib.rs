@@ -98,9 +98,9 @@ pub mod parsing {
     pub use crate::package_layout::collect_compile_unit_source_files;
     pub use crate::parse::{
         LenientParseResult, ParseError, ParseFailure, ParseResult, ParseSuccess,
-        parse_and_merge_parallel, parse_files_parallel, parse_files_parallel_lenient,
-        parse_source_to_ast, parse_source_to_ast_with_errors, source_map_for_parsed_files,
-        validate_source_syntax,
+        expand_source_to_standard_modelica, parse_and_merge_parallel, parse_files_parallel,
+        parse_files_parallel_lenient, parse_source_to_ast, parse_source_to_ast_with_errors,
+        source_map_for_parsed_files, validate_source_syntax,
     };
 }
 

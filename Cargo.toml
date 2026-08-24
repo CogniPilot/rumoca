@@ -29,6 +29,7 @@ members = [
     "crates/rumoca-phase-galec",
     "crates/rumoca-phase-flatten",
     "crates/rumoca-phase-instantiate",
+    "crates/rumoca-phase-autodiff",
     "crates/rumoca-phase-parse",
     "crates/rumoca-phase-parse-galec",
     "crates/rumoca-phase-resolve",
@@ -104,6 +105,7 @@ rumoca-ir-ast = { path = "crates/rumoca-ir-ast" }
 rumoca-ir-flat = { path = "crates/rumoca-ir-flat" }
 rumoca-phase-flatten = { path = "crates/rumoca-phase-flatten" }
 rumoca-phase-instantiate = { path = "crates/rumoca-phase-instantiate" }
+rumoca-phase-autodiff = { path = "crates/rumoca-phase-autodiff" }
 rumoca-phase-parse = { path = "crates/rumoca-phase-parse" }
 rumoca-phase-parse-galec = { path = "crates/rumoca-phase-parse-galec" }
 rumoca-phase-resolve = { path = "crates/rumoca-phase-resolve" }

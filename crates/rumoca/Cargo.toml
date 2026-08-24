@@ -193,6 +193,11 @@ rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-parse = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
+# The Jacobian admission table is the data the battery is generated from
+# (`tests/suite_core/jacobian_admission_battery.rs`), so the gate reads the
+# rules from the crate that owns them rather than restating them where they
+# could drift.
+rumoca-phase-autodiff = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 # Native side of the interpreter-versus-JIT differential oracle
 # (`tests/suite_core/backend_executor_differential.rs`). `rumoca-sim` already
