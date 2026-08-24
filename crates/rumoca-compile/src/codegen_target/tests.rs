@@ -203,6 +203,7 @@ fn solve_with_issued_exact_algebraic_assignment() -> rumoca_ir_solve::SolveProbl
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
         simultaneous_block_indices: vec![0],
@@ -250,6 +251,7 @@ fn solve_with_issued_exact_algebraic_assignment() -> rumoca_ir_solve::SolveProbl
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
         refresh_owners,
@@ -456,10 +458,12 @@ fn solve_with_dependent_algebraic_assignments() -> rumoca_ir_solve::SolveProblem
             solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             },
             solve::AlgebraicProjectionBlock {
                 rows: vec![1],
                 y_indices: vec![1],
+                tearing: None,
             },
         ],
     };

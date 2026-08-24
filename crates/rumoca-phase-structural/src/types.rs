@@ -96,6 +96,9 @@ pub enum BltBlock<'dae> {
     AlgebraicLoop {
         equations: Vec<EquationRef>,
         unknowns: Vec<UnknownId<'dae>>,
+        /// Greedy tearing of the loop, when one reduces the solve dimension.
+        /// Local indices address `equations` and `unknowns` by position.
+        tearing: Option<crate::tearing::TearingResult>,
     },
     StructuredScalar(StructuredScalarBlock),
 }

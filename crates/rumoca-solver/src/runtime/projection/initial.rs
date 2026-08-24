@@ -68,6 +68,7 @@ pub(super) fn combined_initial_projection_plan(
         blocks.push(solve::AlgebraicProjectionBlock {
             rows: block.rows.clone(),
             y_indices: indices,
+            tearing: None,
         });
     }
     Ok(solve::AlgebraicProjectionPlan { blocks })

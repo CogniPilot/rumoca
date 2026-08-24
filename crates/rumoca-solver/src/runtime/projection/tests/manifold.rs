@@ -46,6 +46,7 @@ fn manifold_projection_uses_rectangular_minimum_norm_state_correction() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1, 2, 3],
+                tearing: None,
             }],
         },
     };
@@ -109,6 +110,7 @@ fn failed_manifold_projection_rolls_back_every_y_slot() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0, 1],
+                tearing: None,
             }],
         },
     };

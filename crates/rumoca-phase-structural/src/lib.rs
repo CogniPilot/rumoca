@@ -236,6 +236,7 @@ fn block_report<'dae>(view: dae::DaeView<'dae>, block: &BltBlock<'dae>) -> Block
         BltBlock::AlgebraicLoop {
             equations,
             unknowns,
+            tearing,
         } => BlockReport::Coupled {
             equations: equations
                 .iter()
@@ -245,13 +246,45 @@ fn block_report<'dae>(view: dae::DaeView<'dae>, block: &BltBlock<'dae>) -> Block
                 .iter()
                 .map(|unknown| unknown_label(view, *unknown))
                 .collect(),
-            tearing: None,
+            tearing: tearing
+                .as_ref()
+                .map(|tearing| tearing_report(view, equations, unknowns, tearing)),
         },
         BltBlock::StructuredScalar(family) => BlockReport::StructuredScalar {
             origin: equation_label(view, &EquationRef(family.first_equation_index)),
             point_count: family.point_count,
             equations_per_point: family.equations_per_point,
         },
+    }
+}
+
+fn tearing_report<'dae>(
+    view: dae::DaeView<'dae>,
+    equations: &[EquationRef],
+    unknowns: &[UnknownId<'dae>],
+    tearing: &tearing::TearingResult,
+) -> TearingReport {
+    TearingReport {
+        tear_vars: tearing
+            .tear_var_local_indices
+            .iter()
+            .map(|&local| unknown_label(view, unknowns[local]))
+            .collect(),
+        residual_equations: tearing
+            .residual_eq_local_indices
+            .iter()
+            .map(|&local| equation_label(view, &equations[local]))
+            .collect(),
+        causal_sequence: tearing
+            .causal_sequence
+            .iter()
+            .map(|&(equation_local, variable_local)| {
+                (
+                    equation_label(view, &equations[equation_local]),
+                    unknown_label(view, unknowns[variable_local]),
+                )
+            })
+            .collect(),
     }
 }
 

@@ -301,6 +301,7 @@ fn event_iteration_advances_discrete_pre_before_the_next_whole_equation_pass() {
                     blocks: vec![solve::AlgebraicProjectionBlock {
                         rows: vec![0],
                         y_indices: vec![0],
+                        tearing: None,
                     }],
                 },
                 ..Default::default()
@@ -1003,6 +1004,7 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
                     blocks: vec![solve::AlgebraicProjectionBlock {
                         rows: vec![1],
                         y_indices: vec![1],
+                        tearing: None,
                     }],
                 },
                 ..Default::default()

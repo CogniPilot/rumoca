@@ -544,8 +544,14 @@ pub fn build_derivative_refresh_plan(
 /// the canonical continuous and event projections. Runtime adapters consume
 /// this aggregate and never rerun dependency or assignment discovery.
 pub fn build_continuous_refresh_owners(
-    problem: &solve::SolveProblem,
+    problem: &mut solve::SolveProblem,
 ) -> Result<solve::ContinuousRefreshOwners, EvalSolveError> {
+    // Make the canonical block tearing exact-only before any refresh plan clones
+    // it, so every runtime projection (the refresh owners' `simultaneous_plan`
+    // and `value_projection_plan`, the value-stage plans that must replay those
+    // blocks, and any direct reader of `algebraic_projection_plan`) sees the
+    // same exact-only tearing.
+    normalize_algebraic_projection_tearing(problem)?;
     let catalog = CanonicalScalarProgramCatalog::construct(&problem.continuous.implicit_rhs)?;
     let algebraic = build_canonical_algebraic_refresh_plan(problem, &catalog)?;
     let state_count = problem.solve_layout.state_scalar_count();
@@ -610,6 +616,77 @@ pub fn build_continuous_refresh_owners(
         message: error.to_string(),
         span: catalog.first_span(),
     })
+}
+
+/// Rewrite every algebraic block's tearing so back-substitution is exact-only.
+///
+/// Structural tearing is incidence-based and cannot know which causal rows are
+/// exact explicit assignments, so a greedy causal step may be a genuine
+/// implicit constraint. Runtime back-substitution is exact-only by
+/// construction, so any causal step that is not a compiler-certified exact
+/// target assignment is promoted into the reduced Newton here: its unknown
+/// becomes a tear variable and its row a reduced residual. The reduced Newton
+/// (with a finite-difference Jacobian and line search over the tear variables)
+/// then carries that nonlinearity, and the remaining causal steps stay exact.
+fn normalize_algebraic_projection_tearing(
+    problem: &mut solve::SolveProblem,
+) -> Result<(), EvalSolveError> {
+    // Build the exactness predicate from the same scalar projection the runtime
+    // prepares for `implicit_scalar_rhs`, so the promotion decision matches the
+    // runtime's `implicit_target_assignment_is_exact` row for row.
+    let implicit_scalar_rhs = PreparedScalarProgramBlock::new(
+        crate::to_scalar_program_projection(&problem.continuous.implicit_rhs)?.into_block(),
+    )?;
+    for block in &mut problem.continuous.algebraic_projection_plan.blocks {
+        if let Some(tearing) = block.tearing.as_mut() {
+            promote_inexact_causal_steps(tearing, &implicit_scalar_rhs);
+        }
+    }
+    Ok(())
+}
+
+/// Promote each causal step that is not an exact explicit assignment into the
+/// reduced Newton, preserving `tear_y_indices.len() == residual_rows.len()`.
+///
+/// A promotion appends the step's unknown to `tear_y_indices` and its row to
+/// `residual_rows` (one of each). Retained causal steps keep their original
+/// relative order and stay valid, because a promoted unknown is fixed as a tear
+/// variable before back-substitution runs. When every step is promoted the
+/// block degenerates to a dense reduced Newton over all its unknowns, which is
+/// exactly what an empty `causal_steps` drives.
+fn promote_inexact_causal_steps(
+    tearing: &mut solve::BlockTearing,
+    implicit_scalar_rhs: &PreparedScalarProgramBlock,
+) {
+    let mut retained = Vec::with_capacity(tearing.causal_steps.len());
+    for step in std::mem::take(&mut tearing.causal_steps) {
+        if causal_step_certifies_exact_assignment(implicit_scalar_rhs, step.row, step.y_index) {
+            retained.push(step);
+        } else {
+            tearing.tear_y_indices.push(step.y_index);
+            tearing.residual_rows.push(step.row);
+        }
+    }
+    tearing.causal_steps = retained;
+}
+
+/// Whether evaluating `row`'s target isolator and writing its value satisfies
+/// the scalar residual exactly for solver-Y unknown `y_index`. This mirrors the
+/// runtime `implicit_target_assignment_is_exact` predicate exactly.
+fn causal_step_certifies_exact_assignment(
+    implicit_scalar_rhs: &PreparedScalarProgramBlock,
+    row: usize,
+    y_index: usize,
+) -> bool {
+    implicit_scalar_rhs
+        .row_output_position(row)
+        .is_some_and(|(program_idx, output_offset)| {
+            implicit_scalar_rhs.certifies_exact_target_assignment_output(
+                program_idx,
+                output_offset,
+                y_index,
+            )
+        })
 }
 
 fn extend_scalar_block_dependencies(

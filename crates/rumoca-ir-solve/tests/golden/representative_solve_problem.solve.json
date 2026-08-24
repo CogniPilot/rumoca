@@ -198,7 +198,8 @@
           ],
           "y_indices": [
             1
-          ]
+          ],
+          "tearing": null
         }
       ]
     },

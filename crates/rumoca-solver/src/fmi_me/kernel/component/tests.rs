@@ -103,6 +103,7 @@ fn steep_algebraic_time_event_model() -> solve::SolveModel {
                     blocks: vec![solve::AlgebraicProjectionBlock {
                         rows: vec![1],
                         y_indices: vec![1],
+                        tearing: None,
                     }],
                 },
                 ..Default::default()
@@ -143,7 +144,7 @@ fn steep_algebraic_time_event_model() -> solve::SolveModel {
 fn instantiate(model: &solve::SolveModel) -> SolveMeKernel {
     let mut model = model.clone();
     model.problem.continuous.refresh_owners =
-        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
             .expect("event-entry fixture refresh owners construct");
     SolveMeKernel::instantiate(
         MeModelSource::fixture(&model),

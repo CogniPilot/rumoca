@@ -213,6 +213,7 @@ fn mixed_projection_exact_plan(projection_first: bool) -> RefreshPlan {
     let projection_block = crate::AlgebraicProjectionBlock {
         rows: vec![0],
         y_indices: vec![0],
+        tearing: None,
     };
     let seed = RefreshStage::CausalSeedSweep {
         static_sequence: Default::default(),
@@ -246,6 +247,7 @@ fn mixed_projection_exact_plan(projection_first: bool) -> RefreshPlan {
                 crate::AlgebraicProjectionBlock {
                     rows: vec![1],
                     y_indices: vec![1],
+                    tearing: None,
                 },
             ],
         },
@@ -334,6 +336,7 @@ fn exact_assignment_completeness_requires_full_blt_coverage() {
             blocks: vec![crate::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
         simultaneous_block_indices: vec![0],
@@ -707,6 +710,7 @@ fn derivative_settle_relation_keeps_only_uncovered_root_stages() {
             blocks: vec![crate::AlgebraicProjectionBlock {
                 rows: vec![1, 2],
                 y_indices: vec![1, 2],
+                tearing: None,
             }],
         },
         seed_rows: RefreshRowSelection::default(),

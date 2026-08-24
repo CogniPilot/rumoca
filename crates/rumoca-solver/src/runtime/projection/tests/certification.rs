@@ -43,6 +43,7 @@ impl ImplicitProjectionModel for IllConditionedCoupledProjectionModel {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
+                tearing: None,
             }],
         })
     }

@@ -55,6 +55,7 @@ fn nominal_scaled_projection_corrects_small_physical_residual() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
         coefficient: 1.0,
@@ -79,6 +80,7 @@ fn projection_row_scale_includes_jacobian_coefficient() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
         coefficient: 1.0e-12,
@@ -101,6 +103,7 @@ fn projection_scale_expands_to_the_current_coordinate_magnitude() {
     let block = solve::AlgebraicProjectionBlock {
         rows: vec![0],
         y_indices: vec![0],
+        tearing: None,
     };
     let model = NominalScaledProjectionModel {
         plan: solve::AlgebraicProjectionPlan {
@@ -309,10 +312,12 @@ fn initial_singleton_assignment_writes_sub_tolerance_constant_divisor() {
                 solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
+                    tearing: None,
                 },
                 solve::AlgebraicProjectionBlock {
                     rows: vec![1],
                     y_indices: vec![1],
+                    tearing: None,
                 },
             ],
         },

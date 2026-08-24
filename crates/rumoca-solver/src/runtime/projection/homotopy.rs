@@ -137,6 +137,7 @@ mod tests {
                     blocks: vec![solve::AlgebraicProjectionBlock {
                         rows: vec![0],
                         y_indices: vec![0],
+                        tearing: None,
                     }],
                 },
                 accepted_lambda: Cell::new(0.0),

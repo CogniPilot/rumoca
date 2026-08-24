@@ -40,6 +40,36 @@ impl AlgebraicProjectionPlan {
 pub struct AlgebraicProjectionBlock {
     pub rows: Vec<usize>,
     pub y_indices: Vec<usize>,
+    /// Structural tearing of this coupled block. When present, the runtime
+    /// projection iterates Newton only over the tear variables and recovers
+    /// the remaining unknowns by ordered back-substitution, matching the
+    /// causalized solve OpenModelica performs. Absence selects the dense
+    /// block Newton over every unknown.
+    #[serde(default)]
+    pub tearing: Option<BlockTearing>,
+}
+
+/// Tearing of one coupled algebraic block into a reduced iteration set plus an
+/// ordered back-substitution, expressed in the same solver-index space as the
+/// enclosing [`AlgebraicProjectionBlock`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct BlockTearing {
+    /// Solver-Y indices iterated by the reduced Newton. A subset of the
+    /// block's `y_indices`, equal in count to `residual_rows`.
+    pub tear_y_indices: Vec<usize>,
+    /// Residual rows forming the reduced Newton system driven to zero over the
+    /// tear variables. A subset of the block's `rows`.
+    pub residual_rows: Vec<usize>,
+    /// Back-substitution steps evaluated in order once the tear variables are
+    /// fixed: each step solves its residual row for its unknown.
+    pub causal_steps: Vec<CausalStep>,
+}
+
+/// One back-substitution step: solve `row` for solver-Y unknown `y_index`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct CausalStep {
+    pub row: usize,
+    pub y_index: usize,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

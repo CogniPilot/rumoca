@@ -186,14 +186,17 @@ mod tests {
                 solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
+                    tearing: None,
                 },
                 solve::AlgebraicProjectionBlock {
                     rows: vec![1, 2],
                     y_indices: vec![1, 2],
+                    tearing: None,
                 },
                 solve::AlgebraicProjectionBlock {
                     rows: vec![3],
                     y_indices: vec![3],
+                    tearing: None,
                 },
             ],
         };
@@ -233,10 +236,12 @@ mod tests {
                 solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
+                    tearing: None,
                 },
                 solve::AlgebraicProjectionBlock {
                     rows: vec![1],
                     y_indices: vec![1],
+                    tearing: None,
                 },
             ],
         };
@@ -273,6 +278,7 @@ mod tests {
                 .map(|(equation, target)| solve::AlgebraicProjectionBlock {
                     rows: vec![equation],
                     y_indices: vec![target],
+                    tearing: None,
                 })
                 .collect(),
         };
@@ -304,10 +310,12 @@ mod tests {
                 solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
+                    tearing: None,
                 },
                 solve::AlgebraicProjectionBlock {
                     rows: vec![1],
                     y_indices: vec![1],
+                    tearing: None,
                 },
             ],
         };

@@ -521,7 +521,7 @@ fn construction_issues_event_base_and_clock_remainder_plans() {
     problem.discrete.rhs = consumer;
     problem.discrete.clock_owners = vec![None, Some(clock)];
 
-    let owners = build_continuous_refresh_owners(&problem)
+    let owners = build_continuous_refresh_owners(&mut problem)
         .expect("construction can partition the checked event dependencies");
 
     assert_eq!(
@@ -550,4 +550,149 @@ fn construction_issues_event_base_and_clock_remainder_plans() {
             .collect::<Vec<_>>(),
         vec![1]
     );
+}
+
+#[test]
+fn tearing_normalization_promotes_only_the_inexact_causal_step() {
+    use solve::BinaryOp;
+    use solve::LinearOp::{Binary, LoadY, StoreOutput};
+
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("tearing-normalization-fixture"),
+        1,
+        2,
+    )
+    .require_provenance("tearing normalization fixture")
+    .expect("fixture span is source-backed");
+
+    // Output row 0: `y0*y1 - y2`, an exact isolator for solver-Y index 1.
+    let exact_row = vec![
+        LoadY { dst: 0, index: 0 },
+        LoadY { dst: 1, index: 1 },
+        LoadY { dst: 2, index: 2 },
+        Binary {
+            dst: 3,
+            op: BinaryOp::Mul,
+            lhs: 1,
+            rhs: 2,
+        },
+        Binary {
+            dst: 4,
+            op: BinaryOp::Sub,
+            lhs: 0,
+            rhs: 3,
+        },
+        StoreOutput { src: 4 },
+    ];
+    // Output row 1: `y3*y3 - y4`, quadratic in y3 and therefore not an exact
+    // explicit assignment for solver-Y index 3.
+    let inexact_row = vec![
+        LoadY { dst: 0, index: 3 },
+        LoadY { dst: 1, index: 4 },
+        Binary {
+            dst: 2,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 0,
+        },
+        Binary {
+            dst: 3,
+            op: BinaryOp::Sub,
+            lhs: 2,
+            rhs: 1,
+        },
+        StoreOutput { src: 3 },
+    ];
+    let block = solve::ScalarProgramBlock::with_source_span(vec![exact_row, inexact_row], span)
+        .expect("scalar fixture is computable");
+    let implicit_scalar_rhs = PreparedScalarProgramBlock::new(block).expect("fixture prepares");
+
+    // Ground truth: confirm the fixture rows carry the intended exactness before
+    // asserting the promotion respects it.
+    assert!(
+        causal_step_certifies_exact_assignment(&implicit_scalar_rhs, 0, 1),
+        "row 0 isolates solver-Y index 1 exactly"
+    );
+    assert!(
+        !causal_step_certifies_exact_assignment(&implicit_scalar_rhs, 1, 3),
+        "row 1 is quadratic in solver-Y index 3 and is not an exact assignment"
+    );
+
+    let mut tearing = solve::BlockTearing {
+        tear_y_indices: vec![7],
+        residual_rows: vec![9],
+        causal_steps: vec![
+            solve::CausalStep { row: 0, y_index: 1 },
+            solve::CausalStep { row: 1, y_index: 3 },
+        ],
+    };
+    promote_inexact_causal_steps(&mut tearing, &implicit_scalar_rhs);
+
+    // The exact step is retained; the inexact step is promoted into the reduced
+    // Newton, keeping `tear_y_indices.len() == residual_rows.len()`.
+    assert_eq!(
+        tearing.causal_steps,
+        vec![solve::CausalStep { row: 0, y_index: 1 }],
+        "the exact causal step stays a back-substitution step"
+    );
+    assert_eq!(
+        tearing.tear_y_indices,
+        vec![7, 3],
+        "the inexact step's unknown becomes a tear variable"
+    );
+    assert_eq!(
+        tearing.residual_rows,
+        vec![9, 1],
+        "the inexact step's row becomes a reduced residual"
+    );
+    assert_eq!(tearing.tear_y_indices.len(), tearing.residual_rows.len());
+}
+
+#[test]
+fn tearing_normalization_promotes_every_step_when_none_are_exact() {
+    use solve::BinaryOp;
+    use solve::LinearOp::{Binary, LoadY, StoreOutput};
+
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("all-implicit-fixture"),
+        1,
+        2,
+    )
+    .require_provenance("all-implicit tearing fixture")
+    .expect("fixture span is source-backed");
+
+    // A single quadratic residual that is not an exact assignment for its target.
+    let row = vec![
+        LoadY { dst: 0, index: 0 },
+        LoadY { dst: 1, index: 1 },
+        Binary {
+            dst: 2,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 0,
+        },
+        Binary {
+            dst: 3,
+            op: BinaryOp::Sub,
+            lhs: 2,
+            rhs: 1,
+        },
+        StoreOutput { src: 3 },
+    ];
+    let block = solve::ScalarProgramBlock::with_source_span(vec![row], span)
+        .expect("scalar fixture is computable");
+    let implicit_scalar_rhs = PreparedScalarProgramBlock::new(block).expect("fixture prepares");
+
+    let mut tearing = solve::BlockTearing {
+        tear_y_indices: vec![5],
+        residual_rows: vec![6],
+        causal_steps: vec![solve::CausalStep { row: 0, y_index: 0 }],
+    };
+    promote_inexact_causal_steps(&mut tearing, &implicit_scalar_rhs);
+
+    // With no exact step to retain, back-substitution degenerates to a no-op and
+    // the reduced Newton solves every unknown of the block.
+    assert!(tearing.causal_steps.is_empty());
+    assert_eq!(tearing.tear_y_indices, vec![5, 0]);
+    assert_eq!(tearing.residual_rows, vec![6, 0]);
 }

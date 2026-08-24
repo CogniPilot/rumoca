@@ -138,7 +138,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
 /// produce for the same problem.
 fn issue_refresh_owners(model: &mut rumoca_ir_solve::SolveModel) {
     model.problem.continuous.refresh_owners =
-        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
             .expect("fixture problem issues checked continuous refresh owners");
 }
 

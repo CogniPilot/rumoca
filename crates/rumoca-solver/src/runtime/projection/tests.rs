@@ -1,5 +1,6 @@
 mod certification;
 mod manifold;
+mod order_robustness;
 mod saturation;
 mod scaled_systems;
 
@@ -554,6 +555,7 @@ fn coupled_projection_uses_selected_residual_and_jacobian_rows() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
+                tearing: None,
             }],
         },
     };
@@ -578,6 +580,7 @@ fn coupled_projection_skips_structurally_zero_jacobian_entries() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
+                tearing: None,
             }],
         },
     };
@@ -601,6 +604,7 @@ fn coupled_projection_sensitivity_uses_selected_jacobian_rows() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
+                tearing: None,
             }],
         },
     };
@@ -985,6 +989,7 @@ impl ImplicitProjectionModel for CoupledTargetedInitialProjectionModel {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
+                tearing: None,
             }],
         })
     }
@@ -1033,10 +1038,12 @@ fn project_algebraics_uses_solve_projection_plan_blocks() {
                 solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
+                    tearing: None,
                 },
                 solve::AlgebraicProjectionBlock {
                     rows: vec![1],
                     y_indices: vec![1],
+                    tearing: None,
                 },
             ],
         },
@@ -1057,6 +1064,7 @@ fn project_algebraics_backtracks_to_variable_resolution() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
     };
@@ -1124,6 +1132,7 @@ fn continuous_singleton_assignment_avoids_jacobian_projection() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
     };
@@ -1152,6 +1161,7 @@ fn resistor_assignment_reports_sub_tolerance_current_as_semantic_progress() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
     };
@@ -1189,10 +1199,12 @@ fn reverse_ordered_resistor_blocks_revisit_a_locally_settled_current() {
                 solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
+                    tearing: None,
                 },
                 solve::AlgebraicProjectionBlock {
                     rows: vec![1],
                     y_indices: vec![1],
+                    tearing: None,
                 },
             ],
         },
@@ -1218,6 +1230,7 @@ fn algebraic_seed_certifies_residual_in_row_units() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
     };
@@ -1253,6 +1266,7 @@ fn coupled_projection_prefers_complete_reverse_row_gradients() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
+                tearing: None,
             }],
         },
     };
@@ -1274,6 +1288,7 @@ fn partial_projection_ignores_unselected_residuals_and_unknowns() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
         initial_residual_len: 0,
@@ -1299,6 +1314,7 @@ fn continuous_singleton_assignment_does_not_accept_inexact_improvement() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
     };
@@ -1320,6 +1336,7 @@ fn initial_singleton_assignment_is_certified_by_complete_residual() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
     };
@@ -1344,6 +1361,7 @@ fn initial_projection_rejects_omitted_residual_and_restores_candidate() {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         },
         initial_residual_len: 2,
@@ -1383,6 +1401,7 @@ fn project_algebraic_block_rejects_rectangular_inventory() {
     let block = solve::AlgebraicProjectionBlock {
         rows: vec![0],
         y_indices: vec![0, 1],
+        tearing: None,
     };
     let mut y = vec![0.0, 0.0];
 
@@ -1414,6 +1433,7 @@ fn project_algebraic_block_rejects_row_outside_residual_vector() {
     let block = solve::AlgebraicProjectionBlock {
         rows: vec![2],
         y_indices: vec![0],
+        tearing: None,
     };
     let mut y = vec![0.0, 0.0];
 
@@ -1504,6 +1524,7 @@ impl ImplicitProjectionModel for ScaledResidualProjectionModel {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
+                tearing: None,
             }],
         })
     }
@@ -1554,6 +1575,7 @@ fn project_initial_block_rejects_rectangular_inventory() {
     let block = solve::AlgebraicProjectionBlock {
         rows: vec![0, 1],
         y_indices: vec![0],
+        tearing: None,
     };
     let mut y = vec![0.0, 0.0];
 
@@ -1570,6 +1592,7 @@ fn project_initial_block_rejects_rectangular_targeted_inventory() {
     let block = solve::AlgebraicProjectionBlock {
         rows: vec![0],
         y_indices: vec![0, 1],
+        tearing: None,
     };
     let mut y = vec![0.0, 0.0];
 
@@ -1625,6 +1648,7 @@ fn project_initial_variables_rejects_plan_rows_outside_residual_vector() {
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: vec![2],
             y_indices: vec![0],
+            tearing: None,
         }],
     };
     let mut y = vec![0.0, 0.0];

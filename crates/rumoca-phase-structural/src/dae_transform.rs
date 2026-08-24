@@ -148,6 +148,7 @@ enum ErasedBltBlock {
     AlgebraicLoop {
         equations: Vec<EquationRef>,
         unknowns: Vec<ErasedUnknown>,
+        tearing: Option<crate::tearing::TearingResult>,
     },
     StructuredScalar(StructuredScalarBlock),
 }
@@ -216,9 +217,11 @@ impl ErasedBltBlock {
             BltBlock::AlgebraicLoop {
                 equations,
                 unknowns,
+                tearing,
             } => Self::AlgebraicLoop {
                 equations,
                 unknowns: unknowns.into_iter().map(ErasedUnknown::erase).collect(),
+                tearing,
             },
             BltBlock::StructuredScalar(block) => Self::StructuredScalar(block),
         }
@@ -233,9 +236,11 @@ impl ErasedBltBlock {
             Self::AlgebraicLoop {
                 equations,
                 unknowns,
+                tearing,
             } => BltBlock::AlgebraicLoop {
                 equations: equations.clone(),
                 unknowns: unknowns.iter().map(|unknown| unknown.bind(view)).collect(),
+                tearing: tearing.clone(),
             },
             Self::StructuredScalar(block) => BltBlock::StructuredScalar(block.clone()),
         }

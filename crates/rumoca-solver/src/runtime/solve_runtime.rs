@@ -361,7 +361,7 @@ impl SolveRuntime {
     pub(crate) fn new_fixture(model: &solve::SolveModel) -> Result<Self, EvalSolveError> {
         let mut model = model.clone();
         model.problem.continuous.refresh_owners =
-            solve_eval::refresh_plan::build_continuous_refresh_owners(&model.problem)?;
+            solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem)?;
         Self::new(&model)
     }
 

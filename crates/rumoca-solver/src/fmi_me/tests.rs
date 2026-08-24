@@ -25,7 +25,7 @@ fn zero_state_event_continuation_is_independent_of_value_tolerance() {
     let mut model = solve::SolveModel::default();
     model.problem.events.scheduled_time_events = vec![2.5e-9];
     model.problem.continuous.refresh_owners =
-        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
             .expect("zero-state fixture refresh owners construct");
     let run = |atol| {
         let retained = MeRetainedComponent::instantiate(
@@ -310,6 +310,7 @@ fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
                     blocks: vec![solve::AlgebraicProjectionBlock {
                         rows: vec![1],
                         y_indices: vec![1],
+                        tearing: None,
                     }],
                 },
                 ..Default::default()
@@ -697,7 +698,7 @@ fn block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::ScalarPr
 fn instantiate(model: &solve::SolveModel) -> SolveMeKernel {
     let mut model = model.clone();
     model.problem.continuous.refresh_owners =
-        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
             .expect("ME fixture refresh owners construct");
     SolveMeKernel::instantiate(
         MeModelSource::fixture(&model),
@@ -772,7 +773,7 @@ fn roots_refresh_from_the_exact_derivative_algebraic_branch() {
         "fmi_me_cached_root_branch.mo",
     );
     model.problem.continuous.refresh_owners =
-        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
             .expect("cached-root fixture refresh owners construct");
     let kernel = SolveMeKernel::instantiate(
         MeModelSource::fixture(&model),
@@ -1518,7 +1519,7 @@ fn fixture_instance_config() -> MeInstanceConfig {
 /// answer the batched output getters, without mutating a shared fixture.
 fn refresh_owned(mut model: solve::SolveModel) -> solve::SolveModel {
     model.problem.continuous.refresh_owners =
-        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
             .expect("ME fixture refresh owners construct");
     model.problem.solve_layout.solver_maps.name_to_idx = model
         .problem

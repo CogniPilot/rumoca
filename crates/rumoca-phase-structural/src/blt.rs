@@ -234,8 +234,50 @@ fn scc_to_block<'dae>(
         .iter()
         .filter_map(|&i| match_eq[i].map(|v| incidence.unknowns[v]))
         .collect();
+    let tearing = tear_scc(scc, incidence, match_eq);
     BltBlock::AlgebraicLoop {
         equations,
         unknowns,
+        tearing,
     }
+}
+
+/// Tear a coupled SCC into a reduced iteration set plus a causal
+/// back-substitution, addressing the block's `equations`/`unknowns` by local
+/// position. Returns `None` when every equation is matched (fully causal, not a
+/// loop) or when tearing cannot reduce the dimension.
+fn tear_scc(
+    scc: &[usize],
+    incidence: &Incidence<'_>,
+    match_eq: &[Option<usize>],
+) -> Option<crate::tearing::TearingResult> {
+    // Local position of each SCC unknown, keyed by its global unknown index.
+    // Only equations that are themselves matched contribute an unknown, so a
+    // partially matched SCC yields fewer unknowns than equations and cannot be
+    // torn into a square reduced system here.
+    if scc.iter().any(|&eq| match_eq[eq].is_none()) {
+        return None;
+    }
+    let mut var_local: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::with_capacity(scc.len());
+    for (local, &eq) in scc.iter().enumerate() {
+        if let Some(var) = match_eq[eq] {
+            var_local.insert(var, local);
+        }
+    }
+    if var_local.len() != scc.len() {
+        return None;
+    }
+    let eq_unknowns: Vec<std::collections::HashSet<usize>> = scc
+        .iter()
+        .map(|&eq| {
+            incidence
+                .eq_unknowns
+                .row(eq)
+                .iter()
+                .filter_map(|global| var_local.get(global).copied())
+                .collect()
+        })
+        .collect();
+    crate::tearing::tear_algebraic_loop(scc.len(), &eq_unknowns)
 }

@@ -46,7 +46,7 @@ fn instantiate_with_configuration(
 ) -> SolveMeKernel {
     let mut model = model.clone();
     model.problem.continuous.refresh_owners =
-        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
             .expect("verification fixture refresh owners construct");
     SolveMeKernel::instantiate(
         MeModelSource::configuration_fixture(&model, configuration),

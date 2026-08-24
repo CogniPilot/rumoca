@@ -74,7 +74,7 @@ pub(crate) fn lower_solve_problem(
         clocks: clocks.partition,
     };
     problem.continuous.refresh_owners =
-        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&problem).map_err(
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut problem).map_err(
             |error| match error.source_span() {
                 Some(span) => LowerError::contract(error.to_string(), span),
                 None => LowerError::unspanned_non_computable(error.to_string()),
@@ -86,8 +86,17 @@ pub(crate) fn lower_solve_problem(
 
 struct StructuralMatching<'dae> {
     rows: HashMap<usize, UnknownId<'dae>>,
-    algebraic_blocks: Vec<Vec<(usize, UnknownId<'dae>)>>,
+    algebraic_blocks: Vec<AlgebraicBlockMatch<'dae>>,
     derivative_blocks: Vec<Vec<(usize, UnknownId<'dae>)>>,
+}
+
+/// One algebraic projection block's matched `(equation row, unknown)` pairs,
+/// together with the greedy tearing of the coupled loop it came from. The
+/// tearing's local indices address `matches` by position; a singleton or
+/// partially matched block carries no tearing.
+struct AlgebraicBlockMatch<'dae> {
+    matches: Vec<(usize, UnknownId<'dae>)>,
+    tearing: Option<structural::TearingResult>,
 }
 
 fn structural_matching<'dae>(
@@ -131,16 +140,21 @@ fn structural_matching<'dae>(
 fn algebraic_projection_blocks<'dae>(
     blocks: &[BltBlock<'dae>],
     rows: &HashMap<usize, UnknownId<'dae>>,
-) -> Result<Vec<Vec<(usize, UnknownId<'dae>)>>, LowerError> {
+) -> Result<Vec<AlgebraicBlockMatch<'dae>>, LowerError> {
     let mut algebraic_blocks = Vec::new();
     for block in blocks {
         match block {
             BltBlock::Scalar { equation, unknown }
                 if matches!(unknown, UnknownId::Algebraic { .. }) =>
             {
-                algebraic_blocks.push(vec![(equation.0, *unknown)]);
+                algebraic_blocks.push(AlgebraicBlockMatch {
+                    matches: vec![(equation.0, *unknown)],
+                    tearing: None,
+                });
             }
-            BltBlock::AlgebraicLoop { equations, .. } => {
+            BltBlock::AlgebraicLoop {
+                equations, tearing, ..
+            } => {
                 let algebraic = equations
                     .iter()
                     .filter_map(|equation| {
@@ -151,7 +165,17 @@ fn algebraic_projection_blocks<'dae>(
                     })
                     .collect::<Vec<_>>();
                 if !algebraic.is_empty() {
-                    algebraic_blocks.push(algebraic);
+                    // The tearing addresses the full SCC by position. It is
+                    // only applicable when every equation is an algebraic
+                    // match, so the positions coincide with `algebraic`; a
+                    // mixed loop drops it and falls back to the dense solve.
+                    let tearing = tearing
+                        .clone()
+                        .filter(|_| algebraic.len() == equations.len());
+                    algebraic_blocks.push(AlgebraicBlockMatch {
+                        matches: algebraic,
+                        tearing,
+                    });
                 }
             }
             BltBlock::StructuredScalar(family) => {
@@ -163,10 +187,41 @@ fn algebraic_projection_blocks<'dae>(
     Ok(algebraic_blocks)
 }
 
+/// Translate a structural tearing, whose local indices address the block's
+/// matched pairs by position, into the solver-index space carried by the
+/// projection plan. `rows[i]` and `y_indices[i]` are the residual row and
+/// solver-Y unknown of local position `i`.
+fn solve_block_tearing(
+    tearing: &structural::TearingResult,
+    rows: &[usize],
+    y_indices: &[usize],
+) -> solve::BlockTearing {
+    solve::BlockTearing {
+        tear_y_indices: tearing
+            .tear_var_local_indices
+            .iter()
+            .map(|&local| y_indices[local])
+            .collect(),
+        residual_rows: tearing
+            .residual_eq_local_indices
+            .iter()
+            .map(|&local| rows[local])
+            .collect(),
+        causal_steps: tearing
+            .causal_sequence
+            .iter()
+            .map(|&(equation_local, variable_local)| solve::CausalStep {
+                row: rows[equation_local],
+                y_index: y_indices[variable_local],
+            })
+            .collect(),
+    }
+}
+
 fn append_structured_algebraic_blocks<'dae>(
     family: &rumoca_phase_structural::StructuredScalarBlock,
     rows: &HashMap<usize, UnknownId<'dae>>,
-    blocks: &mut Vec<Vec<(usize, UnknownId<'dae>)>>,
+    blocks: &mut Vec<AlgebraicBlockMatch<'dae>>,
 ) -> Result<(), LowerError> {
     for row in family.scalar_rows() {
         let (EquationRef(equation), _) = row.map_err(|error| LowerError::Structural {
@@ -176,7 +231,10 @@ fn append_structured_algebraic_blocks<'dae>(
         let Some(unknown @ UnknownId::Algebraic { .. }) = rows.get(&equation) else {
             continue;
         };
-        blocks.push(vec![(equation, *unknown)]);
+        blocks.push(AlgebraicBlockMatch {
+            matches: vec![(equation, *unknown)],
+            tearing: None,
+        });
     }
     Ok(())
 }
@@ -872,7 +930,8 @@ fn lower_algebraic_projection<'dae>(
     let blocks = structural
         .algebraic_blocks
         .iter()
-        .map(|matches| {
+        .map(|block| {
+            let matches = &block.matches;
             let mut rows = Vec::with_capacity(matches.len());
             let mut indices = Vec::with_capacity(matches.len());
             for (row, unknown) in matches {
@@ -892,9 +951,14 @@ fn lower_algebraic_projection<'dae>(
                 rows.push(*row);
                 indices.push(index);
             }
+            let tearing = block
+                .tearing
+                .as_ref()
+                .map(|tearing| solve_block_tearing(tearing, &rows, &indices));
             Ok(solve::AlgebraicProjectionBlock {
                 rows,
                 y_indices: indices,
+                tearing,
             })
         })
         .collect::<Result<Vec<_>, LowerError>>()?;
@@ -1055,6 +1119,7 @@ fn manifold_projection_plan(
         blocks.push(solve::AlgebraicProjectionBlock {
             rows,
             y_indices: states.into_iter().collect(),
+            tearing: None,
         });
     }
     Ok(solve::AlgebraicProjectionPlan { blocks })

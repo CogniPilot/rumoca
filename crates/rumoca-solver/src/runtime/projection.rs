@@ -7,6 +7,7 @@ mod plan;
 mod scaling;
 mod singleton;
 mod step_limit;
+mod tearing;
 #[cfg(test)]
 mod tests;
 
@@ -539,6 +540,50 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
     ))
 }
 
+/// Evaluate a block's selected residual, seeding non-finite rows once from the
+/// constructor's exact assignments. Returns `None` when the residual stays
+/// non-finite, in which case the caller leaves the block unsettled.
+fn block_residual_or_seed<M: ImplicitProjectionModel>(
+    model: &M,
+    y: &mut [f64],
+    p: &[f64],
+    t: f64,
+    block: &solve::AlgebraicProjectionBlock,
+    tol: f64,
+    changed: &mut bool,
+) -> Result<Option<Vec<f64>>, RuntimeSolveError> {
+    let mut residual =
+        implicit_selected_residuals(model, y, p, t, &block.rows, "algebraic projection block")?;
+    if !residual.iter().all(|value| value.is_finite()) {
+        *changed |= seed_algebraic_block_assignments(model, y, p, t, block, tol)?;
+        residual =
+            implicit_selected_residuals(model, y, p, t, &block.rows, "seeded algebraic block")?;
+    }
+    Ok(residual
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(residual))
+}
+
+/// Solve a coupled block by its constructor-provided tearing when one is
+/// present. The torn solve iterates Newton over the tear variables and recovers
+/// the rest by exact back-substitution; it either converges the block or
+/// declines and restores `y`, so the dense path stays a faithful fallback.
+fn try_torn_algebraic_block<M: ImplicitProjectionModel>(
+    model: &M,
+    y: &mut [f64],
+    p: &[f64],
+    t: f64,
+    block: &solve::AlgebraicProjectionBlock,
+    tol: f64,
+    certify_coordinates: bool,
+) -> Result<Option<ProjectionBlockUpdate>, RuntimeSolveError> {
+    let Some(tearing) = block.tearing.as_ref() else {
+        return Ok(None);
+    };
+    tearing::project_torn_algebraic_block(model, y, p, t, tearing, tol, certify_coordinates)
+}
+
 fn project_algebraic_block<M: ImplicitProjectionModel>(
     model: &M,
     y: &mut [f64],
@@ -564,28 +609,30 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
             settled: !changed,
         });
     }
+    // A block with a constructor-provided tearing takes the torn solve ahead of,
+    // and instead of, the dense block Newton below: it iterates Newton over the
+    // small tear set and recovers the rest by exact back-substitution. For a
+    // genuinely multi-root block the torn reduced Newton varies only the tear
+    // variables, so it can settle on a different valid root than the dense
+    // Newton over all unknowns would from the same start. This is the same
+    // branch selection OpenModelica's causalized solve makes, and the selected
+    // branch is validated against the OpenModelica reference by the MSL parity
+    // and corpus-pin gates rather than by any runtime cross-check (there is no
+    // second ground truth to compare against, and re-solving densely would give
+    // back the cost the tearing removes).
+    if let Some(update) = try_torn_algebraic_block(model, y, p, t, block, tol, certify_coordinates)?
+    {
+        return Ok(update);
+    }
     if let Some(update) = project_algebraic_singleton_assignment(model, y, p, t, block, tol)? {
         return Ok(update);
     }
-    let mut residual =
-        implicit_selected_residuals(model, y, p, t, &block.rows, "algebraic projection block")?;
-    if !residual.iter().all(|value| value.is_finite()) {
-        changed |= seed_algebraic_block_assignments(model, y, p, t, block, tol)?;
-        residual = implicit_selected_residuals(
-            model,
-            y,
-            p,
-            t,
-            &block.rows,
-            "seeded algebraic projection block",
-        )?;
-    }
-    if !residual.iter().all(|value| value.is_finite()) {
+    let Some(residual) = block_residual_or_seed(model, y, p, t, block, tol, &mut changed)? else {
         return Ok(ProjectionBlockUpdate {
             changed,
             settled: false,
         });
-    }
+    };
     // Exact zero satisfies every positive scaled tolerance, independent of
     // Jacobian-derived row scaling. Runtime callers frequently project an
     // already canonical algebraic view (for example around event queries), so

@@ -809,10 +809,9 @@ mod tests {
 
     #[test]
     fn fixed_algebraic_row_uses_total_sensitivity_of_continuous_refresh() {
-        // Continuous system: a = nested_q - 49, with the initialization update
-        // nested_q = q. Initial equation: a = 0. The compiled partial JVP of the
-        // initial row with respect to q is zero because it reads stored `a`; the
-        // settled total derivative through both owners is one.
+        // Continuous a = nested_q - 49; initialization update nested_q = q; initial
+        // equation a = 0. The compiled partial JVP of the initial row w.r.t. q is
+        // zero (it reads stored `a`); the settled total derivative is one.
         let implicit = block(vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
             solve::LinearOp::LoadP { dst: 1, index: 1 },
@@ -842,10 +841,8 @@ mod tests {
             solve::LinearOp::LoadSeed { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
         ]]);
-        let partial_initial_jacobian = block(vec![vec![
-            solve::LinearOp::LoadSeed { dst: 0, index: 0 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]]);
+        // The initial row's partial JVP is the same identity seed program.
+        let partial_initial_jacobian = implicit_jacobian.clone();
         let dependent_update = block(vec![vec![
             solve::LinearOp::LoadP { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
@@ -868,6 +865,7 @@ mod tests {
                         blocks: vec![solve::AlgebraicProjectionBlock {
                             rows: vec![0],
                             y_indices: vec![0],
+                            tearing: None,
                         }],
                     },
                     ..Default::default()

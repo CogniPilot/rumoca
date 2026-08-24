@@ -80,6 +80,7 @@ fn decay_solve_problem() -> SolveProblem {
                 blocks: vec![rumoca_ir_solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
+                    tearing: None,
                 }],
             },
             ..Default::default()
