@@ -615,8 +615,11 @@ fn compile_model_for_simulation_reports_required_local_parse_errors() {
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect_err("required broken sibling must fail simulation compile");
+        // The compile unit reports siblings in canonical spelling, which can
+        // differ from the tempdir spelling (Windows 8.3 names, macOS /tmp).
+        let sibling_canonical = sibling.canonicalize().expect("canonicalize sibling");
         assert!(
-            err.contains(&sibling.to_string_lossy().to_string()),
+            err.contains(&sibling_canonical.to_string_lossy().to_string()),
             "required parse error should mention the broken sibling file: {err}"
         );
         assert!(

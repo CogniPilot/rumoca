@@ -1065,8 +1065,12 @@ mod tests {
             .compile_file(&root.to_string_lossy())
             .expect_err("required broken sibling must fail strict compile");
         let message = err.to_string();
+        // The compile unit is collected under canonical paths, so the error
+        // names the helper in canonical spelling; a raw tempdir spelling can
+        // differ (Windows 8.3 short names, macOS /tmp symlink).
+        let helper_canonical = helper.canonicalize().expect("canonicalize helper");
         assert!(
-            message.contains(&helper.to_string_lossy().to_string()),
+            message.contains(&helper_canonical.to_string_lossy().to_string()),
             "original helper parse error should be surfaced: {message}"
         );
         assert!(
