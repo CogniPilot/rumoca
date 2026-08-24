@@ -92,11 +92,11 @@ pub(crate) fn render_expression(expr: &Value, cfg: &ExprConfig) -> RenderResult 
 
 fn render_binary(binary: &Value, cfg: &ExprConfig) -> RenderResult {
     let lhs = get_field(binary, "lhs")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Binary expression missing 'lhs' field"))?;
+        .map_err(|_| render_err("Binary expression missing 'lhs' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let rhs = get_field(binary, "rhs")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Binary expression missing 'rhs' field"))?;
+        .map_err(|_| render_err("Binary expression missing 'rhs' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let op_value =
         get_field(binary, "op").map_err(|_| render_err("Binary expression missing 'op' field"))?;
     if is_mul_elem_op(&op_value)
@@ -188,8 +188,8 @@ pub(crate) fn get_binop_string(op: &Value, cfg: &ExprConfig) -> RenderResult {
 
 fn render_unary(unary: &Value, cfg: &ExprConfig) -> RenderResult {
     let rhs = get_field(unary, "rhs")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Unary expression missing 'rhs' field"))?;
+        .map_err(|_| render_err("Unary expression missing 'rhs' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let op =
         get_field(unary, "op").map_err(|_| render_err("Unary expression missing 'op' field"))?;
     // Use function-call form for Not when not_op is a qualified function name.
@@ -943,11 +943,11 @@ fn render_tuple(tuple: &Value, cfg: &ExprConfig) -> RenderResult {
 /// or `range(start, end + 1, step)` since Modelica ranges are 1-based inclusive.
 fn render_range(range: &Value, cfg: &ExprConfig) -> RenderResult {
     let start = get_field(range, "start")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Range missing 'start' field"))?;
+        .map_err(|_| render_err("Range missing 'start' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let end = get_field(range, "end")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Range missing 'end' field"))?;
+        .map_err(|_| render_err("Range missing 'end' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     if cfg.python_range {
         let end_plus1 = python_range_end(&end);
         if let Ok(step) = get_field(range, "step") {
@@ -1001,8 +1001,8 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
     }
 
     let body = get_field(array_comp, "expr")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("ArrayComprehension missing 'expr' field"))?;
+        .map_err(|_| render_err("ArrayComprehension missing 'expr' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
 
     let mut index_clauses = Vec::new();
     for i in 0..len {
@@ -1013,8 +1013,8 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
             .map(|v| v.to_string())
             .map_err(|_| render_err("ArrayComprehension index missing 'name' field"))?;
         let range = get_field(&index, "range")
-            .and_then(|v| render_expression(&v, cfg))
-            .map_err(|_| render_err("ArrayComprehension index missing 'range' field"))?;
+            .map_err(|_| render_err("ArrayComprehension index missing 'range' field"))
+            .and_then(|v| render_expression(&v, cfg))?;
         index_clauses.push(format!("{name} in {range}"));
     }
 
@@ -1091,8 +1091,8 @@ fn try_unroll_c_comprehension_elements(
 /// which are 1-based naming).
 fn render_index(index: &Value, cfg: &ExprConfig) -> RenderResult {
     let base = get_field(index, "base")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Index missing 'base' field"))?;
+        .map_err(|_| render_err("Index missing 'base' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let subs = get_field(index, "subscripts")
         .map_err(|_| render_err("Index missing 'subscripts' field"))?;
     let len = subs.len().unwrap_or(0);
@@ -1118,8 +1118,8 @@ fn render_index(index: &Value, cfg: &ExprConfig) -> RenderResult {
 /// Render a field access expression as `base.field`.
 fn render_field_access(fa: &Value, cfg: &ExprConfig) -> RenderResult {
     let base = get_field(fa, "base")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("FieldAccess missing 'base' field"))?;
+        .map_err(|_| render_err("FieldAccess missing 'base' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let field = get_field(fa, "field")
         .map(|v| v.to_string())
         .map_err(|_| render_err("FieldAccess missing 'field'"))?;

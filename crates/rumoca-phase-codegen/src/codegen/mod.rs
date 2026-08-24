@@ -1278,11 +1278,11 @@ fn render_event_indicator(expr: &Value, cfg: &ExprConfig) -> RenderResult {
     }
 
     let lhs = get_field(&binary, "lhs")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Relation expression missing 'lhs' field"))?;
+        .map_err(|_| render_err("Relation expression missing 'lhs' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     let rhs = get_field(&binary, "rhs")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("Relation expression missing 'rhs' field"))?;
+        .map_err(|_| render_err("Relation expression missing 'rhs' field"))
+        .and_then(|v| render_expression(&v, cfg))?;
     Ok(format!("(({lhs}) - ({rhs}))"))
 }
 
