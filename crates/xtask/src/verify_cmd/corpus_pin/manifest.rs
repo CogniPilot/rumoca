@@ -410,6 +410,27 @@ fn validate_observation(observation: &PinnedObservation, stop_time: f64) -> Resu
     Ok(())
 }
 
+/// Whether `path` names a location from a filesystem root rather than from the
+/// row's output directory.
+///
+/// `Path::is_absolute` cannot answer this for a corpus manifest, because it
+/// answers for the host: `/etc/passwd` is not absolute on Windows (it carries
+/// no drive prefix) and `C:\Windows` is not absolute on Unix. A manifest is
+/// checked-in, host-independent data, so a row that escapes to a root must be
+/// refused the same way everywhere rather than falling through to whichever
+/// diagnostic the running platform happens to produce. Both rooted syntaxes are
+/// judged here directly.
+fn is_rooted(path: &str) -> bool {
+    if path.starts_with('/') || path.starts_with('\\') {
+        return true;
+    }
+    let mut chars = path.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(drive), Some(':')) if drive.is_ascii_alphabetic()
+    )
+}
+
 fn validate_artifact(artifact: &ExpectedArtifact) -> Result<()> {
     let ExpectedArtifact {
         path,
@@ -419,7 +440,7 @@ fn validate_artifact(artifact: &ExpectedArtifact) -> Result<()> {
     ensure!(!path.trim().is_empty(), "an artifact needs a path");
     let relative = Path::new(path);
     ensure!(
-        !relative.is_absolute(),
+        !is_rooted(path),
         "artifact `{path}` must be relative to the row's output directory"
     );
     ensure!(

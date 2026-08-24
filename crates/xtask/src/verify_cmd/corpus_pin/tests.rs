@@ -385,6 +385,13 @@ fn an_inadmissible_artifact_expectation_is_refused_at_load_time() {
     );
     assert_refused(&absolute, "must be relative");
 
+    let mut drive_rooted = base.clone();
+    replace_artifact(
+        &mut drive_rooted,
+        artifact("C:\\Windows\\system32", ArtifactKind::File, 1),
+    );
+    assert_refused(&drive_rooted, "must be relative");
+
     let mut allowed_to_be_empty = base;
     replace_artifact(
         &mut allowed_to_be_empty,
