@@ -899,31 +899,37 @@ impl ScheduleGraph<'_, '_> {
 
     /// Report the same-tick cycle that left the schedule unfinished, preferring
     /// a blocked producer: it carries the source span the model author wrote.
+    /// Among blocked producers, one with a named target is preferred, so an
+    /// event transaction that projects no targets never leaves the message
+    /// naming an empty string.
     fn cycle_error(&self, view: dae::DaeView<'_>, emitted: &[bool]) -> SameTickOrderError {
-        let (blocked_index, blocked_node) = self
-            .nodes
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(index, _)| !emitted[*index])
-            .find(|(_, node)| matches!(node, Node::Producer(_)))
-            .or_else(|| {
-                self.nodes
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .find(|(index, _)| !emitted[*index])
+        let unemitted = || {
+            self.nodes
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(index, _)| !emitted[*index])
+        };
+        let (blocked_index, blocked_node) = unemitted()
+            .find(|(_, node)| {
+                matches!(node, Node::Producer(producer) if !self.producers[*producer].targets.is_empty())
             })
+            .or_else(|| unemitted().find(|(_, node)| matches!(node, Node::Producer(_))))
+            .or_else(|| unemitted().next())
             .expect("an unfinished schedule has an unemitted node");
         let (span, target_names) = match blocked_node {
             Node::Producer(producer) => (
                 self.producers[producer].span,
-                self.producers[producer]
-                    .targets
-                    .iter()
-                    .map(|target| variable_name(view, target.index()))
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                if self.producers[producer].targets.is_empty() {
+                    "<unnamed clocked producer>".to_owned()
+                } else {
+                    self.producers[producer]
+                        .targets
+                        .iter()
+                        .map(|target| variable_name(view, target.index()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                },
             ),
             Node::Intermediate(variable) => (
                 self.producers
