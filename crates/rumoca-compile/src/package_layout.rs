@@ -1069,7 +1069,11 @@ mod tests {
         fs::write(&nested, "model C end C;").expect("write nested");
 
         let files = collect_compile_unit_source_files(&focus).expect("collect compile unit");
-        assert_eq!(files, vec![focus, sibling]);
+        // The collector canonicalizes the entry, so on hosts where the temp
+        // directory sits behind a symlink (macOS /tmp) the expected paths must
+        // be canonicalized the same way.
+        let canon = |p: &std::path::Path| p.canonicalize().expect("canonicalize expected");
+        assert_eq!(files, vec![canon(&focus), canon(&sibling)]);
     }
 
     #[test]
@@ -1092,16 +1096,18 @@ mod tests {
         fs::write(&unrelated, "model Other end Other;").expect("write unrelated");
 
         let files = collect_compile_unit_source_files(&focus).expect("collect compile unit");
-        assert_eq!(
-            files,
-            vec![
-                cousin,
-                focus,
-                sibling,
-                sub.join("package.mo"),
-                pkg.join("package.mo")
-            ]
-        );
+        // Canonicalized expectations for hosts whose temp directory sits
+        // behind a symlink (macOS /tmp).
+        let canon = |p: &Path| p.canonicalize().expect("canonicalize expected");
+        let mut expected = vec![
+            canon(&cousin),
+            canon(&focus),
+            canon(&sibling),
+            canon(&sub.join("package.mo")),
+            canon(&pkg.join("package.mo")),
+        ];
+        expected.sort();
+        assert_eq!(files, expected);
     }
 
     #[test]
