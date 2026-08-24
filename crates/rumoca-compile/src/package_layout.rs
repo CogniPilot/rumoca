@@ -166,9 +166,16 @@ pub fn collect_compile_unit_source_files(path: &Path) -> Result<Vec<PathBuf>> {
     if !path.is_file() {
         bail!("compile-unit path is not a file: {}", path.display());
     }
-
+    // Resolve the entry before climbing for the enclosing package root. A
+    // cwd-relative entry ("Model.mo" run from inside its package) yields ""
+    // from Path::parent, and joining "package.mo" onto "" still resolves
+    // against the cwd, so the climb walked past the filesystem into the empty
+    // path and read_dir("") failed with a pathless io error. An absolute path
+    // makes every ancestor a real directory by construction.
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("resolve compile-unit path {}", path.display()))?;
     let parent = match path.parent() {
-        Some(p) if p.as_os_str().is_empty() => Path::new("."),
         Some(p) => p,
         None => {
             bail!(
@@ -406,7 +413,9 @@ fn validate_directory(
 }
 
 fn collect_directory_children(dir: &Path) -> Result<DirectoryChildren> {
-    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+        .with_context(|| format!("read package directory {}", dir.display()))?;
     entries.sort_by_key(|entry| entry.path());
 
     let mut child_dirs = Vec::new();
@@ -748,7 +757,9 @@ fn record_child_name(
 }
 
 fn contains_direct_modelica_entities(dir: &Path) -> Result<bool> {
-    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+        .with_context(|| format!("read package directory {}", dir.display()))?;
     entries.sort_by_key(|entry| entry.path());
     for entry in entries {
         let path = entry.path();
@@ -763,7 +774,9 @@ fn contains_direct_modelica_entities(dir: &Path) -> Result<bool> {
 }
 
 fn collect_all_modelica_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+        .with_context(|| format!("read package directory {}", dir.display()))?;
     entries.sort_by_key(|entry| entry.path());
     for entry in entries {
         let path = entry.path();
@@ -779,7 +792,9 @@ fn collect_all_modelica_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> R
 }
 
 fn collect_direct_modelica_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+        .with_context(|| format!("read package directory {}", dir.display()))?;
     entries.sort_by_key(|entry| entry.path());
     for entry in entries {
         let path = entry.path();
@@ -796,7 +811,9 @@ fn collect_package_tree_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> 
         out.push(package_path);
     }
 
-    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+        .with_context(|| format!("read package directory {}", dir.display()))?;
     entries.sort_by_key(|entry| entry.path());
     for entry in entries {
         let path = entry.path();
