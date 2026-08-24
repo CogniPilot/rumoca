@@ -164,7 +164,10 @@ fn builtin_template_targets_render_or_are_explicit_readiness_zero_manifests() {
     // declares them so — not because CI skips them.
     assert_eq!(
         coverage.support_partials,
-        vec!["embedded-c-galec:symbols.jinja".to_string()],
+        vec![
+            "embedded-c-galec:scratch.jinja".to_string(),
+            "embedded-c-galec:symbols.jinja".to_string(),
+        ],
         "the declared support partials changed"
     );
 }
@@ -641,6 +644,7 @@ fn shared_template_names_are_globally_unique_and_target_owned() {
         vec![
             "algorithm-code-manifest.jinja <- galec/manifest.xml.jinja".to_string(),
             "algorithm-code-source.jinja <- galec/model.alg.jinja".to_string(),
+            "galec-c-scratch.jinja <- embedded-c-galec/scratch.jinja".to_string(),
             "galec-c-symbols.jinja <- embedded-c-galec/symbols.jinja".to_string(),
             "galec-clang-format.jinja <- embedded-c-galec/clang_format.jinja".to_string(),
             "galec-kernels.c.jinja <- embedded-c-galec/kernels.c.jinja".to_string(),
