@@ -40,7 +40,7 @@ use input_validation::{
     validate_output_len,
 };
 use interpreter::execute_row;
-use owned_jit_module::OwnedJitModule;
+use owned_jit_module::{OwnedJitModule, declare_far_call_in_func};
 
 // Each compiled program writes its outputs through the trailing `*mut f64`
 // pointer (one program may emit several outputs via consecutive StoreOutputs).
@@ -1041,14 +1041,8 @@ impl CraneliftEmitter {
     fn new(
         pure_calls: Option<&typed_program::CompiledPureCallTable>,
     ) -> Result<Self, CompileError> {
-        // `is_pic` routes calls to the registered math symbols through the
-        // module's global-offset table instead of a direct branch. On AArch64 a
-        // direct `bl` reaches only +/-128 MB; a model that emits enough code to
-        // place a host libm symbol outside that window overflows the 26-bit
-        // relocation, while the x86-64 32-bit call form has the range to hide
-        // the same layout. The GOT-relative form has no such limit.
         let mut builder = JITBuilder::with_flags(
-            &[("opt_level", "speed"), ("is_pic", "true")],
+            &[("opt_level", "speed")],
             cranelift_module::default_libcall_names(),
         )
         .map_err(to_backend_err)?;
@@ -2784,7 +2778,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 input_cell += 1;
             }
         }
-        let function = self.module.declare_func_in_func(function, self.fb.func);
+        let function = declare_far_call_in_func(self.module, function, self.fb.func);
         self.fb.ins().call(function, &[input_ptr, output_ptr]);
         self.pure_call_results.insert(cache_key, output_slot);
         self.load_typed_call_results(dst_start, outputs, output_slot)?;
@@ -2962,7 +2956,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             3,
         ));
         let results_ptr = self.fb.ins().stack_addr(types::I64, results, 0);
-        let function = self.module.declare_func_in_func(function, self.fb.func);
+        let function = declare_far_call_in_func(self.module, function, self.fb.func);
         let mut arguments = vec![self.y_ptr, self.p_ptr, self.t_value];
         if let Some(seed) = self.v_ptr {
             arguments.push(seed);
@@ -3617,7 +3611,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         }
         let carried_ptr = self.fb.ins().stack_addr(types::I64, carried, 0);
         let captures_ptr = self.fb.ins().stack_addr(types::I64, capture_slot, 0);
-        let function = self.module.declare_func_in_func(function, self.fb.func);
+        let function = declare_far_call_in_func(self.module, function, self.fb.func);
         let mut arguments = vec![self.y_ptr, self.p_ptr, self.t_value];
         if let Some(seed) = self.v_ptr {
             arguments.push(seed);
@@ -6592,7 +6586,7 @@ fn call_unary_math(
         math.unary.insert(function, func_id);
         func_id
     };
-    let callee = module.declare_func_in_func(func_id, fb.func);
+    let callee = declare_far_call_in_func(module, func_id, fb.func);
     let call = fb.ins().call(callee, &[arg]);
     let values = fb.inst_results(call);
     values
@@ -6622,7 +6616,7 @@ fn call_binary_math(
         math.binary.insert(function, func_id);
         func_id
     };
-    let callee = module.declare_func_in_func(func_id, fb.func);
+    let callee = declare_far_call_in_func(module, func_id, fb.func);
     let call = fb.ins().call(callee, &[lhs, rhs]);
     let values = fb.inst_results(call);
     values
@@ -6652,7 +6646,7 @@ fn call_table_host(
         math.table.insert(function, func_id);
         func_id
     };
-    let callee = module.declare_func_in_func(func_id, fb.func);
+    let callee = declare_far_call_in_func(module, func_id, fb.func);
     let call = fb.ins().call(callee, args);
     let values = fb.inst_results(call);
     values

@@ -1,6 +1,8 @@
 use std::ops::{Deref, DerefMut};
 
+use cranelift_codegen::ir;
 use cranelift_jit::JITModule;
+use cranelift_module::{FuncId, Module};
 
 /// Sole owner of one Cranelift executable-memory arena.
 ///
@@ -15,6 +17,31 @@ impl OwnedJitModule {
     pub(super) fn new(module: JITModule) -> Self {
         Self(Some(module))
     }
+}
+
+/// Import `func_id` into `func` as a callee that is reached through its full
+/// 64-bit address rather than a program-counter-relative branch.
+///
+/// `Module::declare_func_in_func` marks a callee colocated whenever its linkage
+/// is final, which on AArch64 lowers the call to `bl` and a 26-bit
+/// `Reloc::Arm64Call`. That branch reaches only +/-128 MB, and the JIT places
+/// each batch of compiled code in its own arena, so two functions of one model
+/// can land further apart than the branch can encode; `cranelift-jit` then
+/// fails the range assertion while relocating. x86-64 hides the same layout
+/// behind a 32-bit displacement, so the overflow only ever appears on ARM
+/// hosts. Clearing `colocated` selects the far-call sequence, which has no
+/// range limit and costs one address materialization per call.
+///
+/// Every call emitted into JIT code goes through here so that no future callee
+/// can reintroduce a range-limited relocation by declaring itself final.
+pub(super) fn declare_far_call_in_func(
+    module: &mut JITModule,
+    func_id: FuncId,
+    func: &mut ir::Function,
+) -> ir::FuncRef {
+    let callee = module.declare_func_in_func(func_id, func);
+    func.dfg.ext_funcs[callee].colocated = false;
+    callee
 }
 
 impl Deref for OwnedJitModule {
