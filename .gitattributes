@@ -1,1 +1,2 @@
 *.jinja text eol=lf
+*.rs text eol=lf
