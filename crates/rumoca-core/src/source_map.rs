@@ -237,8 +237,9 @@ impl SourceMap {
 
     /// Try to create a `Span` from a `SourceId` and byte offsets.
     ///
-    /// Returns `None` when the source is not registered in this map, matching
-    /// the registered-source semantics of [`SourceMap::try_location_to_span`].
+    /// Returns `None` when the source is not registered in this map; requiring
+    /// a registered source keeps the span pointed at content this map can
+    /// resolve back to a file and offsets.
     pub fn try_span(&self, source: SourceId, start: usize, end: usize) -> Option<Span> {
         self.get_source(source)?;
         Some(Span::from_offsets(source, start, end))
