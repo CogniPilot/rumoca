@@ -1041,8 +1041,14 @@ impl CraneliftEmitter {
     fn new(
         pure_calls: Option<&typed_program::CompiledPureCallTable>,
     ) -> Result<Self, CompileError> {
+        // `is_pic` routes calls to the registered math symbols through the
+        // module's global-offset table instead of a direct branch. On AArch64 a
+        // direct `bl` reaches only +/-128 MB; a model that emits enough code to
+        // place a host libm symbol outside that window overflows the 26-bit
+        // relocation, while the x86-64 32-bit call form has the range to hide
+        // the same layout. The GOT-relative form has no such limit.
         let mut builder = JITBuilder::with_flags(
-            &[("opt_level", "speed")],
+            &[("opt_level", "speed"), ("is_pic", "true")],
             cranelift_module::default_libcall_names(),
         )
         .map_err(to_backend_err)?;
