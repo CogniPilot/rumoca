@@ -46,13 +46,13 @@ pub(crate) mod cache_cmd;
 #[cfg(feature = "scheduled-sim")]
 pub(crate) mod fmt_cli;
 #[cfg(feature = "scheduled-sim")]
-#[cfg(feature = "scheduled-sim")]
 pub(crate) mod main_helpers;
 pub(crate) mod packaging;
 #[cfg(feature = "scheduled-sim")]
 pub(crate) mod sim_bench;
 #[cfg(feature = "scheduled-sim")]
 pub(crate) mod sim_inspect;
+#[cfg(feature = "scheduled-sim")]
 pub(crate) mod standard_modelica;
 pub(crate) mod target_manifest;
 #[cfg(feature = "scheduled-sim")]
