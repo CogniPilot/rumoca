@@ -453,7 +453,11 @@ fn bron_kerbosch(
 /// clocks share a tick when `phase_b - phase_a` is an integer multiple of the
 /// gcd of their periods; a phase difference of zero (the common phase-aligned
 /// case) is always such a multiple.
-fn clocks_share_a_tick(partition: &solve::SolveClockPartition, left: usize, right: usize) -> bool {
+pub(super) fn clocks_share_a_tick(
+    partition: &solve::SolveClockPartition,
+    left: usize,
+    right: usize,
+) -> bool {
     let (Some(a), Some(b)) = (
         partition.periodic_event_schedules.get(left),
         partition.periodic_event_schedules.get(right),

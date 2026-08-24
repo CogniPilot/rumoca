@@ -70,7 +70,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
     for (program_index, transaction) in event_transactions.iter_mut().enumerate() {
         discrete.claim_event_transaction(view, program_index, transaction)?;
     }
-    issue_clock_partition_order(view, layout, &mut discrete)?;
+    issue_clock_partition_order(view, layout, clocks, &mut discrete)?;
     let event_iteration_plan = build_event_iteration_plan(view, layout, &discrete)?;
     let mut discrete = discrete.finish(
         &roots.relation_memory_targets,

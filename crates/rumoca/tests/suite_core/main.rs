@@ -35,6 +35,7 @@ mod cli_diagnostic_rendering;
 mod cli_emit;
 mod cli_fmt_lint;
 mod cli_target_acceptance;
+mod clocked_coincident_exchange;
 mod clocked_sample_regression;
 mod connection_normalization_golden;
 mod enumeration_compact_range_test;

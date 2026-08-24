@@ -8,6 +8,8 @@
 
 use super::*;
 
+use crate::lower::clocks::clocks_share_a_tick;
+
 /// Issue the SOLVE-C57 clock-partition same-tick schedule.
 ///
 /// The structural engine (`rumoca_phase_structural::issue_same_tick_schedule`)
@@ -23,6 +25,7 @@ use super::*;
 pub(super) fn issue_clock_partition_order<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
+    clocks: &LoweredClocks<'dae>,
     discrete: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
     let pending = std::mem::take(&mut discrete.clocked_producers);
@@ -54,11 +57,13 @@ pub(super) fn issue_clock_partition_order<'dae>(
             span: producer.span,
         })
         .collect::<Vec<_>>();
+    let coincidence = producer_clock_coincidence(&clocks.partition, &producers);
     let schedule_result = rumoca_phase_structural::issue_same_tick_schedule(
         view,
         &discrete.same_tick_definitions,
         &producers,
         &excluded,
+        &coincidence,
     );
     let schedule = schedule_result.map_err(|error| match &error {
         rumoca_phase_structural::SameTickOrderError::Cycle { .. }
@@ -187,6 +192,36 @@ fn issue_intermediate_definition<'dae>(
         order.push(solve::ClockPartitionStep::Intermediate { row });
     }
     Ok(())
+}
+
+/// The SOLVE-C57 exchange relation over the producers' periodic clocks.
+///
+/// Two distinct clock identities exchange same-tick values exactly when the
+/// rational clock lattice proves they can fire on one shared instant
+/// ([`clocks_share_a_tick`]: same anchor, phase difference an integer multiple
+/// of the gcd of the periods); identical identities need no proof. The
+/// relation is pairwise, never closed into classes, because coincidence is
+/// not transitive. Clocks that never coincide keep the held entry-storage
+/// read, the SOLVE-C22 left-limit lane, exactly as before.
+fn producer_clock_coincidence(
+    partition: &solve::SolveClockPartition,
+    producers: &[rumoca_phase_structural::SameTickProducer<'_>],
+) -> rumoca_phase_structural::ClockCoincidence {
+    let domains: Vec<u32> = producers
+        .iter()
+        .flat_map(|producer| producer.clock_domains.iter().copied())
+        .collect::<BTreeSet<u32>>()
+        .into_iter()
+        .collect();
+    let mut pairs = Vec::new();
+    for (position, &left) in domains.iter().enumerate() {
+        for &right in &domains[position + 1..] {
+            if clocks_share_a_tick(partition, left as usize, right as usize) {
+                pairs.push((left, right));
+            }
+        }
+    }
+    rumoca_phase_structural::ClockCoincidence::of_pairs(pairs)
 }
 
 fn intermediate_variable_span<'dae>(

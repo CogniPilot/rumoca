@@ -52,8 +52,10 @@ use crate::CausalDefinitions;
 /// through a history lane (for example a `sample(u)` source) passes no roots.
 pub struct SameTickProducer<'dae> {
     /// Canonical periodic-clock domains on which this producer can execute.
-    /// Same-tick exchange exists only between producers with an intersecting
-    /// domain; a disjoint-clock read observes held entry storage.
+    /// Same-tick exchange exists only between producers whose domains can
+    /// fire on one shared instant under the caller's [`ClockCoincidence`]
+    /// relation (identical domains always do); a never-coincident read
+    /// observes held entry storage.
     pub clock_domains: Vec<u32>,
     /// Complete target tuple (DAE variable identities written by the producer).
     pub targets: Vec<dae::VariableId<'dae>>,
@@ -63,6 +65,63 @@ pub struct SameTickProducer<'dae> {
     pub condition_reads: Vec<dae::ConditionId<'dae>>,
     /// Producer source span for rejection diagnostics.
     pub span: Span,
+}
+
+/// Which distinct periodic-clock domains can fire on one shared instant.
+///
+/// Same-tick value exchange between two producers exists exactly when their
+/// clocks can tick together: on such an instant the reader must observe the
+/// freshly issued value, while clocks that never coincide keep the held
+/// entry-storage read (the SOLVE-C22 left-limit lane). Clock identity is not
+/// the right test: two distinct periodic clocks whose phase difference is an
+/// integer multiple of the gcd of their periods (a whole-interval
+/// `shiftSample`, any `subSample`/`superSample`) fire together, so the caller
+/// proves coincidence over its clock lattice and states the result here. The
+/// relation is reflexive by construction and stored symmetric; it is a
+/// required argument of [`issue_same_tick_schedule`] so no caller can skip
+/// the coincidence question.
+pub struct ClockCoincidence {
+    /// Cross-identity pairs proved coincident, stored as `(low, high)`.
+    coincident_pairs: BTreeSet<(u32, u32)>,
+}
+
+impl ClockCoincidence {
+    /// The relation in which no two distinct clock domains ever share a tick.
+    #[must_use]
+    pub const fn never() -> Self {
+        Self {
+            coincident_pairs: BTreeSet::new(),
+        }
+    }
+
+    /// The relation containing exactly `pairs` as coincident distinct-domain
+    /// pairs, order-insensitively; a reflexive `(a, a)` entry is redundant and
+    /// ignored because identical domains always coincide.
+    #[must_use]
+    pub fn of_pairs(pairs: impl IntoIterator<Item = (u32, u32)>) -> Self {
+        Self {
+            coincident_pairs: pairs
+                .into_iter()
+                .filter(|&(left, right)| left != right)
+                .map(|(left, right)| (left.min(right), left.max(right)))
+                .collect(),
+        }
+    }
+
+    /// Whether domains `left` and `right` can fire on one shared instant.
+    #[must_use]
+    pub fn coincident(&self, left: u32, right: u32) -> bool {
+        left == right
+            || self
+                .coincident_pairs
+                .contains(&(left.min(right), left.max(right)))
+    }
+
+    /// Whether any domain of `lhs` can fire together with any domain of `rhs`.
+    fn domains_overlap(&self, lhs: &[u32], rhs: &[u32]) -> bool {
+        lhs.iter()
+            .any(|&left| rhs.iter().any(|&right| self.coincident(left, right)))
+    }
 }
 
 /// One issued step of the same-tick schedule.
@@ -446,6 +505,7 @@ pub fn issue_same_tick_schedule<'dae>(
     definitions: &SameTickDefinitions<'dae>,
     producers: &[SameTickProducer<'dae>],
     excluded: &BTreeSet<u32>,
+    coincidence: &ClockCoincidence,
 ) -> Result<SameTickSchedule<'dae>, SameTickOrderError> {
     if producers.is_empty() {
         return Ok(SameTickSchedule {
@@ -481,6 +541,7 @@ pub fn issue_same_tick_schedule<'dae>(
         &producer_of,
         &direct_reads,
         &intermediates,
+        coincidence,
     )
 }
 
@@ -722,11 +783,13 @@ fn emit_schedule<'dae>(
     producer_of: &BTreeMap<u32, usize>,
     direct_reads: &[BTreeSet<u32>],
     intermediates: &BTreeMap<u32, IntermediateNode<'dae>>,
+    coincidence: &ClockCoincidence,
 ) -> Result<SameTickSchedule<'dae>, SameTickOrderError> {
     let graph = ScheduleGraph {
         producers,
         direct_reads,
         intermediates,
+        coincidence,
         // A read is satisfied when its owning node (producer target or kept
         // intermediate) has been emitted. A read owned by no node reached no
         // producer target during discovery, so its tick-entry value holds for
@@ -793,6 +856,7 @@ struct ScheduleGraph<'a, 'dae> {
     producers: &'a [SameTickProducer<'dae>],
     direct_reads: &'a [BTreeSet<u32>],
     intermediates: &'a BTreeMap<u32, IntermediateNode<'dae>>,
+    coincidence: &'a ClockCoincidence,
     node_of_intermediate: BTreeMap<u32, usize>,
     producer_of: &'a BTreeMap<u32, usize>,
     nodes: Vec<Node>,
@@ -818,18 +882,16 @@ impl ScheduleGraph<'_, '_> {
     fn node_overlaps_producer(&self, node: Node, producer: usize) -> bool {
         let owner_domains = &self.producers[producer].clock_domains;
         match node {
-            Node::Producer(index) => {
-                clock_domains_overlap(&self.producers[index].clock_domains, owner_domains)
-            }
+            Node::Producer(index) => self
+                .coincidence
+                .domains_overlap(&self.producers[index].clock_domains, owner_domains),
             Node::Intermediate(variable) => {
                 self.intermediates[&variable]
                     .consumers
                     .iter()
                     .any(|&consumer| {
-                        clock_domains_overlap(
-                            &self.producers[consumer].clock_domains,
-                            owner_domains,
-                        )
+                        self.coincidence
+                            .domains_overlap(&self.producers[consumer].clock_domains, owner_domains)
                     })
             }
         }
@@ -896,19 +958,6 @@ impl ScheduleGraph<'_, '_> {
             ),
         }
     }
-}
-
-fn clock_domains_overlap(lhs: &[u32], rhs: &[u32]) -> bool {
-    let mut left = 0usize;
-    let mut right = 0usize;
-    while left < lhs.len() && right < rhs.len() {
-        match lhs[left].cmp(&rhs[right]) {
-            std::cmp::Ordering::Less => left += 1,
-            std::cmp::Ordering::Greater => right += 1,
-            std::cmp::Ordering::Equal => return true,
-        }
-    }
-    false
 }
 
 fn variable_name(view: dae::DaeView<'_>, variable: u32) -> String {
@@ -1277,14 +1326,36 @@ mod tests {
             &self,
             producers: &[SameTickProducer<'dae>],
         ) -> Result<Vec<SameTickStep<'dae>>, SameTickOrderError> {
-            issue_same_tick_schedule(self.view, &self.definitions, producers, &BTreeSet::new())
-                .map(|schedule| schedule.steps)
+            self.issue_with(producers, &ClockCoincidence::never())
+        }
+
+        fn issue_with(
+            &self,
+            producers: &[SameTickProducer<'dae>],
+            coincidence: &ClockCoincidence,
+        ) -> Result<Vec<SameTickStep<'dae>>, SameTickOrderError> {
+            issue_same_tick_schedule(
+                self.view,
+                &self.definitions,
+                producers,
+                &BTreeSet::new(),
+                coincidence,
+            )
+            .map(|schedule| schedule.steps)
         }
 
         /// The issued schedule rendered as names, so an assertion states the
         /// order a reader can check against the model text.
         fn issue_names(&self, producers: &[SameTickProducer<'dae>]) -> Vec<String> {
-            self.issue(producers)
+            self.issue_names_with(producers, &ClockCoincidence::never())
+        }
+
+        fn issue_names_with(
+            &self,
+            producers: &[SameTickProducer<'dae>],
+            coincidence: &ClockCoincidence,
+        ) -> Vec<String> {
+            self.issue_with(producers, coincidence)
                 .expect("the fixture schedule is issuable")
                 .into_iter()
                 .map(|step| match step {
@@ -1388,6 +1459,63 @@ mod tests {
         });
     }
 
+    /// A whole-interval `shiftSample`/`subSample` reader lives on a clock
+    /// identity distinct from its source's, yet the two clocks fire together.
+    /// With the coincidence proved, the cross-clock read orders exactly like a
+    /// same-clock read, independent of caller (source equation) order.
+    #[test]
+    fn coincident_domains_order_a_cross_clock_read() {
+        probe(Wiring::Aliases, |probe| {
+            let a_read = probe.read_of("a");
+            let coincidence = ClockCoincidence::of_pairs([(1, 2)]);
+            // Caller order is reader-first, exactly as the model text writes it.
+            let producers = [
+                probe.producer_on("b", &[a_read], &[2]),
+                probe.producer_on("a", &[], &[1]),
+            ];
+            assert_eq!(probe.issue_names_with(&producers, &coincidence), ["a", "b"]);
+            // The owner-first caller order issues the same schedule.
+            let swapped = [
+                probe.producer_on("a", &[], &[1]),
+                probe.producer_on("b", &[a_read], &[2]),
+            ];
+            assert_eq!(probe.issue_names_with(&swapped, &coincidence), ["a", "b"]);
+        });
+    }
+
+    /// The same producers with no coincidence proof keep the held-entry read:
+    /// caller order is preserved because no exchange edge exists.
+    #[test]
+    fn never_coincident_domains_keep_the_caller_order() {
+        probe(Wiring::Aliases, |probe| {
+            let a_read = probe.read_of("a");
+            let producers = [
+                probe.producer_on("b", &[a_read], &[2]),
+                probe.producer_on("a", &[], &[1]),
+            ];
+            assert_eq!(probe.issue_names(&producers), ["b", "a"]);
+        });
+    }
+
+    /// Mutual same-instant reads across two coincident clocks are a genuine
+    /// same-tick algebraic loop and are rejected, mirroring the cross-clock
+    /// construction rejection in the Solve lowering.
+    #[test]
+    fn coincident_opposite_reads_are_rejected_as_a_cycle() {
+        probe(Wiring::Aliases, |probe| {
+            let a_read = probe.read_of("a");
+            let b_read = probe.read_of("b");
+            let producers = [
+                probe.producer_on("b", &[a_read], &[1]),
+                probe.producer_on("a", &[b_read], &[2]),
+            ];
+            assert!(matches!(
+                probe.issue_with(&producers, &ClockCoincidence::of_pairs([(1, 2)])),
+                Err(SameTickOrderError::Cycle { .. })
+            ));
+        });
+    }
+
     #[test]
     fn one_shared_domain_keeps_a_multi_clock_cycle_rejected() {
         probe(Wiring::Aliases, |probe| {
@@ -1457,10 +1585,15 @@ mod tests {
             let alias_read = probe.read_of("nAlias");
             let producers = [probe.producer("b", &[alias_read])];
             let excluded = BTreeSet::from([probe.index("n")]);
-            let steps =
-                issue_same_tick_schedule(probe.view, &probe.definitions, &producers, &excluded)
-                    .expect("a transaction-owned read is schedulable")
-                    .steps;
+            let steps = issue_same_tick_schedule(
+                probe.view,
+                &probe.definitions,
+                &producers,
+                &excluded,
+                &ClockCoincidence::never(),
+            )
+            .expect("a transaction-owned read is schedulable")
+            .steps;
             assert!(matches!(
                 steps.as_slice(),
                 [
