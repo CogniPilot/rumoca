@@ -3,6 +3,7 @@ mod manifold;
 mod order_robustness;
 mod saturation;
 mod scaled_systems;
+mod singular_isolation;
 
 use std::cell::Cell;
 

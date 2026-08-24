@@ -185,6 +185,34 @@ pub(crate) trait ImplicitProjectionModel {
     fn implicit_target_assignment_is_exact(&self, _row_idx: usize, _target_y_index: usize) -> bool {
         false
     }
+
+    /// The row's isolated target value at the current iterate, total over the
+    /// ways isolation can be unavailable: `Ok(None)` covers a row with no
+    /// isolator, a numerically singular coefficient at this `y`, and a
+    /// non-finite result.
+    ///
+    /// The isolator divides by a coefficient evaluated at the current iterate,
+    /// so a coefficient that passes through zero there (the
+    /// differential-amplifier opamp loop crosses exactly this at its start
+    /// state) is a property of the point, not of the model: the block is still
+    /// solvable by residual iteration or by the dense Newton the caller falls
+    /// back to. Projection consumers call this, never the raw evaluation, so
+    /// declining is the only representable response to a singular iterate;
+    /// genuine evaluation failures still propagate.
+    fn isolation_value(
+        &self,
+        row_idx: usize,
+        target_y_index: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        match self.eval_implicit_target_value(row_idx, target_y_index, y, p, t) {
+            Ok(value) => Ok(value.filter(|value| value.is_finite())),
+            Err(RuntimeSolveError::RefreshTargetSingular { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 pub(crate) trait AlgebraicProjectionModel: ImplicitProjectionModel {
@@ -784,19 +812,13 @@ fn try_seed_algebraic_target<M: ImplicitProjectionModel>(
     else {
         return Ok(None);
     };
-    let Some(value) = context.model.eval_implicit_target_value(
-        row,
-        y_index,
-        y,
-        context.parameters,
-        context.time,
-    )?
+    let Some(value) =
+        context
+            .model
+            .isolation_value(row, y_index, y, context.parameters, context.time)?
     else {
         return Ok(None);
     };
-    if !value.is_finite() {
-        return Ok(None);
-    }
     let previous = y[y_index];
     y[y_index] = value;
     let accepted = context
@@ -833,9 +855,7 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
         return Ok(None);
     };
     if model.implicit_target_assignment_is_exact(*row, *y_index) {
-        let value = model
-            .eval_implicit_target_value(*row, *y_index, y, p, t)?
-            .filter(|value| value.is_finite());
+        let value = model.isolation_value(*row, *y_index, y, p, t)?;
         let Some(value) = value else {
             return Ok(Some(ProjectionBlockUpdate {
                 changed: false,
@@ -858,10 +878,7 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
             settled: false,
         }));
     }
-    let Some(value) = model
-        .eval_implicit_target_value(*row, *y_index, y, p, t)?
-        .filter(|value| value.is_finite())
-    else {
+    let Some(value) = model.isolation_value(*row, *y_index, y, p, t)? else {
         return Ok(None);
     };
     let previous = y[*y_index];

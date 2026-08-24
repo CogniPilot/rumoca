@@ -236,10 +236,7 @@ fn solve_causal_step<M: ImplicitProjectionModel>(
     if !model.implicit_target_assignment_is_exact(row, y_index) {
         return Ok(false);
     }
-    match model
-        .eval_implicit_target_value(row, y_index, y, p, t)?
-        .filter(|value| value.is_finite())
-    {
+    match model.isolation_value(row, y_index, y, p, t)? {
         Some(value) => {
             y[y_index] = value;
             Ok(true)
