@@ -1079,8 +1079,8 @@ fn refresh_newton_keeps_finite_causal_values_from_first_sweep() {
     assert!((solver_y[2] + 3.0).abs() <= 1.0e-9);
 }
 
-mod refresh_projection_cases;
 mod condition_memory_seed;
+mod refresh_projection_cases;
 mod visibility;
 
 fn non_assignment_targeted_residual_row() -> Vec<solve::LinearOp> {
