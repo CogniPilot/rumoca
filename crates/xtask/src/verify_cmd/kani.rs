@@ -179,7 +179,7 @@ fn validate_manifest(root: &Path, manifest: &KaniProofManifest) -> Result<()> {
         );
         let source = Path::new(&proof.source);
         ensure!(
-            !source.is_absolute()
+            !crate::verify_cmd::manifest_path_is_rooted(&proof.source)
                 && source
                     .components()
                     .all(|component| matches!(component, Component::Normal(_))),

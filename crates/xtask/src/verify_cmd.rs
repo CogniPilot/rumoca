@@ -1781,3 +1781,22 @@ where
         eprintln!("  {line}");
     }
 }
+
+/// Whether a checked-in manifest path names a location from a filesystem root.
+///
+/// `Path::is_absolute` cannot answer this for manifest data, because it
+/// answers for the host: `/etc/passwd` is not absolute on Windows (it carries
+/// no drive prefix) and `C:\Windows` is not absolute on Unix. Manifests are
+/// host-independent data, so a rooted path must be refused the same way
+/// everywhere rather than falling through to whichever diagnostic the running
+/// platform happens to produce. Both rooted syntaxes are judged directly.
+pub(crate) fn manifest_path_is_rooted(path: &str) -> bool {
+    if path.starts_with('/') || path.starts_with('\\') {
+        return true;
+    }
+    let mut chars = path.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(drive), Some(':')) if drive.is_ascii_alphabetic()
+    )
+}

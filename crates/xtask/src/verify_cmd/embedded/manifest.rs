@@ -169,7 +169,7 @@ fn validate_entry(entry: &BudgetEntry) -> Result<()> {
         "why must say what this row is for"
     );
     ensure!(
-        !Path::new(&entry.entry_point).is_absolute(),
+        !crate::verify_cmd::manifest_path_is_rooted(&entry.entry_point),
         "entry_point `{}` must be relative to the models root",
         entry.entry_point
     );
