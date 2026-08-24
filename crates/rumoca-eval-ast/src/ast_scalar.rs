@@ -498,3 +498,146 @@ fn remaining_boolean_outcomes_match<C: AstScalarContext>(
         .iter()
         .all(|(_, value)| eval_boolean(value, ctx, scope, depth) == Some(common))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_ir_ast::{ComponentRefPart, Subscript};
+    use std::sync::Arc;
+
+    /// A context that overrides none of the trait's defaults: no real or
+    /// enum lookups, no real/boolean calls, no integral-real coercion. What
+    /// it CAN answer is integer arithmetic, which is the floor every phase
+    /// context provides.
+    struct IntegerOnly;
+
+    impl AstScalarContext for IntegerOnly {
+        fn lookup_integer(&self, _expr: &Expression, _scope: &str, _depth: usize) -> Option<i64> {
+            None
+        }
+
+        fn lookup_boolean(&self, _expr: &Expression, _scope: &str, _depth: usize) -> Option<bool> {
+            None
+        }
+
+        fn call_integer(
+            &self,
+            _function: &ComponentReference,
+            _args: &[Expression],
+            _scope: &str,
+            _depth: usize,
+            _span: Span,
+        ) -> Option<i64> {
+            None
+        }
+
+        fn integer_binary(&self, op: &OpBinary, lhs: i64, rhs: i64, _span: Span) -> Option<i64> {
+            match op {
+                OpBinary::Add => lhs.checked_add(rhs),
+                OpBinary::Sub => lhs.checked_sub(rhs),
+                OpBinary::Mul => lhs.checked_mul(rhs),
+                _ => None,
+            }
+        }
+    }
+
+    fn token(text: &str) -> rumoca_core::Token {
+        rumoca_core::Token {
+            text: Arc::from(text),
+            location: Default::default(),
+            token_number: 0,
+            token_type: 0,
+        }
+    }
+
+    fn real_literal(text: &str) -> Expression {
+        Expression::Terminal {
+            terminal_type: TerminalType::UnsignedReal,
+            token: token(text),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn int_literal(value: i64) -> Expression {
+        Expression::Terminal {
+            terminal_type: TerminalType::UnsignedInteger,
+            token: token(&value.to_string()),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn comp_ref(name: &str) -> Expression {
+        Expression::ComponentReference(ComponentReference {
+            local: false,
+            parts: vec![ComponentRefPart {
+                ident: token(name),
+                subs: None::<Vec<Subscript>>,
+                def_id: None,
+            }],
+            span: Span::DUMMY,
+            qualified_display_name: None,
+        })
+    }
+
+    fn compare(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op,
+            lhs: Arc::new(lhs),
+            rhs: Arc::new(rhs),
+            span: Span::DUMMY,
+        }
+    }
+
+    /// The default `lookup_real` answers `None`, so a context that never
+    /// opted into real lookups must refuse to fold a named real rather than
+    /// inventing a value for it. Literal arithmetic keeps folding: refusal is
+    /// scoped to the lookup, not to the real domain.
+    #[test]
+    fn a_context_without_real_lookups_refuses_named_reals_but_folds_literals() {
+        let ctx = IntegerOnly;
+        assert_eq!(eval_real(&comp_ref("r"), &ctx, "scope", 0), None);
+        assert_eq!(
+            eval_real(
+                &compare(OpBinary::Add, real_literal("1.5"), int_literal(2)),
+                &ctx,
+                "scope",
+                0
+            ),
+            Some(3.5)
+        );
+        assert_eq!(
+            eval_boolean(
+                &compare(OpBinary::Lt, real_literal("1.5"), comp_ref("r")),
+                &ctx,
+                "scope",
+                0
+            ),
+            None,
+            "a comparison against an unavailable lookup must not fold"
+        );
+    }
+
+    /// A mixed integer/real comparison falls through the integer attempt to
+    /// the ordered real comparison, and each strictness variant answers for
+    /// itself: `<=` on equal values is not `<`.
+    #[test]
+    fn mixed_comparisons_fold_through_the_ordered_real_path() {
+        let ctx = IntegerOnly;
+        let cases = [
+            (OpBinary::Lt, "1.5", 2, Some(true)),
+            (OpBinary::Gt, "1.5", 2, Some(false)),
+            (OpBinary::Le, "2.0", 2, Some(true)),
+            (OpBinary::Lt, "2.0", 2, Some(false)),
+            (OpBinary::Ge, "2.0", 2, Some(true)),
+        ];
+        for (op, lhs, rhs, expected) in cases {
+            let folded = eval_boolean(
+                &compare(op.clone(), real_literal(lhs), int_literal(rhs)),
+                &ctx,
+                "scope",
+                0,
+            );
+            assert_eq!(folded, expected, "{lhs} {op:?} {rhs}");
+        }
+    }
+}

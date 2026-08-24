@@ -472,3 +472,30 @@ fn msl_resource_monitor_shutdown_interrupts_the_sampling_wait() {
         "monitor shutdown must not wait for the next sampling interval"
     );
 }
+
+/// The Kani shard grammar is `m/n`, 1-based, and fail-closed: a malformed or
+/// out-of-range stripe must abort rather than silently proving the wrong
+/// slice of the manifest (or none of it) while CI reports the matrix green.
+#[test]
+fn kani_shard_parsing_accepts_only_one_based_stripes() {
+    use super::VerifyKaniArgs;
+
+    let shard = |raw: &str| VerifyKaniArgs {
+        shard: Some(raw.to_string()),
+    };
+
+    assert_eq!(
+        VerifyKaniArgs::default().parse_shard().expect("no shard"),
+        None,
+        "an absent shard means the whole manifest"
+    );
+    assert_eq!(shard("1/1").parse_shard().expect("full run"), Some((1, 1)));
+    assert_eq!(shard("2/3").parse_shard().expect("stripe"), Some((2, 3)));
+
+    for raw in ["2", "a/3", "2/b", "0/3", "4/3", "1/0"] {
+        assert!(
+            shard(raw).parse_shard().is_err(),
+            "`{raw}` must be rejected, not clamped or ignored"
+        );
+    }
+}

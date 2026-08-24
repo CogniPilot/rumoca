@@ -625,4 +625,106 @@ mod tests {
             .expect_err("a stale coverage roster must not silently shrink the gate");
         assert!(error.to_string().contains("coverage roster drift"));
     }
+
+    #[test]
+    fn a_metric_within_its_allowance_passes_and_one_beyond_it_fails() {
+        let mut markdown = String::new();
+        let mut failures = Vec::new();
+
+        push_metric_row(
+            &mut markdown,
+            &mut failures,
+            "rumoca-core",
+            MetricKind::ZeroCountFunctionsTotal,
+            10,
+            12,
+            2,
+        );
+        assert!(
+            failures.is_empty(),
+            "current == baseline + allowance passes"
+        );
+        assert_eq!(
+            markdown,
+            "| `rumoca-core` | `zero_count_functions_total` | `10` | `12` | `2` | `+2` | `PASS` |\n"
+        );
+
+        markdown.clear();
+        push_metric_row(
+            &mut markdown,
+            &mut failures,
+            "rumoca-core",
+            MetricKind::NeedsTargetedTestCandidates,
+            10,
+            13,
+            2,
+        );
+        assert!(markdown.ends_with("`FAIL` |\n"));
+        assert_eq!(
+            failures,
+            vec![
+                "rumoca-core needs_targeted_test_candidates regressed: \
+                 current=13 > baseline=10 + allowance=2"
+                    .to_string()
+            ],
+            "the failure names the package, metric, and both sides of the bound"
+        );
+
+        markdown.clear();
+        failures.clear();
+        push_metric_row(
+            &mut markdown,
+            &mut failures,
+            "rumoca-core",
+            MetricKind::CandidatesTotal,
+            10,
+            7,
+            0,
+        );
+        assert!(failures.is_empty(), "an improvement never fails the gate");
+        assert!(
+            markdown.contains("| `-3` |"),
+            "the delta is signed so an improvement reads as one: {markdown}"
+        );
+    }
+
+    #[test]
+    fn resolve_path_keeps_absolute_paths_and_roots_relative_ones() {
+        let root = Path::new("/repo");
+        let absolute = PathBuf::from("/elsewhere/candidates.json");
+        assert_eq!(
+            resolve_path(root, Some(&absolute), "default.json"),
+            absolute,
+            "an absolute user path is taken as given"
+        );
+        assert_eq!(
+            resolve_path(root, Some(&PathBuf::from("target/x.json")), "default.json"),
+            Path::new("/repo/target/x.json"),
+            "a relative user path resolves against the repo root, not the cwd"
+        );
+        assert_eq!(
+            resolve_path(root, None, "target/llvm-cov/trim-candidates.json"),
+            Path::new("/repo/target/llvm-cov/trim-candidates.json"),
+            "no user path falls back to the rooted default"
+        );
+    }
+
+    #[test]
+    fn read_json_reports_the_offending_path_on_bad_input() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("payload.json");
+        std::fs::write(&path, "{\"packages\": {}}").expect("write JSON");
+        let value = read_json(&path).expect("valid JSON parses");
+        assert!(value.get("packages").is_some());
+
+        std::fs::write(&path, "{not json").expect("write junk");
+        let error = read_json(&path).expect_err("malformed JSON must not pass");
+        assert!(
+            error.to_string().contains("payload.json"),
+            "the error names the file the operator must fix: {error}"
+        );
+        let missing = dir.path().join("absent.json");
+        let error = read_json(&missing).expect_err("a missing file must not pass");
+        assert!(error.to_string().contains("absent.json"));
+    }
 }

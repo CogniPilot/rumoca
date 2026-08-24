@@ -456,4 +456,101 @@ mod tests {
             "the reset writes the element this contracted value owns"
         );
     }
+
+    /// A guard condition, a branch body, a call argument, and an `else` arm
+    /// all read the carried scalar; every one of those reads must address the
+    /// widened array, or the two halves of the split disagree on one of them.
+    #[test]
+    fn carried_reads_inside_guards_and_calls_take_the_contracted_subscript() {
+        let guarded = gast::Spanned::dummy(gast::Statement::If(gast::IfStatement {
+            branches: vec![gast::IfBranch {
+                condition: gast::Condition::Expression(gast::Expression::binary(
+                    gast::BinaryOp::Gt,
+                    local("inner"),
+                    gast::Expression::Real(0.0),
+                )),
+                body: vec![gast::Spanned::dummy(gast::Statement::Call(
+                    gast::FunctionCall {
+                        function: gast::Name::ident("observe"),
+                        arguments: vec![local("inner")],
+                    },
+                ))],
+                span: Span::DUMMY,
+            }],
+            else_body: Some(vec![assign("out", local("inner"))]),
+        }));
+        let mut fission = super::ContractionFission {
+            produced: vec![assign("inner", gast::Expression::Real(0.0))],
+            consumed: vec![guarded],
+            carried: vec![gast::Name::ident("inner")],
+        };
+        let mut term = local("inner");
+        assert!(subscript_carried_scalars(
+            &mut fission,
+            &mut term,
+            &local("k")
+        ));
+        assert_eq!(term, element("inner", &["k"]));
+        let gast::Statement::If(rewritten) = &fission.consumed[0].node else {
+            panic!("the guard statement survives the rewrite")
+        };
+        assert_eq!(
+            rewritten.branches[0].condition,
+            gast::Condition::Expression(gast::Expression::binary(
+                gast::BinaryOp::Gt,
+                element("inner", &["k"]),
+                gast::Expression::Real(0.0),
+            )),
+            "the guard reads the element this contracted value owns"
+        );
+        let gast::Statement::Call(call) = &rewritten.branches[0].body[0].node else {
+            panic!("the call statement survives the rewrite")
+        };
+        assert_eq!(
+            call.arguments,
+            vec![element("inner", &["k"])],
+            "the call hands over the element, not the collapsed scalar"
+        );
+        assert_eq!(
+            rewritten.else_body,
+            Some(vec![assign("out", element("inner", &["k"]))]),
+            "the else arm reads the element as well"
+        );
+    }
+
+    /// A conditional expression holds its legalized twin beside the branches,
+    /// so a carried read inside one sits where the subscript cannot reach; the
+    /// rewrite must refuse the split rather than leave the twin stale.
+    #[test]
+    fn a_carried_scalar_read_inside_a_conditional_expression_blocks_the_split() {
+        let carried_conditional = gast::Expression::If(gast::IfExpression::new(
+            vec![(local("p"), local("inner"))],
+            gast::Expression::Real(1.0),
+        ));
+        let mut fission = super::ContractionFission {
+            produced: vec![assign("inner", gast::Expression::Real(0.0))],
+            consumed: vec![assign("out", carried_conditional)],
+            carried: vec![gast::Name::ident("inner")],
+        };
+        let mut term = local("out");
+        assert!(
+            !subscript_carried_scalars(&mut fission, &mut term, &local("k")),
+            "a read the rewrite cannot reach keeps the unsplit body"
+        );
+
+        let free_conditional = gast::Expression::If(gast::IfExpression::new(
+            vec![(local("p"), local("q"))],
+            gast::Expression::Real(1.0),
+        ));
+        let mut fission = super::ContractionFission {
+            produced: vec![assign("inner", gast::Expression::Real(0.0))],
+            consumed: vec![assign("out", free_conditional)],
+            carried: vec![gast::Name::ident("inner")],
+        };
+        let mut term = local("inner");
+        assert!(
+            subscript_carried_scalars(&mut fission, &mut term, &local("k")),
+            "a conditional that names no carried scalar blocks nothing"
+        );
+    }
 }

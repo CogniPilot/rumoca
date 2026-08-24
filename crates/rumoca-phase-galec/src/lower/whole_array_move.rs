@@ -240,3 +240,38 @@ fn value_type_shape(
     let scalar = scalar_type(ty.scalar_type(), name, span).ok()?;
     Some((ty.dimensions().to_vec(), scalar))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::value_type_shape;
+    use rumoca_core::Span;
+    use rumoca_ir_dae as dae;
+    use rumoca_ir_galec::ast as gast;
+
+    /// MLS §4.9.5: an enumeration value IS its ordinal, so an enumeration
+    /// array compares shapes as the Integer array it is declared as. A shape
+    /// derived any other way would refuse a whole-array move the scalar
+    /// mapping in `lower.rs` accepts.
+    #[test]
+    fn an_enumeration_array_shapes_as_the_integer_array_it_is_declared_as() {
+        let ty = dae::ValueType::array(dae::ScalarType::Enumeration, vec![3, 2]);
+        assert_eq!(
+            value_type_shape(&ty, "modes", Span::DUMMY),
+            Some((vec![3, 2], gast::ScalarType::Integer))
+        );
+        let scalar = dae::ValueType::scalar(dae::ScalarType::Real);
+        assert_eq!(
+            value_type_shape(&scalar, "x", Span::DUMMY),
+            Some((Vec::new(), gast::ScalarType::Real))
+        );
+    }
+
+    /// A String has no GALEC scalar type, so its declared shape must not
+    /// exist at all: answering anything would let a shape comparison prove a
+    /// move of a value the target cannot even declare.
+    #[test]
+    fn a_string_value_has_no_declared_shape() {
+        let ty = dae::ValueType::array(dae::ScalarType::String, vec![4]);
+        assert_eq!(value_type_shape(&ty, "labels", Span::DUMMY), None);
+    }
+}

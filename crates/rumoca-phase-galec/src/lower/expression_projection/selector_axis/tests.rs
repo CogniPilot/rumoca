@@ -367,3 +367,57 @@ fn a_nested_loop_redeclaring_the_iterator_keeps_its_axis() {
         "a redeclared iterator does not mean the same thing throughout the body"
     );
 }
+
+/// A loop bound, a loop body, and a call argument all read the pinned
+/// iterator; binding must reach every one of them, or the collapsed body
+/// still walks a coordinate the axis no longer supplies.
+#[test]
+fn iterator_reads_inside_loops_and_calls_are_bound_to_the_selected_coordinate() {
+    let taken = vec![
+        gast::Spanned::dummy(gast::Statement::For(gast::ForLoop {
+            iterator: Some(gast::Name::ident("m")),
+            start: gast::Expression::Integer(1),
+            step: None,
+            stop: local("row"),
+            body: vec![write(local("selected"), element("value", &["m", "row"]))],
+        })),
+        gast::Spanned::dummy(gast::Statement::Call(gast::FunctionCall {
+            function: gast::Name::ident("observe"),
+            arguments: vec![local("row")],
+        })),
+        write(local("selected"), element("value", &["column"])),
+    ];
+    let body = guarded_row_store(
+        equals(local("i"), local("row")),
+        taken,
+        element("out", &["row", "column"]),
+    );
+    let collapse = collapse(&body).expect("the guard pins the row axis");
+    assert_eq!(collapse.axes, vec![0], "only the row axis is pinned");
+
+    let gast::Statement::For(bound_loop) = &collapse.body[0].node else {
+        panic!("expected the inner loop")
+    };
+    assert_eq!(
+        bound_loop.stop,
+        local("i"),
+        "the loop bound reads the selected coordinate"
+    );
+    let gast::Statement::Assignment { value, .. } = &bound_loop.body[0].node else {
+        panic!("expected the loop body write")
+    };
+    assert_eq!(
+        *value,
+        element("value", &["m", "i"]),
+        "the loop body reads the selected coordinate, not the dropped iterator"
+    );
+
+    let gast::Statement::Call(call) = &collapse.body[1].node else {
+        panic!("expected the call statement")
+    };
+    assert_eq!(
+        call.arguments,
+        vec![local("i")],
+        "the call hands over the selected coordinate"
+    );
+}

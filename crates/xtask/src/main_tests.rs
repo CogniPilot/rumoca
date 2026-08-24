@@ -1057,3 +1057,53 @@ fn rust_target_detection_uses_active_toolchain_sysroot() {
         "wasm32-unknown-unknown"
     ));
 }
+
+/// Coverage triage attributes every function to a package by matching the
+/// file's repo-relative path against package root prefixes, longest first.
+/// A nested crate whose directory name extends another's must win over its
+/// parent prefix, and paths outside every package must attribute to none:
+/// a misattribution silently moves a regression onto the wrong crate's gate.
+#[test]
+fn coverage_attribution_matches_the_longest_package_prefix_first() {
+    use super::{WorkspacePackageInfo, package_for_filename, relativize_path};
+
+    let root = Path::new("/repo");
+    // Longest prefix first, exactly as workspace_package_infos orders them.
+    let packages = vec![
+        WorkspacePackageInfo {
+            name: "rumoca-core".to_string(),
+            root_prefix: "crates/rumoca-core/".to_string(),
+        },
+        WorkspacePackageInfo {
+            name: "rumoca".to_string(),
+            root_prefix: "crates/rumoca/".to_string(),
+        },
+    ];
+
+    let owner = package_for_filename(root, &packages, "/repo/crates/rumoca-core/src/lib.rs")
+        .expect("the nested crate owns its own sources");
+    assert_eq!(owner.name, "rumoca-core");
+
+    let owner = package_for_filename(root, &packages, "/repo/crates/rumoca/src/main.rs")
+        .expect("the parent-named crate owns its sources");
+    assert_eq!(owner.name, "rumoca");
+
+    assert!(
+        package_for_filename(root, &packages, "/repo/docs/guide.md").is_none(),
+        "a path outside every package attributes to no crate"
+    );
+    assert!(
+        package_for_filename(root, &packages, "/elsewhere/crates/rumoca/src/main.rs").is_none(),
+        "a path outside the repo root never matches a package prefix"
+    );
+
+    assert_eq!(
+        relativize_path(root, "/repo/crates/rumoca/src/main.rs"),
+        "crates/rumoca/src/main.rs"
+    );
+    assert_eq!(
+        relativize_path(root, "crates\\rumoca\\src\\main.rs"),
+        "crates/rumoca/src/main.rs",
+        "Windows separators normalize so prefixes compare on one spelling"
+    );
+}
