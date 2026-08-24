@@ -74,8 +74,12 @@ fn collect_local_compile_unit_sources_loads_same_directory_siblings() {
         uris.contains(&focus.to_string_lossy().to_string()),
         "focus document must be included"
     );
+    // Siblings are read from disk and reported under their canonical
+    // spelling, which differs from the tempdir spelling behind a symlink
+    // (macOS /tmp).
+    let sibling_canonical = sibling.canonicalize().expect("canonicalize sibling");
     assert!(
-        uris.contains(&sibling.to_string_lossy().to_string()),
+        uris.contains(&sibling_canonical.to_string_lossy().to_string()),
         "same-directory sibling must be included"
     );
 }
@@ -105,7 +109,8 @@ fn collect_local_compile_unit_sources_keep_unrelated_syntax_errors_as_sources() 
         .expect("local compile unit sources should load");
     let uris: HashSet<String> = docs.into_iter().map(|(uri, _)| uri).collect();
 
-    assert!(uris.contains(&broken.to_string_lossy().to_string()));
+    let broken_canonical = broken.canonicalize().expect("canonicalize broken");
+    assert!(uris.contains(&broken_canonical.to_string_lossy().to_string()));
 }
 
 #[test]

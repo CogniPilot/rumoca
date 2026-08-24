@@ -518,13 +518,30 @@ fn collect_local_compile_unit_sources_with_lookup(
 ) -> std::result::Result<Vec<(String, String)>, String> {
     let paths = collect_compile_unit_source_files(Path::new(focus_document_path))
         .map_err(|err| format!("failed to collect local compile unit: {err}"))?;
+    // The collector returns canonical paths, while the editor opened the
+    // focus document under its own spelling (a symlinked temp directory, a
+    // relative path). The session store is keyed by that spelling, so the
+    // focus must also be looked up under it: falling through to the on-disk
+    // content would silently discard unsaved edits.
+    let focus_canonical = Path::new(focus_document_path).canonicalize().ok();
     let mut sources = Vec::new();
 
     for path in paths {
         let uri = path.to_string_lossy().to_string();
-        if let Some(doc) = get_document(&uri)
+        let is_focus = focus_canonical.as_deref() == Some(path.as_path());
+        let document = get_document(&uri).or_else(|| {
+            is_focus
+                .then(|| get_document(focus_document_path))
+                .flatten()
+        });
+        if let Some(doc) = document
             && !doc.content.is_empty()
         {
+            let uri = if is_focus {
+                focus_document_path.to_string()
+            } else {
+                uri
+            };
             sources.push((uri, doc.content.to_string()));
             continue;
         }
