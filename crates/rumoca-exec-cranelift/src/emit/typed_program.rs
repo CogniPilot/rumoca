@@ -211,8 +211,15 @@ struct TableCompiler {
 
 impl TableCompiler {
     fn new(table_id: usize, table: &solve::SolvePureCallTable) -> Result<Self, CompileError> {
+        // `is_pic` routes calls to the registered math symbols through the
+        // module's global-offset table instead of a direct branch. On AArch64 a
+        // direct `bl` reaches only +/-128 MB; the admission battery compiles
+        // enough pure-call functions that a symbol in the host libm lands
+        // outside that window, so the position-dependent form overflows its
+        // 26-bit relocation while the x86-64 32-bit call form does not. The
+        // GOT-relative form has no such range limit.
         let mut builder = JITBuilder::with_flags(
-            &[("opt_level", "speed")],
+            &[("opt_level", "speed"), ("is_pic", "true")],
             cranelift_module::default_libcall_names(),
         )
         .map_err(to_backend_err)?;
