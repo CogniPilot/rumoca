@@ -347,23 +347,21 @@ fn indexed_q_assignments(statements: &[gast::Spanned<gast::Statement>]) -> Vec<i
 /// because a diverted chain may have to materialize per-element work — a
 /// guarded call, a nested selection — ahead of the write it feeds.
 fn is_whole_target_loop(statement: Option<&gast::Spanned<gast::Statement>>, extent: i64) -> bool {
-    matches!(
-        statement,
-        Some(gast::Spanned {
-            node: gast::Statement::For(gast::ForLoop {
-                stop: gast::Expression::Integer(stop),
-                body,
-                ..
-            }),
-            ..
-        }) if *stop == extent && matches!(
-            body.last().map(|statement| &statement.node),
+    let Some(gast::Spanned {
+        node: gast::Statement::For(loop_),
+        ..
+    }) = statement
+    else {
+        return false;
+    };
+    matches!(loop_.stop, gast::Expression::Integer(stop) if stop == extent)
+        && matches!(
+            loop_.body.last().map(|statement| &statement.node),
             Some(gast::Statement::Assignment {
                 target: gast::Reference::Local(target),
                 ..
             }) if target.name.lexeme() == "q"
         )
-    )
 }
 
 /// The four update-chain shapes whose lowering is settled, checked through the

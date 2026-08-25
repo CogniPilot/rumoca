@@ -1050,6 +1050,12 @@ struct TypedForView<'a> {
     stop: TypedExpressionView<'a>,
     c_locals: Vec<TypedLocalView<'a>>,
     body: Vec<TypedSpannedStatement<'a>>,
+    /// The row contraction this loop legalizes, as the GALEC lowering
+    /// attested it. Carried by reference and holding only names and extents,
+    /// so no scan of this view counts an operand twice; the operand views
+    /// themselves stay where every scan already finds them, in `body`.
+    #[serde(skip)]
+    row_contraction: Option<&'a ast::RowContraction>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3068,6 +3074,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                     stop: self.expression(&for_loop.stop)?,
                     c_locals,
                     body,
+                    row_contraction: for_loop.row_contraction(),
                 }))
             }
             ast::Statement::Limit(targets) => TypedStatementView::Limit(
@@ -3502,7 +3509,17 @@ fn kernelize<'a>(
         let TypedStatementView::For(row) = &statement.node else {
             continue;
         };
-        if let Some(product) = matmul_row(row).or_else(|| matmul_row_in_place(row)) {
+        let carried = carried_row_contraction(row);
+        // R-1 retirement assertion: every loop the old recognizer could claim
+        // must now arrive carrying the row contraction the GALEC lowering
+        // attested, so the recognizer has nothing left of its own to find.
+        #[cfg(debug_assertions)]
+        assert!(
+            carried.is_some() || matmul_row_in_place(row).is_none(),
+            "a fissioned row product reached emission without the row \
+             contraction its lowering owes it"
+        );
+        if let Some(product) = matmul_row(row).or(carried) {
             statement.kernel = Some(KernelStatementView::ScaledAdd {
                 count: product.count,
                 zero: product.zero,
@@ -3938,9 +3955,80 @@ fn matmul_row<'a>(row: &TypedForView<'a>) -> Option<MatmulRow<'a>> {
     })
 }
 
-/// Recognise the *fissioned* spelling of one result-row loop of a matrix
-/// product, where the accumulator is an element of a materialized tensor
-/// rather than a frame scalar:
+/// Read the row contraction the GALEC lowering carried on this loop.
+///
+/// Nothing here decides anything. The contraction node that issued the loop
+/// nest already attested the three facts an emitter cannot see in the
+/// statements. The accumulator is a temporary of its own, the coefficient is
+/// row-invariant pure arithmetic, and the right operand walks one run per
+/// contracted value ([`ast::RowContraction`]), so this walks straight to the
+/// operands the correlation names and hands them over.
+///
+/// Two things are still read from the printed view rather than taken on trust,
+/// and both are this target's own data rather than the lowering's: the
+/// declared extents behind each reference, which decide whether the run the
+/// correlation names is expressible as a `count`-element C array argument
+/// ([`contiguous_run`]), and whether a neighbouring kernel already claimed one
+/// of these statements. Where either says no, the loop nest prints as itself.
+fn carried_row_contraction<'a>(row: &TypedForView<'a>) -> Option<MatmulRow<'a>> {
+    let correlation = row.row_contraction?;
+    let [zero, accumulate] = row.body.as_slice() else {
+        return None;
+    };
+    if zero.kernel.is_some() || accumulate.kernel.is_some() {
+        return None;
+    }
+    let TypedStatementView::Assignment {
+        target: accumulator,
+        value: initial,
+    } = &zero.node
+    else {
+        return None;
+    };
+    let TypedStatementView::For(contracted) = &accumulate.node else {
+        return None;
+    };
+    let [body] = contracted.body.as_slice() else {
+        return None;
+    };
+    let TypedStatementView::Assignment { value: sum, .. } = &body.node else {
+        return None;
+    };
+    let TypedExpressionNodeView::Binary { rhs: product, .. } = &unparenthesized(sum).node else {
+        return None;
+    };
+    let TypedExpressionNodeView::Binary {
+        lhs: scale,
+        rhs: source,
+        ..
+    } = &unparenthesized(product).node
+    else {
+        return None;
+    };
+    let column = row.iterator.as_ref()?;
+    let count = i64::from(correlation.count());
+    Some(MatmulRow {
+        count,
+        zero: initial.clone(),
+        target: contiguous_run(accumulator, column, count)?,
+        iterator: correlation.iterator(),
+        extent: i64::from(correlation.extent()),
+        scale: scale.as_ref().clone(),
+        source: contiguous_run(reference_of(source)?, column, count)?,
+    })
+}
+
+/// The retired recognizer for the fissioned spelling of one result-row loop
+/// of a matrix product, kept as the assertion that its pattern is unreachable.
+///
+/// The GALEC lowering now carries [`ast::RowContraction`] on the loop it
+/// issues, so [`carried_row_contraction`] reads the shape instead of
+/// rediscovering it. This is called under `debug_assertions` on every loop
+/// that arrives without that correlation and is required to find nothing;
+/// when it has ridden a release silently, it goes.
+///
+/// The shape it reconstructed, where the accumulator is an element of a
+/// materialized tensor rather than a frame scalar:
 ///
 /// ```text
 /// for j in 1:count loop
@@ -3965,6 +4053,7 @@ fn matmul_row<'a>(row: &TypedForView<'a>) -> Option<MatmulRow<'a>> {
 /// frame-scalar shape no declaration is retired: the accumulator array is
 /// real storage a later statement reads, and the kernel call writes exactly
 /// the values the loop nest wrote.
+#[cfg(debug_assertions)]
 fn matmul_row_in_place<'a>(row: &TypedForView<'a>) -> Option<MatmulRow<'a>> {
     let column = row.iterator.as_ref()?;
     let (TypedExpressionNodeView::Integer(1), TypedExpressionNodeView::Integer(count)) =
@@ -4154,6 +4243,7 @@ fn index_restricted_block<'a>(outer: &TypedForView<'a>) -> Option<TypedStatement
             stop: integer_literal(col_hi),
             c_locals: Vec::new(),
             body: vec![store],
+            row_contraction: None,
         })),
     };
     Some(TypedStatementView::For(Box::new(TypedForView {
@@ -4163,6 +4253,7 @@ fn index_restricted_block<'a>(outer: &TypedForView<'a>) -> Option<TypedStatement
         stop: integer_literal(row_hi),
         c_locals: Vec::new(),
         body: vec![inner_for],
+        row_contraction: None,
     })))
 }
 
@@ -5546,6 +5637,7 @@ mod kernelize_tests {
                         ),
                     ),
                 })],
+                row_contraction: None,
             }))),
             stmt(TypedStatementView::Assignment {
                 target: scalar_ref(&names.target),
@@ -6408,17 +6500,19 @@ mod layout_tests {
                 parameter(ast::Direction::Output, "y", extent),
             ],
             locals: vec![array_local("early", extent), array_local("late", extent)],
-            statements: vec![ast::Spanned::dummy(ast::Statement::For(ast::ForLoop {
-                iterator: Some(ident("i")),
-                start: ast::Expression::Integer(1),
-                step: None,
-                stop: ast::Expression::Integer(extent),
-                body: vec![
-                    element("early", "u"),
-                    element("late", "early"),
-                    element("y", "late"),
-                ],
-            }))],
+            statements: vec![ast::Spanned::dummy(ast::Statement::for_loop(
+                ast::ForLoop::new(
+                    Some(ident("i")),
+                    ast::Expression::Integer(1),
+                    None,
+                    ast::Expression::Integer(extent),
+                    vec![
+                        element("early", "u"),
+                        element("late", "early"),
+                        element("y", "late"),
+                    ],
+                ),
+            ))],
             span: rumoca_core::Span::DUMMY,
         }
     }

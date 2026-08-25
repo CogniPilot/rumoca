@@ -350,13 +350,13 @@ fn a_plain_conditional_operand_is_bound_like_any_other() {
 
 #[test]
 fn a_nested_loop_redeclaring_the_iterator_keeps_its_axis() {
-    let inner = gast::Spanned::dummy(gast::Statement::For(gast::ForLoop {
-        iterator: Some(gast::Name::ident("row")),
-        start: gast::Expression::Integer(1),
-        step: None,
-        stop: gast::Expression::Integer(3),
-        body: vec![write(local("selected"), element("value", &["row"]))],
-    }));
+    let inner = gast::Spanned::dummy(gast::Statement::for_loop(gast::ForLoop::new(
+        Some(gast::Name::ident("row")),
+        gast::Expression::Integer(1),
+        None,
+        gast::Expression::Integer(3),
+        vec![write(local("selected"), element("value", &["row"]))],
+    )));
     let body = guarded_row_store(
         equals(local("i"), local("row")),
         vec![inner],
@@ -374,13 +374,13 @@ fn a_nested_loop_redeclaring_the_iterator_keeps_its_axis() {
 #[test]
 fn iterator_reads_inside_loops_and_calls_are_bound_to_the_selected_coordinate() {
     let taken = vec![
-        gast::Spanned::dummy(gast::Statement::For(gast::ForLoop {
-            iterator: Some(gast::Name::ident("m")),
-            start: gast::Expression::Integer(1),
-            step: None,
-            stop: local("row"),
-            body: vec![write(local("selected"), element("value", &["m", "row"]))],
-        })),
+        gast::Spanned::dummy(gast::Statement::for_loop(gast::ForLoop::new(
+            Some(gast::Name::ident("m")),
+            gast::Expression::Integer(1),
+            None,
+            local("row"),
+            vec![write(local("selected"), element("value", &["m", "row"]))],
+        ))),
         gast::Spanned::dummy(gast::Statement::Call(gast::FunctionCall {
             function: gast::Name::ident("observe"),
             arguments: vec![local("row")],

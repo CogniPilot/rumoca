@@ -1,26 +1,48 @@
-//! Loop fission for materialized tensor contractions.
+//! The retired loop-fission recognizer for materialized tensor contractions,
+//! kept as the assertion that its pattern is unreachable.
 //!
-//! A quadratic form `A*X*A'` lowers to a contraction whose left operand is
-//! itself a contraction, so the inner product `(A*X)[row][contracted]` sits
-//! inside the loop over the result column even though it does not vary with
-//! that column. Splitting the contraction body at the outer index, and
-//! widening the scalars the invariant half defines into arrays over the
-//! contracted index, evaluates that half once per row instead of once per
-//! element. The split is a property of the statements, not of any particular
-//! model: it fires wherever a contraction body carries work the outer index
-//! cannot change.
+//! A quadratic form `A*X*A'` used to lower to a contraction whose left operand
+//! was itself a contraction, leaving the inner product
+//! `(A*X)[row][contracted]` inside the loop over the result column even though
+//! no value of that column could change it. This pass recovered the shape
+//! afterwards, by splitting the emitted body at the outer index and widening
+//! the scalars the invariant half defined into arrays.
+//!
+//! The composed contraction now carries that structure from the checked DAE
+//! ([`super::composed_contraction`]): the intermediate tensor is an explicit
+//! IR value decided on the contraction node, so no body reaches emission with
+//! a split still owed. What survives here is the recognizer alone, called
+//! under `debug_assertions` on every contraction body the projection emits and
+//! required to find nothing. The rewriter it used to drive is gone; when the
+//! assertion has ridden a release silently, this module goes with it.
 
 use super::*;
 
 /// A contraction body split at the outer tensor index.
 pub(super) struct ContractionFission {
     /// The half no value of the outer index can change.
-    pub(super) produced: Vec<gast::Spanned<gast::Statement>>,
+    produced: Vec<gast::Spanned<gast::Statement>>,
     /// The half that still varies with the outer index.
-    pub(super) consumed: Vec<gast::Spanned<gast::Statement>>,
+    consumed: Vec<gast::Spanned<gast::Statement>>,
     /// Scalars `produced` defines and the rest of the contraction reads; each
-    /// becomes an array over the contracted index.
-    pub(super) carried: Vec<gast::Name>,
+    /// would become an array over the contracted index.
+    carried: Vec<gast::Name>,
+}
+
+impl ContractionFission {
+    /// The split this body would have taken, for the retirement assertion to
+    /// report when it finds one.
+    pub(super) fn describe(&self) -> String {
+        format!(
+            "{} hoistable statement(s), {} left with the accumulation, carrying {:?}",
+            self.produced.len(),
+            self.consumed.len(),
+            self.carried
+                .iter()
+                .map(|name| name.lexeme().to_owned())
+                .collect::<Vec<_>>()
+        )
+    }
 }
 
 /// Split a contraction body so the work the outer index cannot change runs
@@ -81,175 +103,6 @@ fn is_read_downstream(
             .any(|statement| user_functions::statement_depends_on(statement, names))
 }
 
-/// Subscript every reference to a carried scalar with the contracted index, so
-/// the two halves of the split contraction address the same array element.
-///
-/// Reports `false` when a carried scalar is read inside a conditional
-/// expression, whose legalized form is held beside the branches and would not
-/// see the new subscript. The caller then keeps the unsplit body.
-#[must_use]
-pub(super) fn subscript_carried_scalars(
-    fission: &mut ContractionFission,
-    product: &mut gast::Expression,
-    contracted: &gast::Expression,
-) -> bool {
-    let ContractionFission {
-        produced,
-        consumed,
-        carried,
-    } = fission;
-    let mut subscripter = Subscripter {
-        carried,
-        index: contracted,
-        blocked: false,
-    };
-    subscripter.body(produced);
-    subscripter.body(consumed);
-    subscripter.expression(product);
-    !subscripter.blocked
-}
-
-/// Rewrites references to the carried scalars into references to their widened
-/// arrays, recording whether any reference sat where the rewrite cannot reach.
-struct Subscripter<'a> {
-    carried: &'a [gast::Name],
-    index: &'a gast::Expression,
-    blocked: bool,
-}
-
-impl Subscripter<'_> {
-    fn body(&mut self, body: &mut [gast::Spanned<gast::Statement>]) {
-        for statement in body {
-            self.statement(statement);
-        }
-    }
-
-    fn statement(&mut self, statement: &mut gast::Spanned<gast::Statement>) {
-        match &mut statement.node {
-            gast::Statement::Assignment { target, value } => {
-                self.reference(target);
-                self.expression(value);
-            }
-            gast::Statement::MultiAssignment { targets, call } => {
-                for target in targets {
-                    self.reference(target);
-                }
-                self.call(call);
-            }
-            gast::Statement::Call(call) => self.call(call),
-            gast::Statement::If(value) => self.if_statement(value),
-            gast::Statement::For(value) => self.for_loop(value),
-            gast::Statement::Limit(targets) => self.limits(targets),
-            gast::Statement::Signal(_) => {}
-        }
-    }
-
-    fn limits(&mut self, targets: &mut [gast::LimitTarget]) {
-        for target in targets {
-            if let gast::LimitTarget::Reference(reference) = target {
-                self.reference(reference);
-            }
-        }
-    }
-
-    fn if_statement(&mut self, value: &mut gast::IfStatement) {
-        for branch in &mut value.branches {
-            self.condition(&mut branch.condition);
-            self.body(&mut branch.body);
-        }
-        if let Some(body) = &mut value.else_body {
-            self.body(body);
-        }
-    }
-
-    fn condition(&mut self, condition: &mut gast::Condition) {
-        match condition {
-            gast::Condition::Expression(expression) => self.expression(expression),
-            gast::Condition::SignalCheck(check) => {
-                if let Some(fallback) = &mut check.fallback {
-                    self.expression(fallback);
-                }
-            }
-        }
-    }
-
-    fn for_loop(&mut self, value: &mut gast::ForLoop) {
-        self.expression(&mut value.start);
-        if let Some(step) = &mut value.step {
-            self.expression(step);
-        }
-        self.expression(&mut value.stop);
-        self.body(&mut value.body);
-    }
-
-    fn call(&mut self, call: &mut gast::FunctionCall) {
-        for argument in &mut call.arguments {
-            self.expression(argument);
-        }
-    }
-
-    fn expression(&mut self, expression: &mut gast::Expression) {
-        match expression {
-            gast::Expression::Bool(_)
-            | gast::Expression::Integer(_)
-            | gast::Expression::Real(_) => {}
-            gast::Expression::Ref(reference) | gast::Expression::Neg(reference) => {
-                self.reference(reference);
-            }
-            gast::Expression::Size { array, dimension } => {
-                self.reference(array);
-                self.expression(dimension);
-            }
-            gast::Expression::Call(call) => self.call(call),
-            gast::Expression::Paren(value) | gast::Expression::Not(value) => {
-                self.expression(value);
-            }
-            gast::Expression::If(value) => self.conditional(value),
-            gast::Expression::Array(values) => {
-                for value in values {
-                    self.expression(value);
-                }
-            }
-            gast::Expression::Binary { lhs, rhs, .. } => {
-                self.expression(lhs);
-                self.expression(rhs);
-            }
-        }
-    }
-
-    /// A conditional expression carries a legalized twin beside its branches,
-    /// so rewriting the branches alone would leave the two disagreeing. Read
-    /// the whole subtree instead and refuse the split if it names a carried
-    /// scalar.
-    fn conditional(&mut self, value: &gast::IfExpression) {
-        let mut names = Vec::new();
-        read_conditional_names(value, &mut names);
-        if names.iter().any(|name| self.carried.contains(name)) {
-            self.blocked = true;
-        }
-    }
-
-    fn reference(&mut self, reference: &mut gast::Reference) {
-        match reference {
-            gast::Reference::Local(part) => {
-                self.subscripts(std::slice::from_mut(part));
-                if self.carried.contains(&part.name) {
-                    part.subscripts.insert(0, self.index.clone());
-                }
-            }
-            gast::Reference::State(parts) => self.subscripts(parts),
-        }
-    }
-
-    fn subscripts(&mut self, parts: &mut [gast::RefPart]) {
-        for part in parts {
-            for subscript in &mut part.subscripts {
-                self.expression(subscript);
-            }
-        }
-    }
-}
-
 fn read_expression_names(expression: &gast::Expression, names: &mut Vec<gast::Name>) {
     match expression {
         gast::Expression::Bool(_) | gast::Expression::Integer(_) | gast::Expression::Real(_) => {}
@@ -303,7 +156,7 @@ fn read_reference_names(reference: &gast::Reference, names: &mut Vec<gast::Name>
 
 #[cfg(test)]
 mod tests {
-    use super::{fission_contraction_body, subscript_carried_scalars};
+    use super::fission_contraction_body;
     use rumoca_core::Span;
     use rumoca_ir_galec::ast as gast;
 
@@ -326,21 +179,6 @@ mod tests {
         })
     }
 
-    fn assign_element(
-        target: &str,
-        index: &str,
-        value: gast::Expression,
-    ) -> gast::Spanned<gast::Statement> {
-        gast::Spanned::dummy(gast::Statement::Assignment {
-            target: gast::Reference::Local(gast::RefPart {
-                name: gast::Name::ident(target),
-                subscripts: vec![local(index)],
-                span: Span::DUMMY,
-            }),
-            value,
-        })
-    }
-
     fn accumulate(target: &str, term: gast::Expression) -> gast::Spanned<gast::Statement> {
         assign(
             target,
@@ -353,13 +191,13 @@ mod tests {
         extent: i64,
         body: gast::Spanned<gast::Statement>,
     ) -> gast::Spanned<gast::Statement> {
-        gast::Spanned::dummy(gast::Statement::For(gast::ForLoop {
-            iterator: Some(gast::Name::ident(iterator)),
-            start: gast::Expression::Integer(1),
-            step: None,
-            stop: gast::Expression::Integer(extent),
-            body: vec![body],
-        }))
+        gast::Spanned::dummy(gast::Statement::for_loop(gast::ForLoop::new(
+            Some(gast::Name::ident(iterator)),
+            gast::Expression::Integer(1),
+            None,
+            gast::Expression::Integer(extent),
+            vec![body],
+        )))
     }
 
     fn product(lhs: gast::Expression, rhs: gast::Expression) -> gast::Expression {
@@ -432,125 +270,6 @@ mod tests {
         assert!(
             fission_contraction_body(&body, &[local("column")], &term).is_none(),
             "a single scalar read costs less than the array it would need"
-        );
-    }
-
-    #[test]
-    fn the_split_halves_address_the_carried_accumulator_by_the_contracted_index() {
-        let body = left_nested_body();
-        let mut term = product(local("inner"), element("a", &["column", "k"]));
-        let mut fission = fission_contraction_body(&body, &[local("column")], &term)
-            .expect("the inner product does not read the result column");
-        assert!(subscript_carried_scalars(
-            &mut fission,
-            &mut term,
-            &local("k")
-        ));
-        assert_eq!(
-            term,
-            product(element("inner", &["k"]), element("a", &["column", "k"]))
-        );
-        assert_eq!(
-            fission.produced[0],
-            assign_element("inner", "k", gast::Expression::Real(0.0)),
-            "the reset writes the element this contracted value owns"
-        );
-    }
-
-    /// A guard condition, a branch body, a call argument, and an `else` arm
-    /// all read the carried scalar; every one of those reads must address the
-    /// widened array, or the two halves of the split disagree on one of them.
-    #[test]
-    fn carried_reads_inside_guards_and_calls_take_the_contracted_subscript() {
-        let guarded = gast::Spanned::dummy(gast::Statement::If(gast::IfStatement {
-            branches: vec![gast::IfBranch {
-                condition: gast::Condition::Expression(gast::Expression::binary(
-                    gast::BinaryOp::Gt,
-                    local("inner"),
-                    gast::Expression::Real(0.0),
-                )),
-                body: vec![gast::Spanned::dummy(gast::Statement::Call(
-                    gast::FunctionCall {
-                        function: gast::Name::ident("observe"),
-                        arguments: vec![local("inner")],
-                    },
-                ))],
-                span: Span::DUMMY,
-            }],
-            else_body: Some(vec![assign("out", local("inner"))]),
-        }));
-        let mut fission = super::ContractionFission {
-            produced: vec![assign("inner", gast::Expression::Real(0.0))],
-            consumed: vec![guarded],
-            carried: vec![gast::Name::ident("inner")],
-        };
-        let mut term = local("inner");
-        assert!(subscript_carried_scalars(
-            &mut fission,
-            &mut term,
-            &local("k")
-        ));
-        assert_eq!(term, element("inner", &["k"]));
-        let gast::Statement::If(rewritten) = &fission.consumed[0].node else {
-            panic!("the guard statement survives the rewrite")
-        };
-        assert_eq!(
-            rewritten.branches[0].condition,
-            gast::Condition::Expression(gast::Expression::binary(
-                gast::BinaryOp::Gt,
-                element("inner", &["k"]),
-                gast::Expression::Real(0.0),
-            )),
-            "the guard reads the element this contracted value owns"
-        );
-        let gast::Statement::Call(call) = &rewritten.branches[0].body[0].node else {
-            panic!("the call statement survives the rewrite")
-        };
-        assert_eq!(
-            call.arguments,
-            vec![element("inner", &["k"])],
-            "the call hands over the element, not the collapsed scalar"
-        );
-        assert_eq!(
-            rewritten.else_body,
-            Some(vec![assign("out", element("inner", &["k"]))]),
-            "the else arm reads the element as well"
-        );
-    }
-
-    /// A conditional expression holds its legalized twin beside the branches,
-    /// so a carried read inside one sits where the subscript cannot reach; the
-    /// rewrite must refuse the split rather than leave the twin stale.
-    #[test]
-    fn a_carried_scalar_read_inside_a_conditional_expression_blocks_the_split() {
-        let carried_conditional = gast::Expression::If(gast::IfExpression::new(
-            vec![(local("p"), local("inner"))],
-            gast::Expression::Real(1.0),
-        ));
-        let mut fission = super::ContractionFission {
-            produced: vec![assign("inner", gast::Expression::Real(0.0))],
-            consumed: vec![assign("out", carried_conditional)],
-            carried: vec![gast::Name::ident("inner")],
-        };
-        let mut term = local("out");
-        assert!(
-            !subscript_carried_scalars(&mut fission, &mut term, &local("k")),
-            "a read the rewrite cannot reach keeps the unsplit body"
-        );
-
-        let free_conditional = gast::Expression::If(gast::IfExpression::new(
-            vec![(local("p"), local("q"))],
-            gast::Expression::Real(1.0),
-        ));
-        let mut fission = super::ContractionFission {
-            produced: vec![assign("inner", gast::Expression::Real(0.0))],
-            consumed: vec![assign("out", free_conditional)],
-            carried: vec![gast::Name::ident("inner")],
-        };
-        let mut term = local("inner");
-        assert!(
-            subscript_carried_scalars(&mut fission, &mut term, &local("k")),
-            "a conditional that names no carried scalar blocks nothing"
         );
     }
 }

@@ -775,16 +775,16 @@ fn tensor_prefix_dependency_finds_outer_indices_inside_nested_loops() {
         target: gast::Reference::local(accumulator.clone()),
         value: gast::Expression::Real(0.0),
     });
-    let dependent = gast::Spanned::dummy(gast::Statement::For(gast::ForLoop {
-        iterator: Some(gast::Name::ident("inner")),
-        start: gast::Expression::Integer(1),
-        step: None,
-        stop: gast::Expression::Integer(3),
-        body: vec![gast::Spanned::dummy(gast::Statement::Assignment {
+    let dependent = gast::Spanned::dummy(gast::Statement::for_loop(gast::ForLoop::new(
+        Some(gast::Name::ident("inner")),
+        gast::Expression::Integer(1),
+        None,
+        gast::Expression::Integer(3),
+        vec![gast::Spanned::dummy(gast::Statement::Assignment {
             target: gast::Reference::local(accumulator),
             value: gast::Expression::Ref(gast::Reference::local(outer.clone())),
         })],
-    }));
+    )));
     let independent = gast::Spanned::dummy(gast::Statement::Assignment {
         target: gast::Reference::local(gast::Name::ident("argument")),
         value: gast::Expression::Real(1.0),
@@ -1025,13 +1025,13 @@ fn guarded_tensor_loop_keeps_invariant_initializer_and_projection_together() {
         gast::Statement::For(_)
     ));
 
-    let second_loop = gast::Spanned::dummy(gast::Statement::For(gast::ForLoop {
-        iterator: Some(gast::Name::ident("j")),
-        start: gast::Expression::Integer(1),
-        step: None,
-        stop: gast::Expression::Integer(3),
-        body: second_body,
-    }));
+    let second_loop = gast::Spanned::dummy(gast::Statement::for_loop(gast::ForLoop::new(
+        Some(gast::Name::ident("j")),
+        gast::Expression::Integer(1),
+        None,
+        gast::Expression::Integer(3),
+        second_body,
+    )));
     let merged =
         user_functions::merge_guarded_tensor_loops(vec![fused.pop().unwrap(), second_loop]);
     assert_eq!(merged.len(), 1);
@@ -1121,16 +1121,16 @@ fn lazy_tensor_selection_guards_hoisted_calls_and_indexed_contractions() {
             target: gast::Reference::local(shared.clone()),
             value: gast::Expression::Real(2.0),
         });
-        let contraction_loop = gast::Spanned::dummy(gast::Statement::For(gast::ForLoop {
-            iterator: Some(gast::Name::ident("inner")),
-            start: gast::Expression::Integer(1),
-            step: None,
-            stop: gast::Expression::Integer(3),
-            body: vec![gast::Spanned::dummy(gast::Statement::Assignment {
+        let contraction_loop = gast::Spanned::dummy(gast::Statement::for_loop(gast::ForLoop::new(
+            Some(gast::Name::ident("inner")),
+            gast::Expression::Integer(1),
+            None,
+            gast::Expression::Integer(3),
+            vec![gast::Spanned::dummy(gast::Statement::Assignment {
                 target: gast::Reference::local(contraction.clone()),
                 value: gast::Expression::Ref(gast::Reference::local(outer.clone())),
             })],
-        }));
+        )));
         let branches = vec![
             expression_projection::SelectionBranch {
                 condition_prefix: Vec::new(),

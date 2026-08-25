@@ -50,13 +50,13 @@ pub(in crate::lower) fn nest_tensor_loops(
         };
         body = invariant;
         body.push(gast::Spanned::new(
-            gast::Statement::For(gast::ForLoop {
-                iterator: Some(iterator.clone()),
-                start: gast::Expression::Integer(1),
-                step: None,
-                stop: gast::Expression::Integer(i64::from(extent)),
-                body: dependent,
-            }),
+            gast::Statement::for_loop(gast::ForLoop::new(
+                Some(iterator.clone()),
+                gast::Expression::Integer(1),
+                None,
+                gast::Expression::Integer(i64::from(extent)),
+                dependent,
+            )),
             span,
         ));
     }
@@ -123,13 +123,13 @@ mod tests {
         iterator: &str,
         body: Vec<gast::Spanned<gast::Statement>>,
     ) -> gast::Spanned<gast::Statement> {
-        gast::Spanned::dummy(gast::Statement::For(gast::ForLoop {
-            iterator: Some(gast::Name::ident(iterator)),
-            start: gast::Expression::Integer(1),
-            step: None,
-            stop: gast::Expression::Integer(4),
+        gast::Spanned::dummy(gast::Statement::for_loop(gast::ForLoop::new(
+            Some(gast::Name::ident(iterator)),
+            gast::Expression::Integer(1),
+            None,
+            gast::Expression::Integer(4),
             body,
-        }))
+        )))
     }
 
     fn iterators() -> Vec<gast::Name> {

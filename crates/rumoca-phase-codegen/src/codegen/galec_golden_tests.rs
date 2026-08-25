@@ -405,12 +405,12 @@ fn matrix_do_step() -> BlockMethod {
         dimension: Box::new(Expression::Integer(d)),
     };
     let ij = || vec![lref("i"), lref("j")];
-    let inner = Spanned::dummy(Statement::For(ForLoop {
-        iterator: Some(n("j")),
-        start: Expression::Integer(1),
-        step: None,
-        stop: size_dim(2),
-        body: vec![
+    let inner = Spanned::dummy(Statement::for_loop(ForLoop::new(
+        Some(n("j")),
+        Expression::Integer(1),
+        None,
+        size_dim(2),
+        vec![
             assign(
                 state_idx("accumulator", ij()),
                 Expression::Ref(state_idx("samples", ij())),
@@ -424,13 +424,13 @@ fn matrix_do_step() -> BlockMethod {
                 ),
             ),
         ],
-    }));
-    let outer = Spanned::dummy(Statement::For(ForLoop {
-        iterator: Some(n("i")),
-        start: Expression::Integer(1),
-        step: None,
-        stop: size_dim(1),
-        body: vec![
+    )));
+    let outer = Spanned::dummy(Statement::for_loop(ForLoop::new(
+        Some(n("i")),
+        Expression::Integer(1),
+        None,
+        size_dim(1),
+        vec![
             assign(local("total"), r(0.0)),
             inner,
             assign(
@@ -438,7 +438,7 @@ fn matrix_do_step() -> BlockMethod {
                 bin(BinaryOp::Div, lref("total"), r(3.0)),
             ),
         ],
-    }));
+    )));
     BlockMethod {
         locals: vec![real_decl(n("total"))],
         statements: vec![outer],
@@ -769,13 +769,13 @@ fn minimal_block(statements: Vec<Spanned<Statement>>) -> Block {
 
 #[test]
 fn for_loop_with_step_prints_start_step_stop() {
-    let mut block = minimal_block(vec![Spanned::dummy(Statement::For(ForLoop {
-        iterator: Some(n("k")),
-        start: Expression::Integer(8),
-        step: Some(Expression::Integer(-2)),
-        stop: Expression::Integer(2),
-        body: vec![assign(local("k2"), lref("k"))],
-    }))]);
+    let mut block = minimal_block(vec![Spanned::dummy(Statement::for_loop(ForLoop::new(
+        Some(n("k")),
+        Expression::Integer(8),
+        Some(Expression::Integer(-2)),
+        Expression::Integer(2),
+        vec![assign(local("k2"), lref("k"))],
+    )))]);
     block.do_step.locals = vec![VariableDeclaration::scalar(ScalarType::Integer, n("k2"))];
     let printed = render_block(&block).expect("block must render");
     assert!(

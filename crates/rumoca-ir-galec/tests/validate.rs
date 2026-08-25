@@ -728,13 +728,13 @@ fn subscripts_must_be_static() {
 fn loop_bounds_must_be_static() {
     let mut block = minimal();
     block.do_step.locals = vec![int_decl("k")];
-    block.do_step.statements = vec![Spanned::dummy(Statement::For(ForLoop {
-        iterator: Some(n("i")),
-        start: int(1),
-        step: None,
-        stop: lref("k"),
-        body: vec![],
-    }))];
+    block.do_step.statements = vec![Spanned::dummy(Statement::for_loop(ForLoop::new(
+        Some(n("i")),
+        int(1),
+        None,
+        lref("k"),
+        vec![],
+    )))];
     expect_codes(&block, &["EG022"]);
 }
 

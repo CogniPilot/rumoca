@@ -116,13 +116,13 @@ fn for_loop(
     stop: i64,
     body: Vec<galec::Spanned<galec::Statement>>,
 ) -> galec::Spanned<galec::Statement> {
-    galec::Spanned::dummy(galec::Statement::For(galec::ForLoop {
-        iterator: Some(galec::Name::ident(name)),
-        start: galec::Expression::Integer(1),
-        step: None,
-        stop: galec::Expression::Integer(stop),
+    galec::Spanned::dummy(galec::Statement::for_loop(galec::ForLoop::new(
+        Some(galec::Name::ident(name)),
+        galec::Expression::Integer(1),
+        None,
+        galec::Expression::Integer(stop),
         body,
-    }))
+    )))
 }
 
 fn scaled(value: galec::Expression, factor: f64) -> galec::Expression {

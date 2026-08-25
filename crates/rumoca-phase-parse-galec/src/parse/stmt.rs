@@ -40,7 +40,7 @@ impl TryFrom<&g::Statement> for ParsedStatement {
             },
             g::StatementGroup::MultiAssignment(s) => multi_assignment(&s.multi_assignment),
             g::StatementGroup::IfStatement(s) => Statement::If(if_statement(&s.if_statement)?),
-            g::StatementGroup::ForLoop(s) => Statement::For(for_loop(&s.for_loop)),
+            g::StatementGroup::ForLoop(s) => Statement::for_loop(for_loop(&s.for_loop)),
             g::StatementGroup::LimitStatement(s) => {
                 Statement::Limit(limit_targets(&s.limit_statement))
             }
@@ -166,13 +166,13 @@ fn for_loop(ast: &g::ForLoop) -> ForLoop {
             third.expression.clone(),
         ),
     };
-    ForLoop {
+    ForLoop::new(
         iterator,
-        start: iteration.expression.clone(),
+        iteration.expression.clone(),
         step,
         stop,
-        body: statements(ast.for_loop_list.iter().map(|s| &s.statement)),
-    }
+        statements(ast.for_loop_list.iter().map(|s| &s.statement)),
+    )
 }
 
 /// `limit_statement : 'limit' limit_target { ',' limit_target }`.

@@ -400,13 +400,15 @@ mod tests {
     #[test]
     fn loop_only_local_is_owned_by_the_loop_body() {
         let declarations = vec![declaration("loop_value")];
-        let statements = vec![ast::Spanned::dummy(ast::Statement::For(ast::ForLoop {
-            iterator: Some(ast::Name::ident("index")),
-            start: ast::Expression::Integer(1),
-            step: None,
-            stop: ast::Expression::Integer(2),
-            body: vec![assignment("loop_value", "loop_value")],
-        }))];
+        let statements = vec![ast::Spanned::dummy(ast::Statement::for_loop(
+            ast::ForLoop::new(
+                Some(ast::Name::ident("index")),
+                ast::Expression::Integer(1),
+                None,
+                ast::Expression::Integer(2),
+                vec![assignment("loop_value", "loop_value")],
+            ),
+        ))];
         let placements = LocalPlacements::derive(&declarations, &statements);
 
         assert!(placements.at(&[]).is_empty());
@@ -485,13 +487,13 @@ mod tests {
         let names = HashSet::from(["used", "shadowed", "never"]);
         let statements = vec![
             assignment("sink", "used"),
-            ast::Spanned::dummy(ast::Statement::For(ast::ForLoop {
-                iterator: Some(ast::Name::ident("shadowed")),
-                start: ast::Expression::Integer(1),
-                step: None,
-                stop: ast::Expression::Integer(2),
-                body: vec![assignment("sink", "shadowed")],
-            })),
+            ast::Spanned::dummy(ast::Statement::for_loop(ast::ForLoop::new(
+                Some(ast::Name::ident("shadowed")),
+                ast::Expression::Integer(1),
+                None,
+                ast::Expression::Integer(2),
+                vec![assignment("sink", "shadowed")],
+            ))),
         ];
         let found = mentioned(&names, &statements);
 

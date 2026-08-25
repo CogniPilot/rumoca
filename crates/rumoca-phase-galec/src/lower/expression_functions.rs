@@ -1260,13 +1260,13 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         let mut body = self.pending_prefix_statements.split_off(assertion_start);
         for (binder, name) in binders.iter().zip(names).rev() {
             body = vec![gast::Spanned::new(
-                gast::Statement::For(gast::ForLoop {
-                    iterator: Some(name),
-                    start: gast::Expression::Integer(binder.lower),
-                    step: (binder.step != 1).then_some(gast::Expression::Integer(binder.step)),
-                    stop: gast::Expression::Integer(binder.upper),
+                gast::Statement::for_loop(gast::ForLoop::new(
+                    Some(name),
+                    gast::Expression::Integer(binder.lower),
+                    (binder.step != 1).then_some(gast::Expression::Integer(binder.step)),
+                    gast::Expression::Integer(binder.upper),
                     body,
-                }),
+                )),
                 span,
             )];
         }

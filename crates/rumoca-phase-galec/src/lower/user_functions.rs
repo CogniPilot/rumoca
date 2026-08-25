@@ -10,7 +10,11 @@ mod tensor_loops;
 mod update_aliasing;
 
 use indexed_update::{lower_indexed_function_update, preserves_function_target};
-pub(super) use tensor_loops::{is_reorderable, nest_tensor_loops};
+/// Only the retired contraction-fission recognizer still asks this, and it
+/// compiles only where its assertion does.
+#[cfg(debug_assertions)]
+pub(super) use tensor_loops::is_reorderable;
+pub(super) use tensor_loops::nest_tensor_loops;
 pub(in crate::lower) use update_aliasing::same_index;
 use update_aliasing::{GroupDefinition, UpdatedAggregate, order_by_value_dependency};
 
@@ -1338,13 +1342,13 @@ fn wrap_function_loops(
 ) -> Vec<gast::Spanned<gast::Statement>> {
     for (binder, name) in domain.structured().binders.iter().zip(names).rev() {
         body = vec![gast::Spanned::new(
-            gast::Statement::For(gast::ForLoop {
-                iterator: Some(name),
-                start: gast::Expression::Integer(binder.lower),
-                step: (binder.step != 1).then_some(gast::Expression::Integer(binder.step)),
-                stop: gast::Expression::Integer(binder.upper),
+            gast::Statement::for_loop(gast::ForLoop::new(
+                Some(name),
+                gast::Expression::Integer(binder.lower),
+                (binder.step != 1).then_some(gast::Expression::Integer(binder.step)),
+                gast::Expression::Integer(binder.upper),
                 body,
-            }),
+            )),
             span,
         )];
     }
@@ -1892,13 +1896,13 @@ fn guarded_tensor_branch(
     body.extend_from_slice(tail);
     for (iterator, &extent) in iterators.iter().zip(extents).rev() {
         body = vec![gast::Spanned::new(
-            gast::Statement::For(gast::ForLoop {
-                iterator: Some(iterator.clone()),
-                start: gast::Expression::Integer(1),
-                step: None,
-                stop: gast::Expression::Integer(i64::from(extent)),
+            gast::Statement::for_loop(gast::ForLoop::new(
+                Some(iterator.clone()),
+                gast::Expression::Integer(1),
+                None,
+                gast::Expression::Integer(i64::from(extent)),
                 body,
-            }),
+            )),
             span,
         )];
     }
@@ -2158,7 +2162,7 @@ fn tensor_loop_shells(
             return None;
         };
         shells.push(TensorLoopShell {
-            loop_statement: loop_statement.clone(),
+            loop_statement: (**loop_statement).clone(),
             span: current.span,
         });
         let [nested] = loop_statement.body.as_slice() else {
@@ -2179,7 +2183,7 @@ fn wrap_tensor_loop(
         let mut loop_statement = shell.loop_statement.clone();
         loop_statement.body = body;
         body = vec![gast::Spanned::new(
-            gast::Statement::For(loop_statement),
+            gast::Statement::for_loop(loop_statement),
             shell.span,
         )];
     }

@@ -959,6 +959,127 @@ pub struct ForLoop {
     pub step: Option<Expression>,
     pub stop: Expression,
     pub body: Vec<Spanned<Statement>>,
+    /// Stronger target-neutral operation whose GALEC legalization is exactly
+    /// this loop, in the shape [`IfExpression::correlation`] already uses for
+    /// bounded selections. Never serialized: the checked Algorithm Code a
+    /// target renders is the legalization, and a target that understands the
+    /// operation reaches it through [`ForLoop::row_contraction`] instead.
+    #[serde(skip)]
+    correlation: Option<Box<RowContraction>>,
+}
+
+/// A contraction that accumulates a whole tensor row, retained beside the
+/// loop nest that is its GALEC legalization:
+///
+/// ```text
+/// for <row> in 1:count loop
+///   <target>[<row>] := 0.0;
+///   for <iterator> in 1:extent loop
+///     <target>[<row>] := <target>[<row>] + <scale> * <source>[<iterator>][<row>];
+///   end for;
+/// end for;
+/// ```
+///
+/// The contraction node that issued the nest knows three things about it that
+/// no reader of those statements does, and all three travel here:
+///
+/// * `target` names a temporary that node declared for this nest alone, so it
+///   aliases neither operand and may be written more than once;
+/// * the coefficient is constant in `row` and evaluates no call and no
+///   comparison, so a target may hoist it out of the row; and
+/// * the right operand addresses one run of `count` elements per `iterator`.
+///
+/// Together they license the row-at-a-time emission: zero the whole run, then
+/// add each `iterator`'s scaled source row into it. For a fixed `row` the
+/// products are the same in the same ascending `iterator` order, so the
+/// interleaving is bit-preserving.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RowContraction {
+    target: Name,
+    count: u32,
+    iterator: Name,
+    extent: u32,
+}
+
+impl RowContraction {
+    /// Attest a row contraction. Only the contraction node that issues the
+    /// nest may call this: the aliasing, purity and run facts above are its
+    /// construction-time knowledge, and nothing downstream re-derives them.
+    #[must_use]
+    pub fn new(target: Name, count: u32, iterator: Name, extent: u32) -> Self {
+        Self {
+            target,
+            count,
+            iterator,
+            extent,
+        }
+    }
+
+    /// The intermediate run the nest accumulates into.
+    #[must_use]
+    pub fn target(&self) -> &Name {
+        &self.target
+    }
+
+    /// Elements in that run.
+    #[must_use]
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+
+    /// The contracted index the inner loop runs over.
+    #[must_use]
+    pub fn iterator(&self) -> &Name {
+        &self.iterator
+    }
+
+    /// Values contracted over.
+    #[must_use]
+    pub fn extent(&self) -> u32 {
+        self.extent
+    }
+}
+
+impl Statement {
+    /// A bounded `for` statement over `loop_`.
+    #[must_use]
+    pub fn for_loop(loop_: ForLoop) -> Self {
+        Self::For(Box::new(loop_))
+    }
+}
+
+impl ForLoop {
+    /// An ordinary bounded loop, with no stronger operation beside it.
+    #[must_use]
+    pub fn new(
+        iterator: Option<Name>,
+        start: Expression,
+        step: Option<Expression>,
+        stop: Expression,
+        body: Vec<Spanned<Statement>>,
+    ) -> Self {
+        Self {
+            iterator,
+            start,
+            step,
+            stop,
+            body,
+            correlation: None,
+        }
+    }
+
+    /// The same loop, carrying the row contraction it legalizes.
+    #[must_use]
+    pub fn with_row_contraction(mut self, correlation: RowContraction) -> Self {
+        self.correlation = Some(Box::new(correlation));
+        self
+    }
+
+    /// The row contraction this loop legalizes, if it is one.
+    #[must_use]
+    pub fn row_contraction(&self) -> Option<&RowContraction> {
+        self.correlation.as_deref()
+    }
 }
 
 /// Target of a `limit` statement.
@@ -992,8 +1113,9 @@ pub enum Statement {
     Call(FunctionCall),
     /// If statement (conditions may be signal checks).
     If(IfStatement),
-    /// Bounded for loop.
-    For(ForLoop),
+    /// Bounded for loop. Boxed: the loop is by far the largest statement,
+    /// and inlining it would make every other statement pay for it.
+    For(Box<ForLoop>),
     /// `limit t1, t2, …;` — saturate ranged entities (trap T3). Whole-block
     /// construction requires at least one target.
     Limit(Vec<LimitTarget>),
