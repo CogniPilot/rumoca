@@ -24,7 +24,11 @@ Compile preflight: cc -O2 -std=c99 -pedantic -Wall -Wextra -Wconversion
   -Wsign-conversion -Wshadow -Wundef -Wcast-qual -Wstrict-prototypes
   -Wmissing-prototypes -Werror -c {{ out_dir }}/rumoca_galec_kernels.c {{ out_dir }}/{{ model_name }}.c
 Both translation units must be compiled; the model calls into the kernel
-library and checks RUMOCA_GALEC_KERNELS_VERSION against the header beside it."""
+library and checks RUMOCA_GALEC_KERNELS_VERSION against the header beside it.
+Target build: add -fno-math-errno. The generated code never reads errno, so
+the flag is sound, and it lets the compiler inline libm entry points the
+code calls through <math.h> (measured on Cortex-M7 -Os: every sqrtf call
+site becomes one VSQRT.F32 instruction instead of a library call chain)."""
 
 # GAL-028: the target's Integer execution domain. The generated C computes
 # Integer arithmetic on int32_t, so declare that domain here like the galec
