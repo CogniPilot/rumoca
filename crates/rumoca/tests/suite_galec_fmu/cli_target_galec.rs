@@ -724,13 +724,14 @@ fn estimator_projection_preserves_call_cardinality_and_compact_tensors() {
     }
     // A whole-tensor move no longer prints a `rumoca_tensor_` loop nest at
     // all: the projection emits the whole-array assignment directly, and the
-    // C target prints it as a counted call into the shared kernel library.
-    // The bounded-ness evidence is therefore the `INT32_C(count)` kernel
+    // C target prints it as a call into the shared kernel library — the
+    // counted generic kernel, or the fixed-count specialization the library
+    // defines for this run length. The bounded-ness evidence is that kernel
     // call, not a loop header — and its absence would mean the moves fell
     // back to some new expanded form this ratchet must catch.
     assert!(
-        c.contains("rumoca_galec_copy_real(INT32_C("),
-        "tensor moves must lower to counted shared-kernel calls:\n{c}"
+        c.contains("rumoca_galec_copy_real(INT32_C(") || c.contains("rumoca_galec_copy_real_"),
+        "tensor moves must lower to shared-kernel calls:\n{c}"
     );
     let constant_coordinate_assignments = c
         .lines()

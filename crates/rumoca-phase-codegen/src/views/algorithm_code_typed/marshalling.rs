@@ -530,6 +530,10 @@ impl<'a> Census<'a> {
                     self.observe_statement(statement);
                     continue;
                 }
+                Some(KernelStatementView::IndexRestricted { statement }) => {
+                    self.observe_statement(statement);
+                    continue;
+                }
                 None | Some(KernelStatementView::Absorbed) => {}
                 Some(KernelStatementView::Fill { value }) => self.observe_expression(value),
                 Some(KernelStatementView::Dot {
@@ -552,6 +556,28 @@ impl<'a> Census<'a> {
                     self.observe_name(iterator);
                     self.observe_expression(scale);
                     self.observe_reference(source);
+                }
+                Some(KernelStatementView::ScaledAddFused {
+                    zero,
+                    row_local,
+                    target,
+                    column,
+                    iterator,
+                    scale,
+                    source,
+                    store_target,
+                    store_value,
+                    ..
+                }) => {
+                    self.observe_expression(zero);
+                    self.observe_name(row_local);
+                    self.observe_reference(target);
+                    self.observe_name(column);
+                    self.observe_name(iterator);
+                    self.observe_expression(scale);
+                    self.observe_reference(source);
+                    self.observe_reference(store_target);
+                    self.observe_expression(store_value);
                 }
             }
             self.observe_statement(&statement.node);

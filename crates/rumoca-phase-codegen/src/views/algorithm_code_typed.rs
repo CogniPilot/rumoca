@@ -833,6 +833,30 @@ enum KernelStatementView<'a> {
     Marshalled {
         statement: Box<TypedStatementView<'a>>,
     },
+    /// A guarded whole-tensor loop nest printed with its index space
+    /// restricted to the guard's own rectangle: the checked GALEC spells
+    ///
+    /// ```text
+    /// for i in 1:n loop for j in 1:m loop
+    ///   T[i][j] := if a <= i and i <= b and c <= j and j <= d
+    ///              then V(i, j) else T[i][j];
+    /// end for; end for;
+    /// ```
+    ///
+    /// and the C target prints the same statement with `i` running `a:b` and
+    /// `j` running `c:d`, the selector gone. Outside the rectangle the
+    /// original iteration stored an element's own value back into it, which
+    /// leaves every bit of memory as it was, and the conditional evaluated
+    /// only integer comparisons of the loop indices against literals, which
+    /// no observer can count. Inside the rectangle `V` is evaluated exactly
+    /// as often as before (the selector evaluated only its chosen arm), so
+    /// the restriction is bit-preserving with no purity demand on `V`.
+    ///
+    /// The replacement is a rebuilt statement printed by the ordinary
+    /// statement machinery, exactly like [`Marshalled`](Self::Marshalled).
+    IndexRestricted {
+        statement: Box<TypedStatementView<'a>>,
+    },
     /// A whole-array assignment whose every element receives the same literal.
     /// The target's loop nest is still printed down to its innermost dimension,
     /// which becomes one `rumoca_galec_fill_*` call over that run.
@@ -872,6 +896,47 @@ enum KernelStatementView<'a> {
         extent: i64,
         scale: Box<TypedExpressionView<'a>>,
         source: TypedReferenceView<'a>,
+    },
+    /// The [`ScaledAdd`](Self::ScaledAdd) row accumulation with a *fused*
+    /// store: the reduction feeds a larger per-element expression instead of
+    /// landing bare, i.e.
+    ///
+    /// ```text
+    /// for j in 1:count loop
+    ///   acc := 0.0;
+    ///   for k in 1:extent loop acc := acc + (scale(k) * source[k][j]); end for;
+    ///   target[…][j] := f(…, acc);
+    /// end for;
+    /// ```
+    ///
+    /// The emission declares the retired scalar accumulator as a
+    /// `count`-element row in a compound block, accumulates the whole row
+    /// first (zero it, then add each `scale(k)`-scaled source row), and then
+    /// runs the store loop with `acc` respelled as that row's `j`-th element
+    /// (`store_value` arrives with the substitution already made). For a
+    /// fixed `j` the identical products are accumulated in the identical
+    /// ascending-`k` order into an identical `float`, and each store computes
+    /// the identical expression over that identical value in the identical
+    /// `j` order, so the substitution is bit-preserving. The store expression
+    /// is restricted to effect-free arithmetic ([`effect_free_store`]), so
+    /// moving the accumulation ahead of every store reorders no observable
+    /// effect.
+    ScaledAddFused {
+        count: i64,
+        zero: TypedExpressionView<'a>,
+        /// The retired scalar accumulator, re-declared as the row.
+        row_local: &'a ast::Name,
+        /// The row target the kernel calls accumulate into: the row local,
+        /// unsubscripted.
+        target: TypedReferenceView<'a>,
+        /// The result-row index the emitted store loop runs over.
+        column: &'a ast::Name,
+        iterator: &'a ast::Name,
+        extent: i64,
+        scale: Box<TypedExpressionView<'a>>,
+        source: TypedReferenceView<'a>,
+        store_target: TypedReferenceView<'a>,
+        store_value: Box<TypedExpressionView<'a>>,
     },
 }
 
@@ -1292,6 +1357,9 @@ fn boundaries_in_statements<'a>(
             // The marshalling rewrite's replacement is the statement that
             // reaches the file; the node beside it is not printed.
             Some(KernelStatementView::Marshalled { statement }) => {
+                boundaries_in_statement(statement, functions, found);
+            }
+            Some(KernelStatementView::IndexRestricted { statement }) => {
                 boundaries_in_statement(statement, functions, found);
             }
             // The remaining kernels replace an assignment with a call into the
@@ -2734,18 +2802,35 @@ fn kernelize<'a>(
         let TypedStatementView::For(row) = &statement.node else {
             continue;
         };
-        let Some(product) = matmul_row(row) else {
-            continue;
-        };
-        statement.kernel = Some(KernelStatementView::ScaledAdd {
-            count: product.count,
-            zero: product.zero,
-            target: product.target,
-            iterator: product.iterator,
-            extent: product.extent,
-            scale: Box::new(product.scale),
-            source: product.source,
-        });
+        if let Some(product) = matmul_row(row).or_else(|| matmul_row_in_place(row)) {
+            statement.kernel = Some(KernelStatementView::ScaledAdd {
+                count: product.count,
+                zero: product.zero,
+                target: product.target,
+                iterator: product.iterator,
+                extent: product.extent,
+                scale: Box::new(product.scale),
+                source: product.source,
+            });
+        } else if let Some(fused) = matmul_row_fused(row) {
+            statement.kernel = Some(KernelStatementView::ScaledAddFused {
+                count: fused.count,
+                zero: fused.zero,
+                row_local: fused.row_local,
+                target: fused.target,
+                column: fused.column,
+                iterator: fused.iterator,
+                extent: fused.extent,
+                scale: Box::new(fused.scale),
+                source: fused.source,
+                store_target: fused.store_target,
+                store_value: Box::new(fused.store_value),
+            });
+        } else if let Some(restricted) = index_restricted_block(row) {
+            statement.kernel = Some(KernelStatementView::IndexRestricted {
+                statement: Box::new(restricted),
+            });
+        }
     }
 
     let mut dead = HashSet::new();
@@ -2793,7 +2878,49 @@ fn kernelize<'a>(
         dead.insert(core.name);
         index += 3;
     }
+
+    absorb_accumulate_pairs(statements);
     dead
+}
+
+/// The two-statement remainder of the same reduction: `acc := 0.0` and the
+/// ascending accumulate loop, with no bare `target := acc` store, because
+/// the accumulated value feeds a larger expression — a fused store, a pair
+/// of reductions combined at the end, a guard. The pair still is the dot
+/// kernel: zero-init plus ascending accumulate over two contiguous runs
+/// into one single-precision object. It prints as `acc =
+/// rumoca_galec_dot_real(...)`, which performs the identical products in
+/// the identical order into the identical `float`, so the substitution is
+/// bit-preserving. The accumulator local survives — every later reader
+/// still sees the value the loop produced — so nothing is retired and no
+/// liveness proof is needed; only the zero statement is absorbed into the
+/// call that replaces the loop. Runs after the three-statement pass so
+/// the fuller form, which also retires the local, wins where both apply.
+fn absorb_accumulate_pairs<'a>(statements: &mut [TypedSpannedStatement<'a>]) {
+    let mut index = 0;
+    while index + 2 <= statements.len() {
+        let recognized =
+            accumulate_pair(&statements[index], &statements[index + 1]).and_then(|pair| {
+                Some((
+                    pair.count,
+                    pair.accumulator.clone(),
+                    contiguous_run(reference_of(pair.lhs)?, pair.iterator, pair.count)?,
+                    contiguous_run(reference_of(pair.rhs)?, pair.iterator, pair.count)?,
+                ))
+            });
+        let Some((count, target, lhs, rhs)) = recognized else {
+            index += 1;
+            continue;
+        };
+        statements[index].kernel = Some(KernelStatementView::Absorbed);
+        statements[index + 1].kernel = Some(KernelStatementView::Dot {
+            count,
+            target,
+            lhs,
+            rhs,
+        });
+        index += 2;
+    }
 }
 
 /// The literal every element of a whole-array assignment receives, if there is
@@ -2910,8 +3037,50 @@ fn contraction_parts<'a, 'view>(
     let [zero, loop_statement, store] = group else {
         return None;
     };
-    // No statement of the group may already belong to another kernel.
-    if zero.kernel.is_some() || loop_statement.kernel.is_some() || store.kernel.is_some() {
+    if store.kernel.is_some() {
+        return None;
+    }
+    let pair = accumulate_pair(zero, loop_statement)?;
+    let TypedStatementView::Assignment { target, value } = &store.node else {
+        return None;
+    };
+    if scalar_local_name(reference_of(value)?)? != pair.name
+        || target.scalar != Some(ast::ScalarType::Real)
+        || target.rank != 0
+    {
+        return None;
+    }
+
+    Some(ContractionParts {
+        name: pair.name,
+        iterator: pair.iterator,
+        count: pair.count,
+        zero: pair.zero,
+        target,
+        lhs: pair.lhs,
+        rhs: pair.rhs,
+    })
+}
+
+/// The first two statements of every contraction group — `acc := 0.0` and the
+/// ascending accumulate loop — parsed on their own, so recognisers can accept
+/// the group whether or not a bare `target := acc` store follows.
+struct AccumulatePair<'a, 'view> {
+    name: &'a str,
+    accumulator: &'view TypedReferenceView<'a>,
+    iterator: &'a ast::Name,
+    count: i64,
+    zero: &'view TypedExpressionView<'a>,
+    lhs: &'view TypedExpressionView<'a>,
+    rhs: &'view TypedExpressionView<'a>,
+}
+
+fn accumulate_pair<'a, 'view>(
+    zero: &'view TypedSpannedStatement<'a>,
+    loop_statement: &'view TypedSpannedStatement<'a>,
+) -> Option<AccumulatePair<'a, 'view>> {
+    // Neither statement may already belong to another kernel.
+    if zero.kernel.is_some() || loop_statement.kernel.is_some() {
         return None;
     }
 
@@ -2979,22 +3148,13 @@ fn contraction_parts<'a, 'view>(
     else {
         return None;
     };
-    let TypedStatementView::Assignment { target, value } = &store.node else {
-        return None;
-    };
-    if scalar_local_name(reference_of(value)?)? != name
-        || target.scalar != Some(ast::ScalarType::Real)
-        || target.rank != 0
-    {
-        return None;
-    }
 
-    Some(ContractionParts {
+    Some(AccumulatePair {
         name,
+        accumulator,
         iterator,
         count: *count,
         zero: initial,
-        target,
         lhs: left,
         rhs: right,
     })
@@ -3054,18 +3214,16 @@ fn matmul_row<'a>(row: &TypedForView<'a>) -> Option<MatmulRow<'a>> {
 
     let target = contiguous_run(parts.target, column, *count)?;
     let source = contiguous_run(reference_of(parts.rhs)?, column, *count)?;
-    // The scale is required to be a plain element reference rather than any
-    // `j`-free expression. A general expression would be correct too — it is
-    // hoisted, not duplicated — but it would also let a comparison or a call
-    // move out of the row loop, which changes how many times an operation with
-    // an observable effect runs. The scaled and fused product forms that this
-    // excludes keep their loops.
-    let scale = reference_of(parts.lhs)?;
-    if mentions_name_in_reference(scale, column.lexeme()) {
+    // The scale must be a pure-arithmetic `j`-free operand ([`scale_operand`]):
+    // hoisting it out of the row loop must not move a comparison or a call,
+    // which would change how many times an operation with an observable effect
+    // runs. Fused product forms outside that whitelist keep their loops.
+    let (scale, scale_roots) = scale_operand(parts.lhs)?;
+    if mentions_name_in_expression(scale, column.lexeme()) {
         return None;
     }
     let target_root = reference_root(&target);
-    if target_root == reference_root(&source) || target_root == reference_root(scale) {
+    if target_root == reference_root(&source) || scale_roots.contains(&target_root) {
         return None;
     }
 
@@ -3075,14 +3233,667 @@ fn matmul_row<'a>(row: &TypedForView<'a>) -> Option<MatmulRow<'a>> {
         target,
         iterator: parts.iterator,
         extent: parts.count,
-        scale: TypedExpressionView {
-            rank: 0,
-            extents: Some(Vec::new()),
-            scalar: Some(ast::ScalarType::Real),
-            node: TypedExpressionNodeView::Ref(scale.clone()),
-        },
+        scale: scale.clone(),
         source,
     })
+}
+
+/// Recognise the *fissioned* spelling of one result-row loop of a matrix
+/// product, where the accumulator is an element of a materialized tensor
+/// rather than a frame scalar:
+///
+/// ```text
+/// for j in 1:count loop
+///   acc[…][j] := 0.0;
+///   for k in 1:extent loop acc[…][j] := acc[…][j] + (scale(k) * source[k][j]); end for;
+/// end for;
+/// ```
+///
+/// The contraction-fission pass produces exactly this shape for the first pass
+/// of a split quadratic form: the carried scalar is widened over the free
+/// column index into a context array that the second pass then reads. The
+/// emitted loop nest walks `source`'s *column* per `j` (strided) and re-reads
+/// the in-memory accumulator element every iteration, which is the most
+/// expensive spelling of the product on an embedded target.
+///
+/// The rewrite is the same one [`matmul_row`] performs: drop the `j` loop,
+/// zero the whole `count`-element accumulator run, and add each `scale(k)`
+/// scaled source row into it. For a fixed `j` the identical products are
+/// accumulated in the identical ascending-`k` order into the identical
+/// `float` object, so the substitution is bit-preserving; it interleaves the
+/// independent `j` sums instead of running them one after another. Unlike the
+/// frame-scalar shape no declaration is retired: the accumulator array is
+/// real storage a later statement reads, and the kernel call writes exactly
+/// the values the loop nest wrote.
+fn matmul_row_in_place<'a>(row: &TypedForView<'a>) -> Option<MatmulRow<'a>> {
+    let column = row.iterator.as_ref()?;
+    let (TypedExpressionNodeView::Integer(1), TypedExpressionNodeView::Integer(count)) =
+        (&row.start.node, &row.stop.node)
+    else {
+        return None;
+    };
+    if row.step.is_some() || !row.c_locals.is_empty() {
+        return None;
+    }
+    let [zero, accumulate] = row.body.as_slice() else {
+        return None;
+    };
+    if zero.kernel.is_some() || accumulate.kernel.is_some() {
+        return None;
+    }
+    let TypedStatementView::Assignment {
+        target: accumulator,
+        value: initial,
+    } = &zero.node
+    else {
+        return None;
+    };
+    // Bit equality, not `==`: the fill kernel writes the zero literal it is
+    // handed, and `-0.0` has different bits.
+    if accumulator.scalar != Some(ast::ScalarType::Real)
+        || !matches!(initial.node,
+            TypedExpressionNodeView::Real(value) if value.to_bits() == 0.0_f64.to_bits())
+    {
+        return None;
+    }
+    let TypedStatementView::For(contracted) = &accumulate.node else {
+        return None;
+    };
+    let iterator = contracted.iterator.as_ref()?;
+    let (TypedExpressionNodeView::Integer(1), TypedExpressionNodeView::Integer(extent)) =
+        (&contracted.start.node, &contracted.stop.node)
+    else {
+        return None;
+    };
+    if contracted.step.is_some() || !contracted.c_locals.is_empty() {
+        return None;
+    }
+    let [body] = contracted.body.as_slice() else {
+        return None;
+    };
+    let TypedStatementView::Assignment {
+        target: accumulated,
+        value: sum,
+    } = &body.node
+    else {
+        return None;
+    };
+    // All three accumulator spellings must name the same element: the zeroed
+    // one, the assigned one, and the carried operand of the sum.
+    if !same_reference(accumulator, accumulated) {
+        return None;
+    }
+    let TypedExpressionNodeView::Binary {
+        op: ast::BinaryOp::Add,
+        lhs: carried,
+        rhs: product,
+        ..
+    } = &unparenthesized(sum).node
+    else {
+        return None;
+    };
+    if !same_reference(reference_of(carried)?, accumulator) {
+        return None;
+    }
+    let TypedExpressionNodeView::Binary {
+        op: ast::BinaryOp::Mul,
+        lhs: left,
+        rhs: right,
+        ..
+    } = &unparenthesized(product).node
+    else {
+        return None;
+    };
+    // The accumulator run: dropping the final `j` subscript must name a
+    // contiguous `count`-element run, and what remains must not move with the
+    // contracted index either — the run has to be one object across the whole
+    // rewritten loop.
+    let target = contiguous_run(accumulator, column, *count)?;
+    if mentions_name_in_reference(&target, iterator.lexeme()) {
+        return None;
+    }
+    let source = contiguous_run(reference_of(right)?, column, *count)?;
+    let (scale, scale_roots) = scale_operand(left)?;
+    if mentions_name_in_expression(scale, column.lexeme()) {
+        return None;
+    }
+    let target_root = reference_root(&target);
+    if target_root == reference_root(&source) || scale_roots.contains(&target_root) {
+        return None;
+    }
+
+    Some(MatmulRow {
+        count: *count,
+        zero: initial.clone(),
+        target,
+        iterator,
+        extent: *extent,
+        scale: scale.clone(),
+        source,
+    })
+}
+
+/// Recognise the dense guarded spelling of a rectangular block assignment and
+/// rebuild it with the loops restricted to the guard's own rectangle; see
+/// [`KernelStatementView::IndexRestricted`] for the shape and the
+/// bit-preservation argument. `None` whenever any piece falls outside the
+/// vocabulary: a non-literal bound, a guard that constrains anything but the
+/// two loop indices, an else arm that is not the target element itself.
+fn index_restricted_block<'a>(outer: &TypedForView<'a>) -> Option<TypedStatementView<'a>> {
+    let row = outer.iterator.as_ref()?;
+    let (TypedExpressionNodeView::Integer(1), TypedExpressionNodeView::Integer(rows)) =
+        (&outer.start.node, &outer.stop.node)
+    else {
+        return None;
+    };
+    if outer.step.is_some() || !outer.c_locals.is_empty() {
+        return None;
+    }
+    let [inner_wrapped] = outer.body.as_slice() else {
+        return None;
+    };
+    if inner_wrapped.kernel.is_some() {
+        return None;
+    }
+    let TypedStatementView::For(inner) = &inner_wrapped.node else {
+        return None;
+    };
+    let column = inner.iterator.as_ref()?;
+    let (TypedExpressionNodeView::Integer(1), TypedExpressionNodeView::Integer(columns)) =
+        (&inner.start.node, &inner.stop.node)
+    else {
+        return None;
+    };
+    if inner.step.is_some() || !inner.c_locals.is_empty() {
+        return None;
+    }
+    let [assignment] = inner.body.as_slice() else {
+        return None;
+    };
+    if assignment.kernel.is_some() {
+        return None;
+    }
+    let TypedStatementView::Assignment { target, value } = &assignment.node else {
+        return None;
+    };
+    let TypedExpressionNodeView::If(selection) = &unparenthesized(value).node else {
+        return None;
+    };
+    let [(condition, chosen)] = selection.branches.as_slice() else {
+        return None;
+    };
+    if !same_reference(reference_of(&selection.else_value)?, target) {
+        return None;
+    }
+    let mut bounds = [(1, *rows), (1, *columns)];
+    if !conjunctive_index_bounds(condition, row, column, &mut bounds) {
+        return None;
+    }
+    let [(row_lo, row_hi), (col_lo, col_hi)] = bounds;
+    // A degenerate rectangle would mean the whole nest is identity writes; no
+    // model spells that, so leave it its loop rather than emit nothing.
+    if row_lo > row_hi || col_lo > col_hi {
+        return None;
+    }
+
+    let store = TypedSpannedStatement {
+        trace: assignment.trace.clone(),
+        kernel: None,
+        node: TypedStatementView::Assignment {
+            target: target.clone(),
+            value: chosen.clone(),
+        },
+    };
+    let inner_for = TypedSpannedStatement {
+        trace: inner_wrapped.trace.clone(),
+        kernel: None,
+        node: TypedStatementView::For(Box::new(TypedForView {
+            iterator: inner.iterator,
+            start: integer_literal(col_lo),
+            step: None,
+            stop: integer_literal(col_hi),
+            c_locals: Vec::new(),
+            body: vec![store],
+        })),
+    };
+    Some(TypedStatementView::For(Box::new(TypedForView {
+        iterator: outer.iterator,
+        start: integer_literal(row_lo),
+        step: None,
+        stop: integer_literal(row_hi),
+        c_locals: Vec::new(),
+        body: vec![inner_for],
+    })))
+}
+
+/// An `int32` literal expression for a rebuilt loop bound.
+fn integer_literal<'a>(value: i64) -> TypedExpressionView<'a> {
+    TypedExpressionView {
+        rank: 0,
+        extents: Some(Vec::new()),
+        scalar: Some(ast::ScalarType::Integer),
+        node: TypedExpressionNodeView::Integer(value),
+    }
+}
+
+/// Tighten `bounds` (one `(lo, hi)` pair per index, `[row, column]`) by a
+/// conjunction of literal comparisons on exactly those indices. `false` the
+/// moment anything else appears — a disjunction, a third name, a computed
+/// bound — so a `true` return means the conjunction is *exactly* the
+/// rectangle the tightened bounds describe.
+fn conjunctive_index_bounds(
+    condition: &TypedExpressionView<'_>,
+    row: &ast::Name,
+    column: &ast::Name,
+    bounds: &mut [(i64, i64); 2],
+) -> bool {
+    let TypedExpressionNodeView::Binary { op, lhs, rhs, .. } = &unparenthesized(condition).node
+    else {
+        return false;
+    };
+    if *op == ast::BinaryOp::And {
+        return conjunctive_index_bounds(lhs, row, column, bounds)
+            && conjunctive_index_bounds(rhs, row, column, bounds);
+    }
+    // One side the bare index, the other an integer literal; normalize to
+    // `index OP literal`.
+    let index_of = |value: &TypedExpressionView<'_>| -> Option<usize> {
+        let name = scalar_local_name(reference_of(unparenthesized(value))?)?;
+        if name == row.lexeme() {
+            Some(0)
+        } else if name == column.lexeme() {
+            Some(1)
+        } else {
+            None
+        }
+    };
+    let literal_of = |value: &TypedExpressionView<'_>| -> Option<i64> {
+        match &unparenthesized(value).node {
+            TypedExpressionNodeView::Integer(literal) => Some(*literal),
+            _ => None,
+        }
+    };
+    let (index, literal, op) =
+        if let (Some(index), Some(literal)) = (index_of(lhs), literal_of(rhs)) {
+            (index, literal, *op)
+        } else if let (Some(literal), Some(index)) = (literal_of(lhs), index_of(rhs)) {
+            // `literal OP index` mirrors to `index OP' literal`.
+            let mirrored = match op {
+                ast::BinaryOp::Lt => ast::BinaryOp::Gt,
+                ast::BinaryOp::Gt => ast::BinaryOp::Lt,
+                ast::BinaryOp::Le => ast::BinaryOp::Ge,
+                ast::BinaryOp::Ge => ast::BinaryOp::Le,
+                ast::BinaryOp::Eq => ast::BinaryOp::Eq,
+                _ => return false,
+            };
+            (index, literal, mirrored)
+        } else {
+            return false;
+        };
+    let (lo, hi) = &mut bounds[index];
+    match op {
+        ast::BinaryOp::Ge => *lo = (*lo).max(literal),
+        ast::BinaryOp::Gt => *lo = (*lo).max(literal.saturating_add(1)),
+        ast::BinaryOp::Le => *hi = (*hi).min(literal),
+        ast::BinaryOp::Lt => *hi = (*hi).min(literal.saturating_sub(1)),
+        ast::BinaryOp::Eq => {
+            *lo = (*lo).max(literal);
+            *hi = (*hi).min(literal);
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// One recognised fused-store result-row loop; see
+/// [`KernelStatementView::ScaledAddFused`] for the shape and the argument.
+struct MatmulRowFused<'a> {
+    count: i64,
+    zero: TypedExpressionView<'a>,
+    row_local: &'a ast::Name,
+    target: TypedReferenceView<'a>,
+    column: &'a ast::Name,
+    iterator: &'a ast::Name,
+    extent: i64,
+    scale: TypedExpressionView<'a>,
+    source: TypedReferenceView<'a>,
+    store_target: TypedReferenceView<'a>,
+    store_value: TypedExpressionView<'a>,
+}
+
+fn matmul_row_fused<'a>(row: &TypedForView<'a>) -> Option<MatmulRowFused<'a>> {
+    let column = row.iterator.as_ref()?;
+    let (TypedExpressionNodeView::Integer(1), TypedExpressionNodeView::Integer(count)) =
+        (&row.start.node, &row.stop.node)
+    else {
+        return None;
+    };
+    if row.step.is_some() {
+        return None;
+    }
+    let [zero, loop_statement, store] = row.body.as_slice() else {
+        return None;
+    };
+    if store.kernel.is_some() {
+        return None;
+    }
+    let pair = accumulate_pair(zero, loop_statement)?;
+    // The accumulator lives and dies inside this loop body: its declaration is
+    // this loop's only frame local, so no sibling statement can read it.
+    if row.c_locals.len() != 1 || row.c_locals[0].decl.name.lexeme() != pair.name {
+        return None;
+    }
+    let TypedStatementView::Assignment {
+        target: store_target,
+        value: store_value,
+    } = &store.node
+    else {
+        return None;
+    };
+    // The store runs after the whole row accumulation instead of interleaved
+    // with it, so it must neither perform an observable effect nor write an
+    // object the accumulation reads.
+    if !effect_free_store(store_value) {
+        return None;
+    }
+    let source = contiguous_run(reference_of(pair.rhs)?, column, *count)?;
+    let (scale, scale_roots) = scale_operand(pair.lhs)?;
+    if mentions_name_in_expression(scale, column.lexeme()) {
+        return None;
+    }
+    let store_root = reference_root(store_target);
+    if store_root == reference_root(&source)
+        || scale_roots.contains(&store_root)
+        || store_root == pair.name
+    {
+        return None;
+    }
+    // The accumulator local, respelled: the row it becomes, and its `j`-th
+    // element every mention in the store expression is rewritten to.
+    let row_name = &row.c_locals[0].decl.name;
+    let target = TypedReferenceView {
+        rank: 1,
+        extents: Some(vec![usize::try_from(*count).ok()?]),
+        scalar: Some(ast::ScalarType::Real),
+        context_resident: false,
+        context_overlay: None,
+        declared_extents: Some(vec![usize::try_from(*count).ok()?]),
+        node: TypedReferenceNodeView::Local(TypedRefPartView {
+            name: row_name,
+            subscripts: Vec::new(),
+        }),
+    };
+    let store_value = substitute_scalar_local(store_value, pair.name, row_name, column);
+
+    Some(MatmulRowFused {
+        count: *count,
+        zero: pair.zero.clone(),
+        row_local: row_name,
+        target,
+        column,
+        iterator: pair.iterator,
+        extent: pair.count,
+        scale: scale.clone(),
+        source,
+        store_target: store_target.clone(),
+        store_value,
+    })
+}
+
+/// Whether a fused store expression is free of observable effects, judged by
+/// the same criterion the C emission applies: a Real-operand comparison
+/// signals through the error-status channel, a call is a call, and a bounded
+/// selection clamps through the signalling index helper — all three refuse.
+/// Everything else the expression grammar offers is pure arithmetic and
+/// selection whose evaluation count and order are unobservable.
+fn effect_free_store(value: &TypedExpressionView<'_>) -> bool {
+    match &value.node {
+        TypedExpressionNodeView::Bool(_)
+        | TypedExpressionNodeView::Integer(_)
+        | TypedExpressionNodeView::Real(_)
+        | TypedExpressionNodeView::Ref(_)
+        | TypedExpressionNodeView::Neg(_) => true,
+        TypedExpressionNodeView::Size { .. }
+        | TypedExpressionNodeView::BoundedSelection(_)
+        | TypedExpressionNodeView::Array(_) => false,
+        // Of the callable vocabulary only the Integer-to-Real conversion is
+        // known pure here: it prints as a C cast, not a call. Every other
+        // call — a user function mutates its context region, a libm call is
+        // still a call — refuses.
+        TypedExpressionNodeView::Call(call) => {
+            !call.user_function
+                && call.lifted_base.is_none()
+                && call.function.lexeme() == "real"
+                && call.arguments.iter().all(effect_free_store)
+        }
+        TypedExpressionNodeView::Paren(inner) | TypedExpressionNodeView::Not(inner) => {
+            effect_free_store(inner)
+        }
+        TypedExpressionNodeView::If(branches) => {
+            branches
+                .branches
+                .iter()
+                .all(|(condition, arm)| effect_free_store(condition) && effect_free_store(arm))
+                && effect_free_store(&branches.else_value)
+        }
+        TypedExpressionNodeView::Binary { op, lhs, rhs, .. } => {
+            let real_comparison = matches!(
+                op,
+                ast::BinaryOp::Lt
+                    | ast::BinaryOp::Gt
+                    | ast::BinaryOp::Le
+                    | ast::BinaryOp::Ge
+                    | ast::BinaryOp::Eq
+                    | ast::BinaryOp::Ne
+            ) && (lhs.scalar == Some(ast::ScalarType::Real)
+                || rhs.scalar == Some(ast::ScalarType::Real));
+            !real_comparison && effect_free_store(lhs) && effect_free_store(rhs)
+        }
+    }
+}
+
+/// Rebuild an expression with every mention of the bare scalar local `name`
+/// respelled as `row[column]`. Only unsubscripted single-part local
+/// references can mention a scalar local, so the rewrite touches exactly
+/// those nodes and clones the rest.
+fn substitute_scalar_local<'a>(
+    value: &TypedExpressionView<'a>,
+    name: &str,
+    row: &'a ast::Name,
+    column: &'a ast::Name,
+) -> TypedExpressionView<'a> {
+    let node = match &value.node {
+        TypedExpressionNodeView::Ref(reference) if scalar_local_name(reference) == Some(name) => {
+            TypedExpressionNodeView::Ref(row_element(reference, row, column))
+        }
+        TypedExpressionNodeView::Neg(reference) if scalar_local_name(reference) == Some(name) => {
+            TypedExpressionNodeView::Neg(row_element(reference, row, column))
+        }
+        TypedExpressionNodeView::Paren(inner) => TypedExpressionNodeView::Paren(Box::new(
+            substitute_scalar_local(inner, name, row, column),
+        )),
+        TypedExpressionNodeView::Not(inner) => TypedExpressionNodeView::Not(Box::new(
+            substitute_scalar_local(inner, name, row, column),
+        )),
+        TypedExpressionNodeView::Call(call) => TypedExpressionNodeView::Call(TypedCallView {
+            function: call.function,
+            lifted_base: call.lifted_base,
+            user_function: call.user_function,
+            arguments: call
+                .arguments
+                .iter()
+                .map(|argument| substitute_scalar_local(argument, name, row, column))
+                .collect(),
+            outputs: call.outputs.clone(),
+        }),
+        TypedExpressionNodeView::If(branches) => {
+            TypedExpressionNodeView::If(TypedIfExpressionView {
+                branches: branches
+                    .branches
+                    .iter()
+                    .map(|(condition, arm)| {
+                        (
+                            substitute_scalar_local(condition, name, row, column),
+                            substitute_scalar_local(arm, name, row, column),
+                        )
+                    })
+                    .collect(),
+                else_value: Box::new(substitute_scalar_local(
+                    &branches.else_value,
+                    name,
+                    row,
+                    column,
+                )),
+            })
+        }
+        TypedExpressionNodeView::Binary {
+            op,
+            precedence_class,
+            associativity,
+            lhs,
+            rhs,
+            square_form,
+        } => TypedExpressionNodeView::Binary {
+            op: *op,
+            precedence_class: *precedence_class,
+            associativity: *associativity,
+            lhs: Box::new(substitute_scalar_local(lhs, name, row, column)),
+            rhs: Box::new(substitute_scalar_local(rhs, name, row, column)),
+            square_form: *square_form,
+        },
+        other => other.clone(),
+    };
+    TypedExpressionView {
+        rank: value.rank,
+        extents: value.extents.clone(),
+        scalar: value.scalar,
+        node,
+    }
+}
+
+/// `row[column]`: the element the retired accumulator's mention becomes.
+fn row_element<'a>(
+    original: &TypedReferenceView<'a>,
+    row: &'a ast::Name,
+    column: &'a ast::Name,
+) -> TypedReferenceView<'a> {
+    let mut column_ref = TypedReferenceView {
+        rank: 0,
+        extents: Some(Vec::new()),
+        scalar: Some(ast::ScalarType::Integer),
+        context_resident: false,
+        context_overlay: None,
+        declared_extents: None,
+        node: TypedReferenceNodeView::Local(TypedRefPartView {
+            name: column,
+            subscripts: Vec::new(),
+        }),
+    };
+    column_ref.scalar = Some(ast::ScalarType::Integer);
+    TypedReferenceView {
+        rank: 0,
+        extents: Some(Vec::new()),
+        scalar: original.scalar,
+        context_resident: false,
+        context_overlay: None,
+        declared_extents: None,
+        node: TypedReferenceNodeView::Local(TypedRefPartView {
+            name: row,
+            subscripts: vec![TypedExpressionView {
+                rank: 0,
+                extents: Some(Vec::new()),
+                scalar: Some(ast::ScalarType::Integer),
+                node: TypedExpressionNodeView::Ref(column_ref),
+            }],
+        }),
+    }
+}
+
+/// A row-product scale operand a C-family target may evaluate once per
+/// contracted step instead of once per element: pure scalar Real arithmetic
+/// over literals and element references — parentheses, negation, `*` and `/`
+/// — and nothing that could observe how often it runs. A comparison signals
+/// through the error channel and a call is a call, so both refuse; hoisting
+/// this whitelist changes only *how many times* bit-identical values are
+/// recomputed, never a value and never an effect.
+///
+/// Returns the expression together with the root object of every reference in
+/// it, so the caller can prove none of them is the run the kernel writes.
+fn scale_operand<'a, 'view>(
+    value: &'view TypedExpressionView<'a>,
+) -> Option<(&'view TypedExpressionView<'a>, Vec<&'a str>)> {
+    if value.rank != 0 || value.scalar != Some(ast::ScalarType::Real) {
+        return None;
+    }
+    let mut roots = Vec::new();
+    scale_operand_roots(value, &mut roots).then_some((value, roots))
+}
+
+/// The recursive walk behind [`scale_operand`]: `true` when every node is on
+/// the whitelist, collecting reference roots along the way.
+fn scale_operand_roots<'a>(value: &TypedExpressionView<'a>, roots: &mut Vec<&'a str>) -> bool {
+    match &value.node {
+        TypedExpressionNodeView::Real(_) | TypedExpressionNodeView::Integer(_) => true,
+        TypedExpressionNodeView::Ref(reference) | TypedExpressionNodeView::Neg(reference) => {
+            roots.push(reference_root(reference));
+            true
+        }
+        TypedExpressionNodeView::Paren(inner) => scale_operand_roots(inner, roots),
+        TypedExpressionNodeView::Binary {
+            op: ast::BinaryOp::Mul | ast::BinaryOp::Div,
+            lhs,
+            rhs,
+            ..
+        } => scale_operand_roots(lhs, roots) && scale_operand_roots(rhs, roots),
+        _ => false,
+    }
+}
+
+/// Structural identity of two references, decided conservatively: identical
+/// storage spelling, identical part names, and pairwise-identical subscripts
+/// where a subscript is a literal or a bare scalar name. Any subscript shape
+/// outside that vocabulary answers `false`, which callers treat as "not the
+/// same element" — the safe direction.
+fn same_reference(left: &TypedReferenceView<'_>, right: &TypedReferenceView<'_>) -> bool {
+    if left.context_resident != right.context_resident
+        || left.context_overlay != right.context_overlay
+    {
+        return false;
+    }
+    let (left_parts, right_parts) = match (&left.node, &right.node) {
+        (TypedReferenceNodeView::Local(a), TypedReferenceNodeView::Local(b)) => {
+            (std::slice::from_ref(a), std::slice::from_ref(b))
+        }
+        (TypedReferenceNodeView::State(a), TypedReferenceNodeView::State(b)) => {
+            (a.as_slice(), b.as_slice())
+        }
+        _ => return false,
+    };
+    left_parts.len() == right_parts.len()
+        && left_parts.iter().zip(right_parts).all(|(a, b)| {
+            a.name.lexeme() == b.name.lexeme()
+                && a.subscripts.len() == b.subscripts.len()
+                && a.subscripts
+                    .iter()
+                    .zip(&b.subscripts)
+                    .all(|(x, y)| same_subscript(x, y))
+        })
+}
+
+/// Identity of one subscript pair, over the two shapes loop nests actually
+/// index with: integer literals and bare scalar names. Anything else is
+/// "unknown", not "equal".
+fn same_subscript(left: &TypedExpressionView<'_>, right: &TypedExpressionView<'_>) -> bool {
+    match (&unparenthesized(left).node, &unparenthesized(right).node) {
+        (TypedExpressionNodeView::Integer(a), TypedExpressionNodeView::Integer(b)) => a == b,
+        (TypedExpressionNodeView::Ref(a), TypedExpressionNodeView::Ref(b)) => {
+            match (scalar_local_name(a), scalar_local_name(b)) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            }
+        }
+        _ => false,
+    }
 }
 
 /// The declared object a reference indexes into, named by its root identifier.
@@ -4059,12 +4870,16 @@ mod kernelize_tests {
         ));
     }
 
-    /// Frame membership alone is not license to absorb: a sibling statement
+    /// Frame membership alone is not license to *retire*: a sibling statement
     /// in the same list reading the accumulator after the canonical
     /// three-statement group means the group is not the whole life of the
-    /// name, and deleting its writes would change what that reader observes.
+    /// name, so the store and the declaration must both survive. The
+    /// reduction itself is still the dot kernel — the two-statement pass
+    /// prints `acc = rumoca_galec_dot_real(...)`, which writes the identical
+    /// value the loop wrote, and every later reader (the store and the
+    /// sibling) still reads it.
     #[test]
-    fn sibling_reader_of_the_accumulator_keeps_its_loop() {
+    fn sibling_reader_of_the_accumulator_keeps_the_store_and_the_local() {
         let names = GroupNames::new();
         let extra_target = ast::Name::ident("t2");
         let declaration =
@@ -4079,29 +4894,131 @@ mod kernelize_tests {
             value: ref_expr(&names.acc),
         }));
         let dead = kernelize(&mut statements, &frame);
+        // Nothing is retired: the local survives for the store and the
+        // sibling reader, both of which keep their statements.
         assert!(dead.is_empty());
+        assert!(matches!(
+            statements[0].kernel,
+            Some(KernelStatementView::Absorbed)
+        ));
+        assert!(matches!(
+            statements[1].kernel,
+            Some(KernelStatementView::Dot { count: 3, .. })
+        ));
+        assert!(statements[2].kernel.is_none(), "the store must survive");
         assert!(
-            statements
-                .iter()
-                .all(|statement| statement.kernel.is_none())
+            statements[3].kernel.is_none(),
+            "the sibling reader must survive"
         );
     }
 
     /// The accumulator's declaration living at an *outer* frame means some
     /// scope outside this statement list also uses the name — the placement
-    /// is the common prefix of all uses. Absorbing the group here would
-    /// delete writes that outer reader still observes, so the loop stays.
+    /// is the common prefix of all uses. Retiring the declaration is
+    /// therefore off the table, but the reduction itself may still print as
+    /// `acc = rumoca_galec_dot_real(...)`: the write survives with the
+    /// identical value, so every outer reader is unaffected.
     #[test]
-    fn outer_declared_accumulator_keeps_its_loop() {
+    fn outer_declared_accumulator_keeps_its_write() {
         let names = GroupNames::new();
         let mut statements = accumulate_group(&names);
         let dead = kernelize(&mut statements, &[]);
         assert!(dead.is_empty());
-        assert!(
-            statements
-                .iter()
-                .all(|statement| statement.kernel.is_none())
+        assert!(matches!(
+            statements[0].kernel,
+            Some(KernelStatementView::Absorbed)
+        ));
+        assert!(matches!(
+            statements[1].kernel,
+            Some(KernelStatementView::Dot { count: 3, .. })
+        ));
+        assert!(statements[2].kernel.is_none(), "the store must survive");
+    }
+
+    /// The guard parser behind the index-restriction rewrite. Getting a bound
+    /// wrong silently drops block writes, so the property pinned here is
+    /// two-sided: exact rectangles for the conjunction vocabulary, and a hard
+    /// `false` for anything outside it.
+    #[test]
+    fn conjunctive_index_bounds_are_exact_and_fail_closed() {
+        let row = ast::Name::ident("i");
+        let column = ast::Name::ident("j");
+        fn compare<'a>(
+            op: ast::BinaryOp,
+            lhs: TypedExpressionView<'a>,
+            rhs: TypedExpressionView<'a>,
+        ) -> TypedExpressionView<'a> {
+            binary(op, lhs, rhs)
+        }
+        let literal = |value: i64| {
+            expr(
+                ast::ScalarType::Integer,
+                TypedExpressionNodeView::Integer(value),
+            )
+        };
+
+        // ((i >= 4) && (i <= 6)) && ((j >= 7) && (j <= 9))  ->  [4,6] x [7,9]
+        let condition = binary(
+            ast::BinaryOp::And,
+            binary(
+                ast::BinaryOp::And,
+                compare(ast::BinaryOp::Ge, ref_expr(&row), literal(4)),
+                compare(ast::BinaryOp::Le, ref_expr(&row), literal(6)),
+            ),
+            binary(
+                ast::BinaryOp::And,
+                compare(ast::BinaryOp::Ge, ref_expr(&column), literal(7)),
+                compare(ast::BinaryOp::Le, ref_expr(&column), literal(9)),
+            ),
         );
+        let mut bounds = [(1, 15), (1, 15)];
+        assert!(conjunctive_index_bounds(
+            &condition,
+            &row,
+            &column,
+            &mut bounds
+        ));
+        assert_eq!(bounds, [(4, 6), (7, 9)]);
+
+        // Mirrored and strict spellings: (3 < i) && (j == 5)  ->  [4,15] x [5,5]
+        let condition = binary(
+            ast::BinaryOp::And,
+            compare(ast::BinaryOp::Lt, literal(3), ref_expr(&row)),
+            compare(ast::BinaryOp::Eq, ref_expr(&column), literal(5)),
+        );
+        let mut bounds = [(1, 15), (1, 15)];
+        assert!(conjunctive_index_bounds(
+            &condition,
+            &row,
+            &column,
+            &mut bounds
+        ));
+        assert_eq!(bounds, [(4, 15), (5, 5)]);
+
+        // A disjunction is not a rectangle.
+        let condition = binary(
+            ast::BinaryOp::Or,
+            compare(ast::BinaryOp::Le, ref_expr(&row), literal(3)),
+            compare(ast::BinaryOp::Ge, ref_expr(&row), literal(9)),
+        );
+        let mut bounds = [(1, 15), (1, 15)];
+        assert!(!conjunctive_index_bounds(
+            &condition,
+            &row,
+            &column,
+            &mut bounds
+        ));
+
+        // A third name is not one of the loop's indices.
+        let other = ast::Name::ident("n");
+        let condition = compare(ast::BinaryOp::Le, ref_expr(&row), ref_expr(&other));
+        let mut bounds = [(1, 15), (1, 15)];
+        assert!(!conjunctive_index_bounds(
+            &condition,
+            &row,
+            &column,
+            &mut bounds
+        ));
     }
 }
 

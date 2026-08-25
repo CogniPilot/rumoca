@@ -1188,8 +1188,8 @@ fn array_copies_go_through_one_shared_kernel() {
         .expect("copy fixture must render");
 
     assert!(
-        source.contains("rumoca_galec_copy_real(INT32_C(3), self->target, self->source);"),
-        "a whole-array copy must be one kernel call:\n{source}"
+        source.contains("rumoca_galec_copy_real_3(self->target, self->source);"),
+        "a whole-array copy of a specialized count must be one fixed-count kernel call:\n{source}"
     );
     assert!(
         !source.contains("for (int32_t rumoca_galec_copy_"),
@@ -1443,7 +1443,7 @@ fn rank_two_copies_call_the_kernel_once_per_row() {
     );
     assert!(
         source.contains(
-            "rumoca_galec_copy_real(INT32_C(3), self->target[rumoca_galec_copy_0], \
+            "rumoca_galec_copy_real_3(self->target[rumoca_galec_copy_0], \
              self->source[rumoca_galec_copy_0]);"
         ),
         "{source}"
@@ -1506,7 +1506,11 @@ fn copy_kernels_move_every_element_unchanged() {
     let checked = mixed_copy_block();
     let header = render(&checked, "model.h.jinja").expect("mixed copy header");
     let source = render(&checked, "model.c.jinja").expect("mixed copy source");
-    for name in COPY_KERNELS {
+    // The Real copy is count 3, a specialized count, so it prints the
+    // fixed-count kernel; Integer and Boolean copies have no specializations
+    // and keep the counted call.
+    assert!(source.contains("rumoca_galec_copy_real_3("), "{source}");
+    for name in &COPY_KERNELS[1..] {
         assert!(source.contains(&format!("{name}(INT32_C(")), "{source}");
     }
     assert_model_unit_defines_no_kernels(&source);

@@ -317,8 +317,24 @@ self->{{ symbol(c_state_symbols, variable.name) }}{% for index in indices %}[{{ 
 {#- The kernel call for one rank-1 run: `count`, then the destination run, then
     the source run. Both operands are the enclosing loops' partial subscripting
     of an object whose innermost dimension is `count`. -#}
+{#- The fixed-count specializations the emitted kernel library defines
+    (`kernels.c.jinja`). A call site whose literal count and Real element type
+    match one prints the specialized name and drops the count argument; every
+    other site prints the generic counted call. The two spellings execute the
+    identical element operations in the identical order, so this is a
+    call-emission selection, not a semantic decision. The lists here must
+    match the library templates — the emitted `#error` version check ties a
+    model source to the kernel header it was generated beside. -#}
+{%- set specialized_copy_counts = [3, 15, 24] -%}
+{%- set specialized_fill_counts = [3, 15] -%}
+{%- set specialized_dot_counts = [6, 12, 15] -%}
+{%- set specialized_scaled_add_counts = [3, 6, 12, 15] -%}
 {%- macro copy_kernel_call(kernel, count, target_text, source_text, indent) -%}
+{%- if kernel == "rumoca_galec_copy_real" and count in specialized_copy_counts -%}
+{{ pad(indent) }}{{ kernel }}_{{ count }}({{ target_text }}, {{ source_text }});
+{%- else -%}
 {{ pad(indent) }}{{ kernel }}(INT32_C({{ count }}), {{ target_text }}, {{ source_text }});
+{%- endif -%}
 {%- endmacro -%}
 {#- The fill kernels, the same idea one operand narrower: a whole-array
     assignment whose every element receives the same literal is a run and a
@@ -334,7 +350,11 @@ self->{{ symbol(c_state_symbols, variable.name) }}{% for index in indices %}[{{ 
 {%- endif -%}
 {%- endmacro -%}
 {%- macro fill_kernel_call(kernel, count, target_text, value_text, indent) -%}
+{%- if kernel == "rumoca_galec_fill_real" and count in specialized_fill_counts -%}
+{{ pad(indent) }}{{ kernel }}_{{ count }}({{ target_text }}, {{ value_text }});
+{%- else -%}
 {{ pad(indent) }}{{ kernel }}(INT32_C({{ count }}), {{ target_text }}, {{ value_text }});
+{%- endif -%}
 {%- endmacro -%}
 {#- A call passes the block context and the operands, and nothing else. The
     callee's outputs are slots in the callee's own region, so the caller reads
@@ -605,19 +625,49 @@ self->{{ symbol(c_state_symbols, variable.name) }}{% for index in indices %}[{{ 
     is the view's, taken in `views::algorithm_code_marshalling` and carried in
     the same sibling slot every other emission decision uses, so `model.alg`
     still prints the checked statement and the copy beside it. -#}
-{%- set value = wrapped.kernel.statement if (wrapped.kernel is not none and wrapped.kernel.kind == "marshalled") else wrapped.node -%}
+{%- set value = wrapped.kernel.statement if (wrapped.kernel is not none and wrapped.kernel.kind in ["marshalled", "index_restricted"]) else wrapped.node -%}
 {#- One contraction group's surviving statement: the whole reduction, including
     the loop and the accumulator that are gone from this scope, is the call. -#}
 {%- if wrapped.kernel is not none and wrapped.kernel.kind == "dot" -%}
+{%- if wrapped.kernel.count in specialized_dot_counts -%}
+{{ pad(indent) }}{{ reference(wrapped.kernel.target) }} = rumoca_galec_dot_real_{{ wrapped.kernel.count }}({{ reference(wrapped.kernel.lhs) }}, {{ reference(wrapped.kernel.rhs) }});
+{%- else -%}
 {{ pad(indent) }}{{ reference(wrapped.kernel.target) }} = rumoca_galec_dot_real(INT32_C({{ wrapped.kernel.count }}), {{ reference(wrapped.kernel.lhs) }}, {{ reference(wrapped.kernel.rhs) }});
+{%- endif -%}
 {#- One result row of a matrix product: the row loop is gone and the row is
     accumulated in place. The contracted loop survives because its extent is
     the number of source rows, and a rank-1 kernel reads one of those at a
     time. -#}
 {%- elif wrapped.kernel is not none and wrapped.kernel.kind == "scaled_add" -%}
-{{ pad(indent) }}rumoca_galec_fill_real(INT32_C({{ wrapped.kernel.count }}), {{ reference(wrapped.kernel.target) }}, {{ expr(wrapped.kernel.zero) }});
+{{ fill_kernel_call("rumoca_galec_fill_real", wrapped.kernel.count, reference(wrapped.kernel.target), expr(wrapped.kernel.zero), indent) }}
 {{ pad(indent) }}for (int32_t {{ symbol(c_symbols, name_text(wrapped.kernel.iterator)) }} = 1; {{ symbol(c_symbols, name_text(wrapped.kernel.iterator)) }} <= {{ wrapped.kernel.extent }}; {{ symbol(c_symbols, name_text(wrapped.kernel.iterator)) }} += 1) {
+{%- if wrapped.kernel.count in specialized_scaled_add_counts %}
+{{ pad(indent + 1) }}rumoca_galec_scaled_add_real_{{ wrapped.kernel.count }}({{ reference(wrapped.kernel.target) }}, {{ expr(wrapped.kernel.scale) }}, {{ reference(wrapped.kernel.source) }});
+{%- else %}
 {{ pad(indent + 1) }}rumoca_galec_scaled_add_real(INT32_C({{ wrapped.kernel.count }}), {{ reference(wrapped.kernel.target) }}, {{ expr(wrapped.kernel.scale) }}, {{ reference(wrapped.kernel.source) }});
+{%- endif %}
+{{ pad(indent) }}}
+{#- The fused-store row accumulation: the retired scalar accumulator becomes a
+    row in a compound block, the row is accumulated first exactly as the
+    `scaled_add` form above, and the store loop then runs with the
+    accumulator's mentions already respelled by the view as the row's
+    element. See the view's `ScaledAddFused` for the bit-preservation
+    argument. -#}
+{%- elif wrapped.kernel is not none and wrapped.kernel.kind == "scaled_add_fused" -%}
+{{ pad(indent) }}{
+{{ pad(indent + 1) }}float {{ symbol(c_symbols, name_text(wrapped.kernel.row_local)) }}[{{ wrapped.kernel.count }}];
+
+{{ fill_kernel_call("rumoca_galec_fill_real", wrapped.kernel.count, reference(wrapped.kernel.target), expr(wrapped.kernel.zero), indent + 1) }}
+{{ pad(indent + 1) }}for (int32_t {{ symbol(c_symbols, name_text(wrapped.kernel.iterator)) }} = 1; {{ symbol(c_symbols, name_text(wrapped.kernel.iterator)) }} <= {{ wrapped.kernel.extent }}; {{ symbol(c_symbols, name_text(wrapped.kernel.iterator)) }} += 1) {
+{%- if wrapped.kernel.count in specialized_scaled_add_counts %}
+{{ pad(indent + 2) }}rumoca_galec_scaled_add_real_{{ wrapped.kernel.count }}({{ reference(wrapped.kernel.target) }}, {{ expr(wrapped.kernel.scale) }}, {{ reference(wrapped.kernel.source) }});
+{%- else %}
+{{ pad(indent + 2) }}rumoca_galec_scaled_add_real(INT32_C({{ wrapped.kernel.count }}), {{ reference(wrapped.kernel.target) }}, {{ expr(wrapped.kernel.scale) }}, {{ reference(wrapped.kernel.source) }});
+{%- endif %}
+{{ pad(indent + 1) }}}
+{{ pad(indent + 1) }}for (int32_t {{ symbol(c_symbols, name_text(wrapped.kernel.column)) }} = 1; {{ symbol(c_symbols, name_text(wrapped.kernel.column)) }} <= {{ wrapped.kernel.count }}; {{ symbol(c_symbols, name_text(wrapped.kernel.column)) }} += 1) {
+{{ pad(indent + 2) }}{{ reference(wrapped.kernel.store_target) }} = {{ expr(wrapped.kernel.store_value) }};
+{{ pad(indent + 1) }}}
 {{ pad(indent) }}}
 {%- elif value.kind == "assignment" -%}
 {%- if value.value.value.kind == "call" and value.value.value.value.user_function -%}

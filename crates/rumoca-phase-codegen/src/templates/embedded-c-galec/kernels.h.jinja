@@ -123,4 +123,26 @@ float rumoca_galec_dot_real(int32_t count, const float lhs[], const float rhs[])
  * distinct declared objects. */
 void rumoca_galec_scaled_add_real(int32_t count, float target[], float scale, const float source[]);
 
+/* Fixed-count specializations of the Real kernels above, for the short run
+ * lengths that dominate estimator-class blocks. Each `_N` function is the
+ * counted kernel of the same name with `count` bound to `N` and the loop
+ * written out straight-line in the identical ascending element order, so
+ * every contract stated above — operand order, accumulation order and
+ * precision, aliasing, bit preservation — carries over unchanged with
+ * `count` fixed. Every array parameter must address at least `N` elements.
+ * The set of specialized counts is a property of this library version; a
+ * generated model calls one exactly when its literal count matches. */
+void rumoca_galec_copy_real_3(float target[], const float source[]);
+void rumoca_galec_copy_real_15(float target[], const float source[]);
+void rumoca_galec_copy_real_24(float target[], const float source[]);
+void rumoca_galec_fill_real_3(float target[], float value);
+void rumoca_galec_fill_real_15(float target[], float value);
+float rumoca_galec_dot_real_6(const float lhs[], const float rhs[]);
+float rumoca_galec_dot_real_12(const float lhs[], const float rhs[]);
+float rumoca_galec_dot_real_15(const float lhs[], const float rhs[]);
+void rumoca_galec_scaled_add_real_3(float target[], float scale, const float source[]);
+void rumoca_galec_scaled_add_real_6(float target[], float scale, const float source[]);
+void rumoca_galec_scaled_add_real_12(float target[], float scale, const float source[]);
+void rumoca_galec_scaled_add_real_15(float target[], float scale, const float source[]);
+
 #endif /* RUMOCA_GALEC_KERNELS_H */

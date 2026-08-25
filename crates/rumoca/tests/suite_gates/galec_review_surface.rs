@@ -142,17 +142,32 @@ const MAX_REDUNDANT_INT32_CASTS: usize = 0;
 /// its own ceiling rather than the model unit's.
 const KERNEL_LIBRARY_STEM: &str = "rumoca_galec_kernels";
 
-/// The shared kernel library's `.c`, total lines. Current: 64.
+/// The shared kernel library's `.c`, total lines. Current: 247.
 ///
 /// DECISION (recorded here so the split is deliberate): the model-unit
 /// ceilings above measure the per-model review surface, and folding a
-/// constant 64-line model-independent TU into them would let model-unit
+/// constant model-independent TU into them would let model-unit
 /// growth hide behind kernel-library shrinkage (or vice versa). The library
 /// is therefore ratcheted separately — it is reviewed once per compiler
 /// build, not once per model, but it must not grow silently either: every
 /// kernel added to it is new certification surface for every consumer.
 /// RATCHET: lower when improved, never raise without a recorded decision.
-const MAX_KERNEL_LIBRARY_LINES: usize = 80;
+///
+/// DECISION 2026-08-24 (raise 80 -> 260): the library gained fixed-count
+/// straight-line specializations of the four Real kernels (copy 3/15/24,
+/// fill 3/15, dot 6/12/15, scaled-add 3/6/12/15) for the 1 kHz flight-track
+/// budget. Measured on `Vehicles.Rdd2.NavigationEstimator`'s worst
+/// correcting step (GPS pos+vel, dossier scenario 6, Cortex-M7 `-Os`): the
+/// generic counted loops cost 8 to 9.5 executed instructions per element at
+/// the run lengths this class of model produces (12 to 15), while the
+/// straight-line bodies cost 3.3 to 4.1; the specializations took the step
+/// from 954,168 to under 620,000 executed instructions and were required to
+/// fit the block's declared 1 ms period at 600 MHz. Each added line is a
+/// single subscripted element operation with no control flow — line count
+/// rises 4x while branch count in the library stays exactly what it was
+/// (one bounded loop per generic kernel). Every specialization is pinned
+/// bit-identical to its generic kernel by the equivalence suites.
+const MAX_KERNEL_LIBRARY_LINES: usize = 260;
 
 /// The emitted Production Code sources.
 struct ProductionSources {
