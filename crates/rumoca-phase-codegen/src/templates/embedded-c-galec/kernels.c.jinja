@@ -99,7 +99,7 @@ void rumoca_galec_copy_real_{{ count }}(float target[], const float source[]) {
 {% endfor -%}
 }
 {% endfor %}
-{%- for count in [3, 15] %}
+{%- for count in [2, 3, 15] %}
 void rumoca_galec_fill_real_{{ count }}(float target[], float value) {
 {% for element in range(count) %}    target[{{ element }}] = value;
 {% endfor -%}
@@ -112,7 +112,7 @@ float rumoca_galec_dot_real_{{ count }}(const float lhs[], const float rhs[]) {
 {% endfor %}    return accumulator;
 }
 {% endfor %}
-{%- for count in [3, 6, 12, 15] %}
+{%- for count in [2, 3, 6, 12, 15] %}
 void rumoca_galec_scaled_add_real_{{ count }}(float target[], float scale, const float source[]) {
 {% for element in range(count) %}    target[{{ element }}] = target[{{ element }}] + (scale * source[{{ element }}]);
 {% endfor -%}

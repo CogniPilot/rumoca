@@ -348,9 +348,9 @@ self->{{ symbol(c_state_symbols, variable.name) }}{% for index in indices %}[{{ 
     match the library templates — the emitted `#error` version check ties a
     model source to the kernel header it was generated beside. -#}
 {%- set specialized_copy_counts = [3, 15, 24] -%}
-{%- set specialized_fill_counts = [3, 15] -%}
+{%- set specialized_fill_counts = [2, 3, 15] -%}
 {%- set specialized_dot_counts = [6, 12, 15] -%}
-{%- set specialized_scaled_add_counts = [3, 6, 12, 15] -%}
+{%- set specialized_scaled_add_counts = [2, 3, 6, 12, 15] -%}
 {%- macro copy_kernel_call(kernel, count, target_text, source_text, indent) -%}
 {%- if kernel == "rumoca_galec_copy_real" and count in specialized_copy_counts -%}
 {{ pad(indent) }}{{ kernel }}_{{ count }}({{ target_text }}, {{ source_text }});

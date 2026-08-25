@@ -167,6 +167,22 @@ const KERNEL_LIBRARY_STEM: &str = "rumoca_galec_kernels";
 /// rises 4x while branch count in the library stays exactly what it was
 /// (one bounded loop per generic kernel). Every specialization is pinned
 /// bit-identical to its generic kernel by the equivalence suites.
+///
+/// NOTE 2026-08-25 (no raise; measured 247 -> 257): `fill_real_2` and
+/// `scaled_add_real_2` joined the set. `n = 2` is the SE_2(3) column-pair
+/// shape the LieGroups vocabulary produces everywhere, and the exp_mixed
+/// head-to-head (`dev/2026-08-25-expmixed-codegen-study.md`) measured 66
+/// generic `scaled_add_real` calls at that count delivering 120 fused
+/// multiply-adds for 1,440 executed instructions, 12 per useful FMA against
+/// the 4.3 the `_3` specialization costs. Adding the two took that kernel's
+/// exp_mixed spend from 1,440 to 540 and the whole artifact from 6,058 to
+/// 4,827 executed instructions, and the estimator's worst correcting step
+/// from 530,475 to 529,231, with the dossier driver report byte-identical.
+/// `copy_real_2` and `dot_real_2` were DELIBERATELY NOT added: each has one
+/// static call site in the estimator and both are executed ZERO times in the
+/// measured step, so they would spend ten lines of certification surface and
+/// the remaining ratchet headroom for no measured win. The ceiling stays at
+/// 260 because the addition fits under it.
 const MAX_KERNEL_LIBRARY_LINES: usize = 260;
 
 /// The emitted Production Code sources.
