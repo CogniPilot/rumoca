@@ -420,12 +420,15 @@ fn result_consumed_twice() -> CheckedAlgorithmBlock {
 fn a_result_consumed_twice_keeps_its_read_back() {
     let block = result_consumed_twice();
     let source = render(&block, "model.c.jinja");
+    // `produced` and `kept` are arena slots here, so the copies spell them
+    // as `(*name)` through the typed pointers the entry declares; the point
+    // read-back and the copy both survive.
     assert!(
-        source.contains("rumoca_galec_copy_real(INT32_C(4), ctx->produced,"),
+        source.contains("rumoca_galec_copy_real(INT32_C(4), (*produced),"),
         "a twice-read result must still be read back into its own slot:\n{source}"
     );
     assert!(
-        source.contains("rumoca_galec_copy_real(INT32_C(4), ctx->kept, ctx->produced)"),
+        source.contains("rumoca_galec_copy_real(INT32_C(4), (*kept), (*produced))"),
         "the copy out of a twice-read result must survive:\n{source}"
     );
     let (passed, output) = run_expecting(&block, 12.0);
@@ -485,12 +488,16 @@ fn shape_mismatched_actual() -> CheckedAlgorithmBlock {
 fn a_shape_mismatched_actual_keeps_its_copy() {
     let block = shape_mismatched_actual();
     let source = render(&block, "model.c.jinja");
+    // The temporaries are arena slots, spelled `(*name)` through the typed
+    // pointers the entry declares. `staged` is a `[4]` handed to a declared
+    // formal and `wide` a `[2][4]`, so those two keep separate offsets; the
+    // copy itself is what must survive, and it does.
     assert!(
-        source.contains("ctx->staged[j - 1] = ctx->wide[1][j - 1];"),
+        source.contains("(*staged)[j - 1] = (*wide)[1][j - 1];"),
         "a staging traversal out of a wider object must keep its copy:\n{source}"
     );
     assert!(
-        source.contains("ctx->staged);"),
+        source.contains("(*staged));"),
         "the call must still pass the staged temporary:\n{source}"
     );
     let (passed, output) = run_expecting(&block, 15.0);

@@ -38,6 +38,25 @@ typedef union {{ c_model }}ScratchArm{{ member.overlay }}_{{ region_name(region,
 } {{ c_model }}ScratchArm{{ member.overlay }}_{{ region_name(region, c_symbols) }};
 {% endif %}{% endfor -%}
 {%- endmacro -%}
+{#- A region's value arena: one flat float array whose fixed offsets carry the
+    slots the checked projection proved never live together where they overlap.
+    The legend restates each slot's placement so a map-file reader can find a
+    value without opening the generated source, where the same offsets appear
+    on the typed pointers the body declares. Offsets and extents are in float
+    elements; every resident is a float array, so every offset the projection
+    chose is naturally aligned for every access. A wider resident would need
+    its offset rounded to its own alignment, and none is emitted today. -#}
+{%- macro arena_member(c_model, region, c_symbols) -%}
+{%- if region.arena is not none %}
+    /* Value arena (float offsets; overlapping slots are proven never live
+     * together by the checked projection):
+{%- for slot in region.arena.slots %}
+     *   [{{ slot.offset }}..{{ slot.offset + slot.floats }}) {{ symbol(c_symbols, slot.name.value[0]) }}{{ region_dimensions(slot) }}
+{%- endfor %}
+     */
+    float rumoca_galec_arena[{{ region.arena.floats }}];
+{%- endif %}
+{%- endmacro -%}
 {%- macro declarations(c_model, scratch_layout, c_symbols) -%}
 {%- for group in scratch_layout.groups %}
 {%- for region in group.regions %}
@@ -50,6 +69,7 @@ typedef struct {{ c_model }}Scratch_{{ region_name(region, c_symbols) }}Tag {
     {{ c_model }}ScratchArm{{ member.overlay }}_{{ region_name(region, c_symbols) }} rumoca_galec_arm{{ member.overlay }};
 {%- endif %}
 {%- endfor %}
+{{- arena_member(c_model, region, c_symbols) }}
 } {{ c_model }}Scratch_{{ region_name(region, c_symbols) }};
 {% endfor %}
 {%- endfor %}

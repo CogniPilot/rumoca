@@ -45,7 +45,12 @@
  * reaches the other through the block's calls. Slots inside one region are
  * overlaid into a `rumoca_galec_arm<n>` union only where the checked placement
  * proof says each is used in exactly one arm of one conditional and those arms
- * exclude one another. These slots
+ * exclude one another. A region's `rumoca_galec_arena` is one flat float array
+ * carrying the Real array slots whose live ranges the checked projection
+ * proved disjoint wherever their fixed offsets overlap; the generated source
+ * reaches each one through a typed pointer at its offset, so every access is a
+ * float access into the arena and every 4-byte offset is naturally aligned.
+ * These slots
  * are execution storage, not GALEC LogicalData; no manifest consumer binds to
  * them. Distinct State objects therefore have disjoint mutable storage and may
  * execute concurrently. Calls on the same State still require ordinary

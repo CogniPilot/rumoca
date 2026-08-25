@@ -624,48 +624,190 @@ fn arm_overlaid_slots_compute_the_same_values_on_every_arm() {
     );
 }
 
-/// NEGATIVE CONTROL, in the emitted C. The three arm-local buffers land in one
-/// union; the buffer that is live across the chain keeps its own storage.
+/// NEGATIVE CONTROL, in the emitted C. The three arm-local buffers land at one
+/// arena offset; the buffer that is live across the chain gets an offset of
+/// its own.
 ///
 /// This is the layout claim the runtime test above depends on: without it that
 /// test would pass for the uninteresting reason that nothing was overlaid.
 #[test]
-fn a_slot_live_across_the_chain_is_refused_an_arm_overlay() {
+fn a_slot_live_across_the_chain_is_refused_shared_arena_storage() {
     let header = render_as(&arm_fixture(), "model.h.jinja", ARM_MODEL);
     let source = render_as(&arm_fixture(), "model.c.jinja", ARM_MODEL);
 
-    let overlay = header
-        .split("typedef union ArmOverlayScratchArm0_dostepTag {")
-        .nth(1)
-        .and_then(|rest| rest.split('}').next())
-        .unwrap_or_default();
-    for slot in ["arm_a", "arm_b", "arm_c"] {
-        assert!(
-            overlay.contains(&format!("float {slot}[4];")),
-            "`{slot}` is local to one arm and belongs in the overlay:\n{header}"
-        );
-    }
+    // The region holds one flat arena; its legend states every placement.
     assert!(
-        !overlay.contains("float spanning[4];"),
-        "`spanning` is read in every arm and must keep its own storage:\n{header}"
+        header.contains("float rumoca_galec_arena[8];"),
+        "four 4-float buffers must share an 8-float arena:\n{header}"
     );
-    assert!(
-        header.contains("    float spanning[4];"),
-        "`spanning` stays a plain member of the region:\n{header}"
+    // Each body reaches its slot through a typed pointer at a fixed offset:
+    // the three arm-local buffers at ONE offset, `spanning` at its own.
+    let pointer = |name: &str| arena_offset(&source, name);
+    let spanning = pointer("spanning").expect("`spanning` lives in the arena");
+    let arm_a = pointer("arm_a").expect("`arm_a` lives in the arena");
+    let arm_b = pointer("arm_b").expect("`arm_b` lives in the arena");
+    let arm_c = pointer("arm_c").expect("`arm_c` lives in the arena");
+    assert_eq!(
+        arm_a, arm_b,
+        "two exclusive arms share one offset:\n{source}"
     );
-    // And the bodies address each slot through the storage it was given.
-    assert!(
-        source.contains("ctx->rumoca_galec_arm0.arm_a"),
-        "an overlaid slot is reached through its overlay:\n{source}"
-    );
-    assert!(
-        source.contains("ctx->spanning"),
-        "a slot that owns its storage is reached directly:\n{source}"
+    assert_eq!(arm_b, arm_c, "and so does the else arm:\n{source}");
+    assert_ne!(
+        spanning, arm_a,
+        "`spanning` is read in every arm and must keep bytes of its own:\n{source}"
     );
     // Three arm-local buffers of 16 bytes collapse to one, and `spanning` is
     // still counted once: four slots of 16 bytes become 32 bytes, not 64.
     assert!(
         header.contains("RUMOCA_ARMOVERLAY_CHECKED_SCRATCH_SLOT_BYTES UINT32_C(32)"),
-        "the arm overlay must show up in the checked slot budget:\n{header}"
+        "the sharing must show up in the checked slot budget:\n{header}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The value arena: slots whose live ranges are sequential share one offset.
+// ---------------------------------------------------------------------------
+
+/// The float offset an emitted arena pointer declaration binds `name` to.
+///
+/// The declaration reads
+/// `float (*const <name>)[..] = (float (*)[..])(&ctx->rumoca_galec_arena[<k>]);`
+/// and this reads back `<k>`, so a test states the layout claim in the units
+/// the projection decided it in rather than by matching a whole line.
+fn arena_offset(source: &str, name: &str) -> Option<usize> {
+    let tail = source.split(&format!("(*const {name})")).nth(1)?;
+    let offset = tail.split("rumoca_galec_arena[").nth(1)?;
+    offset.split(']').next()?.parse().ok()
+}
+
+const ARENA_MODEL: &str = "ValueArena";
+
+/// A block whose `DoStep` is a straight-line chain of temporaries, plus one
+/// that is live across the whole chain.
+///
+/// ```text
+/// DoStep : spanning := 2*a;
+///          first    := 3*a;   held := spanning + first;   -> 5*a
+///          second   := 4*a;   result := held + second + spanning;  -> 11*a
+/// ```
+///
+/// `first` is dead before `second` is written, so the arena is entitled to put
+/// them at one offset. `spanning` is written before `first` and read after
+/// `second`, so it must keep bytes of its own; `held` likewise spans the tail.
+/// If the arena gave `spanning` either temporary's offset, the assignment to
+/// that temporary would overwrite it before the sum that reads it and the
+/// answer would come out wrong rather than merely differently spelled. That is
+/// what the driver checks.
+fn arena_fixture() -> CheckedAlgorithmBlock {
+    let mut block = galec::Block::new(galec::Name::ident(ARENA_MODEL));
+    block.interface = vec![
+        interface(galec::InterfaceKind::Input, "a"),
+        interface(galec::InterfaceKind::Output, "result"),
+    ];
+    block.do_step.locals = vec![
+        array("spanning"),
+        array("first"),
+        array("second"),
+        array("held"),
+    ];
+    block.do_step.statements = vec![
+        assign(local_ref("spanning"), scaled(state("a"), 2.0)),
+        assign(local_ref("first"), scaled(state("a"), 3.0)),
+        assign(local_ref("held"), sum(local("spanning"), local("first"))),
+        assign(local_ref("second"), scaled(state("a"), 4.0)),
+        assign(
+            state_ref("result"),
+            sum(sum(local("held"), local("second")), local("spanning")),
+        ),
+    ];
+    CheckedAlgorithmBlock::construct(block).expect("arena fixture must be valid GALEC")
+}
+
+const ARENA_DRIVER: &str = "\
+#include <stdio.h>
+#include \"ValueArena.h\"
+
+int main(void) {
+    ValueArenaState state = {0};
+    for (int32_t i = 0; i < 4; ++i) {
+        state.a[i] = (float)(i + 1);
+    }
+    /* Twice around, so a value one call left behind is read by the next call
+       rather than by a fresh instance. */
+    for (int32_t round = 0; round < 2; ++round) {
+        ValueArena_dostep(&state);
+        for (int32_t i = 0; i < 4; ++i) {
+            const float expected = 11.0f * (float)(i + 1);
+            if (state.result[i] != expected) {
+                printf(\"round %d result[%d] = %f, expected %f\\n\",
+                       (int)round, (int)i,
+                       (double)state.result[i], (double)expected);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+";
+
+/// The arena computes the same numbers in real compiled C.
+///
+/// The fixture is built so a WRONG placement produces a different answer, not
+/// merely different text: `spanning` is live across the chain, so an arena
+/// that gave it a temporary's offset would have that temporary's assignment
+/// clobber it before the sum that reads it.
+#[test]
+fn arena_placed_slots_compute_the_same_values() {
+    let block = arena_fixture();
+    let header = render_as(&block, "model.h.jinja", ARENA_MODEL);
+    let source = render_as(&block, "model.c.jinja", ARENA_MODEL);
+
+    let (passed, output) = run_generated(ARENA_MODEL, &source, &header, ARENA_DRIVER);
+    assert!(
+        passed,
+        "the value arena changed the block's values:\n{output}"
+    );
+}
+
+/// NEGATIVE CONTROL, in the emitted C. The two sequential temporaries land on
+/// one offset; the two that are live across the chain do not.
+///
+/// This is the layout claim the runtime test above depends on: without it that
+/// test would pass for the uninteresting reason that nothing was shared.
+#[test]
+fn a_slot_live_across_the_chain_is_refused_a_shared_offset() {
+    let block = arena_fixture();
+    let header = render_as(&block, "model.h.jinja", ARENA_MODEL);
+    let source = render_as(&block, "model.c.jinja", ARENA_MODEL);
+
+    let pointer = |name: &str| arena_offset(&source, name);
+    let first = pointer("first").expect("`first` lives in the arena");
+    let second = pointer("second").expect("`second` lives in the arena");
+    let spanning = pointer("spanning").expect("`spanning` lives in the arena");
+    let held = pointer("held").expect("`held` lives in the arena");
+    assert_eq!(
+        first, second,
+        "two temporaries used one after the other share one offset:\n{source}"
+    );
+    assert_ne!(
+        spanning, first,
+        "`spanning` is read after both and must keep bytes of its own:\n{source}"
+    );
+    assert_ne!(
+        held, first,
+        "`held` is live across the tail of the chain:\n{source}"
+    );
+    assert_ne!(
+        held, spanning,
+        "and it is live beside `spanning`:\n{source}"
+    );
+    // Four 4-float buffers in three: 64 bytes of extents in 48 bytes.
+    assert!(
+        header.contains("float rumoca_galec_arena[12];"),
+        "the sharing must show up in the declared arena:\n{header}"
+    );
+    assert!(
+        header.contains("RUMOCA_VALUEARENA_CHECKED_SCRATCH_SLOT_BYTES UINT32_C(48)"),
+        "and in the checked slot budget:\n{header}"
     );
 }

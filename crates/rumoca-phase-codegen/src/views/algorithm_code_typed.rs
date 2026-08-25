@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use rumoca_ir_galec::ast;
 use serde::Serialize;
 
+use super::algorithm_code_arena::{self as arena, ARENA_ALIGN, SlotUse};
 use super::algorithm_code_bound_equalization::{self as bound_equalization, SlotBounds};
 use super::algorithm_code_overlay::{self as overlay, CallGraph, Owner};
 use super::algorithm_code_scopes::{LocalPlacements, ScopePath, ScopeStep};
@@ -92,6 +93,34 @@ struct ScratchRegionView<'a> {
     /// body spells the one it reads.
     #[serde(skip)]
     slot_overlays: HashMap<&'a str, Option<usize>>,
+    /// The region's flat value arena, or `None` when no pair of slots was
+    /// proven able to share one. Slots placed here are removed from `members`;
+    /// a target declares the arena as one `float` array and reaches each slot
+    /// through a typed pointer at its fixed offset. The offsets are decided by
+    /// the prover in `algorithm_code_arena` and only printed by a target.
+    arena: Option<ArenaRegionView<'a>>,
+}
+
+/// One region's value arena as a target declares it.
+#[derive(Debug, Clone, Serialize)]
+struct ArenaRegionView<'a> {
+    /// The arena's extent in `float` elements: total bytes over [`ARENA_ALIGN`].
+    floats: usize,
+    /// The placed slots, lowest offset first (ties in declaration order), each
+    /// carrying the shape a target derives its typed pointer from.
+    slots: Vec<ArenaSlotView<'a>>,
+}
+
+/// One slot living in a region's value arena.
+#[derive(Debug, Clone, Serialize)]
+struct ArenaSlotView<'a> {
+    #[serde(flatten)]
+    slot: ScratchSlotView<'a>,
+    /// The slot's offset into the arena, in `float` elements.
+    offset: usize,
+    /// The slot's extent in `float` elements, so a template can print the
+    /// occupied range without doing arithmetic of its own.
+    floats: usize,
 }
 
 /// One member of a region's storage in the emitted C: either a slot on its own,
@@ -257,6 +286,10 @@ impl<'a> ScratchRegionView<'a> {
             bytes: total_bytes(members.iter().map(|member| member.bytes)),
             members,
             slot_overlays,
+            // Filled in by `adopt_arena` once the owner's statements are
+            // final: the live ranges the arena is placed from are ranges in
+            // the statements a target prints, not in the checked AST.
+            arena: None,
         }
     }
 
@@ -401,6 +434,13 @@ struct ScratchLayoutView<'a> {
     /// how much of it came from below region granularity.
     arm_overlays: usize,
     arm_overlay_slots: usize,
+    /// The same visibility for the value arenas: how many regions carry one,
+    /// how many slots they hold, and the bytes those slots would need laid end
+    /// to end against the bytes the arenas actually occupy.
+    arena_regions: usize,
+    arena_slots: usize,
+    arena_slot_bytes: usize,
+    arena_bytes: usize,
     /// One line of prose stating the facts above, for a target to print
     /// verbatim above the declaration. Formatted here so that a target needs no
     /// conditional for the not-a-literal-extent case.
@@ -410,6 +450,9 @@ struct ScratchLayoutView<'a> {
     /// relations, and a reader who wants to know why a region is the size it is
     /// reads them one at a time.
     arm_summary: String,
+    /// And one more line for the value arenas, for the same reason: a third
+    /// prover over a third relation, stated on its own.
+    arena_summary: String,
 }
 
 /// One overlay group: the regions that share a single piece of storage.
@@ -549,6 +592,28 @@ impl<'a> ScratchLayoutView<'a> {
                  mutually exclusive arms",
             ),
         };
+        let arenas: Vec<&ArenaRegionView<'a>> = regions
+            .iter()
+            .filter_map(|region| region.arena.as_ref())
+            .collect();
+        let arena_regions = arenas.len();
+        let arena_slots: usize = arenas.iter().map(|arena| arena.slots.len()).sum();
+        let arena_slot_bytes: usize = arenas
+            .iter()
+            .flat_map(|arena| &arena.slots)
+            .filter_map(|slot| slot.slot.bytes)
+            .sum();
+        let arena_bytes: usize = arenas.iter().map(|arena| arena.floats * ARENA_ALIGN).sum();
+        let arena_summary = match arena_regions {
+            0 => "no value arena: no two slots were proven live-disjoint in the printed statement \
+                  order"
+                .to_owned(),
+            _ => format!(
+                "{arena_regions} value arena(s) hold {arena_slots} slots whose extents sum to \
+                 {arena_slot_bytes} bytes in {arena_bytes} bytes of storage; every pair of slots \
+                 at overlapping offsets is proven never live together",
+            ),
+        };
         let summary = if groups.is_empty() {
             "no working memory: every intermediate fits in a frame".to_owned()
         } else {
@@ -574,8 +639,13 @@ impl<'a> ScratchLayoutView<'a> {
             chain_bytes,
             arm_overlays,
             arm_overlay_slots,
+            arena_regions,
+            arena_slots,
+            arena_slot_bytes,
+            arena_bytes,
             summary,
             arm_summary,
+            arena_summary,
         }
     }
 }
@@ -1026,6 +1096,14 @@ struct TypedReferenceView<'a> {
     /// context-resident at all. A target names the overlay by this ordinal; it
     /// takes no view of its own on which slots share one.
     context_overlay: Option<usize>,
+    /// `true` when the context-resident slot this reference names lives in its
+    /// region's value arena rather than in a declared member. A target reaches
+    /// such a slot through the typed pointer it declared at the owner's entry,
+    /// so it prints the bare identifier and ignores `context_overlay`. Set by
+    /// `mark_arena_references` after the arena is placed, which is after every
+    /// reference is projected; false everywhere else, including for the `.alg`
+    /// rendering, which reads none of the `context_*` fields.
+    context_arena: bool,
     /// The literal extents the reference's *final* declaration was declared
     /// with, before this reference's own subscripts are applied — so
     /// `Some([15, 15])` for both `P` and `P[i][j]` where `P` is a `[15, 15]`
@@ -1621,7 +1699,610 @@ fn adopt_extents(region: &mut ScratchRegionView<'_>, extents: &[Vec<usize>]) {
         }
         member.bytes = widest_bytes(member.slots.iter().map(|slot| slot.bytes));
     }
-    region.bytes = total_bytes(region.members.iter().map(|member| member.bytes));
+    resize(region);
+}
+
+/// Re-add a region's total from the storage it now holds: its declared
+/// members plus its value arena.
+///
+/// One function rather than the expression repeated at each site that changes
+/// a region's storage. The arena is a member of the region struct like any
+/// other, and a total that forgot it would understate every budget the header
+/// and the manifest publish; the equalization pass dropped exactly that way
+/// before this existed.
+fn resize(region: &mut ScratchRegionView<'_>) {
+    let arena = region
+        .arena
+        .as_ref()
+        .map_or(0, |arena| arena.floats * ARENA_ALIGN);
+    region.bytes =
+        total_bytes(region.members.iter().map(|member| member.bytes)).map(|bytes| bytes + arena);
+}
+
+/// Every place the emitted statements name each context-resident slot, in the
+/// coordinates the arena prover reasons over: the scope chain down from the
+/// owner's body plus the statement index inside the innermost scope.
+///
+/// # Why this reads the projected statements
+///
+/// The same reason [`call_boundary_bounds`] does: the live ranges the arena is
+/// placed from are ranges in the statements a target *prints*. The marshalling
+/// rewrite moves a slot's read to the call it is forwarded into, and a kernel
+/// carries respelled operands of its own, so a walk over the checked AST would
+/// place a slot from mentions the file no longer has and miss the ones it
+/// gained.
+///
+/// # The over-approximation contract
+///
+/// A recorded use only ever *widens* a live range, so this walk is free to
+/// record generously and forbidden to miss: it walks the node of every
+/// statement (including one a kernel absorbed or replaced, whose mentions the
+/// surviving kernel call carries at a neighbouring index) and every kernel
+/// payload beside it. What it must never do is skip a construct the templates
+/// print a slot's name in; the match arms below are exhaustive so a new
+/// statement or expression form fails the build here rather than silently
+/// shortening a live range.
+///
+/// The generosity is measured, not assumed. Restricting the walk to exactly
+/// the statements the templates print (skipping the node beside an absorbed,
+/// marshalled, index-restricted or contraction kernel) was tried on the RDD2
+/// navigation estimator and moved the block's slot budget by zero bytes, so
+/// the safe reading is kept: a use this walk invents costs bytes at worst,
+/// and a use it misses is a silent wrong-code defect.
+fn arena_slot_uses<'a>(
+    statements: &[TypedSpannedStatement<'a>],
+) -> BTreeMap<&'a str, Vec<SlotUse>> {
+    let mut found = BTreeMap::new();
+    let mut scopes: ScopePath = Vec::new();
+    arena_uses_in_statements(statements, &mut scopes, &mut found);
+    found
+}
+
+fn arena_record_use<'a>(
+    found: &mut BTreeMap<&'a str, Vec<SlotUse>>,
+    name: &'a str,
+    scopes: &ScopePath,
+    statement: usize,
+) {
+    let place = SlotUse {
+        scopes: scopes.clone(),
+        statement,
+    };
+    let uses = found.entry(name).or_default();
+    if uses.last() != Some(&place) {
+        uses.push(place);
+    }
+}
+
+fn arena_uses_in_statements<'a>(
+    statements: &[TypedSpannedStatement<'a>],
+    scopes: &mut ScopePath,
+    found: &mut BTreeMap<&'a str, Vec<SlotUse>>,
+) {
+    for (index, statement) in statements.iter().enumerate() {
+        if let Some(kernel) = &statement.kernel {
+            arena_uses_in_kernel(kernel, index, scopes, found);
+        }
+        arena_uses_in_statement(&statement.node, index, scopes, found);
+    }
+}
+
+fn arena_uses_in_kernel<'a>(
+    kernel: &KernelStatementView<'a>,
+    index: usize,
+    scopes: &mut ScopePath,
+    found: &mut BTreeMap<&'a str, Vec<SlotUse>>,
+) {
+    match kernel {
+        // An absorbed statement prints nothing; its own node is still walked
+        // by the caller, which is the generous side of the contract.
+        KernelStatementView::Absorbed => {}
+        KernelStatementView::Marshalled { statement }
+        | KernelStatementView::IndexRestricted { statement } => {
+            arena_uses_in_statement(statement, index, scopes, found);
+        }
+        KernelStatementView::Fill { value } => {
+            arena_uses_in_expression(value, index, scopes, found);
+        }
+        KernelStatementView::Dot {
+            target, lhs, rhs, ..
+        } => {
+            arena_uses_in_reference(target, index, scopes, found);
+            arena_uses_in_reference(lhs, index, scopes, found);
+            arena_uses_in_reference(rhs, index, scopes, found);
+        }
+        KernelStatementView::ScaledAdd {
+            zero,
+            target,
+            scale,
+            source,
+            ..
+        } => {
+            arena_uses_in_expression(zero, index, scopes, found);
+            arena_uses_in_reference(target, index, scopes, found);
+            arena_uses_in_expression(scale, index, scopes, found);
+            arena_uses_in_reference(source, index, scopes, found);
+        }
+        KernelStatementView::ScaledAddFused {
+            zero,
+            target,
+            scale,
+            source,
+            store_target,
+            store_value,
+            ..
+        } => {
+            arena_uses_in_expression(zero, index, scopes, found);
+            arena_uses_in_reference(target, index, scopes, found);
+            arena_uses_in_expression(scale, index, scopes, found);
+            arena_uses_in_reference(source, index, scopes, found);
+            arena_uses_in_reference(store_target, index, scopes, found);
+            arena_uses_in_expression(store_value, index, scopes, found);
+        }
+    }
+}
+
+fn arena_uses_in_statement<'a>(
+    statement: &TypedStatementView<'a>,
+    index: usize,
+    scopes: &mut ScopePath,
+    found: &mut BTreeMap<&'a str, Vec<SlotUse>>,
+) {
+    match statement {
+        TypedStatementView::Assignment { target, value } => {
+            arena_uses_in_reference(target, index, scopes, found);
+            arena_uses_in_expression(value, index, scopes, found);
+        }
+        TypedStatementView::MultiAssignment { targets, call } => {
+            for target in targets {
+                arena_uses_in_reference(target, index, scopes, found);
+            }
+            arena_uses_in_call(call, index, scopes, found);
+        }
+        TypedStatementView::Call(call) => arena_uses_in_call(call, index, scopes, found),
+        TypedStatementView::If(conditional) => {
+            for (branch_index, branch) in conditional.branches.iter().enumerate() {
+                arena_uses_in_condition(&branch.condition, index, scopes, found);
+                scopes.push(ScopeStep::IfBranch {
+                    statement: index,
+                    branch: branch_index,
+                });
+                arena_uses_in_statements(&branch.body, scopes, found);
+                scopes.pop();
+            }
+            if let Some(body) = &conditional.else_body {
+                scopes.push(ScopeStep::IfElse { statement: index });
+                arena_uses_in_statements(body, scopes, found);
+                scopes.pop();
+            }
+        }
+        TypedStatementView::For(loop_) => {
+            arena_uses_in_expression(&loop_.start, index, scopes, found);
+            if let Some(step) = &loop_.step {
+                arena_uses_in_expression(step, index, scopes, found);
+            }
+            arena_uses_in_expression(&loop_.stop, index, scopes, found);
+            scopes.push(ScopeStep::ForBody { statement: index });
+            arena_uses_in_statements(&loop_.body, scopes, found);
+            scopes.pop();
+        }
+        TypedStatementView::Limit(targets) => {
+            for target in targets {
+                match target {
+                    TypedLimitTargetView::SelfState => {}
+                    TypedLimitTargetView::Reference(reference) => {
+                        arena_uses_in_reference(reference, index, scopes, found);
+                    }
+                }
+            }
+        }
+        TypedStatementView::Signal(_) => {}
+    }
+}
+
+/// A branch condition's mentions. A signal check names its closure by spelling
+/// alone, and recording that keeps a slot of the same name live over the whole
+/// conditional rather than guessing it is not the one meant.
+fn arena_uses_in_condition<'a>(
+    condition: &TypedConditionView<'a>,
+    index: usize,
+    scopes: &mut ScopePath,
+    found: &mut BTreeMap<&'a str, Vec<SlotUse>>,
+) {
+    match condition {
+        TypedConditionView::Expression(value) => {
+            arena_uses_in_expression(value, index, scopes, found);
+        }
+        TypedConditionView::SignalCheck(check) => {
+            if let Some(closure) = &check.closure {
+                arena_record_use(found, closure.as_str(), scopes, index);
+            }
+        }
+    }
+}
+
+fn arena_uses_in_call<'a>(
+    call: &TypedCallView<'a>,
+    index: usize,
+    scopes: &mut ScopePath,
+    found: &mut BTreeMap<&'a str, Vec<SlotUse>>,
+) {
+    for argument in &call.arguments {
+        arena_uses_in_expression(argument, index, scopes, found);
+    }
+}
+
+fn arena_uses_in_reference<'a>(
+    reference: &TypedReferenceView<'a>,
+    index: usize,
+    scopes: &mut ScopePath,
+    found: &mut BTreeMap<&'a str, Vec<SlotUse>>,
+) {
+    let parts: &[TypedRefPartView<'a>] = match &reference.node {
+        TypedReferenceNodeView::Local(part) => {
+            if reference.context_resident {
+                arena_record_use(found, part.name.lexeme(), scopes, index);
+            }
+            std::slice::from_ref(part)
+        }
+        TypedReferenceNodeView::State(parts) => parts.as_slice(),
+    };
+    for subscript in parts.iter().flat_map(|part| &part.subscripts) {
+        arena_uses_in_expression(subscript, index, scopes, found);
+    }
+}
+
+fn arena_uses_in_expression<'a>(
+    value: &TypedExpressionView<'a>,
+    index: usize,
+    scopes: &mut ScopePath,
+    found: &mut BTreeMap<&'a str, Vec<SlotUse>>,
+) {
+    match &value.node {
+        TypedExpressionNodeView::Bool(_)
+        | TypedExpressionNodeView::Integer(_)
+        | TypedExpressionNodeView::Real(_) => {}
+        TypedExpressionNodeView::Ref(reference) | TypedExpressionNodeView::Neg(reference) => {
+            arena_uses_in_reference(reference, index, scopes, found);
+        }
+        TypedExpressionNodeView::Size { array, dimension } => {
+            arena_uses_in_reference(array, index, scopes, found);
+            arena_uses_in_expression(dimension, index, scopes, found);
+        }
+        TypedExpressionNodeView::Call(call) => arena_uses_in_call(call, index, scopes, found),
+        TypedExpressionNodeView::Paren(inner) | TypedExpressionNodeView::Not(inner) => {
+            arena_uses_in_expression(inner, index, scopes, found);
+        }
+        TypedExpressionNodeView::If(conditional) => {
+            for (condition, branch) in &conditional.branches {
+                arena_uses_in_expression(condition, index, scopes, found);
+                arena_uses_in_expression(branch, index, scopes, found);
+            }
+            arena_uses_in_expression(&conditional.else_value, index, scopes, found);
+        }
+        TypedExpressionNodeView::BoundedSelection(selection) => {
+            arena_uses_in_reference(&selection.reference, index, scopes, found);
+            for (condition, branch) in &selection.galec.branches {
+                arena_uses_in_expression(condition, index, scopes, found);
+                arena_uses_in_expression(branch, index, scopes, found);
+            }
+            arena_uses_in_expression(&selection.galec.else_value, index, scopes, found);
+        }
+        TypedExpressionNodeView::Array(elements) => {
+            for element in elements {
+                arena_uses_in_expression(element, index, scopes, found);
+            }
+        }
+        TypedExpressionNodeView::Binary { lhs, rhs, .. } => {
+            arena_uses_in_expression(lhs, index, scopes, found);
+            arena_uses_in_expression(rhs, index, scopes, found);
+        }
+    }
+}
+
+/// Whether one slot may enter its region's value arena at all.
+///
+/// Everything here is a fail-closed gate, not a proof; the proof is the
+/// pairwise relation the placement consumes.
+///
+/// * Only a **`Real` array** with literal extents: the arena is a `float`
+///   array, so a `Real` resident is reached through pointers of its own
+///   element type and every access stays a `float` access into it; an
+///   `Integer` or `Boolean` slot would need an arena of its own type and is
+///   left as a declared member instead.
+/// * Not a name in `withheld`: a function's **output parameters** are read
+///   back by the caller after the function returns, a lifetime no analysis of
+///   this body can see, so they keep declared members exactly as they keep
+///   their exclusion from the marshalling retirement; and a slot spelled like
+///   a **user function** would shadow that function's file-scope definition
+///   once it becomes a block-scope pointer.
+/// * A use the walk recorded: a slot the printed statements never name has no
+///   live range to place.
+fn eligible_for_arena<'a>(
+    slot: &ScratchSlotView<'a>,
+    withheld: &HashSet<&'a str>,
+    uses: &arena::SlotUses<'a>,
+) -> bool {
+    slot.scalar == Some(ast::ScalarType::Real)
+        && slot
+            .extents
+            .as_ref()
+            .is_some_and(|extents| !extents.is_empty())
+        && slot
+            .bytes
+            .is_some_and(|bytes| bytes > 0 && bytes % ARENA_ALIGN == 0)
+        && !withheld.contains(slot.lexeme())
+        && uses.knows(slot.lexeme())
+}
+
+/// Give one owner's region a value arena, from the statements a target prints.
+///
+/// Runs once per owner, after the projection's fixed point has settled, so the
+/// live ranges are ranges in the final statement list; and before the regions
+/// are placed into groups, so the group overlay and its floor are computed
+/// from the shrunken region sizes.
+///
+/// The rewrite is layout only. Every slot keeps its extents and its element
+/// order; what changes is where the slot's first byte sits (a fixed offset in
+/// one `float` array instead of a declared member) and how a target spells the
+/// access path. No statement, no operand and no operation order is touched, so
+/// the emitted arithmetic is bit-identical with and without the arena.
+fn adopt_arena<'a>(
+    region: &mut ScratchRegionView<'a>,
+    statements: &mut [TypedSpannedStatement<'a>],
+    withheld: &HashSet<&'a str>,
+    functions: &HashMap<&'a str, &'a ast::UserFunction>,
+) {
+    if region.members.is_empty() {
+        return;
+    }
+    let uses = arena::SlotUses::observed(arena_slot_uses(statements));
+    // The addresses this owner hands to a declared array parameter, read off
+    // the same statements a target prints and by the same walk the bound
+    // equalization uses. At those offsets a C compiler asks how large the
+    // object is, so two declared shapes may not meet there.
+    let mut boundaries = BTreeMap::new();
+    boundaries_in_statements(statements, functions, &mut boundaries);
+    let flattened: Vec<&ScratchSlotView<'a>> = region
+        .members
+        .iter()
+        .flat_map(|member| member.slots.iter())
+        .collect();
+    let eligible: Vec<arena::ArenaCandidate<'a>> = flattened
+        .iter()
+        .enumerate()
+        .filter(|(_, slot)| eligible_for_arena(slot, withheld, &uses))
+        .map(|(index, slot)| arena::ArenaCandidate {
+            name: slot.lexeme(),
+            index,
+            bytes: slot.bytes,
+            extents: slot.extents.clone().unwrap_or_default(),
+            call_boundary: boundaries.contains_key(slot.lexeme()),
+        })
+        .collect();
+    if eligible.len() < 2 {
+        return;
+    }
+    let resolved = arena::plan(&uses, &eligible);
+    let absorbed: usize = eligible
+        .iter()
+        .filter(|candidate| resolved.offsets.contains_key(&candidate.index))
+        .filter_map(|candidate| candidate.bytes)
+        .sum();
+    // An arena that packs nothing tighter than the members it replaces is not
+    // taken: the members stay, the header stays legible, and nothing changes.
+    if resolved.offsets.len() < 2 || resolved.bytes >= absorbed {
+        return;
+    }
+    let mut placed: HashMap<&'a str, usize> = HashMap::new();
+    let mut slots: Vec<ArenaSlotView<'a>> = Vec::new();
+    for (index, offset) in &resolved.offsets {
+        let slot = flattened[*index];
+        placed.insert(slot.lexeme(), *offset);
+        slots.push(ArenaSlotView {
+            slot: slot.clone(),
+            offset: offset / ARENA_ALIGN,
+            floats: slot.bytes.unwrap_or(0) / ARENA_ALIGN,
+        });
+    }
+    slots.sort_by(|left, right| {
+        left.offset
+            .cmp(&right.offset)
+            .then_with(|| left.slot.lexeme().cmp(right.slot.lexeme()))
+    });
+    for member in &mut region.members {
+        member
+            .slots
+            .retain(|slot| !placed.contains_key(slot.lexeme()));
+        member.bytes = widest_bytes(member.slots.iter().map(|slot| slot.bytes));
+    }
+    region.members.retain(|member| !member.slots.is_empty());
+    region.arena = Some(ArenaRegionView {
+        floats: resolved.bytes / ARENA_ALIGN,
+        slots,
+    });
+    resize(region);
+    region.used = true;
+    let names: HashSet<&'a str> = placed.into_keys().collect();
+    mark_arena_references(statements, &names);
+}
+
+/// Set [`TypedReferenceView::context_arena`] on every reference that names an
+/// arena-placed slot, kernel payloads included.
+///
+/// A missed reference here is not a wrong value, it is a failed build: the
+/// slot's declared member is gone from the header, so a spelling that still
+/// says `ctx-><slot>` does not compile. The walk therefore mirrors
+/// [`arena_slot_uses`] arm for arm.
+fn mark_arena_references<'a>(
+    statements: &mut [TypedSpannedStatement<'a>],
+    placed: &HashSet<&'a str>,
+) {
+    for statement in statements {
+        if let Some(kernel) = &mut statement.kernel {
+            mark_arena_in_kernel(kernel, placed);
+        }
+        mark_arena_in_statement(&mut statement.node, placed);
+    }
+}
+
+fn mark_arena_in_kernel<'a>(kernel: &mut KernelStatementView<'a>, placed: &HashSet<&'a str>) {
+    match kernel {
+        KernelStatementView::Absorbed => {}
+        KernelStatementView::Marshalled { statement }
+        | KernelStatementView::IndexRestricted { statement } => {
+            mark_arena_in_statement(statement, placed);
+        }
+        KernelStatementView::Fill { value } => mark_arena_in_expression(value, placed),
+        KernelStatementView::Dot {
+            target, lhs, rhs, ..
+        } => {
+            mark_arena_in_reference(target, placed);
+            mark_arena_in_reference(lhs, placed);
+            mark_arena_in_reference(rhs, placed);
+        }
+        KernelStatementView::ScaledAdd {
+            zero,
+            target,
+            scale,
+            source,
+            ..
+        } => {
+            mark_arena_in_expression(zero, placed);
+            mark_arena_in_reference(target, placed);
+            mark_arena_in_expression(scale, placed);
+            mark_arena_in_reference(source, placed);
+        }
+        KernelStatementView::ScaledAddFused {
+            zero,
+            target,
+            scale,
+            source,
+            store_target,
+            store_value,
+            ..
+        } => {
+            mark_arena_in_expression(zero, placed);
+            mark_arena_in_reference(target, placed);
+            mark_arena_in_expression(scale, placed);
+            mark_arena_in_reference(source, placed);
+            mark_arena_in_reference(store_target, placed);
+            mark_arena_in_expression(store_value, placed);
+        }
+    }
+}
+
+fn mark_arena_in_statement<'a>(statement: &mut TypedStatementView<'a>, placed: &HashSet<&'a str>) {
+    match statement {
+        TypedStatementView::Assignment { target, value } => {
+            mark_arena_in_reference(target, placed);
+            mark_arena_in_expression(value, placed);
+        }
+        TypedStatementView::MultiAssignment { targets, call } => {
+            for target in targets {
+                mark_arena_in_reference(target, placed);
+            }
+            mark_arena_in_call(call, placed);
+        }
+        TypedStatementView::Call(call) => mark_arena_in_call(call, placed),
+        TypedStatementView::If(conditional) => {
+            for branch in &mut conditional.branches {
+                if let TypedConditionView::Expression(condition) = &mut branch.condition {
+                    mark_arena_in_expression(condition, placed);
+                }
+                mark_arena_references(&mut branch.body, placed);
+            }
+            if let Some(body) = &mut conditional.else_body {
+                mark_arena_references(body, placed);
+            }
+        }
+        TypedStatementView::For(loop_) => {
+            mark_arena_in_expression(&mut loop_.start, placed);
+            if let Some(step) = &mut loop_.step {
+                mark_arena_in_expression(step, placed);
+            }
+            mark_arena_in_expression(&mut loop_.stop, placed);
+            mark_arena_references(&mut loop_.body, placed);
+        }
+        TypedStatementView::Limit(targets) => {
+            for target in targets {
+                if let TypedLimitTargetView::Reference(reference) = target {
+                    mark_arena_in_reference(reference, placed);
+                }
+            }
+        }
+        TypedStatementView::Signal(_) => {}
+    }
+}
+
+fn mark_arena_in_call<'a>(call: &mut TypedCallView<'a>, placed: &HashSet<&'a str>) {
+    for argument in &mut call.arguments {
+        mark_arena_in_expression(argument, placed);
+    }
+}
+
+fn mark_arena_in_reference<'a>(reference: &mut TypedReferenceView<'a>, placed: &HashSet<&'a str>) {
+    if reference.context_resident
+        && let TypedReferenceNodeView::Local(part) = &reference.node
+        && placed.contains(part.name.lexeme())
+    {
+        reference.context_arena = true;
+    }
+    match &mut reference.node {
+        TypedReferenceNodeView::Local(part) => {
+            for subscript in &mut part.subscripts {
+                mark_arena_in_expression(subscript, placed);
+            }
+        }
+        TypedReferenceNodeView::State(parts) => {
+            for subscript in parts.iter_mut().flat_map(|part| &mut part.subscripts) {
+                mark_arena_in_expression(subscript, placed);
+            }
+        }
+    }
+}
+
+fn mark_arena_in_expression<'a>(value: &mut TypedExpressionView<'a>, placed: &HashSet<&'a str>) {
+    match &mut value.node {
+        TypedExpressionNodeView::Bool(_)
+        | TypedExpressionNodeView::Integer(_)
+        | TypedExpressionNodeView::Real(_) => {}
+        TypedExpressionNodeView::Ref(reference) | TypedExpressionNodeView::Neg(reference) => {
+            mark_arena_in_reference(reference, placed);
+        }
+        TypedExpressionNodeView::Size { array, dimension } => {
+            mark_arena_in_reference(array, placed);
+            mark_arena_in_expression(dimension, placed);
+        }
+        TypedExpressionNodeView::Call(call) => mark_arena_in_call(call, placed),
+        TypedExpressionNodeView::Paren(inner) | TypedExpressionNodeView::Not(inner) => {
+            mark_arena_in_expression(inner, placed);
+        }
+        TypedExpressionNodeView::If(conditional) => {
+            for (condition, branch) in &mut conditional.branches {
+                mark_arena_in_expression(condition, placed);
+                mark_arena_in_expression(branch, placed);
+            }
+            mark_arena_in_expression(&mut conditional.else_value, placed);
+        }
+        TypedExpressionNodeView::BoundedSelection(selection) => {
+            mark_arena_in_reference(&mut selection.reference, placed);
+            for (condition, branch) in &mut selection.galec.branches {
+                mark_arena_in_expression(condition, placed);
+                mark_arena_in_expression(branch, placed);
+            }
+            mark_arena_in_expression(&mut selection.galec.else_value, placed);
+        }
+        TypedExpressionNodeView::Array(elements) => {
+            for element in elements {
+                mark_arena_in_expression(element, placed);
+            }
+        }
+        TypedExpressionNodeView::Binary { lhs, rhs, .. } => {
+            mark_arena_in_expression(lhs, placed);
+            mark_arena_in_expression(rhs, placed);
+        }
+    }
 }
 
 /// Whether a declaration is delivered through the owner's context region
@@ -1999,7 +2680,7 @@ impl<'a> BlockShapes<'a> {
                         && !retired.contains(declaration.name.lexeme())
                 })
                 .collect::<Vec<_>>();
-            let scratch = ScratchRegionView::new(Owner::Method(spelling), &slots, &placements);
+            let mut scratch = ScratchRegionView::new(Owner::Method(spelling), &slots, &placements);
             let scope = ScopeShapes::new(self, &method.locals, &scratch);
             *self.context_reads.borrow_mut() = false;
             let mut statements =
@@ -2011,6 +2692,10 @@ impl<'a> BlockShapes<'a> {
                 retired.extend(forwarded);
                 continue;
             }
+            // The statements are final; a method withholds nothing but the
+            // user function names a block-scope pointer would shadow.
+            let withheld: HashSet<&str> = self.functions.keys().copied().collect();
+            adopt_arena(&mut scratch, &mut statements, &withheld, &self.functions);
             let uses_scratch = *self.context_reads.borrow();
             return Ok(TypedMethodView {
                 signals: &method.signals,
@@ -2047,7 +2732,7 @@ impl<'a> BlockShapes<'a> {
                 })
                 .chain(output_parameters(function).map(|parameter| &parameter.decl))
                 .collect::<Vec<_>>();
-            let scratch = ScratchRegionView::new(
+            let mut scratch = ScratchRegionView::new(
                 Owner::Function(function.name.lexeme()),
                 &slots,
                 &placements,
@@ -2063,6 +2748,18 @@ impl<'a> BlockShapes<'a> {
                 retired.extend(forwarded);
                 continue;
             }
+            // The statements are final. Outputs are withheld from the arena
+            // because the caller reads them back after this function returns,
+            // a live range no walk over this body can see; function names are
+            // withheld because a block-scope pointer of that spelling would
+            // shadow the file-scope definition.
+            let withheld: HashSet<&str> = self
+                .functions
+                .keys()
+                .copied()
+                .chain(output_parameters(function).map(|parameter| parameter.decl.name.lexeme()))
+                .collect();
+            adopt_arena(&mut scratch, &mut statements, &withheld, &self.functions);
             let uses_scratch = *self.context_reads.borrow();
             return Ok(TypedFunctionView {
                 kind: function.kind,
@@ -2520,6 +3217,9 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             scalar: shape.scalar,
             context_resident,
             context_overlay: slot.flatten(),
+            // Arena membership is decided after every reference is projected;
+            // `mark_arena_references` sets this where the placement landed.
+            context_arena: false,
             declared_extents: self
                 .final_declaration(reference)
                 .and_then(|declaration| literal_extents(&declaration.dimensions)),
@@ -3616,6 +4316,7 @@ fn matmul_row_fused<'a>(row: &TypedForView<'a>) -> Option<MatmulRowFused<'a>> {
         extents: Some(vec![usize::try_from(*count).ok()?]),
         scalar: Some(ast::ScalarType::Real),
         context_resident: false,
+        context_arena: false,
         context_overlay: None,
         declared_extents: Some(vec![usize::try_from(*count).ok()?]),
         node: TypedReferenceNodeView::Local(TypedRefPartView {
@@ -3782,6 +4483,7 @@ fn row_element<'a>(
         extents: Some(Vec::new()),
         scalar: Some(ast::ScalarType::Integer),
         context_resident: false,
+        context_arena: false,
         context_overlay: None,
         declared_extents: None,
         node: TypedReferenceNodeView::Local(TypedRefPartView {
@@ -3795,6 +4497,7 @@ fn row_element<'a>(
         extents: Some(Vec::new()),
         scalar: original.scalar,
         context_resident: false,
+        context_arena: false,
         context_overlay: None,
         declared_extents: None,
         node: TypedReferenceNodeView::Local(TypedRefPartView {
@@ -4276,6 +4979,7 @@ mod square_reduction_tests {
             extents: Some(Vec::new()),
             scalar: Some(ast::ScalarType::Real),
             context_resident: false,
+            context_arena: false,
             context_overlay: None,
             declared_extents: None,
             node: TypedReferenceNodeView::Local(TypedRefPartView { name, subscripts }),
@@ -4749,6 +5453,7 @@ mod kernelize_tests {
             extents: Some(Vec::new()),
             scalar: Some(ast::ScalarType::Real),
             context_resident: false,
+            context_arena: false,
             context_overlay: None,
             declared_extents: None,
             node: TypedReferenceNodeView::Local(TypedRefPartView {
@@ -4776,6 +5481,7 @@ mod kernelize_tests {
                 extents: Some(Vec::new()),
                 scalar: Some(ast::ScalarType::Real),
                 context_resident: false,
+                context_arena: false,
                 context_overlay: None,
                 declared_extents: Some(vec![3]),
                 node: TypedReferenceNodeView::Local(TypedRefPartView {
@@ -5103,6 +5809,166 @@ mod layout_tests {
             .expect("fixture must project")
             .0
             .scratch_layout
+    }
+
+    /// Every owner that carries a region, paired with the statements a target
+    /// prints for it: what the arena census re-derives its evidence from.
+    fn owners_with_statements<'view, 'a>(
+        view: &'view TypedBlockView<'a>,
+    ) -> Vec<(
+        &'a str,
+        &'view ScratchRegionView<'a>,
+        &'view [TypedSpannedStatement<'a>],
+    )> {
+        let methods = [
+            ("startup", &view.startup),
+            ("recalibrate", &view.recalibrate),
+            ("dostep", &view.do_step),
+        ]
+        .into_iter()
+        .map(|(spelling, method)| (spelling, &method.scratch, method.statements.as_slice()));
+        view.protected_functions
+            .iter()
+            .chain(&view.public_functions)
+            .map(|function| {
+                (
+                    function.name.lexeme(),
+                    &function.scratch,
+                    function.statements.as_slice(),
+                )
+            })
+            .chain(methods)
+            .collect()
+    }
+
+    /// Every unordered pair of arena slots whose byte ranges overlap.
+    fn overlapping_pairs<'view, 'a>(
+        slots: &'view [ArenaSlotView<'a>],
+    ) -> Vec<(&'view ArenaSlotView<'a>, &'view ArenaSlotView<'a>)> {
+        let bytes = |slot: &ArenaSlotView<'a>| slot.slot.bytes.expect("an arena slot is sizable");
+        slots
+            .iter()
+            .enumerate()
+            .flat_map(|(index, placed)| slots[index + 1..].iter().map(move |other| (placed, other)))
+            .filter(|(placed, other)| {
+                let low = placed.offset * ARENA_ALIGN;
+                let other_low = other.offset * ARENA_ALIGN;
+                low < other_low + bytes(other) && other_low < low + bytes(placed)
+            })
+            .collect()
+    }
+
+    /// THE arena soundness property, checked end to end through the finished
+    /// projection: in every region, every pair of arena slots whose byte
+    /// ranges overlap is a pair the relation proves can never be live at the
+    /// same moment.
+    ///
+    /// A layout violating this is a silent miscompile: one temporary writes
+    /// over another that is still holding a value. The prover's own unit tests
+    /// in `algorithm_code_arena` pin the relation on hand-built use sets; this
+    /// pins that the placement which SURVIVED into the view still satisfies it
+    /// against evidence re-derived from the view's own statements. That is the
+    /// part a unit test cannot cover, because the passes that run after the
+    /// placement (bound equalization, the accounting) are free to invalidate
+    /// it and this is what would notice.
+    ///
+    /// The fixture is deliberately awkward: sequential temporaries that must
+    /// share, a temporary live across everything that must not, two arms that
+    /// must share with each other and with neither, and a loop body where
+    /// nothing may share.
+    #[test]
+    fn overlapping_arena_slots_are_pairwise_never_concurrent() {
+        let block = block_of(
+            vec![
+                sequential_function("chained", 16),
+                branching_function("branching", 8),
+                looping_function("looping", 8),
+            ],
+            &["chained", "branching", "looping"],
+        );
+        let sources = rumoca_core::SourceMap::new();
+        let view = super::block(&block, &sources)
+            .expect("fixture must project")
+            .0;
+
+        let mut arenas_seen = 0usize;
+        for (owner, region, statements) in owners_with_statements(&view) {
+            let Some(arena) = region.arena.as_ref() else {
+                continue;
+            };
+            arenas_seen += 1;
+            // Re-derive the evidence from the statements this owner prints,
+            // rather than trusting whatever the placement was handed.
+            let uses = arena::SlotUses::observed(arena_slot_uses(statements));
+            for placed in &arena.slots {
+                let bytes = placed.slot.bytes.expect("an arena slot is sizable");
+                assert_eq!(
+                    placed.floats * ARENA_ALIGN,
+                    bytes,
+                    "`{owner}`.`{}` reports an extent its size disagrees with",
+                    placed.slot.lexeme()
+                );
+                assert!(
+                    placed.offset + placed.floats <= arena.floats,
+                    "`{owner}`.`{}` runs past the arena it is declared in",
+                    placed.slot.lexeme()
+                );
+            }
+            for (placed, other) in overlapping_pairs(&arena.slots) {
+                assert!(
+                    uses.never_concurrent(placed.slot.lexeme(), other.slot.lexeme()),
+                    "`{owner}`: `{}` and `{}` overlap in the arena without a proof",
+                    placed.slot.lexeme(),
+                    other.slot.lexeme()
+                );
+            }
+        }
+        assert!(
+            arenas_seen > 0,
+            "the fixture must exercise at least one arena, or this proves nothing"
+        );
+    }
+
+    /// What the arena is FOR, as a layout property: two sequential temporaries
+    /// land on one offset, and the temporary that is live across both does
+    /// not. Without the second half the first would pass for the uninteresting
+    /// reason that everything shares.
+    #[test]
+    fn sequential_temporaries_share_an_offset_and_a_spanning_one_does_not() {
+        let block = block_of(vec![sequential_function("chained", 16)], &["chained"]);
+        let sources = rumoca_core::SourceMap::new();
+        let resolved = layout(&block, &sources);
+        let region = region_of(&resolved, "chained");
+
+        let (first, _) = arena_of(region, "first").expect("`first` is arena-placed");
+        let (second, _) = arena_of(region, "second").expect("`second` is arena-placed");
+        let (spanning, _) = arena_of(region, "spanning").expect("`spanning` is arena-placed");
+        assert_eq!(
+            first, second,
+            "two temporaries used one after the other share one offset"
+        );
+        assert_ne!(
+            spanning, first,
+            "a temporary read after both must keep bytes of its own"
+        );
+    }
+
+    /// NEGATIVE CONTROL. Two temporaries used in one loop body never share:
+    /// statement order within an iteration says nothing across the back edge.
+    #[test]
+    fn two_temporaries_inside_one_loop_body_never_share_an_offset() {
+        let block = block_of(vec![looping_function("looping", 8)], &["looping"]);
+        let sources = rumoca_core::SourceMap::new();
+        let resolved = layout(&block, &sources);
+        let region = region_of(&resolved, "looping");
+
+        // Refusing them the arena entirely is the same refusal, stronger, so
+        // only a pair that both landed has anything to check.
+        if let (Some((early, _)), Some((late, _))) =
+            (arena_of(region, "early"), arena_of(region, "late"))
+        {
+            assert_ne!(early, late, "a loop body orders nothing across iterations");
+        }
     }
 
     /// Every declared region, keyed by owner, with the group it landed in.
@@ -5469,6 +6335,95 @@ mod layout_tests {
     }
 
     /// `function <name>(input u[extent]) => (output y[extent])` whose body is a
+    /// straight-line chain:
+    ///
+    /// ```text
+    /// spanning := u; first := u; y := first;
+    /// second := u; y := second; y := spanning;
+    /// ```
+    ///
+    /// `first` dies before `second` is born, so they are what the arena is
+    /// for. `spanning` is written first and read last, so it is live across
+    /// both and must keep bytes of its own: the counterexample in the same
+    /// fixture.
+    fn sequential_function(name: &str, extent: i64) -> ast::UserFunction {
+        let from_input = |slot: &str| {
+            ast::Spanned::dummy(ast::Statement::Assignment {
+                target: ast::Reference::local(ident(slot)),
+                value: ast::Expression::Ref(ast::Reference::local(ident("u"))),
+            })
+        };
+        let into_output = |slot: &str| {
+            ast::Spanned::dummy(ast::Statement::Assignment {
+                target: ast::Reference::local(ident("y")),
+                value: ast::Expression::Ref(ast::Reference::local(ident(slot))),
+            })
+        };
+        ast::UserFunction {
+            kind: ast::FunctionKind::Stateless,
+            name: ident(name),
+            signals: Vec::new(),
+            parameters: vec![
+                parameter(ast::Direction::Input, "u", extent),
+                parameter(ast::Direction::Output, "y", extent),
+            ],
+            locals: vec![
+                array_local("spanning", extent),
+                array_local("first", extent),
+                array_local("second", extent),
+            ],
+            statements: vec![
+                from_input("spanning"),
+                from_input("first"),
+                into_output("first"),
+                from_input("second"),
+                into_output("second"),
+                into_output("spanning"),
+            ],
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    /// The same chain shut inside one `for` body, where the back edge makes
+    /// statement order say nothing: `early` written late in one iteration is
+    /// read by `late` early in the next, so neither may take the other's
+    /// bytes.
+    fn looping_function(name: &str, extent: i64) -> ast::UserFunction {
+        let element = |slot: &str, source: &str| {
+            let mut target = ast::RefPart::plain(ident(slot));
+            target.subscripts = vec![ast::Expression::Ref(ast::Reference::local(ident("i")))];
+            let mut from = ast::RefPart::plain(ident(source));
+            from.subscripts = vec![ast::Expression::Ref(ast::Reference::local(ident("i")))];
+            ast::Spanned::dummy(ast::Statement::Assignment {
+                target: ast::Reference::Local(target),
+                value: ast::Expression::Ref(ast::Reference::Local(from)),
+            })
+        };
+        ast::UserFunction {
+            kind: ast::FunctionKind::Stateless,
+            name: ident(name),
+            signals: Vec::new(),
+            parameters: vec![
+                parameter(ast::Direction::Input, "u", extent),
+                parameter(ast::Direction::Output, "y", extent),
+            ],
+            locals: vec![array_local("early", extent), array_local("late", extent)],
+            statements: vec![ast::Spanned::dummy(ast::Statement::For(ast::ForLoop {
+                iterator: Some(ident("i")),
+                start: ast::Expression::Integer(1),
+                step: None,
+                stop: ast::Expression::Integer(extent),
+                body: vec![
+                    element("early", "u"),
+                    element("late", "early"),
+                    element("y", "late"),
+                ],
+            }))],
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    /// `function <name>(input u[extent]) => (output y[extent])` whose body is a
     /// two-armed conditional: `if c then a := u; y := a; else b := u; y := b;`.
     ///
     /// `a` and `b` are each named in exactly one arm; `y` is the OUTPUT
@@ -5529,12 +6484,58 @@ mod layout_tests {
             .and_then(|member| member.overlay)
     }
 
-    /// What the arm overlay buys, as a layout property: two array temporaries
-    /// each confined to one arm of one conditional become one piece of storage,
-    /// and the region is sized for one of them rather than both.
+    /// The arena slot placement of a named slot: `(float offset, floats)`, or
+    /// `None` when the slot is not arena-placed.
+    fn arena_of<'a>(region: &ScratchRegionView<'a>, slot: &str) -> Option<(usize, usize)> {
+        region.arena.as_ref().and_then(|arena| {
+            arena
+                .slots
+                .iter()
+                .find(|placed| placed.slot.lexeme() == slot)
+                .map(|placed| (placed.offset, placed.floats))
+        })
+    }
+
+    /// What sub-region sharing buys, as a layout property: two Real array
+    /// temporaries each confined to one arm of one conditional become one
+    /// piece of arena storage, and the region is sized for one of them rather
+    /// than both. The exclusive-arms proof now lands them in the value arena
+    /// at one offset; the arm union remains the vehicle for slots the arena
+    /// does not take (see the Integer variant below).
     #[test]
     fn two_arm_local_slots_share_one_piece_of_region_storage() {
         let block = block_of(vec![branching_function("branching", 8)], &["branching"]);
+        let sources = rumoca_core::SourceMap::new();
+        let resolved = layout(&block, &sources);
+        let region = region_of(&resolved, "branching");
+
+        let (a_offset, a_floats) = arena_of(region, "a").expect("`a` is confined to one arm");
+        let (b_offset, _) = arena_of(region, "b").expect("so is `b`, the other arm");
+        assert_eq!(a_offset, b_offset, "the two arms share one offset");
+        assert_eq!(a_floats, 8);
+        // 8 Reals of 4 bytes each: `a` and `b` cost 32 together, not 64, and
+        // `y` still costs its own 32 as a declared member the caller reads
+        // back.
+        assert_eq!(region.bytes, Some(64));
+        assert_eq!(resolved.arena_regions, 1);
+        assert_eq!(resolved.arena_slots, 2);
+        assert_eq!(resolved.arena_slot_bytes, 64);
+        assert_eq!(resolved.arena_bytes, 32);
+    }
+
+    /// The same two-arm shape over Integer slots: the arena is a float array
+    /// and refuses them, so the arm overlay still places them in one union.
+    /// This is the path that keeps the arm prover load-bearing.
+    #[test]
+    fn two_integer_arm_local_slots_still_share_an_arm_union() {
+        let mut function = branching_function("branching", 8);
+        for local in &mut function.locals {
+            local.ty = ast::TypeRef::Primitive(ast::ScalarType::Integer);
+        }
+        for parameter in &mut function.parameters {
+            parameter.decl.ty = ast::TypeRef::Primitive(ast::ScalarType::Integer);
+        }
+        let block = block_of(vec![function], &["branching"]);
         let sources = rumoca_core::SourceMap::new();
         let resolved = layout(&block, &sources);
         let region = region_of(&resolved, "branching");
@@ -5545,8 +6546,10 @@ mod layout_tests {
             Some(arm),
             "so is `b`, the other arm"
         );
-        // 8 Reals of 4 bytes each: `a` and `b` cost 32 together, not 64, and
-        // `y` still costs its own 32.
+        assert!(
+            region.arena.is_none(),
+            "an Integer slot never enters the float arena"
+        );
         assert_eq!(region.bytes, Some(64));
         assert_eq!(resolved.arm_overlays, 1);
         assert_eq!(resolved.arm_overlay_slots, 2);

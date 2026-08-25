@@ -66,18 +66,40 @@
 {%- endmacro -%}
 {#- A `local` reference is spelled against whichever storage the view says it
     got: `ctx->` names a slot in the enclosing owner's block-context region,
-    a bare identifier an object still in the frame. The two are the same C
-    lvalue in every other respect, so subscripting is shared.
+    a bare identifier an object still in the frame OR an arena slot reached
+    through the typed pointer of the same name that the owner's entry declared.
+    All are the same C lvalue in every other respect, so subscripting is
+    shared.
 
     A region slot that shares an arm overlay with other slots is reached through
     that overlay's member. Which slots share one, and which overlay each landed
     in, is decided in the checked projection; this prints the ordinal it was
-    given and takes no view of its own. -#}
+    given and takes no view of its own. An arena-placed slot prints bare even
+    when it carries an overlay ordinal: the pointer already points at its
+    storage, wherever the projection put it. -#}
 {%- macro local_storage(value) -%}
-{%- if value.context_resident %}ctx->{% if value.context_overlay is not none %}rumoca_galec_arm{{ value.context_overlay }}.{% endif %}{% endif -%}
+{%- if value.context_arena %}{% elif value.context_resident %}ctx->{% if value.context_overlay is not none %}rumoca_galec_arm{{ value.context_overlay }}.{% endif %}{% endif -%}
+{%- endmacro -%}
+{#- The identifier itself, with the storage that reaches it. An arena slot's
+    entry declaration binds a pointer to the slot's WHOLE array type, so the
+    object is spelled `(*name)` and subscripting then proceeds exactly as it
+    would on a declared member. Pointing at the whole array rather than at its
+    row is what keeps a C compiler's object-size analysis right: `float (*)[3]`
+    would say three floats live at that address, and an argument handed from
+    there to a `const float[4]` formal is then diagnosed as a read past the end
+    of an object that the code never performs. -#}
+{%- macro local_lvalue(value) -%}
+{%- if value.context_arena -%}(*{{ symbol(c_symbols, name_text(value.value.name)) }})
+{%- else -%}{{ local_storage(value) }}{{ symbol(c_symbols, name_text(value.value.name)) }}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro bounded_lvalue(value) -%}
+{%- if value.context_arena -%}(*{{ symbol(c_symbols, name_text(value.value.name)) }})
+{%- else -%}{{ local_storage(value) }}{{ symbol(c_symbols, name_text(value.value.name)) }}
+{%- endif -%}
 {%- endmacro -%}
 {%- macro reference(value) -%}
-{%- if value.kind == "local" -%}{{ local_storage(value) }}{{ symbol(c_symbols, name_text(value.value.name)) }}{% for index in value.value.subscripts %}{{ subscript(index) }}{% endfor %}
+{%- if value.kind == "local" -%}{{ local_lvalue(value) }}{% for index in value.value.subscripts %}{{ subscript(index) }}{% endfor %}
 {%- elif value.kind == "state" -%}
 {%- for part in value.value -%}
 {%- if loop.first -%}self->{{ state_symbol(part) }}{%- else -%}.{{ symbol(c_symbols, name_text(part.name)) }}{%- endif -%}
@@ -87,7 +109,7 @@
 {%- endmacro -%}
 {%- macro bounded_reference(value) -%}
 {%- if value.reference.kind == "local" -%}
-{{ local_storage(value.reference) }}{{ symbol(c_symbols, name_text(value.reference.value.name)) }}{% for index in value.reference.value.subscripts %}[rumoca_galec_bounded_index({{ expr(index) }}, {{ value.extents[loop.index0] }})]{% endfor %}
+{{ bounded_lvalue(value.reference) }}{% for index in value.reference.value.subscripts %}[rumoca_galec_bounded_index({{ expr(index) }}, {{ value.extents[loop.index0] }})]{% endfor %}
 {%- elif value.reference.kind == "state" and value.reference.value|length == 1 -%}
 self->{{ state_symbol(value.reference.value[0]) }}{% for index in value.reference.value[0].subscripts %}[rumoca_galec_bounded_index({{ expr(index) }}, {{ value.extents[loop.index0] }})]{% endfor %}
 {%- else -%}{{ fail_closed_bounded_reference_kind }}{%- endif -%}
@@ -778,6 +800,20 @@ static void {{ symbol(c_symbols, name_text(value.name)) }}(
 {%- macro region_alias(region, indent) -%}
 {%- set name = region_name(region) %}
 {{ pad(indent) }}{{ c_model }}Scratch_{{ name }} *const ctx = &{{ region_path(region.group, name) }};
+{#- The typed pointers into this owner's value arena, one per arena slot, at
+    the fixed float offsets the checked projection placed them at. The pointer
+    carries the slot's own array type, so every use below subscripts exactly
+    as a declared member would, and the address arithmetic is compile-time.
+    Slots whose offsets overlap are proven never live together; the operand of
+    the cast is parenthesized so the formatter cannot read the `&` as binary. -#}
+{%- if region.arena is not none %}
+{%- for slot in region.arena.slots %}
+{%- if slot.extents is none %}{{ fail("unsupported-feature:embedded-c-arena-dimension") }}
+{%- else %}
+{{ pad(indent) }}float (*const {{ symbol(c_symbols, slot.name.value[0]) }}){% for extent in slot.extents %}[{{ extent }}]{% endfor %} = (float (*){% for extent in slot.extents %}[{{ extent }}]{% endfor %})(&ctx->rumoca_galec_arena[{{ slot.offset }}]);
+{%- endif %}
+{%- endfor %}
+{%- endif %}
 {%- endmacro -%}
 {#- Every emitted C function is headed by the GALEC declaration it implements
     and by that declaration's source anchor. This is the unit a reviewer reads
@@ -1178,7 +1214,18 @@ static void rumoca_galec_limit_startup({{ c_model }}State *self) {
  * slots is ever touched. A slot read or written anywhere outside a single arm
  * keeps storage of its own.
  *
+ * A region's `rumoca_galec_arena` shares storage below both of those, at the
+ * granularity of a slot's live range in this file's own statement order. Two
+ * Real array slots occupy overlapping arena offsets only where the projection
+ * proved that every use of one is sequenced apart from every use of the other
+ * within a single activation: disjoint statement intervals inside scopes that
+ * run at most once per call, or mutually exclusive arms of one conditional,
+ * and never across a loop's back edge. Each function reaches its arena slots
+ * through the typed `float` pointers declared at its entry, so the arithmetic
+ * and its order are exactly those of the declared-member layout.
+ *
  * {{ scratch_layout.summary }}
- * {{ scratch_layout.arm_summary }} */
+ * {{ scratch_layout.arm_summary }}
+ * {{ scratch_layout.arena_summary }} */
 {%- endif %}
 {{- body_text }}

@@ -10,14 +10,14 @@
       "target": "embedded-c-galec",
       "why": "The artifact that flies: the RDD2 navigation estimator as GALEC-derived embedded C, linked into the Zephyr image on the vehicle's microcontroller. Its flash footprint and its single static allocation are acceptance criteria for that deployment, not diagnostics.",
       "budget": {
-        "text_bytes": 61000,
-        "state_bytes": 32680,
+        "text_bytes": 59550,
+        "state_bytes": 25300,
         "fp_ops": 1138,
         "measured": {
-          "text_bytes": 58648,
-          "state_bytes": 31980,
-          "fp_ops": 1094,
-          "comment": "Re-measured 2026-08-24 after the fixed-count kernel work landed, with gcc-arm-embedded-15.2.rel1 under arm-none-eabi-gcc -Os -std=c99 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -ffunction-sections -c over both emitted translation units. text 58648 B = 57214 B model + 1434 B shared kernels (was 59384 = 59216 + 168): the model unit shed 2002 B because the hot contraction loop nests now print as calls into the shared library's fixed-count kernels (copy/fill/dot/scaled-add at the run lengths 3/6/12/15/24), the fissioned first-pass products print in the transposed scaled-add form, guarded rectangular block assignments print with their loops restricted to the guard's own rectangle, and the shared library carries the straight-line specializations once for every artifact. state 31980 B unchanged. fp_ops 1094 = 1023 model + 71 shared kernels (was 1144 = 1142 + 2): the drop is real arithmetic removed, chiefly the row-scale coefficients that were re-multiplied per element and now multiply once per contracted step. Behavior witness: the dossier-rig host driver (40 warm steps, one GPS pos+vel dostep, scenario 6) produces byte-identical status, NIS and output report before and after, and the dynamically executed worst-step instruction count fell from 954168 to 572366 (model-A upper bound, dyn.pl over both TUs). Ceilings LOWERED in the same change that lands the saving, per the fall-only policy: text 61455 -> 61000, fp 1184 -> 1138 (about four percent above the new measurements)."
+          "text_bytes": 57268,
+          "state_bytes": 24344,
+          "fp_ops": 1098,
+          "comment": "Re-measured 2026-08-25 after the per-value working-memory arena landed, with gcc-arm-embedded-15.2.rel1 under arm-none-eabi-gcc -Os -std=c99 -mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard -ffunction-sections -c over both emitted translation units. state 24344 B (was 31980), of which working memory is 20572 B (was 28208): each region's Real array slots now live at fixed offsets in one flat float arena per region, and two slots share an offset only where the checked projection proved every use of one sequenced apart from every use of the other inside a single activation. The saving is per VALUE rather than per function: the never-concurrent region overlay and the arm overlay are unchanged and still bound which regions may union, the arena packs inside each of them. text 57268 B = 55834 B model + 1434 B shared kernels (was 58648 = 57214 + 1434): the model unit shed 1380 B because a body now addresses its arrays through one const pointer computed at entry instead of repeating the region member path at every use. fp_ops 1098 (was 1094): four more single-precision arithmetic instructions in the objects, from register allocation around the entry pointers, not from any arithmetic the block performs. Behavior witness: every block output of 262 consecutive steps over 13 aiding combinations is byte-identical before and after, dumped as raw words (md5 f11402ae800a86ee924e7b7b4b673d71), and the dossier-rig driver report (scenario 6, 40 warm + 1 correcting step) is byte-identical; executed instructions for that step moved 528679 -> 530475 (+0.34 percent, model-A upper bound over both TUs) with the mul/add/div/sqrt/cmp categories identical. Ceilings LOWERED in the same change that lands the saving, per the fall-only policy: text 61000 -> 59550, state 32680 -> 25300 (about four percent above the new measurements). The fp ceiling is left at 1138 rather than recomputed: the measurement rose slightly, and a fall-only ceiling is never raised to accommodate that."
         }
       }
     },
@@ -28,14 +28,14 @@
       "target": "galec-production",
       "why": "The same estimator inside its eFMU Production Code container, the form the certification review reads. Its C bodies come from the same shared templates as the embedded-c-galec row, so the two rows are pinned to the same numbers on purpose: a divergence between them means the packaging track changed what gets compiled rather than only how it is wrapped, which is a finding either way.",
       "budget": {
-        "text_bytes": 61000,
-        "state_bytes": 32680,
+        "text_bytes": 59550,
+        "state_bytes": 25300,
         "fp_ops": 1138,
         "measured": {
-          "text_bytes": 58648,
-          "state_bytes": 31980,
-          "fp_ops": 1094,
-          "comment": "Re-measured 2026-08-24 after the fixed-count kernel work landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It therefore carries that row's numbers and lowered ceilings unchanged (text 61455 -> 61000, fp 1184 -> 1138), so the two artifacts cannot drift apart without one of them going red. See the embedded-c-galec row's comment for the measured split and the behavior witness."
+          "text_bytes": 57268,
+          "state_bytes": 24344,
+          "fp_ops": 1098,
+          "comment": "Re-measured 2026-08-25 after the per-value working-memory arena landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It therefore carries that row's numbers and lowered ceilings unchanged (text 61000 -> 59550, state 32680 -> 25300, fp held at 1138), so the two artifacts cannot drift apart without one of them going red. See the embedded-c-galec row's comment for the measured split and the behavior witness."
         }
       }
     },
@@ -46,14 +46,14 @@
       "target": "galec-production",
       "why": "The heaviest matrix-algebra model with an established eFMI target, and nearly as large as the navigation estimator despite being a smaller model: sigma-point work is where an unrolled kernel or a widened scratch region shows up first, so this row is the early warning for both ceilings.",
       "budget": {
-        "text_bytes": 57550,
-        "state_bytes": 32485,
+        "text_bytes": 56150,
+        "state_bytes": 27780,
         "fp_ops": 1353,
         "measured": {
-          "text_bytes": 55334,
-          "state_bytes": 31292,
+          "text_bytes": 54004,
+          "state_bytes": 26712,
           "fp_ops": 1301,
-          "comment": "Re-measured 2026-08-24 after the fixed-count kernel work landed, same toolchain and flags as the NavigationEstimator rows, over ProductionCode/. text 55334 B (was 56962), state 31292 B unchanged, fp_ops 1301 (was 1322): the sigma-point loop nests pick up the same kernelized emission, a smaller win than the estimator's because fewer of its contractions sit at the specialized run lengths. Ceilings LOWERED with the saving, per the fall-only policy: text 59155 -> 57550, fp 1374 -> 1353."
+          "comment": "Re-measured 2026-08-25 after the per-value working-memory arena landed, same toolchain and flags as the NavigationEstimator rows, over ProductionCode/. state 26712 B (was 31292), of which working memory is 23124 B (was 27704): the sigma-point temporaries are the shape the arena is for, a long straight-line chain of same-sized matrices whose live ranges do not overlap. text 54004 B (was 55334); fp_ops 1301 unchanged, which is the check that no arithmetic moved. The saving is smaller in proportion than the NavigationEstimator's because more of this block's storage sits on one deep call chain, where a caller's live intermediates may never be lent to its callee. Ceilings LOWERED with the saving, per the fall-only policy: text 57550 -> 56150, state 32485 -> 27780. fp ceiling unchanged at 1353 against an unchanged measurement."
         }
       }
     },
@@ -64,14 +64,14 @@
       "target": "embedded-c-galec",
       "why": "The other artifact that flies, and the one on the fast loop: the RDD2 attitude and rate controller as GALEC-derived embedded C, running beside the navigation estimator on the same microcontroller and against a shorter period. It is gated from the day its cross-compile is warning-free on both targets, because a controller that fits only when the estimator happens to be small is not a deployment anyone can plan; its own ceilings say so independently. It is also the corpus's densest user of the Lie-group function library, so a region overlay or a call-boundary decision that regresses on nested small functions shows up here before it shows up on the estimators.",
       "budget": {
-        "text_bytes": 21730,
-        "state_bytes": 4014,
+        "text_bytes": 20100,
+        "state_bytes": 1700,
         "fp_ops": 418,
         "measured": {
-          "text_bytes": 20892,
-          "state_bytes": 3860,
+          "text_bytes": 19328,
+          "state_bytes": 1632,
           "fp_ops": 402,
-          "comment": "Re-measured 2026-08-24 after the fixed-count kernel work landed, same toolchain and flags. text 20892 B = 19458 B model + 1434 B shared kernels (was 19788 = 19620 + 168); fp_ops 402 = 331 model + 71 shared kernels (was 336 = 334 + 2); state 3860 B unchanged. CEILING RAISED (text 20579 -> 21730, fp 349 -> 418), reviewed justification: the model unit itself SHRANK (162 B text, 3 fp instructions), and the entire growth is the shared kernel library's fixed-count specializations, which this gate sums into every row because it measures per-artifact objects. The library is byte-identical for every artifact of one compiler build, so an image that links the controller beside the estimator carries ONE copy, and -ffunction-sections plus --gc-sections drops the specializations nothing in the image calls; the summed-object number is therefore an upper bound the deployment does not pay twice. The specializations exist for the 1 kHz estimator budget (worst correcting step 954168 -> 572366 executed instructions, measured with the dossier rig) and the controller shares the identical library bytes by design rather than growing any code of its own."
+          "comment": "Re-measured 2026-08-25 after the per-value working-memory arena landed, same toolchain and flags. state 1632 B (was 3860), of which working memory is 908 B (was 3136), a 71 percent reduction and the largest proportional saving in the budget: this block is the corpus's densest user of the small Lie-group functions, whose bodies are short straight-line chains of three-and four-element temporaries that the old function-granular layout gave a slot each. text 19328 B = 17894 B model + 1434 B shared kernels (was 20892 = 19458 + 1434); fp_ops 402 unchanged, which is the check that no arithmetic moved. Ceilings LOWERED, per the fall-only policy: text 21730 -> 20100, state 4014 -> 1700. This supersedes the reviewed RAISE recorded in the previous comment: the shared fixed-count kernel library that justified it is still summed into this row, and the model unit has now shrunk far enough that the row sits below its pre-raise ceiling anyway. fp ceiling unchanged at 418 against an unchanged measurement."
         }
       }
     },
@@ -82,14 +82,14 @@
       "target": "galec-production",
       "why": "The same controller inside its eFMU Production Code container, pinned against the embedded-c-galec row's numbers for the reason the two NavigationEstimator rows are pinned against each other: the C bodies come from the same shared templates, so a divergence means the packaging track changed what gets compiled rather than only how it is wrapped.",
       "budget": {
-        "text_bytes": 21730,
-        "state_bytes": 4014,
+        "text_bytes": 20100,
+        "state_bytes": 1700,
         "fp_ops": 418,
         "measured": {
-          "text_bytes": 20892,
-          "state_bytes": 3860,
+          "text_bytes": 19328,
+          "state_bytes": 1632,
           "fp_ops": 402,
-          "comment": "Re-measured 2026-08-24 after the fixed-count kernel work landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the flight-controller/embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It carries that row's raised ceilings and their recorded justification unchanged (the growth is the shared fixed-count kernel library, deduplicated and link-time garbage-collected in a real image; the model unit itself shrank), so the two artifacts cannot drift apart without one of them going red."
+          "comment": "Re-measured 2026-08-25 after the per-value working-memory arena landed, with gcc-arm-embedded-15.2.rel1 under the same flags as the flight-controller/embedded-c-galec row, over ProductionCode/. Byte-identical to that row's measurement by construction: galec-production extends the same C templates and overrides only the conformance banner, which is a comment. It carries that row's lowered ceilings unchanged (text 21730 -> 20100, state 4014 -> 1700), so the two artifacts cannot drift apart without one of them going red. See that row's comment for the measured split."
         }
       }
     }
