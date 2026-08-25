@@ -54,13 +54,14 @@ use analysis::{
     FunctionStatementPlan, FunctionValueSeed, HistoryOperatorPlans, ModelAlgorithmPlan,
     ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan, ModelEventTensorLoopPlan,
     MultiOutputEquationPlan, PlannedRole, RecordArrayFieldPlan, RecordArrayFieldPlans,
-    RecordEquationFieldValue, RecordEquationPlan, RuntimeVariableRole, SemiLinearRules, analyze,
-    assigned_function_targets, discrete_value_assignment, effective_function_scalar_type,
-    effective_variable_scalar_type, empty_array_bound_to_declaration, equation_partition,
-    flattened_function_loop_source, function_assertion, function_record_field_name,
-    is_event_condition, is_inferred_clock_condition, is_whole_clock_coordinate,
-    model_algorithm_targets, record_field_projections, selected_conditional_statements,
-    specialized_comprehension_plan, structured_assignment_names,
+    RecordEquationFieldValue, RecordEquationPlan, RuntimeVariableRole, SemiLinearRules,
+    StructuredSource, analyze, assigned_function_targets, discrete_value_assignment,
+    effective_function_scalar_type, effective_variable_scalar_type,
+    empty_array_bound_to_declaration, equation_partition, flattened_function_loop_source,
+    function_assertion, function_record_field_name, is_event_condition,
+    is_inferred_clock_condition, is_whole_clock_coordinate, model_algorithm_targets,
+    record_field_projections, selected_conditional_statements, specialized_comprehension_plan,
+    structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
 use conditions::{combine_conditions, condition_owner_clock, lower_condition, negate_condition};

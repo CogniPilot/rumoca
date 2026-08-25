@@ -48,6 +48,56 @@ fn statement_guard<'dae>(
     }
 }
 
+/// The expression one field of a structured assignment reads.
+///
+/// Split out so the sample a field reads is decided in one place: a
+/// `Previous` source must reach the previous-sample coordinate, never
+/// `context.values`, which holds what this activation has already assigned.
+fn structured_source_expression<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    context: &AlgorithmStatementContext<'_, '_, 'dae>,
+    structured_source: &StructuredSource,
+    owner_clock: Option<dae::PeriodicClockId<'dae>>,
+    provenance: dae::DaeProvenance,
+    span: Span,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let source_leaf = structured_source.name();
+    match structured_source {
+        StructuredSource::Previous(_) => {
+            let owner_clock =
+                owner_clock.ok_or(dae::DaeConstructionError::MissingPreviousClockOwner { span })?;
+            let coordinate = context.coordinates[source_leaf];
+            let previous = construction.temporal(|temporal| match coordinate {
+                Coordinate::DiscreteReal(variable) => {
+                    temporal.previous_discrete_real(owner_clock.into(), variable, provenance)
+                }
+                Coordinate::DiscreteValue(variable) => {
+                    temporal.previous_discrete_value(owner_clock.into(), variable, provenance)
+                }
+                _ => Err(dae::DaeConstructionError::InvalidVariableRole {
+                    name: source_leaf.clone(),
+                    span,
+                }),
+            })?;
+            construction.expressions(|expressions| {
+                expressions
+                    .at(provenance)
+                    .coordinate(dae::CoordinateInput::Previous(previous))
+            })
+        }
+        StructuredSource::Current(_) => {
+            construction.expressions(
+                |expressions| match context.values.get(source_leaf).copied() {
+                    Some(value) => Ok(value),
+                    None => expressions
+                        .at(provenance)
+                        .coordinate(context.coordinates[source_leaf].current()),
+                },
+            )
+        }
+    }
+}
+
 pub(super) fn lower_algorithm_assignment<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
@@ -116,17 +166,17 @@ pub(super) fn lower_algorithm_assignment<'dae>(
         .span()
         .expect("algorithm analysis proves assignment-value provenance");
     let mut updates = Vec::with_capacity(pairs.len());
-    for (target_leaf, source_leaf) in pairs {
+    for (target_leaf, structured_source) in pairs {
         let source_provenance =
             dae::DaeProvenance::generated(dae::DaeGeneration::DiscreteUpdate, value_span)?;
-        let source = construction.expressions(|expressions| {
-            match context.values.get(&source_leaf).copied() {
-                Some(value) => Ok(value),
-                None => expressions
-                    .at(source_provenance)
-                    .coordinate(context.coordinates[&source_leaf].current()),
-            }
-        })?;
+        let source = structured_source_expression(
+            construction,
+            &context,
+            &structured_source,
+            guard.owner_clock,
+            source_provenance,
+            value_span,
+        )?;
         updates.push((target_leaf.clone(), source));
         lower_when_assignment(
             construction,

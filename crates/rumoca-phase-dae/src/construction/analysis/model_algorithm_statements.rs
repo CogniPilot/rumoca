@@ -487,11 +487,15 @@ fn structured_assignment_pairs(
     target: &VarName,
     value: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-) -> Option<Vec<(VarName, VarName)>> {
+) -> Option<Vec<VarName>> {
     let pairs = structured_assignment_names(target, value, roles.keys())?;
+    let pairs = pairs
+        .into_iter()
+        .map(|(target_leaf, _)| target_leaf)
+        .collect::<Vec<_>>();
     pairs
         .iter()
-        .all(|(target_leaf, _)| {
+        .all(|target_leaf| {
             matches!(
                 roles.get(target_leaf),
                 Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)

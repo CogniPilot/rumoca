@@ -1433,11 +1433,44 @@ fn validate_known_function_calls(
     Ok(())
 }
 
+/// Which sample of a record's fields a structured assignment reads.
+///
+/// Carried as a type rather than a flag beside the pairs so a caller cannot
+/// lower `target := pre(source)` by reading the CURRENT field values, which
+/// would be a silently wrong answer rather than a refused one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum StructuredSource {
+    /// `target := source`.
+    Current(VarName),
+    /// `target := pre(source)`. Modelica defines `pre` of a record
+    /// component-wise, so every field reads its own previous sample and the
+    /// whole-record form means exactly the field-wise form.
+    Previous(VarName),
+}
+
+impl StructuredSource {
+    pub(super) fn name(&self) -> &VarName {
+        match self {
+            Self::Current(name) | Self::Previous(name) => name,
+        }
+    }
+}
+
 pub(super) fn structured_assignment_names<'a>(
     target: &VarName,
     value: &Expression,
     names: impl IntoIterator<Item = &'a VarName>,
-) -> Option<Vec<(VarName, VarName)>> {
+) -> Option<Vec<(VarName, StructuredSource)>> {
+    // See through `pre`: the record form is the field-wise form, so the
+    // pairing below is identical and only the sample each field reads differs.
+    let (value, wrap): (&Expression, fn(VarName) -> StructuredSource) = match value {
+        Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Pre,
+            args,
+            ..
+        } if args.len() == 1 => (&args[0], StructuredSource::Previous),
+        value => (value, StructuredSource::Current),
+    };
     let Expression::VarRef {
         name, subscripts, ..
     } = value
@@ -1477,7 +1510,7 @@ pub(super) fn structured_assignment_names<'a>(
         if !source_leaves.contains(suffix) || !names.contains(&source_leaf) {
             return None;
         }
-        pairs.push((target_leaf, source_leaf));
+        pairs.push((target_leaf, wrap(source_leaf)));
     }
     pairs.sort_by(|(lhs, _), (rhs, _)| lhs.as_str().cmp(rhs.as_str()));
     Some(pairs)
