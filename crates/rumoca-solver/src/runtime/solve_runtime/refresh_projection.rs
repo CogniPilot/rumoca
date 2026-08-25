@@ -1,7 +1,42 @@
-use crate::runtime::projection::ScaledNewtonSystem;
+use crate::runtime::projection::{ScaledNewtonSystem, per_row_torn_block_sweep};
 use nalgebra::DVector;
+use rumoca_eval_solve::{PreparedTornSweep, TornSweepStatus};
 
 use super::*;
+
+/// Prepared batched torn-block sweeps, keyed by the address of the plan's
+/// `BlockTearing`. The tearing lives inside the runtime's immutable
+/// `SolveModel`, so its address is stable for the runtime's lifetime; the
+/// cache is dropped on clone because a clone owns a different model
+/// allocation, so inherited keys could collide with unrelated tearings.
+#[derive(Default)]
+pub(super) struct TornSweepCache(RefCell<FxHashMap<usize, Option<Rc<PreparedTornSweepEntry>>>>);
+
+impl Clone for TornSweepCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+/// One torn block's prepared batched sweep and, when the execution backend
+/// accepts the composite, its compiled form.
+pub(super) struct PreparedTornSweepEntry {
+    sweep: PreparedTornSweep,
+    compiled: Option<CompiledTornSweep>,
+}
+
+/// Compiled composite of one torn sweep: the causal chain as one assignment
+/// schedule (later rows observe earlier writes, exactly as back-substitution
+/// does) and the reduced residual rows as one expression block.
+struct CompiledTornSweep {
+    schedule: Rc<dyn CompiledSolveAssignmentSchedule>,
+    residual_block: Rc<dyn CompiledSolveExpression>,
+    /// Flat output index of each residual row in the block's output order;
+    /// `None` marks a row with no scalar view.
+    residual_outputs: Box<[Option<usize>]>,
+    /// Total outputs of `residual_block`, sizing its dense output buffer.
+    residual_len: usize,
+}
 
 pub(super) struct RefreshSlotArgs<'a> {
     pub(super) t: f64,
@@ -590,6 +625,57 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             })
     }
 
+    /// Batched torn sweep: the compiled composite (one assignment-schedule
+    /// call plus one residual-block call) when the backend accepts it, and
+    /// otherwise one prepared-block call per sweep, instead of one model call
+    /// per causal step and residual row. Every form is built from the same
+    /// certified isolators and program outputs the per-row path resolves on
+    /// every call, so all paths produce bit-identical values and decline
+    /// decisions; the debug agreement check below enforces that.
+    fn torn_block_sweep(
+        &self,
+        tearing: &solve::BlockTearing,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        residual_out: &mut Vec<f64>,
+    ) -> Result<bool, RuntimeSolveError> {
+        let Some(entry) = self.runtime.prepared_torn_sweep(tearing) else {
+            return per_row_torn_block_sweep(self, tearing, y, p, t, residual_out);
+        };
+        #[cfg(debug_assertions)]
+        let entry_y = y.to_vec();
+        let mut raw = Vec::with_capacity(tearing.residual_rows.len());
+        let compiled_status = entry.compiled.as_ref().and_then(|compiled| {
+            self.eval_compiled_torn_sweep(compiled, tearing, y, p, t, &mut raw)
+        });
+        let status = match compiled_status {
+            Some(status) => status,
+            None => self
+                .runtime
+                .implicit_scalar_rhs
+                .eval_torn_sweep_unchecked_with_context(
+                    &entry.sweep,
+                    y,
+                    p,
+                    t,
+                    self.runtime.row_eval_context(),
+                    &mut raw,
+                )
+                .map_err(RuntimeSolveError::from)?,
+        };
+        let completed = status == TornSweepStatus::Completed;
+        if completed {
+            residual_out.clear();
+            for (&row, value) in tearing.residual_rows.iter().zip(&raw) {
+                residual_out.push(self.torn_residual_value(t, y, row, *value));
+            }
+        }
+        #[cfg(debug_assertions)]
+        self.debug_assert_torn_sweep_agrees(tearing, &entry_y, p, t, completed, y, residual_out)?;
+        Ok(completed)
+    }
+
     fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
         self.runtime
             .model
@@ -641,6 +727,105 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
 }
 
 impl RefreshProjectionModel<'_> {
+    /// Debug-only strict-refinement guard: replay the sweep through the
+    /// per-row reference path from the same entry point and require the same
+    /// decline decision and, on completion, bit-identical unknowns and
+    /// residual values (NaN compared by bit pattern).
+    #[cfg(debug_assertions)]
+    // SPEC_0021: Exception - the agreement check compares every input and output of one sweep.
+    #[allow(clippy::too_many_arguments)]
+    fn debug_assert_torn_sweep_agrees(
+        &self,
+        tearing: &solve::BlockTearing,
+        entry_y: &[f64],
+        p: &[f64],
+        t: f64,
+        batched_completed: bool,
+        batched_y: &[f64],
+        batched_residual: &[f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let mut reference_y = entry_y.to_vec();
+        let mut reference_residual = Vec::new();
+        let reference_completed = per_row_torn_block_sweep(
+            self,
+            tearing,
+            &mut reference_y,
+            p,
+            t,
+            &mut reference_residual,
+        )?;
+        debug_assert_eq!(
+            reference_completed, batched_completed,
+            "batched torn sweep disagrees with the per-row sweep on declining"
+        );
+        if reference_completed && batched_completed {
+            let bits_equal = |reference: &[f64], batched: &[f64]| {
+                reference.len() == batched.len()
+                    && reference
+                        .iter()
+                        .zip(batched)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+            };
+            debug_assert!(
+                bits_equal(&reference_y, batched_y),
+                "batched torn sweep diverged from the per-row sweep in solver values"
+            );
+            debug_assert!(
+                bits_equal(&reference_residual, batched_residual),
+                "batched torn sweep diverged from the per-row sweep in residual values"
+            );
+        }
+        Ok(())
+    }
+
+    /// Run one compiled torn sweep, or `None` to fall back to the interpreted
+    /// batch. A failed compiled call may leave causal targets partially
+    /// written; that needs no restore, because the fallback rewrites every
+    /// causal target in order from the untouched tear values before anything
+    /// reads them.
+    fn eval_compiled_torn_sweep(
+        &self,
+        compiled: &CompiledTornSweep,
+        tearing: &solve::BlockTearing,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        raw: &mut Vec<Option<f64>>,
+    ) -> Option<TornSweepStatus> {
+        let tables = self.runtime.model.external_tables.as_slice();
+        compiled.schedule.call(y, p, t, tables).ok()?;
+        // Mirror the per-row decline decision in causal order: the isolator
+        // programs poison a singular step to a non-finite value, so the first
+        // non-finite target is exactly where the per-row path declines.
+        for step in &tearing.causal_steps {
+            if !y.get(step.y_index).copied().unwrap_or(f64::NAN).is_finite() {
+                return Some(TornSweepStatus::Declined);
+            }
+        }
+        let mut out = vec![0.0; compiled.residual_len];
+        compiled
+            .residual_block
+            .call(y, p, t, tables, &mut out)
+            .ok()?;
+        raw.clear();
+        for position in compiled.residual_outputs.iter() {
+            raw.push(position.and_then(|index| out.get(index).copied()));
+        }
+        Some(TornSweepStatus::Completed)
+    }
+
+    /// One residual row's sweep value under the per-row policy: report the
+    /// raw value for the non-finite diagnostics, then record NaN for a row
+    /// with no scalar view or a non-finite value.
+    fn torn_residual_value(&self, t: f64, y: &[f64], row: usize, value: Option<f64>) -> f64 {
+        let Some(value) = value else {
+            return f64::NAN;
+        };
+        self.runtime
+            .report_nonfinite_implicit_residual_row_inputs(t, y, row, value);
+        if value.is_finite() { value } else { f64::NAN }
+    }
+
     fn implicit_row_is_affine(&self, row_idx: usize) -> bool {
         let block = &self.runtime.implicit_scalar_rhs;
         block
@@ -651,6 +836,62 @@ impl RefreshProjectionModel<'_> {
 }
 
 impl SolveRuntime {
+    /// Prepared batched sweep for one torn block, resolved once from the same
+    /// certified isolators the per-row path re-resolves on every call, with
+    /// its compiled composite when the execution backend accepts it. `None`
+    /// is cached too, so an unbatchable block keeps the per-row path without
+    /// repeating the resolution.
+    pub(super) fn prepared_torn_sweep(
+        &self,
+        tearing: &solve::BlockTearing,
+    ) -> Option<Rc<PreparedTornSweepEntry>> {
+        let key = std::ptr::from_ref(tearing) as usize;
+        if let Some(prepared) = self.torn_sweep_cache.0.borrow().get(&key) {
+            return prepared.clone();
+        }
+        let prepared = self.build_torn_sweep_entry(tearing).map(Rc::new);
+        self.torn_sweep_cache
+            .0
+            .borrow_mut()
+            .insert(key, prepared.clone());
+        prepared
+    }
+
+    fn build_torn_sweep_entry(
+        &self,
+        tearing: &solve::BlockTearing,
+    ) -> Option<PreparedTornSweepEntry> {
+        let causal_steps = tearing
+            .causal_steps
+            .iter()
+            .map(|step| (step.row, step.y_index))
+            .collect::<Vec<_>>();
+        let sweep = self
+            .implicit_scalar_rhs
+            .prepare_torn_sweep(&causal_steps, &tearing.residual_rows)?;
+        let compiled = self.execution_backend.as_ref().and_then(|backend| {
+            let composite = self.implicit_scalar_rhs.torn_sweep_composite(&sweep)?;
+            let schedule = optional_compiled(
+                "torn_assignment_schedule",
+                backend.compile_torn_assignment_rows(
+                    &composite.assignment_rows,
+                    &composite.assignment_targets,
+                ),
+            )?;
+            let residual_block = optional_compiled(
+                "torn_residual_block",
+                backend.compile_expression(&composite.residual_block),
+            )?;
+            Some(CompiledTornSweep {
+                schedule,
+                residual_block,
+                residual_len: composite.residual_block.stored_output_count(),
+                residual_outputs: composite.residual_outputs.into_boxed_slice(),
+            })
+        });
+        Some(PreparedTornSweepEntry { sweep, compiled })
+    }
+
     pub(super) fn value_stage_schedule_is_certified(&self, plan: &solve::RefreshPlan) -> bool {
         let structural = self.continuous_structural.algebraic_projection();
         plan.simultaneous_block_indices.len() == plan.simultaneous_plan.blocks.len()

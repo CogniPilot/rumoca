@@ -146,6 +146,18 @@ pub trait SolveExecutionBackend {
         schedule: &solve::ExactRefreshAssignmentSchedule,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String>;
 
+    /// Compile a causally ordered list of single-output isolator rows whose
+    /// outputs write to the paired solver-Y targets, so later rows observe
+    /// earlier writes. Torn back-substitution batches through this; the
+    /// default declines so existing backends stay untouched.
+    fn compile_torn_assignment_rows(
+        &self,
+        _rows: &[Vec<solve::LinearOp>],
+        _target_y_indices: &[usize],
+    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
+        Err("torn assignment rows are not compiled by this backend".to_string())
+    }
+
     fn compile_event_transaction(
         &self,
         program: &solve::EventTransactionProgram,
@@ -309,6 +321,7 @@ pub struct SolveRuntime {
     static_refresh_cache: RefCell<StaticRefreshCache>,
     static_refresh_parameter_indices: Box<[usize]>,
     parameter_static_gradient_cache: RefCell<ParameterStaticGradientCache>,
+    torn_sweep_cache: TornSweepCache,
     runtime_state: solve_eval::SimulationRuntimeState,
     delay_runtime: DelayRuntime,
     root_condition_count: usize,
@@ -667,6 +680,7 @@ impl SolveRuntime {
             static_refresh_cache: RefCell::new(StaticRefreshCache::default()),
             static_refresh_parameter_indices,
             parameter_static_gradient_cache: RefCell::new(ParameterStaticGradientCache::default()),
+            torn_sweep_cache: TornSweepCache::default(),
             runtime_state: solve_eval::SimulationRuntimeState::new(),
             delay_runtime,
             root_condition_count,

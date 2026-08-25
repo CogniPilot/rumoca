@@ -19,6 +19,11 @@
 //! exactness invariant is ever violated it declines the step rather than
 //! accepting an under-solved value.
 //!
+//! Every evaluation of the block goes through one sweep primitive
+//! ([`ImplicitProjectionModel::torn_block_sweep`]): back-substitution followed
+//! by the reduced residual rows. Models that can batch the sweep into a single
+//! call override it; the per-row default here is the reference semantics.
+//!
 //! The torn solve is a strict refinement: it either converges the block and
 //! reports it settled, or it declines (restoring the incoming values) and the
 //! caller falls back to the dense block Newton, so no block that solved before
@@ -68,21 +73,25 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
     }
     let snapshot = y.to_vec();
 
-    if !back_substitute(model, y, p, t, tearing)? {
+    let mut residual = Vec::with_capacity(tearing.residual_rows.len());
+    if !model.torn_block_sweep(tearing, y, p, t, &mut residual)? {
         y.copy_from_slice(&snapshot);
         return Ok(None);
     }
 
+    // The sweep writes only causal unknowns and the scales read only tear
+    // slots, so computing them after the residual rows leaves the values the
+    // pre-sweep ordering produced.
     let variable_scales = tearing
         .tear_y_indices
         .iter()
         .map(|&index| model_variable_scale(model, index, y[index]))
         .collect::<Vec<_>>();
 
-    let Some(mut residual) = reduced_residual(model, y, p, t, tearing)?.take_if_finite() else {
+    if !all_finite(&residual) {
         y.copy_from_slice(&snapshot);
         return Ok(None);
-    };
+    }
 
     for _ in 0..TORN_OUTER_MAX_ITERS {
         match advance_torn_newton(
@@ -145,6 +154,20 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
     tol: f64,
     certify_coordinates: bool,
 ) -> Result<TornStep, RuntimeSolveError> {
+    // A residual that is exactly zero rowwise satisfies every positive scaled
+    // tolerance (`scaled_tolerance` never falls below `f64::MIN_POSITIVE`),
+    // so the fresh finite-difference Jacobian's row scales could only confirm
+    // what is already proven; settle without paying the Jacobian sweeps. This
+    // mirrors the dense block's exact-zero shortcut and, like it, settles
+    // without probing the Jacobian at the solved point. It stays out of
+    // coordinate certification, which also requires the Newton correction to
+    // be within tolerance and therefore needs the Jacobian. A nonzero
+    // residual keeps the full path: its convergence test reads the fresh row
+    // scales, which can shrink between iterates, so passing under stale
+    // scales proves nothing.
+    if !certify_coordinates && residual.iter().all(|value| *value == 0.0) {
+        return Ok(TornStep::Settled);
+    }
     let base = y.to_vec();
     let Some(jacobian) =
         reduced_jacobian(model, y, p, t, tearing, residual, variable_scales, &base)?
@@ -190,21 +213,30 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
     }
 }
 
-/// Evaluate every causal step in order, writing each recovered unknown into
-/// `y`. Returns `false` when any step cannot be evaluated to a finite value, in
-/// which case the caller declines the torn solve and falls back to the dense
-/// block Newton.
-fn back_substitute<M: ImplicitProjectionModel>(
+/// Per-row torn sweep: back-substitute every causal step in order, then
+/// evaluate the reduced residual rows into `residual_out` (NaN for a row that
+/// yields no finite scalar value). Returns `false` when any causal step
+/// cannot be evaluated to a finite value, in which case the caller declines
+/// the torn solve, restores `y`, and falls back to the dense block Newton.
+///
+/// This is both the default [`ImplicitProjectionModel::torn_block_sweep`] and
+/// the reference semantics a batching override must reproduce bit for bit.
+pub(crate) fn per_row_torn_block_sweep<M: ImplicitProjectionModel + ?Sized>(
     model: &M,
+    tearing: &solve::BlockTearing,
     y: &mut [f64],
     p: &[f64],
     t: f64,
-    tearing: &solve::BlockTearing,
+    residual_out: &mut Vec<f64>,
 ) -> Result<bool, RuntimeSolveError> {
     for step in &tearing.causal_steps {
         if !solve_causal_step(model, y, p, t, step.row, step.y_index)? {
             return Ok(false);
         }
+    }
+    residual_out.clear();
+    for &row in &tearing.residual_rows {
+        residual_out.push(residual_row(model, y, p, t, row)?.unwrap_or(f64::NAN));
     }
     Ok(true)
 }
@@ -217,7 +249,7 @@ fn back_substitute<M: ImplicitProjectionModel>(
 /// The step still fails closed: if the exactness invariant is ever violated, or
 /// the isolator yields no finite value, it declines (`Ok(false)`) so the caller
 /// falls back to the dense block Newton rather than accepting a wrong value.
-fn solve_causal_step<M: ImplicitProjectionModel>(
+fn solve_causal_step<M: ImplicitProjectionModel + ?Sized>(
     model: &M,
     y: &mut [f64],
     p: &[f64],
@@ -245,35 +277,8 @@ fn solve_causal_step<M: ImplicitProjectionModel>(
     }
 }
 
-/// Reduced Newton residual over the tear system's residual rows.
-struct ReducedResidual(Vec<f64>);
-
-impl ReducedResidual {
-    fn take_if_finite(self) -> Option<Vec<f64>> {
-        self.0
-            .iter()
-            .all(|value| value.is_finite())
-            .then_some(self.0)
-    }
-}
-
-fn reduced_residual<M: ImplicitProjectionModel>(
-    model: &M,
-    y: &[f64],
-    p: &[f64],
-    t: f64,
-    tearing: &solve::BlockTearing,
-) -> Result<ReducedResidual, RuntimeSolveError> {
-    let mut values = Vec::with_capacity(tearing.residual_rows.len());
-    for &row in &tearing.residual_rows {
-        match residual_row(model, y, p, t, row)? {
-            Some(value) => values.push(value),
-            None => {
-                values.push(f64::NAN);
-            }
-        }
-    }
-    Ok(ReducedResidual(values))
+fn all_finite(values: &[f64]) -> bool {
+    values.iter().all(|value| value.is_finite())
 }
 
 /// Total finite-difference Jacobian of the reduced residual with respect to the
@@ -294,18 +299,15 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
     let rows = tearing.residual_rows.len();
     let columns = tearing.tear_y_indices.len();
     let mut jacobian = DMatrix::zeros(rows, columns);
+    let mut perturbed = Vec::with_capacity(rows);
     for (column, &tear_index) in tearing.tear_y_indices.iter().enumerate() {
         y.copy_from_slice(base);
         let h = perturbation(base[tear_index], variable_scales[column]);
         y[tear_index] = base[tear_index] + h;
-        if !back_substitute(model, y, p, t, tearing)? {
+        if !model.torn_block_sweep(tearing, y, p, t, &mut perturbed)? || !all_finite(&perturbed) {
             y.copy_from_slice(base);
             return Ok(None);
         }
-        let Some(perturbed) = reduced_residual(model, y, p, t, tearing)?.take_if_finite() else {
-            y.copy_from_slice(base);
-            return Ok(None);
-        };
         for row in 0..rows {
             jacobian[(row, column)] = (perturbed[row] - residual[row]) / h;
         }
@@ -337,26 +339,16 @@ fn line_search<M: ImplicitProjectionModel>(
 ) -> Result<Option<Vec<f64>>, RuntimeSolveError> {
     let mut alpha = 1.0;
     for _ in 0..TORN_BACKTRACK_STEPS {
-        y.copy_from_slice(base);
-        let mut finite = true;
-        for (&tear_index, &step) in tearing.tear_y_indices.iter().zip(delta.iter()) {
-            let candidate = base[tear_index] + alpha * step;
-            if !candidate.is_finite() {
-                finite = false;
-                break;
-            }
-            y[tear_index] = candidate;
-        }
-        if finite
-            && back_substitute(model, y, p, t, tearing)?
-            && let Some(residual) = reduced_residual(model, y, p, t, tearing)?.take_if_finite()
-        {
-            let norm = scaled_residual_norm(&residual, row_scales);
-            if norm.is_finite()
-                && (scaled_residual_converged(&residual, row_scales, tol) || norm < before)
-            {
-                return Ok(Some(residual));
-            }
+        let step = LineSearchStep {
+            base,
+            delta,
+            row_scales,
+            before,
+            tol,
+            alpha,
+        };
+        if let Some(residual) = line_search_step(model, y, p, t, tearing, &step)? {
+            return Ok(Some(residual));
         }
         alpha *= 0.5;
     }
@@ -364,7 +356,48 @@ fn line_search<M: ImplicitProjectionModel>(
     Ok(None)
 }
 
-fn residual_row<M: ImplicitProjectionModel>(
+/// One backtracking candidate: the base point, Newton direction, acceptance
+/// scales, and the step fraction under trial.
+struct LineSearchStep<'a> {
+    base: &'a [f64],
+    delta: &'a [f64],
+    row_scales: &'a [f64],
+    before: f64,
+    tol: f64,
+    alpha: f64,
+}
+
+/// Evaluate one backtracking candidate, returning its residual when accepted.
+/// `y` holds the candidate point on acceptance and stays at the (partially
+/// written) trial point otherwise; the caller resets it from `base` before
+/// the next trial or on exhaustion.
+fn line_search_step<M: ImplicitProjectionModel>(
+    model: &M,
+    y: &mut [f64],
+    p: &[f64],
+    t: f64,
+    tearing: &solve::BlockTearing,
+    step: &LineSearchStep<'_>,
+) -> Result<Option<Vec<f64>>, RuntimeSolveError> {
+    y.copy_from_slice(step.base);
+    for (&tear_index, &direction) in tearing.tear_y_indices.iter().zip(step.delta.iter()) {
+        let candidate = step.base[tear_index] + step.alpha * direction;
+        if !candidate.is_finite() {
+            return Ok(None);
+        }
+        y[tear_index] = candidate;
+    }
+    let mut residual = Vec::with_capacity(tearing.residual_rows.len());
+    if !model.torn_block_sweep(tearing, y, p, t, &mut residual)? || !all_finite(&residual) {
+        return Ok(None);
+    }
+    let norm = scaled_residual_norm(&residual, step.row_scales);
+    let accepted = norm.is_finite()
+        && (scaled_residual_converged(&residual, step.row_scales, step.tol) || norm < step.before);
+    Ok(accepted.then_some(residual))
+}
+
+fn residual_row<M: ImplicitProjectionModel + ?Sized>(
     model: &M,
     y: &[f64],
     p: &[f64],

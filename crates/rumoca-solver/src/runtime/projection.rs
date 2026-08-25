@@ -30,6 +30,7 @@ use singleton::{SingletonAssignmentStep, initial_row_target_name, singleton_assi
 use step_limit::StepLimit;
 
 pub(crate) use manifold::{ManifoldProjectionModel, project_state_manifold};
+pub(crate) use tearing::per_row_torn_block_sweep;
 
 #[cfg(test)]
 use plan::algebraic_tail_len;
@@ -212,6 +213,29 @@ pub(crate) trait ImplicitProjectionModel {
             Err(RuntimeSolveError::RefreshTargetSingular { .. }) => Ok(None),
             Err(error) => Err(error),
         }
+    }
+
+    /// Execute one torn-block sweep: back-substitute every causal step in
+    /// order (each writes its recovered unknown into `y`), then evaluate the
+    /// reduced residual rows into `residual_out`, recording NaN for a row
+    /// with no scalar view or a non-finite value. Returns `Ok(false)` when a
+    /// causal step declines, in which case the caller restores `y` and falls
+    /// back to the dense block Newton.
+    ///
+    /// The default makes one model call per row. An override may batch the
+    /// sweep, but must preserve the per-row semantics bit for bit: the same
+    /// evaluation order within and across rows and the same singular and
+    /// non-finite decline decisions, so torn convergence and root selection
+    /// cannot depend on which path a model takes.
+    fn torn_block_sweep(
+        &self,
+        tearing: &solve::BlockTearing,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        residual_out: &mut Vec<f64>,
+    ) -> Result<bool, RuntimeSolveError> {
+        tearing::per_row_torn_block_sweep(self, tearing, y, p, t, residual_out)
     }
 }
 

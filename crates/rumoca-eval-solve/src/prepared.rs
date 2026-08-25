@@ -11,6 +11,7 @@ mod dependency;
 #[cfg(test)]
 mod prepared_compute_block_tests;
 mod support;
+mod torn_sweep;
 
 use std::cell::RefCell;
 
@@ -47,6 +48,7 @@ use rumoca_ir_solve::{
     UnaryOp,
 };
 use support::*;
+pub use torn_sweep::{PreparedTornSweep, TornSweepComposite, TornSweepStatus};
 
 pub(crate) fn assignment_shape_for_program_output(
     program: &[LinearOp],
@@ -369,6 +371,20 @@ impl PreparedScalarProgramBlock {
     }
 
     fn eval_row_output_inner(&self, request: RowOutputRequest<'_>) -> Result<f64, EvalSolveError> {
+        let mut out = self.row_output_scratch.borrow_mut();
+        let mut scratch = self.scratch.borrow_mut();
+        self.eval_row_output_with_scratch(request, &mut scratch, &mut out)
+    }
+
+    /// Core of [`Self::eval_row_output_inner`] with caller-owned scratch, so a
+    /// batched sweep borrows each scratch cell once instead of once per row.
+    /// Both entry points share this body; they cannot diverge.
+    fn eval_row_output_with_scratch(
+        &self,
+        request: RowOutputRequest<'_>,
+        scratch: &mut RowEvalScratch,
+        out: &mut Vec<f64>,
+    ) -> Result<f64, EvalSolveError> {
         let row =
             self.block
                 .programs()
@@ -399,18 +415,16 @@ impl PreparedScalarProgramBlock {
                 span: self.block.program_span(request.row_idx),
             });
         }
-        let mut out = self.row_output_scratch.borrow_mut();
         reserve_prepared_vec_capacity(
-            &mut out,
+            out,
             output_count,
             "prepared row output scratch count",
             self.block.program_span(request.row_idx),
         )?;
         out.resize(output_count, 0.0);
         out[..output_count].fill(0.0);
-        let mut scratch = self.scratch.borrow_mut();
         record_solve_block_eval(request.label, self.output_count, output_count);
-        let mut sink = OutputCursor::new(&mut out);
+        let mut sink = OutputCursor::new(out);
         eval_row_prepared_maybe_fast(
             PreparedRowEval::new(
                 row,
@@ -423,7 +437,7 @@ impl PreparedScalarProgramBlock {
             .with_lazy_plan(self.row_lazy_plans[request.row_idx].as_ref())
             .with_source_span(self.block.program_span(request.row_idx)),
             true,
-            &mut scratch,
+            scratch,
             &mut sink,
         )
         .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
@@ -876,23 +890,16 @@ impl PreparedScalarProgramBlock {
             );
         };
         let mut scratch = self.scratch.borrow_mut();
-        eval_prevalidated_discard_output_program(
-            PreparedRowEval::new(
-                &row[..shape.expr_eval_len()],
-                self.row_registers[request.row_idx],
-                request.y,
-                request.p,
-                request.t,
-                request.context,
-            )
-            .with_source_span(span),
-            true,
-            &mut scratch,
-        )
-        .map_err(|error| error.with_source_span(span))?;
-        let value = eval_assignment_shape(shape, request.row_idx, &scratch.regs, span)
-            .map_err(|error| error.with_source_span(span))?;
-        Ok(Some(value))
+        self.eval_target_assignment_row_with_scratch(TargetAssignmentScratchRequest {
+            row_idx: request.row_idx,
+            shape,
+            y: request.y,
+            p: request.p,
+            t: request.t,
+            context: request.context,
+            scratch: &mut scratch,
+        })
+        .map(Some)
     }
 
     fn require_row_output_count(
@@ -1046,6 +1053,12 @@ struct AssignmentProgramBuilder<'a> {
     next_register: u32,
 }
 
+/// Whether a constant assignment-shape coefficient can never trip the
+/// per-row singular-coefficient check.
+fn constant_coefficient_is_regular(coefficient: f64) -> bool {
+    coefficient != 0.0 && coefficient.is_finite()
+}
+
 pub(crate) fn assignment_shape_reads_y_index(
     row: &[LinearOp],
     shape: TargetAssignmentShape,
@@ -1096,7 +1109,9 @@ impl<'a> AssignmentProgramBuilder<'a> {
                 offset_scale,
                 coefficient_scale,
                 ..
-            } => self.affine(offset_reg, coefficient_reg, offset_scale, coefficient_scale),
+            } => self
+                .affine(offset_reg, coefficient_reg, offset_scale, coefficient_scale)
+                .map(|(result, _)| result),
             TargetAssignmentShape::AffineResidual {
                 target_reg,
                 residual_reg,
@@ -1106,13 +1121,72 @@ impl<'a> AssignmentProgramBuilder<'a> {
         }
     }
 
+    /// Materialize a shape for the torn sweep's compiled assignment schedule,
+    /// which cannot raise the per-row path's singular-coefficient error. For
+    /// an evaluated (register) coefficient the isolated value is poisoned to
+    /// NaN whenever the coefficient is non-finite, so the schedule's consumer
+    /// declines exactly where the per-row path raises; a zero coefficient
+    /// already yields a non-finite quotient. Shapes with a constant singular
+    /// coefficient return `None`: the per-row path declines them on every
+    /// call, and the caller keeps the interpreted path that reproduces that.
+    fn materialize_poisoning_singular(&mut self, shape: TargetAssignmentShape) -> Option<u32> {
+        match shape {
+            TargetAssignmentShape::Direct { .. } => self.materialize(shape),
+            TargetAssignmentShape::Affine {
+                offset_reg,
+                coefficient_reg: coefficient_reg @ Some(_),
+                offset_scale,
+                coefficient_scale,
+                ..
+            } => {
+                let (result, coefficient) =
+                    self.affine(offset_reg, coefficient_reg, offset_scale, coefficient_scale)?;
+                self.poison_non_finite(result, coefficient)
+            }
+            TargetAssignmentShape::Affine {
+                coefficient_reg: None,
+                coefficient_scale,
+                ..
+            } => constant_coefficient_is_regular(coefficient_scale)
+                .then(|| self.materialize(shape))
+                .flatten(),
+            TargetAssignmentShape::AffineResidual { coefficient, .. } => {
+                constant_coefficient_is_regular(coefficient)
+                    .then(|| self.materialize(shape))
+                    .flatten()
+            }
+        }
+    }
+
+    /// Emit `value - (guard - guard)`. For a finite guard the correction is
+    /// exactly +0.0 and IEEE 754 subtraction of +0.0 reproduces `value` bit
+    /// for bit (including -0.0); for an infinite or NaN guard it is NaN and
+    /// poisons the result.
+    fn poison_non_finite(&mut self, value: u32, guard: u32) -> Option<u32> {
+        let gap = self.allocate()?;
+        let poisoned = self.allocate()?;
+        self.program.push(LinearOp::Binary {
+            dst: gap,
+            op: BinaryOp::Sub,
+            lhs: guard,
+            rhs: guard,
+        });
+        self.program.push(LinearOp::Binary {
+            dst: poisoned,
+            op: BinaryOp::Sub,
+            lhs: value,
+            rhs: gap,
+        });
+        Some(poisoned)
+    }
+
     fn affine(
         &mut self,
         offset: u32,
         coefficient: Option<u32>,
         offset_scale: f64,
         coefficient_scale: f64,
-    ) -> Option<u32> {
+    ) -> Option<(u32, u32)> {
         let offset_scale_reg = self.allocate()?;
         let scaled_offset = self.allocate()?;
         let coefficient_scale_reg = self.allocate()?;
@@ -1145,7 +1219,7 @@ impl<'a> AssignmentProgramBuilder<'a> {
             lhs: negated_offset,
             rhs: scaled_coefficient,
         });
-        Some(result)
+        Some((result, scaled_coefficient))
     }
 
     fn scaled_coefficient(&mut self, scale: u32, coefficient: Option<u32>, target: u32) {
