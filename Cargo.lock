@@ -7252,6 +7252,7 @@ dependencies = [
  "lsp-types",
  "mimalloc",
  "num_cpus",
+ "rustc-demangle",
  "serde",
  "serde_json",
  "sha2",

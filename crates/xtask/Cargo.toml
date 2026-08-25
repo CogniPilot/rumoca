@@ -20,6 +20,7 @@ path = "src/bin/rumoca-traversal-policy-check.rs"
 # owning package. The CI arch check enforces this boundary.
 [dependencies]
 anyhow = { workspace = true }
+rustc-demangle = "0.1"
 clap = { workspace = true }
 clap_complete = { workspace = true }
 mimalloc = { workspace = true }
