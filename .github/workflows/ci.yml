@@ -860,6 +860,25 @@ jobs:
         run: |
           ./target/debug/xtask coverage report
 
+      # Publish the measurement the gate just judged. The trim metric counts
+      # what the suite actually executed, and a workstation runs a different
+      # set than this job does (cached corpora, feature availability), so a
+      # baseline promoted from a developer machine can never match what this
+      # job enforces. Promote from these artifacts instead: download them,
+      # place them under target/llvm-cov, run `xtask coverage gate
+      # --promote-baseline`, and commit the refreshed baseline.
+      - name: Upload coverage gate measurement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-gate-measurement
+          path: |
+            target/llvm-cov/trim-candidates.json
+            target/llvm-cov/coverage-gate.md
+            target/llvm-cov/coverage-trim-report.md
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Enforce coverage regression gate
         run: |
           ./target/debug/xtask coverage gate --enforce-trim-regressions
