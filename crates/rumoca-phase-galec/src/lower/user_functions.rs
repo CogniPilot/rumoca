@@ -1442,7 +1442,7 @@ fn lower_tensor_element_value<'a, 'dae>(
 /// lazy control-flow owners, so moving these calls to the assignment prefix
 /// preserves branch execution while ensuring every projection reads the same
 /// materialized result.
-fn materialize_eager_aggregate_calls<'a, 'dae>(
+pub(super) fn materialize_eager_aggregate_calls<'a, 'dae>(
     expression: dae::ExprId<'dae>,
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
 ) -> Result<(), GalecTargetError> {

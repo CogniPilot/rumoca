@@ -632,6 +632,10 @@ fn append_definition_assignments<'dae>(
         ));
         return Ok(());
     }
+    if let Some(statements) = tensor_definition_assignments(lowerer, value, classified, span) {
+        assignments.extend(statements);
+        return Ok(());
+    }
     for indices in row_major_indices(dimensions) {
         let lowered = lowerer.lower_element(value, &indices)?;
         let value = coerce(lowered, classified.scalar_type, span)?;
@@ -644,6 +648,119 @@ fn append_definition_assignments<'dae>(
         ));
     }
     Ok(())
+}
+
+/// Lower one rank-`n` clocked definition through the function-body tensor
+/// path, when its value carries a whole-array contraction that the coordinate
+/// projection would dissolve (reconstruction ledger R-9).
+///
+/// The value is lowered ONCE at symbolic axis iterators, exactly as a
+/// function-body whole-array assignment is, so a contraction keeps its
+/// free-index loops and its hoisted invariant half instead of re-deriving the
+/// contraction per target coordinate. The decision is taken from the checked
+/// DAE value before any coordinate statement exists
+/// ([`expression_projection::contains_whole_array_contraction`]), so this is
+/// emission and not recognition (TRP-020/021/035).
+///
+/// Every precondition fails closed to the coordinate projection:
+///
+/// * A value without a matrix-involving contraction keeps the coordinate
+///   form byte for byte, so equations that never dissolve are untouched.
+/// * A value that reads its own target's current tick keeps the coordinate
+///   form. (Such a self-read is a scheduling cycle and is rejected later,
+///   but this path must not change WHICH refusal the model receives.)
+/// * A value the symbolic-index projection cannot lower (for example an
+///   array constructor selected per coordinate) keeps the coordinate form:
+///   the trial runs on a clone of the lowerer, so a failed attempt leaves no
+///   temporary, cache entry or emitted statement behind.
+fn tensor_definition_assignments<'dae>(
+    lowerer: &mut ExpressionLowerer<'_, 'dae>,
+    value: dae::ExprId<'dae>,
+    classified: &ClassifiedVariable<'dae>,
+    span: Span,
+) -> Option<Vec<gast::Spanned<gast::Statement>>> {
+    if classified.variable.value_type().dimensions().is_empty()
+        || !expression_projection::contains_whole_array_contraction(lowerer.view, value)
+    {
+        return None;
+    }
+    let mut current_reads = HashSet::new();
+    collect_current_reads(lowerer.view, value, &mut current_reads);
+    if current_reads.contains(&classified.id.index()) {
+        return None;
+    }
+    let mut trial = lowerer.clone();
+    match lower_tensor_definition(&mut trial, value, classified, span) {
+        Ok(statements) => {
+            *lowerer = trial;
+            Some(statements)
+        }
+        Err(_) => None,
+    }
+}
+
+/// The tensor-loop statement sequence for one clocked whole-array definition:
+/// the mirror of `user_functions::lower_tensor_function_assignment`, storing
+/// to checked state instead of a function local.
+///
+/// No snapshot prologue is needed here: the caller has already proven the
+/// value does not read the target's current tick, so the store can never
+/// observe its own writes.
+fn lower_tensor_definition<'dae>(
+    lowerer: &mut ExpressionLowerer<'_, 'dae>,
+    value: dae::ExprId<'dae>,
+    classified: &ClassifiedVariable<'dae>,
+    span: Span,
+) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
+    let dimensions = classified.variable.value_type().dimensions();
+    user_functions::materialize_eager_aggregate_calls(value, lowerer)?;
+    let names = dimensions
+        .iter()
+        .enumerate()
+        .map(|(axis, _)| {
+            gast::Name::ident(format!(
+                "rumoca_tensor_{}_{}_{}",
+                lowerer.temporary_namespace, lowerer.temporary_counter, axis
+            ))
+        })
+        .collect::<Vec<_>>();
+    lowerer.temporary_counter += 1;
+    let bounds_depth = lowerer.loop_index_bounds.len();
+    for (name, &extent) in names.iter().zip(dimensions) {
+        lowerer.loop_index_bounds.push(LoopIndexBound {
+            name: name.clone(),
+            minimum: 1,
+            maximum: i64::from(extent),
+        });
+    }
+    let indices = names
+        .iter()
+        .cloned()
+        .map(|name| gast::Expression::Ref(gast::Reference::local(name)))
+        .collect::<Vec<_>>();
+    let prefix_start = lowerer.pending_prefix_statements.len();
+    let lowered = lowerer.lower_at(value, &indices);
+    lowerer.loop_index_bounds.truncate(bounds_depth);
+    let lowered = coerce(lowered?, classified.scalar_type, span)?;
+    let prefixes = lowerer.pending_prefix_statements.split_off(prefix_start);
+    let (before, mut body) = user_functions::partition_tensor_prefixes(prefixes, &names);
+    lowerer.pending_prefix_statements.extend(before);
+    body.push(gast::Spanned::new(
+        gast::Statement::Assignment {
+            target: state_reference_with_subscripts(classified.name.clone(), indices, span),
+            value: lowered,
+        },
+        span,
+    ));
+    Ok(user_functions::nest_tensor_loops(
+        body,
+        &names,
+        &expression_projection::AxisBounds {
+            extents: dimensions,
+            proven: &|index, extent| lowerer.prove_dynamic_index(index, extent, span).is_ok(),
+        },
+        span,
+    ))
 }
 
 /// The single array-shaped GALEC storage object `value` already denotes, when

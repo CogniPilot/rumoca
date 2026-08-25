@@ -96,6 +96,77 @@ fn compute_contains_function_fold_projection<'dae>(
     found
 }
 
+/// Whether lowering `expression` per target coordinate would dissolve a
+/// whole-array contraction into per-coordinate scalar accumulations.
+///
+/// The walk answers the question the clocked equation projection asks before
+/// choosing its statement shape: does this checked DAE value contain a `*`
+/// whose operand shapes make it a matrix-involving contraction? Such a node
+/// carries free indices that a per-coordinate projection would pin to
+/// constants, re-deriving the contraction once per target coordinate instead
+/// of once per free-index loop. A call to a directly-lowerable function is
+/// not descended: it materializes as one call, and its body already lowers
+/// through the function-body tensor path. An inlined function value or an
+/// inlined call result is descended, because its right-hand side lowers in
+/// this projection's own context.
+pub(in crate::lower) fn contains_whole_array_contraction<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> bool {
+    let mut pending = vec![expression];
+    let mut seen = HashSet::new();
+    let mut found = false;
+    while let Some(root) = pending.pop() {
+        if !seen.insert(root.index()) {
+            continue;
+        }
+        dae::for_each_expression(view, root, |_, node| match node.operation() {
+            dae::ExpressionOperation::Binary {
+                operator: dae::BinaryOperator::Multiply,
+                lhs,
+                rhs,
+            } => {
+                let dimensions = |operand| {
+                    view.expression(operand)
+                        .map(|node| node.value_type().dimensions().to_vec())
+                        .unwrap_or_default()
+                };
+                if is_matrix_contraction(&dimensions(lhs), &dimensions(rhs)) {
+                    found = true;
+                }
+            }
+            dae::ExpressionOperation::FunctionValue { definition, .. } => {
+                pending.push(definition.rhs());
+            }
+            dae::ExpressionOperation::Call {
+                function, output, ..
+            } => {
+                if !user_functions::is_directly_lowerable(view, function)
+                    && let Some(result) = view
+                        .function(function)
+                        .and_then(|function| function.result_values().rhs(output as usize))
+                {
+                    pending.push(result);
+                }
+            }
+            _ => {}
+        });
+    }
+    found
+}
+
+/// Whether `*` over these operand shapes is a contraction with at least one
+/// matrix operand: exactly the shapes [`tensor_contraction`] accepts, read
+/// off the checked types alone.
+fn is_matrix_contraction(lhs: &[u32], rhs: &[u32]) -> bool {
+    match (lhs, rhs) {
+        ([_, inner], [rhs_inner]) | ([inner], [rhs_inner, _]) | ([_, inner], [rhs_inner, _]) => {
+            inner == rhs_inner
+        }
+        _ => false,
+    }
+}
+
 /// Read an index-split selection guard as `<loop index> <= <literal>`.
 ///
 /// Concatenation and slice selections always guard on the loop coordinate the
