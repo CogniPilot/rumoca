@@ -1,16 +1,16 @@
 {
   "generated_by": "cargo xtask coverage gate",
-  "generated_at_unix_secs": 1787659895,
+  "generated_at_unix_secs": 1787665331,
   "source_candidates_file": "target/llvm-cov/trim-candidates.json",
   "workspace_line_coverage_percent": 77.37874621393274,
   "workspace_lines_covered": 310654,
   "workspace_lines_total": 401472,
   "packages": {
     "rumoca": {
-      "zero_count_functions_total": 566,
-      "candidates_total": 562,
-      "dead_likely_candidates": 131,
-      "needs_targeted_test_candidates": 308
+      "zero_count_functions_total": 585,
+      "candidates_total": 581,
+      "dead_likely_candidates": 132,
+      "needs_targeted_test_candidates": 322
     },
     "rumoca-bind-python": {
       "zero_count_functions_total": 401,
@@ -49,26 +49,26 @@
       "needs_targeted_test_candidates": 22
     },
     "rumoca-compile": {
-      "zero_count_functions_total": 416,
-      "candidates_total": 372,
-      "dead_likely_candidates": 96,
+      "zero_count_functions_total": 421,
+      "candidates_total": 377,
+      "dead_likely_candidates": 99,
       "needs_targeted_test_candidates": 148
     },
     "rumoca-contracts": {
-      "zero_count_functions_total": 45,
-      "candidates_total": 45,
+      "zero_count_functions_total": 46,
+      "candidates_total": 46,
       "dead_likely_candidates": 6,
       "needs_targeted_test_candidates": 33
     },
     "rumoca-core": {
-      "zero_count_functions_total": 1345,
-      "candidates_total": 274,
-      "dead_likely_candidates": 23,
+      "zero_count_functions_total": 1346,
+      "candidates_total": 275,
+      "dead_likely_candidates": 24,
       "needs_targeted_test_candidates": 116
     },
     "rumoca-eval-ast": {
-      "zero_count_functions_total": 190,
-      "candidates_total": 147,
+      "zero_count_functions_total": 192,
+      "candidates_total": 148,
       "dead_likely_candidates": 60,
       "needs_targeted_test_candidates": 74
     },
@@ -79,8 +79,8 @@
       "needs_targeted_test_candidates": 94
     },
     "rumoca-eval-flat": {
-      "zero_count_functions_total": 102,
-      "candidates_total": 102,
+      "zero_count_functions_total": 104,
+      "candidates_total": 104,
       "dead_likely_candidates": 60,
       "needs_targeted_test_candidates": 20
     },
@@ -91,8 +91,8 @@
       "needs_targeted_test_candidates": 45
     },
     "rumoca-eval-solve": {
-      "zero_count_functions_total": 500,
-      "candidates_total": 447,
+      "zero_count_functions_total": 503,
+      "candidates_total": 450,
       "dead_likely_candidates": 200,
       "needs_targeted_test_candidates": 179
     },
@@ -133,22 +133,22 @@
       "needs_targeted_test_candidates": 0
     },
     "rumoca-ir-ast": {
-      "zero_count_functions_total": 919,
-      "candidates_total": 178,
-      "dead_likely_candidates": 48,
-      "needs_targeted_test_candidates": 85
+      "zero_count_functions_total": 1035,
+      "candidates_total": 192,
+      "dead_likely_candidates": 49,
+      "needs_targeted_test_candidates": 92
     },
     "rumoca-ir-dae": {
-      "zero_count_functions_total": 438,
-      "candidates_total": 328,
-      "dead_likely_candidates": 105,
-      "needs_targeted_test_candidates": 150
+      "zero_count_functions_total": 482,
+      "candidates_total": 347,
+      "dead_likely_candidates": 107,
+      "needs_targeted_test_candidates": 158
     },
     "rumoca-ir-flat": {
-      "zero_count_functions_total": 128,
-      "candidates_total": 94,
+      "zero_count_functions_total": 150,
+      "candidates_total": 107,
       "dead_likely_candidates": 1,
-      "needs_targeted_test_candidates": 47
+      "needs_targeted_test_candidates": 55
     },
     "rumoca-ir-galec": {
       "zero_count_functions_total": 32,
@@ -157,10 +157,10 @@
       "needs_targeted_test_candidates": 16
     },
     "rumoca-ir-solve": {
-      "zero_count_functions_total": 502,
-      "candidates_total": 468,
+      "zero_count_functions_total": 558,
+      "candidates_total": 508,
       "dead_likely_candidates": 160,
-      "needs_targeted_test_candidates": 207
+      "needs_targeted_test_candidates": 236
     },
     "rumoca-opt": {
       "zero_count_functions_total": 8,
@@ -205,10 +205,10 @@
       "needs_targeted_test_candidates": 69
     },
     "rumoca-phase-parse": {
-      "zero_count_functions_total": 68,
-      "candidates_total": 67,
+      "zero_count_functions_total": 70,
+      "candidates_total": 69,
       "dead_likely_candidates": 35,
-      "needs_targeted_test_candidates": 19
+      "needs_targeted_test_candidates": 21
     },
     "rumoca-phase-parse-galec": {
       "zero_count_functions_total": 35,
@@ -217,10 +217,10 @@
       "needs_targeted_test_candidates": 15
     },
     "rumoca-phase-resolve": {
-      "zero_count_functions_total": 58,
-      "candidates_total": 57,
-      "dead_likely_candidates": 20,
-      "needs_targeted_test_candidates": 29
+      "zero_count_functions_total": 66,
+      "candidates_total": 65,
+      "dead_likely_candidates": 23,
+      "needs_targeted_test_candidates": 33
     },
     "rumoca-phase-solve": {
       "zero_count_functions_total": 765,
@@ -235,10 +235,10 @@
       "needs_targeted_test_candidates": 44
     },
     "rumoca-phase-typecheck": {
-      "zero_count_functions_total": 88,
-      "candidates_total": 82,
+      "zero_count_functions_total": 87,
+      "candidates_total": 81,
       "dead_likely_candidates": 28,
-      "needs_targeted_test_candidates": 27
+      "needs_targeted_test_candidates": 26
     },
     "rumoca-reference": {
       "zero_count_functions_total": 27,
@@ -253,9 +253,9 @@
       "needs_targeted_test_candidates": 3
     },
     "rumoca-sim": {
-      "zero_count_functions_total": 371,
-      "candidates_total": 349,
-      "dead_likely_candidates": 79,
+      "zero_count_functions_total": 374,
+      "candidates_total": 352,
+      "dead_likely_candidates": 80,
       "needs_targeted_test_candidates": 113
     },
     "rumoca-solver": {
@@ -283,10 +283,10 @@
       "needs_targeted_test_candidates": 207
     },
     "rumoca-tool-fmt": {
-      "zero_count_functions_total": 27,
-      "candidates_total": 27,
-      "dead_likely_candidates": 9,
-      "needs_targeted_test_candidates": 4
+      "zero_count_functions_total": 53,
+      "candidates_total": 53,
+      "dead_likely_candidates": 25,
+      "needs_targeted_test_candidates": 8
     },
     "rumoca-tool-lint": {
       "zero_count_functions_total": 13,
@@ -295,10 +295,10 @@
       "needs_targeted_test_candidates": 13
     },
     "rumoca-tool-lsp": {
-      "zero_count_functions_total": 206,
-      "candidates_total": 195,
+      "zero_count_functions_total": 210,
+      "candidates_total": 199,
       "dead_likely_candidates": 81,
-      "needs_targeted_test_candidates": 67
+      "needs_targeted_test_candidates": 72
     },
     "rumoca-tool-lsp-galec": {
       "zero_count_functions_total": 14,
