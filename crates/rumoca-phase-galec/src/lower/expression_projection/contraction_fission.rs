@@ -272,4 +272,46 @@ mod tests {
             "a single scalar read costs less than the array it would need"
         );
     }
+
+    /// The retirement assertion is only evidence if the split it reports can
+    /// be read: this pins the message the recognizer would print if it ever
+    /// found a body the composed contraction failed to carry.
+    #[test]
+    fn a_recognized_split_describes_itself() {
+        let body = left_nested_body();
+        let term = product(local("inner"), element("a", &["column", "k"]));
+        let fission = fission_contraction_body(&body, &[local("column")], &term)
+            .expect("the inner product does not read the result column");
+        assert_eq!(
+            fission.describe(),
+            "2 hoistable statement(s), 0 left with the accumulation, carrying [\"inner\"]"
+        );
+    }
+
+    /// An outer index may be a conditional, and every name it can reach counts
+    /// as one the invariant half must not depend on. Missing a name here would
+    /// hoist work that does vary with the result column.
+    #[test]
+    fn a_conditional_outer_index_contributes_every_name_it_reaches() {
+        let body = left_nested_body();
+        let term = product(local("inner"), element("a", &["column", "k"]));
+        let conditional = gast::Expression::If(gast::IfExpression::new(
+            vec![(gast::Expression::Bool(true), local("column"))],
+            local("row"),
+        ));
+        assert!(
+            fission_contraction_body(&body, &[conditional], &term).is_none(),
+            "the else value names the row the invariant half reads, so the \
+             invariant half is not invariant"
+        );
+
+        let disjoint = gast::Expression::If(gast::IfExpression::new(
+            vec![(gast::Expression::Bool(true), local("column"))],
+            local("column"),
+        ));
+        assert!(
+            fission_contraction_body(&body, &[disjoint], &term).is_some(),
+            "a conditional naming only the result column still splits"
+        );
+    }
 }

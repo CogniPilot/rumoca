@@ -4007,10 +4007,21 @@ fn carried_row_contraction<'a>(row: &TypedForView<'a>) -> Option<MatmulRow<'a>> 
     };
     let column = row.iterator.as_ref()?;
     let count = i64::from(correlation.count());
+    let target = contiguous_run(accumulator, column, count)?;
+    // The run the printer reaches is a product of placement, overlay and arena
+    // projection, so it is derived here rather than carried. Its *identity* is
+    // not: lowering attested which intermediate this nest accumulates into, and
+    // a derived run naming a different object would mean the printer matched a
+    // nest the attestation was not about.
+    debug_assert_eq!(
+        reference_root(&target),
+        correlation.target().lexeme(),
+        "row contraction attested an accumulation into a different run"
+    );
     Some(MatmulRow {
         count,
         zero: initial.clone(),
-        target: contiguous_run(accumulator, column, count)?,
+        target,
         iterator: correlation.iterator(),
         extent: i64::from(correlation.extent()),
         scale: scale.as_ref().clone(),
@@ -6727,5 +6738,170 @@ mod layout_tests {
         assert_eq!(slot_bytes(&array_local("t", 4)), Some(16));
         assert_eq!(total_bytes([slot_bytes(&derived), Some(16)]), None);
         assert_eq!(widest_bytes([slot_bytes(&derived), Some(16)]), None);
+    }
+}
+
+#[cfg(test)]
+mod scale_operand_tests {
+    use super::*;
+
+    fn scalar_view<'a>(
+        scalar: ast::ScalarType,
+        node: TypedExpressionNodeView<'a>,
+    ) -> TypedExpressionView<'a> {
+        TypedExpressionView {
+            rank: 0,
+            extents: Some(Vec::new()),
+            scalar: Some(scalar),
+            node,
+        }
+    }
+
+    fn reference<'a>(
+        name: &'a ast::Name,
+        subscripts: Vec<TypedExpressionView<'a>>,
+    ) -> TypedReferenceView<'a> {
+        TypedReferenceView {
+            rank: 0,
+            extents: Some(Vec::new()),
+            scalar: Some(ast::ScalarType::Real),
+            context_resident: false,
+            context_arena: false,
+            context_overlay: None,
+            declared_extents: None,
+            node: TypedReferenceNodeView::Local(TypedRefPartView { name, subscripts }),
+        }
+    }
+
+    fn real_ref<'a>(name: &'a ast::Name) -> TypedExpressionView<'a> {
+        scalar_view(
+            ast::ScalarType::Real,
+            TypedExpressionNodeView::Ref(reference(name, Vec::new())),
+        )
+    }
+
+    fn binary<'a>(
+        op: ast::BinaryOp,
+        lhs: TypedExpressionView<'a>,
+        rhs: TypedExpressionView<'a>,
+    ) -> TypedExpressionView<'a> {
+        scalar_view(
+            ast::ScalarType::Real,
+            TypedExpressionNodeView::Binary {
+                op,
+                precedence_class: op.precedence_class(),
+                associativity: op.precedence_class().associativity(),
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                square_form: SquareForm::Multiply,
+            },
+        )
+    }
+
+    /// A scale is a scalar Real by definition: an array-valued operand is not
+    /// a coefficient the kernel can hoist, whatever its node shape.
+    #[test]
+    fn array_valued_operand_is_not_a_scale() {
+        let a = ast::Name::ident("a");
+        let mut value = real_ref(&a);
+        value.rank = 1;
+        value.extents = Some(vec![3]);
+        assert!(scale_operand(&value).is_none());
+    }
+
+    #[test]
+    fn integer_operand_is_not_a_scale() {
+        let value = scalar_view(
+            ast::ScalarType::Integer,
+            TypedExpressionNodeView::Integer(2),
+        );
+        assert!(scale_operand(&value).is_none());
+    }
+
+    /// The whitelist walk descends products, quotients, parentheses and
+    /// negation, and reports the root object of every reference it passes so
+    /// the caller can prove none of them is the run the kernel writes.
+    #[test]
+    fn product_reports_every_reference_root() {
+        let (a, b, c) = (
+            ast::Name::ident("a"),
+            ast::Name::ident("b"),
+            ast::Name::ident("c"),
+        );
+        let negated = scalar_view(
+            ast::ScalarType::Real,
+            TypedExpressionNodeView::Neg(reference(&c, Vec::new())),
+        );
+        let parenthesized = scalar_view(
+            ast::ScalarType::Real,
+            TypedExpressionNodeView::Paren(Box::new(binary(
+                ast::BinaryOp::Div,
+                real_ref(&b),
+                negated,
+            ))),
+        );
+        let value = binary(ast::BinaryOp::Mul, real_ref(&a), parenthesized);
+
+        let (reported, roots) = scale_operand(&value).expect("product of references is a scale");
+        assert!(std::ptr::eq(reported, &value));
+        assert_eq!(roots, vec!["a", "b", "c"]);
+    }
+
+    /// Addition is off the whitelist: hoisting it would change how many times
+    /// a rounding-sensitive sum is evaluated, so the walk refuses the node
+    /// rather than reporting partial roots.
+    #[test]
+    fn addition_is_refused() {
+        let (a, b) = (ast::Name::ident("a"), ast::Name::ident("b"));
+        let value = binary(ast::BinaryOp::Add, real_ref(&a), real_ref(&b));
+        assert!(scale_operand(&value).is_none());
+
+        let mut roots = Vec::new();
+        assert!(!scale_operand_roots(&value, &mut roots));
+    }
+
+    #[test]
+    fn local_reference_mentions_its_own_name() {
+        let a = ast::Name::ident("a");
+        assert!(mentions_name_in_reference(&reference(&a, Vec::new()), "a"));
+        assert!(!mentions_name_in_reference(&reference(&a, Vec::new()), "b"));
+    }
+
+    #[test]
+    fn subscript_mentions_are_found() {
+        let (a, k) = (ast::Name::ident("a"), ast::Name::ident("k"));
+        let subscripted = reference(&a, vec![real_ref(&k)]);
+        assert!(mentions_name_in_reference(&subscripted, "k"));
+    }
+
+    /// A state path's component names are not local names, so a component that
+    /// happens to spell the searched name is not a mention; its subscripts
+    /// still are.
+    #[test]
+    fn state_component_name_is_not_a_local_mention() {
+        let (state, k) = (ast::Name::ident("k"), ast::Name::ident("k"));
+        let path = TypedReferenceView {
+            rank: 0,
+            extents: Some(Vec::new()),
+            scalar: Some(ast::ScalarType::Real),
+            context_resident: false,
+            context_arena: false,
+            context_overlay: None,
+            declared_extents: None,
+            node: TypedReferenceNodeView::State(vec![TypedRefPartView {
+                name: &state,
+                subscripts: Vec::new(),
+            }]),
+        };
+        assert!(!mentions_name_in_reference(&path, "k"));
+
+        let subscripted = TypedReferenceView {
+            node: TypedReferenceNodeView::State(vec![TypedRefPartView {
+                name: &state,
+                subscripts: vec![real_ref(&k)],
+            }]),
+            ..path.clone()
+        };
+        assert!(mentions_name_in_reference(&subscripted, "k"));
     }
 }

@@ -267,3 +267,68 @@ fn shape_only_family_collision_is_ambiguous() {
         "shape aliases must not silently select one colliding instance"
     );
 }
+
+/// A dotted reference resolves its later parts as named children of the
+/// instances the earlier parts named. The child map is keyed by an owned
+/// segment but queried with the borrowed part text, so this also pins that the
+/// lookup finds a key it did not have to allocate to ask for.
+#[test]
+fn a_dotted_reference_resolves_its_tail_as_a_named_child() {
+    let body_def_id = DefId::new(51);
+    let mut overlay = InstanceOverlay::new();
+    identity_instance(&mut overlay, "Pkg.Root.body", body_def_id, TypeId::new(31));
+    identity_instance(
+        &mut overlay,
+        "Pkg.Root.body.value",
+        DefId::new(52),
+        TypeId::new(32),
+    );
+    let scope = InstanceSemanticScope::from_overlay(&overlay);
+
+    let mut reference = resolved_reference("body", body_def_id);
+    reference.parts.push(ComponentRefPart {
+        ident: Token {
+            text: Arc::from("value"),
+            ..Default::default()
+        },
+        subs: None,
+        def_id: None,
+    });
+
+    assert!(
+        matches!(
+            scope.lookup_reference(
+                &reference,
+                2,
+                None,
+                Some(&ComponentPath::from_flat_path("Pkg.Root")),
+            ),
+            SemanticLookup::Found(ComponentSemantics { type_id, .. })
+                if type_id == TypeId::new(32)
+        ),
+        "the tail part names a child of the instance the head part resolved to"
+    );
+
+    let mut absent = resolved_reference("body", body_def_id);
+    absent.parts.push(ComponentRefPart {
+        ident: Token {
+            text: Arc::from("missing"),
+            ..Default::default()
+        },
+        subs: None,
+        def_id: None,
+    });
+    assert!(
+        !matches!(
+            scope.lookup_reference(
+                &absent,
+                2,
+                None,
+                Some(&ComponentPath::from_flat_path("Pkg.Root")),
+            ),
+            SemanticLookup::Found(ComponentSemantics { type_id, .. })
+                if type_id == TypeId::new(32)
+        ),
+        "a tail part that names no child must not borrow a sibling's semantics"
+    );
+}

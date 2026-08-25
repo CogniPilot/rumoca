@@ -216,3 +216,100 @@ pub(super) fn intermediate_element(
     part.subscripts.push(contracted.clone());
     gast::Reference::Local(part)
 }
+
+#[cfg(test)]
+mod mentions_tests {
+    use super::*;
+
+    fn name(text: &str) -> gast::Name {
+        gast::Name::ident(text)
+    }
+
+    fn local(text: &str) -> gast::Expression {
+        gast::Expression::Ref(gast::Reference::local(name(text)))
+    }
+
+    /// A call's arguments are ordinary expressions and are searched in full:
+    /// the intermediate must not be renamed out from under a call that reads
+    /// it.
+    #[test]
+    fn call_arguments_are_searched() {
+        let call = gast::Expression::Call(gast::FunctionCall {
+            function: name("f"),
+            arguments: vec![gast::Expression::Integer(1), local("k")],
+        });
+        assert!(mentions(&call, &name("k")));
+        assert!(!mentions(&call, &name("j")));
+    }
+
+    /// Both halves of every branch pair are searched, and so is the mandatory
+    /// else value.
+    #[test]
+    fn conditional_branches_and_else_are_searched() {
+        let in_condition = gast::Expression::If(gast::IfExpression::new(
+            vec![(local("k"), gast::Expression::Integer(1))],
+            gast::Expression::Integer(0),
+        ));
+        assert!(mentions(&in_condition, &name("k")));
+
+        let in_value = gast::Expression::If(gast::IfExpression::new(
+            vec![(gast::Expression::Bool(true), local("k"))],
+            gast::Expression::Integer(0),
+        ));
+        assert!(mentions(&in_value, &name("k")));
+
+        let in_else = gast::Expression::If(gast::IfExpression::new(
+            vec![(gast::Expression::Bool(true), gast::Expression::Integer(1))],
+            local("k"),
+        ));
+        assert!(mentions(&in_else, &name("k")));
+
+        let absent = gast::Expression::If(gast::IfExpression::new(
+            vec![(gast::Expression::Bool(true), gast::Expression::Integer(1))],
+            gast::Expression::Integer(0),
+        ));
+        assert!(!mentions(&absent, &name("k")));
+    }
+
+    #[test]
+    fn array_elements_are_searched() {
+        let array = gast::Expression::Array(vec![gast::Expression::Integer(1), local("k")]);
+        assert!(mentions(&array, &name("k")));
+        assert!(!mentions(&array, &name("j")));
+    }
+
+    /// A subscript is an expression, so a name reached only through one is
+    /// still a mention; a bare literal never is.
+    #[test]
+    fn subscripts_are_searched_and_literals_are_not() {
+        let mut part = gast::RefPart::plain(name("a"));
+        part.subscripts = vec![local("k")];
+        let subscripted = gast::Expression::Ref(gast::Reference::Local(part));
+        assert!(mentions(&subscripted, &name("k")));
+
+        assert!(!mentions(&gast::Expression::Real(1.5), &name("k")));
+        assert!(!mentions(&gast::Expression::Bool(false), &name("k")));
+        assert!(!mentions(&gast::Expression::Integer(3), &name("k")));
+    }
+
+    /// `size(a, k)` reaches the name through its dimension argument.
+    #[test]
+    fn size_dimension_is_searched() {
+        let query = gast::Expression::Size {
+            array: gast::Reference::local(name("a")),
+            dimension: Box::new(local("k")),
+        };
+        assert!(mentions(&query, &name("k")));
+    }
+
+    #[test]
+    fn a_bare_local_reference_is_recognized_exactly() {
+        assert!(is_reference_to(&local("k"), &name("k")));
+        assert!(!is_reference_to(&local("j"), &name("k")));
+
+        let mut part = gast::RefPart::plain(name("k"));
+        part.subscripts = vec![gast::Expression::Integer(1)];
+        let subscripted = gast::Expression::Ref(gast::Reference::Local(part));
+        assert!(!is_reference_to(&subscripted, &name("k")));
+    }
+}
