@@ -121,11 +121,19 @@ fn function(
 /// staying alive across a call.
 ///
 /// ```text
-/// inner(u) => y      : y := 3*u
+/// inner(u) => y      : hold := u; y := 3*hold
 /// outer(u) => y      : keep := u; (y) := inner(keep); y := y + keep
 /// DoStep             : staging := a; guard := 5*a;
 ///                      (result) := outer(staging); result := result + guard
 /// ```
+///
+/// `inner` writes its output through a local rather than straight from `u` so
+/// that it still OWNS a region: `inner` has one call site and writes all of `y`
+/// at top level, so the projection places `y` in `outer`'s own output slot and
+/// nothing of `y` is left here. `hold` keeps the three-deep chain three regions
+/// deep, which is what the overlay assertions below are about, and the placement
+/// then rides on the same compiled, value-checked fixture: an unsound one puts a
+/// different number on `result`.
 ///
 /// With `a = [1,2,3,4]` the answer is `9*a`, and each of the two overlay
 /// mistakes this change could make produces a different number:
@@ -146,8 +154,11 @@ fn fixture() -> CheckedAlgorithmBlock {
     block.protected_functions = vec![
         function(
             "inner",
-            Vec::new(),
-            vec![assign(local_ref("y"), scaled(local("u"), 3.0))],
+            vec![array("hold")],
+            vec![
+                assign(local_ref("hold"), local("u")),
+                assign(local_ref("y"), scaled(local("hold"), 3.0)),
+            ],
         ),
         function(
             "outer",

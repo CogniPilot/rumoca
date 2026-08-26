@@ -25,6 +25,13 @@ use super::source_trace::{SourceTrace, SourceTraceResolver, TraceLegend};
 /// the rest of the crate has any use for.
 mod marshalling;
 
+/// Destination placement: which callee output slots live in storage the caller
+/// already owns, so the read-back that would move them there is never emitted.
+/// A child module for the same reason [`marshalling`] is one: it reads the
+/// checked block's own statement vocabulary and answers a question only this
+/// view asks.
+mod destination;
+
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TypedBlockView<'a> {
     name: &'a ast::Name,
@@ -99,6 +106,34 @@ struct ScratchRegionView<'a> {
     /// through a typed pointer at its fixed offset. The offsets are decided by
     /// the prover in `algorithm_code_arena` and only printed by a target.
     arena: Option<ArenaRegionView<'a>>,
+    /// Output slots this owner delivers through storage its CALLER owns.
+    ///
+    /// Each is reached through a typed pointer the owner's entry declares at
+    /// the destination, exactly as an arena slot is reached through one at its
+    /// arena offset. It is not a member of this region and costs it no bytes;
+    /// the caller's slot is the storage, and the caller emits no read-back for
+    /// it. The permission behind each entry is minted in [`destination`].
+    destinations: Vec<DestinationSlotView<'a>>,
+}
+
+/// One output slot delivered through a caller-owned destination.
+#[derive(Debug, Clone, Serialize)]
+struct DestinationSlotView<'a> {
+    /// The output's source name. The owner's body spells it, and the owner's
+    /// entry declares a pointer of the same name, so a target prints the two
+    /// exactly as it prints an arena slot and its pointer.
+    name: &'a ast::Name,
+    /// The scalar the destination holds, equal to the output's by construction.
+    scalar: ast::ScalarType,
+    /// The destination's extents as its own region finally declares them, so a
+    /// target's pointer carries the destination's type and needs no cast. Read
+    /// back after the bound equalization has run, which is the only pass that
+    /// may still widen a leading extent.
+    extents: Vec<usize>,
+    /// The user function whose region holds the destination.
+    owner: &'a str,
+    /// The destination member's source name inside that region.
+    member: &'a str,
 }
 
 /// One region's value arena as a target declares it.
@@ -255,16 +290,20 @@ impl<'a> ScratchSlotView<'a> {
 }
 
 impl<'a> ScratchRegionView<'a> {
+    /// `pinned` names the slots a destination placement lends to a callee. They
+    /// keep their own storage: an overlay sibling would put another value in
+    /// the bytes a callee writes through a pointer this region never sees.
     fn new(
         owner: Owner<'a>,
         slots: &[&'a ast::VariableDeclaration],
         placements: &LocalPlacements<'a>,
+        pinned: &HashSet<&'a str>,
     ) -> Self {
         let (function, method) = match owner {
             Owner::Function(name) => (Some(name), None),
             Owner::Method(spelling) => (None, Some(spelling)),
         };
-        let members = overlay_slots(slots, placements);
+        let members = overlay_slots(slots, placements, pinned);
         let slot_overlays = members
             .iter()
             .flat_map(|member| {
@@ -290,6 +329,10 @@ impl<'a> ScratchRegionView<'a> {
             // final: the live ranges the arena is placed from are ranges in
             // the statements a target prints, not in the checked AST.
             arena: None,
+            // Filled in by the owner's projection from the block's placement
+            // plan, and completed once the bound equalization has settled the
+            // destinations' extents.
+            destinations: Vec::new(),
         }
     }
 
@@ -309,12 +352,19 @@ impl<'a> ScratchRegionView<'a> {
 fn overlay_slots<'a>(
     slots: &[&'a ast::VariableDeclaration],
     placements: &LocalPlacements<'a>,
+    pinned: &HashSet<&'a str>,
 ) -> Vec<ScratchMemberView<'a>> {
     let homes = SlotHomes::observed(
         slots
             .iter()
             .filter_map(|slot| {
                 let name = slot.name.lexeme();
+                // A slot lent to a callee as a destination is withheld from the
+                // overlay: the callee writes it through a pointer, at a moment
+                // this region's arm analysis cannot see.
+                if pinned.contains(name) {
+                    return None;
+                }
                 placements.home(name).map(|home| (name, home.to_vec()))
             })
             .collect(),
@@ -1083,6 +1133,11 @@ struct TypedCallView<'a> {
     /// them back from these slots instead of passing out pointers; the order
     /// is the order the call's assignment targets are written in.
     outputs: Vec<&'a ast::VariableDeclaration>,
+    /// One flag per entry of `outputs`: `true` where the block placed that
+    /// output in the destination this call assigns it to, so the callee has
+    /// already written the target and the read-back is not emitted. See
+    /// [`destination`] for the permission each `true` carries.
+    placed_outputs: Vec<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1279,6 +1334,12 @@ pub(super) fn block<'a>(
             .chain(&mut public_functions)
             .collect(),
     );
+    retype_destinations(
+        protected_functions
+            .iter_mut()
+            .chain(&mut public_functions)
+            .collect(),
+    )?;
     let semantic_uses = shapes.semantic_uses.borrow().clone();
     let regions: Vec<_> = protected_functions
         .iter()
@@ -1328,6 +1389,54 @@ pub(super) fn block<'a>(
         },
         traces,
     ))
+}
+
+/// Give every destination pointer the type its destination finally has, and
+/// fail closed on a destination that is not there.
+///
+/// The bound equalization is the last pass that may widen a slot's leading
+/// extent, and a pointer declared with the output's narrower type would be a
+/// second declared shape at one address — exactly what the equalization exists
+/// to remove. Widening never moves an element (only the leading extent grows,
+/// and it is not a stride), so the placement stays value-preserving; the
+/// pointer just has to say so.
+///
+/// A destination that is not a plain member of its owner's region would mean
+/// the projection had placed a slot the arena or the arm overlay then moved,
+/// which the pinning in [`BlockShapes::function`] rules out. This is where that
+/// invariant is checked rather than assumed: a violated one is a wrong address,
+/// so it stops the projection.
+fn retype_destinations<'a>(functions: Vec<&mut TypedFunctionView<'a>>) -> Result<(), String> {
+    let members: HashMap<(&'a str, &'a str), Vec<usize>> = functions
+        .iter()
+        .filter_map(|function| function.scratch.function.map(|owner| (owner, function)))
+        .flat_map(|(owner, function)| {
+            function
+                .scratch
+                .members
+                .iter()
+                .filter(|member| member.overlay.is_none())
+                .filter_map(move |member| {
+                    let slot = member.slots.first()?;
+                    Some(((owner, slot.lexeme()), slot.extents.clone()?))
+                })
+        })
+        .collect();
+    for function in functions {
+        for placed in &mut function.scratch.destinations {
+            let Some(extents) = members.get(&(placed.owner, placed.member)) else {
+                return Err(format!(
+                    "destination-placed output `{}` names `{}.{}`, which is not a plain \
+                     member of that region",
+                    placed.name.lexeme(),
+                    placed.owner,
+                    placed.member
+                ));
+            };
+            placed.extents = extents.clone();
+        }
+    }
+    Ok(())
 }
 
 /// The block's call graph, as the overlay prover wants it: one entry per owner,
@@ -2573,6 +2682,10 @@ struct BlockShapes<'a> {
     state: HashMap<&'a str, &'a ast::VariableDeclaration>,
     compartments: HashMap<&'a str, &'a ast::StateCompartment>,
     functions: HashMap<&'a str, &'a ast::UserFunction>,
+    /// Which callee outputs live in caller-owned slots. Decided once, before
+    /// any owner is projected, because a placement removes a slot from one
+    /// region and pins one in another and both are inputs to the projection.
+    destinations: destination::Plan<'a>,
     semantic_uses: RefCell<SemanticOperationUses>,
     /// Set while lowering one owner's body when a reference resolves into that
     /// owner's context region. Read straight after, so a target knows whether
@@ -2605,10 +2718,12 @@ impl<'a> BlockShapes<'a> {
             .chain(&block.public_functions)
             .map(|function| (function.name.lexeme(), function))
             .collect();
+        let destinations = destination::plan(block, &functions);
         Self {
             state,
             compartments,
             functions,
+            destinations,
             semantic_uses: RefCell::new(SemanticOperationUses::default()),
             context_reads: RefCell::new(false),
             traces: SourceTraceResolver::new(sources),
@@ -2686,8 +2801,16 @@ impl<'a> BlockShapes<'a> {
                         && !retired.contains(declaration.name.lexeme())
                 })
                 .collect::<Vec<_>>();
-            let mut scratch = ScratchRegionView::new(Owner::Method(spelling), &slots, &placements);
-            let scope = ScopeShapes::new(self, &method.locals, &scratch);
+            // A block method never lends a destination (see [`destination`]),
+            // so nothing is pinned in its region and it delivers no output of
+            // its own through one.
+            let mut scratch = ScratchRegionView::new(
+                Owner::Method(spelling),
+                &slots,
+                &placements,
+                &HashSet::new(),
+            );
+            let scope = ScopeShapes::new(self, &method.locals, &scratch, HashSet::new());
             *self.context_reads.borrow_mut() = false;
             let mut statements =
                 scope.statements(&method.statements, &placements, &mut Vec::new())?;
@@ -2719,10 +2842,17 @@ impl<'a> BlockShapes<'a> {
 
     fn function(&self, function: &'a ast::UserFunction) -> Result<TypedFunctionView<'a>, String> {
         let placements = LocalPlacements::derive(&function.locals, &function.statements);
+        let owner = Owner::Function(function.name.lexeme());
+        // The outputs this function delivers through a caller-owned slot, and
+        // the slots of its own it lends to a callee the same way.
+        let placed = self.destinations.placed_outputs(owner);
+        let pinned = self.destinations.pinned_slots(owner);
         // Only a local is retirable. An output parameter is a slot the caller
         // reads back after this function returns, and no analysis of this body
-        // can see that use.
-        let retirable = retirable_locals(&function.locals);
+        // can see that use; a pinned local is the storage a callee writes
+        // through a pointer, which no analysis of this body can see either.
+        let mut retirable = retirable_locals(&function.locals);
+        retirable.retain(|name| !pinned.contains(name));
         let mut retired = HashSet::new();
         loop {
             // Declaration order inside the region: reachable array locals, then
@@ -2745,14 +2875,17 @@ impl<'a> BlockShapes<'a> {
                         && context_resident(declaration)
                         && !retired.contains(declaration.name.lexeme())
                 })
-                .chain(output_parameters(function).map(|parameter| &parameter.decl))
+                .chain(
+                    output_parameters(function)
+                        .map(|parameter| &parameter.decl)
+                        // An output the block placed at a caller-owned slot has
+                        // no storage here at all: it is reached through the
+                        // pointer this owner's entry declares at that slot.
+                        .filter(|declaration| !placed.contains(declaration.name.lexeme())),
+                )
                 .collect::<Vec<_>>();
-            let mut scratch = ScratchRegionView::new(
-                Owner::Function(function.name.lexeme()),
-                &slots,
-                &placements,
-            );
-            let scope = ScopeShapes::for_function(self, function, &scratch);
+            let mut scratch = ScratchRegionView::new(owner, &slots, &placements, &pinned);
+            let scope = ScopeShapes::for_function(self, function, &scratch, placed.clone());
             *self.context_reads.borrow_mut() = false;
             let mut statements =
                 scope.statements(&function.statements, &placements, &mut Vec::new())?;
@@ -2767,14 +2900,19 @@ impl<'a> BlockShapes<'a> {
             // because the caller reads them back after this function returns,
             // a live range no walk over this body can see; function names are
             // withheld because a block-scope pointer of that spelling would
-            // shadow the file-scope definition.
+            // shadow the file-scope definition. A slot lent to a callee as a
+            // destination is withheld too: the arena shares bytes on a liveness
+            // model of THIS body, and a callee writing through a pointer at
+            // that slot is not a use this body performs.
             let withheld: HashSet<&str> = self
                 .functions
                 .keys()
                 .copied()
                 .chain(output_parameters(function).map(|parameter| parameter.decl.name.lexeme()))
+                .chain(pinned.iter().copied())
                 .collect();
             adopt_arena(&mut scratch, &mut statements, &withheld, &self.functions);
+            scratch.destinations = self.destination_slots(function, &placed);
             let uses_scratch = *self.context_reads.borrow();
             return Ok(TypedFunctionView {
                 kind: function.kind,
@@ -2790,6 +2928,41 @@ impl<'a> BlockShapes<'a> {
                 statements,
             });
         }
+    }
+
+    /// The pointers one function's entry declares for the outputs the block
+    /// placed at caller-owned slots, in signature order.
+    ///
+    /// The extents recorded here are the OUTPUT's declared extents. They are
+    /// equal to the destination's by the permission that minted the placement,
+    /// and [`retype_destinations`] replaces them with the destination's final
+    /// ones after the bound equalization, which is the only pass that may still
+    /// widen a leading extent.
+    fn destination_slots(
+        &self,
+        function: &'a ast::UserFunction,
+        placed: &HashSet<&'a str>,
+    ) -> Vec<DestinationSlotView<'a>> {
+        if placed.is_empty() {
+            return Vec::new();
+        }
+        output_parameters(function)
+            .filter(|parameter| placed.contains(parameter.decl.name.lexeme()))
+            .filter_map(|parameter| {
+                let name = parameter.decl.name.lexeme();
+                let destination = self
+                    .destinations
+                    .destination_of(function.name.lexeme(), name)?;
+                let (scalar, extents) = slot_shape(&parameter.decl)?;
+                Some(DestinationSlotView {
+                    name: &parameter.decl.name,
+                    scalar,
+                    extents,
+                    owner: destination.owner,
+                    member: destination.member,
+                })
+            })
+            .collect()
     }
 
     fn state_reference_shape(&self, parts: &[ast::RefPart]) -> Result<ShapeEvidence, String> {
@@ -2915,6 +3088,11 @@ struct ScopeShapes<'a, 'block> {
     /// whether the region holds it at all, and which member of the region it is
     /// reached through.
     context_slots: HashMap<&'a str, Option<usize>>,
+    /// The outputs this owner delivers through a caller-owned slot. They are
+    /// not members of this region at all, so a reference to one is spelled
+    /// against the pointer the owner's entry declares, exactly as an arena
+    /// slot's reference is.
+    destination_slots: HashSet<&'a str>,
 }
 
 impl<'a, 'block> ScopeShapes<'a, 'block> {
@@ -2922,6 +3100,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
         block: &'block BlockShapes<'a>,
         locals: &'a [ast::VariableDeclaration],
         scratch: &ScratchRegionView<'a>,
+        destination_slots: HashSet<&'a str>,
     ) -> Self {
         Self {
             block,
@@ -2931,6 +3110,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 .collect(),
             iterators: HashSet::new(),
             context_slots: scratch.slot_overlays.clone(),
+            destination_slots,
         }
     }
 
@@ -2938,6 +3118,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
         block: &'block BlockShapes<'a>,
         function: &'a ast::UserFunction,
         scratch: &ScratchRegionView<'a>,
+        destination_slots: HashSet<&'a str>,
     ) -> Self {
         Self {
             block,
@@ -2954,6 +3135,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 .collect(),
             iterators: HashSet::new(),
             context_slots: scratch.slot_overlays.clone(),
+            destination_slots,
         }
     }
 
@@ -2967,6 +3149,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             locals: self.locals.clone(),
             iterators,
             context_slots: self.context_slots.clone(),
+            destination_slots: self.destination_slots.clone(),
         }
     }
 
@@ -3118,6 +3301,22 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             .borrow_mut()
             .observe_call(lifted_base.unwrap_or_else(|| call.function.lexeme()));
         let callee = self.block.functions.get(call.function.lexeme()).copied();
+        let outputs: Vec<&'a ast::VariableDeclaration> = callee
+            .map(|function| {
+                output_parameters(function)
+                    .map(|parameter| &parameter.decl)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let placed_outputs = outputs
+            .iter()
+            .map(|output| {
+                self.block
+                    .destinations
+                    .destination_of(call.function.lexeme(), output.name.lexeme())
+                    .is_some()
+            })
+            .collect();
         Ok(TypedCallView {
             function: &call.function,
             lifted_base,
@@ -3127,13 +3326,8 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 .iter()
                 .map(|argument| self.expression(argument))
                 .collect::<Result<_, _>>()?,
-            outputs: callee
-                .map(|function| {
-                    output_parameters(function)
-                        .map(|parameter| &parameter.decl)
-                        .collect()
-                })
-                .unwrap_or_default(),
+            outputs,
+            placed_outputs,
         })
     }
 
@@ -3223,6 +3417,13 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             }
             ast::Reference::Local(_) | ast::Reference::State(_) => None,
         };
+        // An output delivered through a caller-owned destination is reached
+        // through the pointer the owner's entry declared, so it is neither a
+        // member of this region nor a reason to alias the region at all.
+        let destination_placed = matches!(reference,
+            ast::Reference::Local(part)
+                if !self.iterators.contains(part.name.lexeme())
+                    && self.destination_slots.contains(part.name.lexeme()));
         let context_resident = slot.is_some();
         if context_resident {
             *self.block.context_reads.borrow_mut() = true;
@@ -3234,8 +3435,11 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             context_resident,
             context_overlay: slot.flatten(),
             // Arena membership is decided after every reference is projected;
-            // `mark_arena_references` sets this where the placement landed.
-            context_arena: false,
+            // `mark_arena_references` sets this where the placement landed. A
+            // destination-placed output is known here, and shares the spelling
+            // because it shares the mechanism: a typed pointer of the slot's
+            // own name, declared once at the owner's entry.
+            context_arena: destination_placed,
             declared_extents: self
                 .final_declaration(reference)
                 .and_then(|declaration| literal_extents(&declaration.dimensions)),
@@ -4537,6 +4741,7 @@ fn substitute_scalar_local<'a>(
                 .map(|argument| substitute_scalar_local(argument, name, row, column))
                 .collect(),
             outputs: call.outputs.clone(),
+            placed_outputs: call.placed_outputs.clone(),
         }),
         TypedExpressionNodeView::If(branches) => {
             TypedExpressionNodeView::If(TypedIfExpressionView {
@@ -5259,6 +5464,7 @@ mod square_reduction_tests {
                 user_function: true,
                 arguments: Vec::new(),
                 outputs: Vec::new(),
+                placed_outputs: Vec::new(),
             }),
         );
         assert_eq!(
@@ -5298,6 +5504,7 @@ mod square_reduction_tests {
                 user_function: false,
                 arguments: vec![integer_literal(2)],
                 outputs: Vec::new(),
+                placed_outputs: Vec::new(),
             }),
         );
         assert_eq!(
@@ -5319,6 +5526,7 @@ mod square_reduction_tests {
                 user_function: false,
                 arguments: vec![integer_literal(3)],
                 outputs: Vec::new(),
+                placed_outputs: Vec::new(),
             }),
         );
         assert_eq!(
@@ -5340,6 +5548,7 @@ mod square_reduction_tests {
                 user_function: true,
                 arguments: vec![integer_literal(2)],
                 outputs: Vec::new(),
+                placed_outputs: Vec::new(),
             }),
         );
         assert_eq!(
@@ -5863,7 +6072,14 @@ mod layout_tests {
     }
 
     /// `function <name>(input u[extent]) => (output y[extent])` whose body is
-    /// `y := u;` followed by one `(t) := <callee>(u);` per callee.
+    /// `y := u;` followed by one `(t) := <callee>(t);` per callee.
+    ///
+    /// Each call passes its own target. That is deliberate and it is what these
+    /// layout fixtures are about: an actual that aliases the destination is
+    /// exactly the case [`destination`] refuses to place, so every callee here
+    /// keeps the read-back whose layout hazard the tests below are named for.
+    /// A fixture whose outputs were placed would be measuring the placement
+    /// instead of the overlay; the placement has its own tests.
     fn function(name: &str, extent: i64, callees: &[&str]) -> ast::UserFunction {
         let mut statements = vec![ast::Spanned::dummy(ast::Statement::Assignment {
             target: ast::Reference::local(ident("y")),
@@ -5874,7 +6090,7 @@ mod layout_tests {
                 targets: vec![ast::Reference::local(ident("t"))],
                 call: ast::FunctionCall {
                     function: ident(callee),
-                    arguments: vec![ast::Expression::Ref(ast::Reference::local(ident("u")))],
+                    arguments: vec![ast::Expression::Ref(ast::Reference::local(ident("t")))],
                 },
             }));
         }
