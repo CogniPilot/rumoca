@@ -44,26 +44,34 @@
 //!    statements refuse the callee outright. Only a *protected* function is a
 //!    candidate: a public one is part of the block's API and a consumer that
 //!    calls it reads its outputs where the header says they are.
-//! 2. **A destination the caller owns outright.** The destination is a whole,
-//!    unsubscripted array slot of the *calling function's* region with the
-//!    callee output's exact scalar and extents. It is pinned out of the arm
-//!    overlay, out of the value arena, out of bound equalization and out of
-//!    marshalling retirement, so its address is a plain member at a fixed
-//!    offset from `self` and its bytes are shared with nothing. A block method
-//!    is never a destination owner: its array locals are the ones the value
-//!    arena places, and pinning one there would trade the larger saving for the
-//!    smaller.
+//! 2. **A destination the caller owns outright, and pays nothing to lend.** The
+//!    destination is a whole, unsubscripted array slot of the *calling
+//!    function's* region with the callee output's exact scalar and extents, and
+//!    it is a PLAIN MEMBER of that region: claimed by neither the arm overlay,
+//!    nor the value arena, nor the marshalling rewrite. A callee writes it
+//!    through a pointer at a moment none of those three can see, so a slot any
+//!    of them claimed may not be lent.
+//!
+//!    That fact is READ from a first projection ([`super::block`]), never
+//!    forced on a second, and the difference is bytes. Forcing a slot out of
+//!    the three to lend it buys one copy and pays for it in the storage they
+//!    were saving: measured on the RDD2 estimator, that cost 2,472 B of
+//!    scratch. Reading their answer costs nothing and declines exactly the
+//!    slots that were paying their way. A block method is never a destination
+//!    owner: its array locals are what the value arena places, so they would
+//!    almost all decline anyway, and the second pass exists only for the
+//!    functions.
 //! 3. **Disjointness from every operand.** The callee writes the destination
 //!    while its own body runs, so the destination must not be reachable from
 //!    any actual. It cannot be: an emitted argument is spelled from the calling
 //!    owner's own namespace (a local, an arena slot, or block state) and no
 //!    argument this target emits ever names another owner's region member, so
 //!    the only way an actual and the destination can meet is by naming the same
-//!    local — which [`permission::place`] refuses by name. A destination that
-//!    is itself an output parameter of the caller may be placed in turn, which
-//!    resolves it into an ancestor's region and opens one more route: an array
-//!    actual that is a formal parameter aliases storage handed down from that
-//!    ancestor. Such a call is refused.
+//!    local — which [`permission::place`] refuses by name. An output parameter
+//!    of the caller may itself be placed in turn, which resolves it into an
+//!    ancestor's region and opens one more route: an array actual that is a
+//!    formal parameter aliases storage handed down from that ancestor. Such a
+//!    call is refused.
 //! 4. **A total write.** With the copy, the destination receives every element
 //!    of the callee's slot. Without it, the destination keeps its own bytes
 //!    wherever the callee writes none. The two agree exactly when the callee
@@ -92,7 +100,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use rumoca_ir_galec::ast;
 
-use super::{LocalPlacements, Owner, output_parameters, slot_shape};
+use super::{Owner, output_parameters, slot_shape};
 
 /// The storage a placed output is reached through: a slot of some owner's
 /// region, named by the owner and the member.
@@ -113,7 +121,6 @@ pub(super) struct Destination<'a> {
 #[derive(Debug, Default)]
 pub(super) struct Plan<'a> {
     placed: BTreeMap<(&'a str, &'a str), Destination<'a>>,
-    pinned: BTreeMap<&'a str, BTreeSet<&'a str>>,
 }
 
 impl<'a> Plan<'a> {
@@ -139,17 +146,10 @@ impl<'a> Plan<'a> {
             .collect()
     }
 
-    /// The slot names `owner` must keep as a plain member of its own region:
-    /// every destination some callee was placed at.
-    pub(super) fn pinned_slots(&self, owner: Owner<'a>) -> HashSet<&'a str> {
-        match owner {
-            Owner::Function(name) => self
-                .pinned
-                .get(name)
-                .map(|slots| slots.iter().copied().collect())
-                .unwrap_or_default(),
-            Owner::Method(_) => HashSet::new(),
-        }
+    /// Whether nothing is placed, which is when the caller may keep the
+    /// projection it already has.
+    pub(super) fn is_empty(&self) -> bool {
+        self.placed.is_empty()
     }
 }
 
@@ -164,13 +164,23 @@ struct CallSite<'a> {
 
 /// Plan every placement one block admits.
 ///
-/// Runs before any owner is projected, over the checked AST alone: a placement
-/// removes a slot from a callee's region and pins one in a caller's, and both
-/// are inputs to the projection rather than outputs of it.
+/// `plain_members` is the first projection's answer to the one question this
+/// cannot ask of the AST: which of an owner's region slots own their storage
+/// outright, having been claimed by neither the arm overlay, nor the value
+/// arena, nor the marshalling rewrite. A destination must be one of those, and
+/// reading it rather than forcing it is what keeps a placement from costing the
+/// bytes those three mechanisms were saving. See [`super::block`].
 pub(super) fn plan<'a>(
     block: &'a ast::Block,
-    functions: &HashMap<&'a str, &'a ast::UserFunction>,
+    plain_members: &BTreeMap<&'a str, BTreeSet<&'a str>>,
 ) -> Plan<'a> {
+    let functions: HashMap<&'a str, &'a ast::UserFunction> = block
+        .protected_functions
+        .iter()
+        .chain(&block.public_functions)
+        .map(|function| (function.name.lexeme(), function))
+        .collect();
+    let functions = &functions;
     let mut sites: HashMap<&'a str, Vec<CallSite<'a>>> = HashMap::new();
     for method in [&block.startup, &block.recalibrate, &block.do_step] {
         collect(&method.statements, None, functions, &mut sites);
@@ -197,7 +207,7 @@ pub(super) fn plan<'a>(
         let Some([site]) = sites.get(name).map(Vec::as_slice) else {
             continue;
         };
-        for placement in permission::place(callee, site, functions, &claimed) {
+        for placement in permission::place(callee, site, functions, plain_members, &claimed) {
             let (output, destination) = placement.into_parts();
             claimed.insert(destination.clone());
             placed.insert((name, output), destination);
@@ -211,10 +221,10 @@ pub(super) fn plan<'a>(
 /// A destination may itself be an output some other placement moved, which is
 /// the shape a call chain produces: an inner callee's output is placed at its
 /// caller's output, which is placed at ITS caller's slot. Only the last link
-/// names storage, so every pointer is declared at that address and the pin is
-/// taken there. The walk is bounded by the number of placements and drops a
-/// placement it cannot bottom out — the block's acyclic call graph makes a cycle
-/// impossible, and this refuses to depend on that proof having run.
+/// names storage, so every pointer is declared at that address. The walk is
+/// bounded by the number of placements and drops a placement it cannot bottom
+/// out — the block's acyclic call graph makes a cycle impossible, and this
+/// refuses to depend on that proof having run.
 fn resolve<'a>(placed: BTreeMap<(&'a str, &'a str), Destination<'a>>) -> Plan<'a> {
     let limit = placed.len();
     let mut plan = Plan::default();
@@ -231,10 +241,6 @@ fn resolve<'a>(placed: BTreeMap<(&'a str, &'a str), Destination<'a>>) -> Plan<'a
         if hops > limit {
             continue;
         }
-        plan.pinned
-            .entry(root.owner)
-            .or_default()
-            .insert(root.member);
         plan.placed.insert(*key, root);
     }
     plan
@@ -346,11 +352,11 @@ fn mentions_in_reference<'a>(reference: &'a ast::Reference, found: &mut HashSet<
 
 /// Permission to place one output, and the only place it is minted.
 mod permission {
-    use std::collections::{BTreeSet, HashMap, HashSet};
+    use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
     use rumoca_ir_galec::ast;
 
-    use super::{CallSite, Destination, LocalPlacements, mentions, output_parameters, slot_shape};
+    use super::{CallSite, Destination, mentions, output_parameters, slot_shape};
 
     /// Evidence that one callee output may live in one caller-owned slot.
     ///
@@ -408,6 +414,7 @@ mod permission {
         callee: &'a ast::UserFunction,
         site: &CallSite<'a>,
         functions: &HashMap<&'a str, &'a ast::UserFunction>,
+        plain_members: &BTreeMap<&'a str, BTreeSet<&'a str>>,
         claimed: &BTreeSet<Destination<'a>>,
     ) -> Vec<Placement<'a>> {
         let mut minted = Vec::new();
@@ -429,14 +436,8 @@ mod permission {
         if outputs.is_empty() || outputs.len() != site.targets.len() {
             return minted;
         }
-        let placements = LocalPlacements::derive(&caller.locals, &caller.statements);
         let outputs_of_caller: HashSet<&'a str> = output_parameters(caller)
             .map(|parameter| parameter.decl.name.lexeme())
-            .collect();
-        let locals: HashMap<&'a str, &'a ast::VariableDeclaration> = caller
-            .locals
-            .iter()
-            .map(|declaration| (declaration.name.lexeme(), declaration))
             .collect();
         let mut operands = HashSet::new();
         for argument in &site.call.arguments {
@@ -464,22 +465,32 @@ mod permission {
                 continue;
             }
             let member = part.name.lexeme();
-            // The destination has to be a slot `A`'s region certainly holds,
-            // with exactly this shape: an output parameter of `A`, or a local
-            // the placement walk reached.
-            let declaration = if outputs_of_caller.contains(member) {
-                caller
-                    .parameters
-                    .iter()
-                    .find(|parameter| parameter.decl.name.lexeme() == member)
-                    .map(|parameter| &parameter.decl)
-            } else {
-                locals
-                    .get(member)
-                    .copied()
-                    .filter(|_| placements.is_placed(member))
-            };
-            let Some(declaration) = declaration else {
+            // The destination has to be a slot `A`'s region holds as a plain
+            // member of its own, at a fixed offset, with exactly this shape.
+            //
+            // "Plain member" is the first projection's answer, not a demand
+            // made of the second, and the difference is bytes. A callee writes
+            // the destination through a pointer at a moment neither the arm
+            // overlay, nor the value arena, nor the marshalling rewrite can
+            // see, so a slot any of the three claimed may not be lent. FORCING
+            // a slot out of them to lend it would buy one copy and pay for it
+            // in storage those mechanisms were saving: measured on the RDD2
+            // estimator, that cost 2,472 B of scratch. READING their answer
+            // costs nothing and declines exactly the slots that were paying
+            // their way.
+            if !plain_members
+                .get(owner)
+                .is_some_and(|members| members.contains(member))
+            {
+                continue;
+            }
+            let Some(declaration) = caller
+                .parameters
+                .iter()
+                .map(|parameter| &parameter.decl)
+                .chain(&caller.locals)
+                .find(|declaration| declaration.name.lexeme() == member)
+            else {
                 continue;
             };
             if slot_shape(declaration).as_ref() != Some(&shape) {
@@ -490,11 +501,11 @@ mod permission {
             if operands.contains(member) {
                 continue;
             }
-            // A destination that is an output parameter of `A` may itself be
-            // placed, which resolves it into an ancestor's region where an array
-            // formal of `A` can alias. Conservative and order-independent: the
-            // question is asked of the shape, not of whether that further
-            // placement has been decided yet.
+            // An output parameter of `A` may itself be placed, which resolves
+            // this destination into an ancestor's region where an array formal
+            // of `A` can alias. The question is asked of the shape rather than
+            // of whether that further placement has been decided yet, so the
+            // answer does not depend on the order the plan considers callees in.
             if outputs_of_caller.contains(member) && array_formal_operand {
                 continue;
             }

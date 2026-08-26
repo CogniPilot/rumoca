@@ -290,20 +290,16 @@ impl<'a> ScratchSlotView<'a> {
 }
 
 impl<'a> ScratchRegionView<'a> {
-    /// `pinned` names the slots a destination placement lends to a callee. They
-    /// keep their own storage: an overlay sibling would put another value in
-    /// the bytes a callee writes through a pointer this region never sees.
     fn new(
         owner: Owner<'a>,
         slots: &[&'a ast::VariableDeclaration],
         placements: &LocalPlacements<'a>,
-        pinned: &HashSet<&'a str>,
     ) -> Self {
         let (function, method) = match owner {
             Owner::Function(name) => (Some(name), None),
             Owner::Method(spelling) => (None, Some(spelling)),
         };
-        let members = overlay_slots(slots, placements, pinned);
+        let members = overlay_slots(slots, placements);
         let slot_overlays = members
             .iter()
             .flat_map(|member| {
@@ -352,19 +348,12 @@ impl<'a> ScratchRegionView<'a> {
 fn overlay_slots<'a>(
     slots: &[&'a ast::VariableDeclaration],
     placements: &LocalPlacements<'a>,
-    pinned: &HashSet<&'a str>,
 ) -> Vec<ScratchMemberView<'a>> {
     let homes = SlotHomes::observed(
         slots
             .iter()
             .filter_map(|slot| {
                 let name = slot.name.lexeme();
-                // A slot lent to a callee as a destination is withheld from the
-                // overlay: the callee writes it through a pointer, at a moment
-                // this region's arm analysis cannot see.
-                if pinned.contains(name) {
-                    return None;
-                }
                 placements.home(name).map(|home| (name, home.to_vec()))
             })
             .collect(),
@@ -1287,11 +1276,59 @@ struct TypedBoundedSelectionView<'a> {
 /// the projection actually reached, which is much smaller than the session's
 /// source map (a model instantiates far more library files than it keeps
 /// statements from) and is what the emitted file documents.
+/// Two passes, and only where the first one found something to place.
+///
+/// A destination has to be a slot its owner's region holds as a plain member,
+/// because a callee writes it through a pointer at a moment the arm overlay,
+/// the value arena and the marshalling rewrite cannot see, and none of those
+/// three may therefore have claimed it. Which slots those are is an OUTPUT of a
+/// projection, not an input to one — so the first pass projects with nothing
+/// placed and the plan reads its answer.
+///
+/// The second pass changes only what a placement changes: a callee's region
+/// loses the placed slot and its entry declares a pointer instead, and the
+/// caller emits no read-back. Every input the caller's own layout is derived
+/// from is identical, so the slot the plan chose is still a plain member; that
+/// is not assumed, it is checked in [`retype_destinations`], which fails the
+/// projection rather than emit a pointer at an address that moved.
 pub(super) fn block<'a>(
     block: &'a ast::Block,
     sources: &'a rumoca_core::SourceMap,
 ) -> Result<(TypedBlockView<'a>, TraceLegend), String> {
-    let shapes = BlockShapes::new(block, sources);
+    let (view, traces) = project(block, sources, destination::Plan::default())?;
+    let plan = destination::plan(block, &plain_members(&view));
+    if plan.is_empty() {
+        return Ok((view, traces));
+    }
+    project(block, sources, plan)
+}
+
+/// Every user function's region members that own their storage outright, by
+/// owner: the only slots a destination placement may name.
+fn plain_members<'a>(view: &TypedBlockView<'a>) -> BTreeMap<&'a str, BTreeSet<&'a str>> {
+    view.protected_functions
+        .iter()
+        .chain(&view.public_functions)
+        .filter_map(|function| {
+            let owner = function.scratch.function?;
+            let slots = function
+                .scratch
+                .members
+                .iter()
+                .filter(|member| member.overlay.is_none())
+                .filter_map(|member| Some(member.slots.first()?.lexeme()))
+                .collect();
+            Some((owner, slots))
+        })
+        .collect()
+}
+
+fn project<'a>(
+    block: &'a ast::Block,
+    sources: &'a rumoca_core::SourceMap,
+    destinations: destination::Plan<'a>,
+) -> Result<(TypedBlockView<'a>, TraceLegend), String> {
+    let shapes = BlockShapes::new(block, sources, destinations);
     // The overlay below is only sound on an acyclic call graph, so this runs
     // first and the layout is derived from the same `shapes.functions` map it
     // just certified. A cycle fails the whole projection rather than producing
@@ -2695,7 +2732,11 @@ struct BlockShapes<'a> {
 }
 
 impl<'a> BlockShapes<'a> {
-    fn new(block: &'a ast::Block, sources: &'a rumoca_core::SourceMap) -> Self {
+    fn new(
+        block: &'a ast::Block,
+        sources: &'a rumoca_core::SourceMap,
+        destinations: destination::Plan<'a>,
+    ) -> Self {
         let state = block
             .interface
             .iter()
@@ -2718,7 +2759,6 @@ impl<'a> BlockShapes<'a> {
             .chain(&block.public_functions)
             .map(|function| (function.name.lexeme(), function))
             .collect();
-        let destinations = destination::plan(block, &functions);
         Self {
             state,
             compartments,
@@ -2801,15 +2841,9 @@ impl<'a> BlockShapes<'a> {
                         && !retired.contains(declaration.name.lexeme())
                 })
                 .collect::<Vec<_>>();
-            // A block method never lends a destination (see [`destination`]),
-            // so nothing is pinned in its region and it delivers no output of
-            // its own through one.
-            let mut scratch = ScratchRegionView::new(
-                Owner::Method(spelling),
-                &slots,
-                &placements,
-                &HashSet::new(),
-            );
+            let mut scratch = ScratchRegionView::new(Owner::Method(spelling), &slots, &placements);
+            // A block method has no outputs to deliver through a caller-owned
+            // slot: it is the consumer's entry point and has no caller here.
             let scope = ScopeShapes::new(self, &method.locals, &scratch, HashSet::new());
             *self.context_reads.borrow_mut() = false;
             let mut statements =
@@ -2843,16 +2877,17 @@ impl<'a> BlockShapes<'a> {
     fn function(&self, function: &'a ast::UserFunction) -> Result<TypedFunctionView<'a>, String> {
         let placements = LocalPlacements::derive(&function.locals, &function.statements);
         let owner = Owner::Function(function.name.lexeme());
-        // The outputs this function delivers through a caller-owned slot, and
-        // the slots of its own it lends to a callee the same way.
+        // The outputs this function delivers through a slot its caller owns.
+        //
+        // Nothing else about this body changes when a placement exists: the
+        // slots this function LENDS to its own callees keep the exact storage
+        // the first pass gave them, which is what makes the plan's evidence
+        // about them still true (see [`block`]).
         let placed = self.destinations.placed_outputs(owner);
-        let pinned = self.destinations.pinned_slots(owner);
         // Only a local is retirable. An output parameter is a slot the caller
         // reads back after this function returns, and no analysis of this body
-        // can see that use; a pinned local is the storage a callee writes
-        // through a pointer, which no analysis of this body can see either.
-        let mut retirable = retirable_locals(&function.locals);
-        retirable.retain(|name| !pinned.contains(name));
+        // can see that use.
+        let retirable = retirable_locals(&function.locals);
         let mut retired = HashSet::new();
         loop {
             // Declaration order inside the region: reachable array locals, then
@@ -2884,7 +2919,7 @@ impl<'a> BlockShapes<'a> {
                         .filter(|declaration| !placed.contains(declaration.name.lexeme())),
                 )
                 .collect::<Vec<_>>();
-            let mut scratch = ScratchRegionView::new(owner, &slots, &placements, &pinned);
+            let mut scratch = ScratchRegionView::new(owner, &slots, &placements);
             let scope = ScopeShapes::for_function(self, function, &scratch, placed.clone());
             *self.context_reads.borrow_mut() = false;
             let mut statements =
@@ -2900,16 +2935,12 @@ impl<'a> BlockShapes<'a> {
             // because the caller reads them back after this function returns,
             // a live range no walk over this body can see; function names are
             // withheld because a block-scope pointer of that spelling would
-            // shadow the file-scope definition. A slot lent to a callee as a
-            // destination is withheld too: the arena shares bytes on a liveness
-            // model of THIS body, and a callee writing through a pointer at
-            // that slot is not a use this body performs.
+            // shadow the file-scope definition.
             let withheld: HashSet<&str> = self
                 .functions
                 .keys()
                 .copied()
                 .chain(output_parameters(function).map(|parameter| parameter.decl.name.lexeme()))
-                .chain(pinned.iter().copied())
                 .collect();
             adopt_arena(&mut scratch, &mut statements, &withheld, &self.functions);
             scratch.destinations = self.destination_slots(function, &placed);

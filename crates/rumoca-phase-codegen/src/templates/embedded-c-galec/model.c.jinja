@@ -861,10 +861,12 @@ static void {{ symbol(c_symbols, name_text(value.name)) }}(
 /* GALEC {{ visibility }} {% if value.kind.kind == "stateless" %}function{% else %}method{% endif %} `{{ name_text(value.name) }}`.
 {% if value.trace is not none %} * Modelica: {% if value.trace.path is not none %}{{ trace_path(value.trace.path) }}:{{ value.trace.line }}:{{ value.trace.column }}-{{ value.trace.end_line }}:{{ value.trace.end_column }}{% else %}source-id {{ value.trace.source_id }}, bytes {{ value.trace.byte_start }}..{{ value.trace.byte_end }} (unresolved source){% endif %}
 {% endif %} * Outputs are left in this owner's context region; the caller reads them back
- * after the call returns. An output the projection placed at a caller-owned
- * slot is written there directly and has no read-back; each one is declared
- * below and says which caller object it is. Only inputs are formal parameters.
- */
+ * after the call returns. Only inputs are formal parameters.
+{%- if value.scratch.destinations|length > 0 %}
+ * Some outputs are placed instead: the caller owns the slot and this function
+ * writes it directly, so there is no read-back. Each one is declared below and
+ * says which caller object it is.
+{%- endif %} */
 {{ function_signature(value) }} {
 {# Unused-parameter suppression is bookkeeping, not algorithm, and each one is
     an executable statement a structural-coverage obligation has to account for.
