@@ -313,22 +313,25 @@ pub(super) fn unsupported(feature: &str, detail: String, span: Span) -> GalecTar
     }
 }
 
-pub(super) fn type_mismatch(expected: &str, found: &str, span: Span) -> GalecTargetError {
+/// Reject a lowered expression whose operand types do not meet.
+///
+/// Both type names are `&'static str` because both always are: every caller
+/// names either a `ScalarType::keyword` or a literal such as `"numeric"`, and
+/// the diagnostic field is `&'static str` too. The names used to be laundered
+/// through a four-entry lookup that mapped anything else to `"unknown"`, which
+/// could only ever have turned a real type name into a useless one in a
+/// user-facing message; taking the static name directly means a caller with a
+/// name this crate does not own fails to compile instead.
+pub(super) fn type_mismatch(
+    expected: &'static str,
+    found: &'static str,
+    span: Span,
+) -> GalecTargetError {
     GalecTargetError::LoweringTypeMismatch {
         context: "checked DAE expression".to_owned(),
-        expected: leak_type_name(expected),
-        found: leak_type_name(found),
+        expected,
+        found,
         span: (!span.is_dummy()).then_some(span),
-    }
-}
-
-fn leak_type_name(name: &str) -> &'static str {
-    match name {
-        "Real" => "Real",
-        "Integer" => "Integer",
-        "Boolean" => "Boolean",
-        "numeric" => "numeric",
-        _ => "unknown",
     }
 }
 

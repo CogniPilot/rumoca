@@ -18,7 +18,7 @@ pub mod fmi;
 
 pub use ad::{
     lower_compute_block_full_jvp, lower_compute_block_jvp, lower_scalar_program_block_ad,
-    lower_scalar_program_block_full_ad, lower_scalar_program_block_full_ad_with_spans,
+    lower_scalar_program_block_full_ad_with_spans,
 };
 pub use error::LowerError;
 pub use layout::build_var_layout;

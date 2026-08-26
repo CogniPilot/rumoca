@@ -593,13 +593,6 @@ pub fn lower_scalar_program_block_ad(
     )
 }
 
-pub fn lower_scalar_program_block_full_ad(
-    primal_rows: &[Vec<LinearOp>],
-    layout: &VarLayout,
-) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    lower_scalar_program_block_full_ad_with_spans(primal_rows, &[], layout)
-}
-
 pub fn lower_scalar_program_block_full_ad_with_spans(
     primal_rows: &[Vec<LinearOp>],
     row_spans: &[rumoca_core::Span],
