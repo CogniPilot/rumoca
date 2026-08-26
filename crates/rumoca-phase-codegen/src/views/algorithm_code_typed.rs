@@ -1444,7 +1444,8 @@ fn project<'a>(
 /// invariant is checked rather than assumed: a violated one is a wrong address,
 /// so it stops the projection.
 fn retype_destinations<'a>(functions: Vec<&mut TypedFunctionView<'a>>) -> Result<(), String> {
-    let members: HashMap<(&'a str, &'a str), Vec<usize>> = functions
+    type Shape = (Option<ast::ScalarType>, Vec<usize>);
+    let members: HashMap<(&'a str, &'a str), Shape> = functions
         .iter()
         .filter_map(|function| function.scratch.function.map(|owner| (owner, function)))
         .flat_map(|(owner, function)| {
@@ -1455,13 +1456,13 @@ fn retype_destinations<'a>(functions: Vec<&mut TypedFunctionView<'a>>) -> Result
                 .filter(|member| member.overlay.is_none())
                 .filter_map(move |member| {
                     let slot = member.slots.first()?;
-                    Some(((owner, slot.lexeme()), slot.extents.clone()?))
+                    Some(((owner, slot.lexeme()), (slot.scalar, slot.extents.clone()?)))
                 })
         })
         .collect();
     for function in functions {
         for placed in &mut function.scratch.destinations {
-            let Some(extents) = members.get(&(placed.owner, placed.member)) else {
+            let Some((scalar, extents)) = members.get(&(placed.owner, placed.member)) else {
                 return Err(format!(
                     "destination-placed output `{}` names `{}.{}`, which is not a plain \
                      member of that region",
@@ -1470,6 +1471,42 @@ fn retype_destinations<'a>(functions: Vec<&mut TypedFunctionView<'a>>) -> Result
                     placed.member
                 ));
             };
+            // Adopting the destination's extents is sound only for the one
+            // difference the bound equalization can introduce: a wider LEADING
+            // extent, which moves no element because it is not a stride. A
+            // different rank or element type would be a different address
+            // arithmetic, and the pointer would silently carry it. Nothing
+            // emits that today; a future pass that did would meet a diagnostic
+            // here rather than a wrong type in the artifact.
+            if *scalar != Some(placed.scalar) || extents.len() != placed.extents.len() {
+                return Err(format!(
+                    "destination-placed output `{}` and its destination `{}.{}` no longer \
+                     agree on element type or rank",
+                    placed.name.lexeme(),
+                    placed.owner,
+                    placed.member
+                ));
+            }
+            if extents
+                .iter()
+                .zip(&placed.extents)
+                .enumerate()
+                .any(|(axis, (member, output))| {
+                    if axis == 0 {
+                        member < output
+                    } else {
+                        member != output
+                    }
+                })
+            {
+                return Err(format!(
+                    "destination-placed output `{}` and its destination `{}.{}` differ \
+                     other than by a widened leading extent",
+                    placed.name.lexeme(),
+                    placed.owner,
+                    placed.member
+                ));
+            }
             placed.extents = extents.clone();
         }
     }
