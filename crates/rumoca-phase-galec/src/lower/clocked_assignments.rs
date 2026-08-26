@@ -301,6 +301,19 @@ fn lower_clock_domain_shared_calls<'a, 'b, 'dae>(
             .owners
             .extend(unguarded_calls.iter().map(|call| (call.owner, id)));
     }
+    if allow_scheduled {
+        lower_conditional_branch_shared_calls(
+            view,
+            causal,
+            lowerer,
+            pending,
+            &roots,
+            &entry_owners,
+            &mut slots,
+            has_preamble,
+            &mut shared,
+        )?;
+    }
     shared.entry = lowerer.shared_materialized_function_calls();
     if allow_scheduled {
         lower_guarded_shared_calls(
@@ -320,6 +333,242 @@ fn lower_clock_domain_shared_calls<'a, 'b, 'dae>(
     }
     lowerer.expect_scheduled_shared_calls(shared.owners.keys().copied().collect());
     Ok(shared)
+}
+
+/// One conditional's first branch, and the calls this domain evaluates more
+/// than once inside it.
+struct ConditionalBranchShare<'dae> {
+    /// The ordered condition identities the activation key is built from. Two
+    /// conditionals selecting on the same conditions carry the same key, which
+    /// is what lets one node serve every value that branches on them.
+    operands: Vec<u32>,
+    condition: dae::ExprId<'dae>,
+    calls: Vec<RepeatedCall<'dae>>,
+    span: Span,
+}
+
+/// Materialize each call repeated inside one conditional branch, under that
+/// branch's own condition.
+///
+/// The branches of a conditional own separate dynamic executions, so a call
+/// inside one runs only where that branch is selected. The node re-states the
+/// branch condition around its materialization, so the call keeps exactly that
+/// tick set, and lowers under the same
+/// [`ConditionalActivationKey`] the branch pushes, so the memo entry it leaves
+/// records the branch it holds under. `MaterializedFunctionCallKey::dominates`
+/// is then the whole admission proof for a consumer: a group that reaches the
+/// call under the same conditions and the same branch matches the entry, and a
+/// group under a different branch, a different conditional or none matches
+/// nothing and lowers the call for itself.
+///
+/// Only the first branch is admitted. A later branch runs under the negation of
+/// every earlier condition as well, which the node would have to re-state as a
+/// nested chain; declining keeps the emitted guard exactly one condition, the
+/// one the key names.
+///
+/// Only values the domain clock alone selects are scanned. A value under a
+/// runtime guard evaluates its conditional only where that guard holds, and a
+/// node stating the branch condition alone would run on more ticks than the
+/// model does.
+#[allow(clippy::too_many_arguments)]
+fn lower_conditional_branch_shared_calls<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    causal: &CausalReadExpansion<'a, 'dae>,
+    lowerer: &mut ExpressionLowerer<'_, 'dae>,
+    pending: &mut Vec<ClockedAssignment>,
+    roots: &[DomainValueRoot<'dae>],
+    entry_owners: &HashSet<u32>,
+    slots: &mut ScheduleIdAllocator,
+    requires_preamble: bool,
+    shared: &mut SharedClockCalls<'dae>,
+) -> Result<(), GalecTargetError> {
+    let branches = conditional_branch_shares(view, causal, roots, entry_owners);
+    for branch in branches {
+        let Some(id) = slots.next() else {
+            return Ok(());
+        };
+        // The node is built on a clone, so an activation that turns out not to
+        // lower leaves no temporary, cache entry or emitted statement behind.
+        let mut trial = lowerer.clone();
+        trial.begin_shared_call_group(&trial.shared_materialized_function_calls());
+        let Some(node) = lower_conditional_branch_node(&mut trial, &branch)? else {
+            continue;
+        };
+        let mut reads = branch.calls.iter().fold(HashSet::new(), |mut reads, call| {
+            reads.extend(call.reads.iter().copied());
+            reads
+        });
+        let mut condition_reads = HashSet::new();
+        collect_current_reads(view, branch.condition, &mut condition_reads);
+        reads.extend(causal.expand(condition_reads));
+        *lowerer = trial;
+        pending.push(ClockedAssignment {
+            targets: HashSet::from([id]),
+            reads,
+            statements: node,
+            span: branch.span,
+            is_preamble: false,
+            requires_preamble,
+        });
+        shared.scheduled = true;
+        shared
+            .owners
+            .extend(branch.calls.iter().map(|call| (call.owner, id)));
+    }
+    Ok(())
+}
+
+/// Emit one conditional-branch node's statements, or decline.
+///
+/// The condition is lowered with the branch's activation key already pushed,
+/// which is the order `lower_materialized_conditional_branch` lowers it in, so
+/// a call inside the condition matches the same facts on both sides.
+/// `conditional_depth` is raised for the same reason: it disables the scalar
+/// projection and function-value caches, and the node has to be lowered in the
+/// environment its consumers lower in.
+fn lower_conditional_branch_node<'dae>(
+    lowerer: &mut ExpressionLowerer<'_, 'dae>,
+    branch: &ConditionalBranchShare<'dae>,
+) -> Result<Option<Vec<gast::Spanned<gast::Statement>>>, GalecTargetError> {
+    lowerer.conditional_depth += 1;
+    lowerer
+        .conditional_activation_path
+        .push(ConditionalActivationKey {
+            kind: ConditionalActivationKind::ConditionalScalar,
+            operands: branch.operands.clone(),
+            branch: 0,
+        });
+    let lowered = lower_conditional_branch_body(lowerer, branch);
+    lowerer.conditional_activation_path.pop();
+    lowerer.conditional_depth -= 1;
+    lowered
+}
+
+fn lower_conditional_branch_body<'dae>(
+    lowerer: &mut ExpressionLowerer<'_, 'dae>,
+    branch: &ConditionalBranchShare<'dae>,
+) -> Result<Option<Vec<gast::Spanned<gast::Statement>>>, GalecTargetError> {
+    let condition = lowerer.lower(branch.condition)?;
+    require_boolean(&condition, branch.span)?;
+    let mut statements = lowerer.drain_prefix_statements();
+    for call in &branch.calls {
+        lowerer.materialize_eager_call(call.call)?;
+    }
+    let body = lowerer.drain_prefix_statements();
+    if body.is_empty() {
+        return Ok(None);
+    }
+    statements.push(gast::Spanned::new(
+        gast::Statement::If(gast::IfStatement {
+            branches: vec![gast::IfBranch {
+                condition: gast::Condition::Expression(condition.expression),
+                body,
+                span: branch.span,
+            }],
+            else_body: None,
+        }),
+        branch.span,
+    ));
+    Ok(Some(statements))
+}
+
+/// Group the domain's clock-selected values by the conditional branch they
+/// evaluate calls in, keeping the calls more than one value reaches.
+///
+/// A call already materialized at domain entry or by the unguarded node is left
+/// out, so nothing is materialized twice. A call that appears under two
+/// different branch keys is left out as well: one node states one condition,
+/// and the memo it leaves records the call owner rather than the branch.
+fn conditional_branch_shares<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    causal: &CausalReadExpansion<'a, 'dae>,
+    roots: &[DomainValueRoot<'dae>],
+    entry_owners: &HashSet<u32>,
+) -> Vec<ConditionalBranchShare<'dae>> {
+    let mut order = Vec::new();
+    let mut branches =
+        HashMap::<Vec<u32>, (dae::ExprId<'dae>, HashMap<u32, (dae::ExprId<'dae>, usize)>)>::new();
+    for root in roots
+        .iter()
+        .filter(|root| root.activation == ValueActivation::Entry)
+    {
+        let mut selected = Vec::new();
+        let mut seen = HashSet::new();
+        expression_functions::for_each_eager_call(
+            view,
+            root.value,
+            &mut seen,
+            &|coordinate| causal.inlined_definition(coordinate),
+            &mut |site| {
+                if let expression_functions::EagerSite::Conditional { operands } = site
+                    && operands.len() >= 3
+                    && let (Some(condition), Some(value)) = (operands.get(0), operands.get(1))
+                {
+                    selected.push((conditional_activation_operands(operands), condition, value));
+                }
+            },
+        );
+        for (key, condition, value) in selected {
+            let entry = branches
+                .entry(key.clone())
+                .or_insert_with(|| (condition, HashMap::new()));
+            let mut branch_seen = seen.clone();
+            let mut occurrences = HashMap::new();
+            collect_eager_calls(view, value, causal, &mut branch_seen, &mut occurrences);
+            for (owner, (call, _)) in occurrences {
+                entry
+                    .1
+                    .entry(owner)
+                    .and_modify(|(_, count)| *count += 1)
+                    .or_insert((call, 1));
+            }
+            if !order.contains(&key) {
+                order.push(key);
+            }
+        }
+    }
+    let mut single_key = HashMap::<u32, usize>::new();
+    for key in &order {
+        for owner in branches[key].1.keys() {
+            *single_key.entry(*owner).or_default() += 1;
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|key| {
+            let (condition, owners) = branches.remove(&key)?;
+            let mut calls = owners
+                .into_iter()
+                .filter(|(owner, (_, count))| {
+                    *count >= 2
+                        && !entry_owners.contains(owner)
+                        && single_key.get(owner) == Some(&1)
+                })
+                .map(|(owner, (call, _))| {
+                    let mut reads = HashSet::new();
+                    collect_current_reads(view, call, &mut reads);
+                    RepeatedCall {
+                        call,
+                        owner,
+                        reads: causal.expand(reads),
+                        span: view
+                            .expression(call)
+                            .expect("checked eager call resolves")
+                            .provenance()
+                            .span(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            calls.sort_by_key(|call| call.call.index());
+            let span = calls.first()?.span;
+            Some(ConditionalBranchShare {
+                operands: key,
+                condition,
+                calls,
+                span,
+            })
+        })
+        .collect()
 }
 
 /// Everything the per-guard half of the shared-call plan works against.
@@ -769,12 +1018,14 @@ fn collect_eager_calls<'a, 'dae>(
         expression,
         seen,
         &|coordinate| causal.inlined_definition(coordinate),
-        &mut |call, owner| {
+        &mut |site| {
             // Count construction-issued invocations, not scalar projections.
-            occurrences
-                .entry(owner)
-                .and_modify(|(_, count)| *count += 1)
-                .or_insert((call, 1));
+            if let expression_functions::EagerSite::Call { call, owner } = site {
+                occurrences
+                    .entry(owner)
+                    .and_modify(|(_, count)| *count += 1)
+                    .or_insert((call, 1));
+            }
         },
     );
 }

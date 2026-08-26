@@ -3639,3 +3639,188 @@ fn embedded_c_shares_a_guarded_tuple_call_only_on_the_ticks_its_guard_holds() {
         &do_step[guard..call]
     );
 }
+
+// ===========================================================================
+// Fixture 16: a repeated call inside one branch of a conditional runs on
+// exactly the ticks that branch is selected.
+//
+// `echoLow`, `echoHigh` and `echoSpan` read variables the `if` statement above
+// them assigns, so the checked DAE gives each of them a conditional value whose
+// selected branch projects one result of `signallingSplit`. Nothing about that
+// conditional is an activation guard: it is an ordinary expression the value
+// carries, and its branch is what decides whether the call runs. Sharing it is
+// only legal under that branch condition, and the function raises NAN on every
+// call, so the compared `ErrorSignalStatus` word is a per-tick record of the
+// ticks it ran on. The branch is not selected on ticks 1 and 2, so an
+// evaluation hoisted out of it would raise NAN there and both executing legs
+// would disagree with the pinned expectation below.
+//
+// The fixture also carries fixture 15's shape, because the `if` statement that
+// creates the conditional is itself the activation of the three assignments
+// inside it. Both nodes stand under the same predicate, so the compared word
+// pins them together.
+// ===========================================================================
+
+const CONDITIONAL_SHARED_CALL: &str = r#"
+function signallingSplit
+  input Real level;
+  input Real zeroGain;
+  output Real low;
+  output Real high;
+  output Real span;
+algorithm
+  low := if zeroGain / zeroGain > 1.0 then -1.0 else 0.5 * level;
+  high := 2.0 * level;
+  span := high - low;
+end signallingSplit;
+
+model ConditionalSharedCallSmoke
+  constant Real samplePeriod = 0.1;
+  parameter Real zeroGain = 0.0;
+  discrete output Real ticks(start = 0.0, fixed = true);
+  discrete output Real echoLow(start = 0.0, fixed = true);
+  discrete output Real echoHigh(start = 0.0, fixed = true);
+  discrete output Real echoSpan(start = 0.0, fixed = true);
+protected
+  discrete Real low(start = 0.0, fixed = true);
+  discrete Real high(start = 0.0, fixed = true);
+  discrete Real span(start = 0.0, fixed = true);
+algorithm
+  when sample(0.0, samplePeriod) then
+    ticks := pre(ticks) + 1.0;
+    if ticks > 2.5 then
+      (low, high, span) := signallingSplit(ticks, zeroGain);
+    else
+      low := pre(low);
+      high := pre(high);
+      span := pre(span);
+    end if;
+    echoLow := low;
+    echoHigh := high;
+    echoSpan := span;
+  end when;
+end ConditionalSharedCallSmoke;
+"#;
+
+const CONDITIONAL_SHARED_CALL_DRIVER: &str = r#"#include <stdio.h>
+#include "ConditionalSharedCallSmoke.h"
+static void row(const char *label, const ConditionalSharedCallSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%lu\n", label,
+           (double)state->ticks, (double)state->echoLow,
+           (double)state->echoHigh, (double)state->echoSpan,
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    ConditionalSharedCallSmokeState state;
+    char label[16];
+    ConditionalSharedCallSmoke_startup(&state);
+    row("startup", &state);
+    ConditionalSharedCallSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        ConditionalSharedCallSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn embedded_c_shares_a_conditional_branch_call_only_where_that_branch_is_selected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "ConditionalSharedCallSmoke";
+    let fields = [
+        Field {
+            name: "ticks",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "echoLow",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "echoHigh",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "echoSpan",
+            kind: FieldKind::Real,
+        },
+    ];
+
+    let projection = project_embedded_c(dir.path(), model, CONDITIONAL_SHARED_CALL);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(
+        &out_dir,
+        model,
+        CONDITIONAL_SHARED_CALL_DRIVER,
+        fields.len(),
+    );
+    let ref_ticks = reference_ticks(model, CONDITIONAL_SHARED_CALL, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+    assert_status("startup", &oracle.startup, &c_run.startup, LIFECYCLE_STATUS);
+    assert_status(
+        "recalibrate",
+        &oracle.recalibrate,
+        &c_run.recalibrate,
+        LIFECYCLE_STATUS,
+    );
+
+    // Ticks 1 and 2 select the else branch: the call must not run, so no NAN.
+    let expected_status = [0, 0, NAN_SIGNAL_BIT, NAN_SIGNAL_BIT, NAN_SIGNAL_BIT];
+    for (tick, want) in expected_status.into_iter().enumerate() {
+        let label = format!("tick {}", tick + 1);
+        assert_status(&label, &oracle.steps[tick], &c_run.steps[tick], want);
+        let time = (tick + 1) as f64;
+        let level = if time > 2.5 { time } else { 0.0 };
+        let expected = [time, 0.5 * level, 2.0 * level, 1.5 * level];
+        for (leg, values) in [
+            ("generated C", &c_run.steps[tick].values),
+            ("galec oracle", &oracle.steps[tick].values),
+        ] {
+            for (field, (got, want)) in fields.iter().zip(values.iter().zip(expected)) {
+                let (atol, rtol) = F32_PROFILE;
+                assert!(
+                    (got - want).abs() <= atol + rtol * want.abs(),
+                    "{leg} tick {tick} channel `{}`: {got} vs {want}",
+                    field.name
+                );
+            }
+        }
+    }
+
+    // The sharing itself. The three echo stores read one invocation, so no call
+    // may stand between the first and the last of them, and every call site
+    // that remains stands inside a guard rather than ahead of one.
+    let emitted = fs::read_to_string(out_dir.join(format!("{model}.c"))).expect("read emitted C");
+    let do_step = emitted
+        .split_once("void ConditionalSharedCallSmoke_dostep(")
+        .expect("emitted C declares DoStep")
+        .1;
+    let first = do_step
+        .find("self->echoLow =")
+        .expect("DoStep stores echoLow");
+    let last = do_step
+        .find("self->echoSpan =")
+        .expect("DoStep stores echoSpan");
+    assert!(
+        !do_step[first..last].contains("signallingSplit("),
+        "the three echo stores must read one invocation, but DoStep re-calls between them:\n{}",
+        &do_step[first..last]
+    );
+    for (offset, _) in do_step.match_indices("        signallingSplit(") {
+        let guard = do_step[..offset]
+            .rfind("    if (rumoca_galec_compare_gt(")
+            .expect("every remaining call must stand under a guard");
+        assert!(
+            !do_step[guard..offset].contains('}'),
+            "a shared call escaped its guard:\n{}",
+            &do_step[guard..offset]
+        );
+    }
+}
