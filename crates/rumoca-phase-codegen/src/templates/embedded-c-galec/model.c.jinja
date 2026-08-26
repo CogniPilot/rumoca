@@ -395,7 +395,16 @@ self->{{ symbol(c_state_symbols, variable.name) }}{% for index in indices %}[{{ 
     the projection's prover refuses to let them share. It is emitted here,
     immediately after the call and inside the same macro, so no sibling call can
     be sequenced between the callee's return and the copy that reads its
-    results. -#}
+    results.
+
+    An output the projection DESTINATION-PLACED has no read-back: the callee's
+    slot for it is the caller's own slot, reached through the typed pointer the
+    callee's entry declares (`destination_aliases`), so the value is already
+    where the copy would have put it. `placed_outputs` carries that decision,
+    one flag per output, and the permission behind each one is minted in
+    `views::algorithm_code_typed::destination`. That there is nothing between
+    the call and this point is exactly what makes the earlier write
+    unobservable, so the two mechanisms rest on the same sentence. -#}
 {%- macro region_of(call) -%}{{ region_path(scratch_groups[name_text(call.function)], symbol(c_symbols, name_text(call.function))) }}{%- endmacro -%}
 {#- The GALEC-level names of a reference, `.`-joined, subscripts dropped —
     comment text, never code. -#}
@@ -442,7 +451,9 @@ self->{{ symbol(c_state_symbols, variable.name) }}{% for index in indices %}[{{ 
 {{ pad(indent + 1) }}self{% for argument in value.arguments %},
 {{ pad(indent + 1) }}{{ expr(argument) }}{% endfor %});
 {%- if value.outputs|length != 1 -%}{{ fail("unsupported-feature:embedded-c-user-call:single-target-arity") }}{%- endif -%}
+{%- if not value.placed_outputs[0] -%}
 {{ binding_comment(value, value.outputs[0], target, indent) }}{{ read_back(value, value.outputs[0], target, 0, [], indent) }}
+{%- endif -%}
 {%- endmacro -%}
 {%- macro user_multi_call(value, indent) -%}
 {{ pad(indent) }}{{ symbol(c_symbols, name_text(value.call.function)) }}(
@@ -450,7 +461,9 @@ self->{{ symbol(c_state_symbols, variable.name) }}{% for index in indices %}[{{ 
 {{ pad(indent + 1) }}{{ expr(argument) }}{% endfor %});
 {%- if value.call.outputs|length != value.targets|length -%}{{ fail("unsupported-feature:embedded-c-user-call:target-arity") }}{%- endif -%}
 {%- for target in value.targets -%}
+{%- if not value.call.placed_outputs[loop.index0] -%}
 {{ binding_comment(value.call, value.call.outputs[loop.index0], target, indent) }}{{ read_back(value.call, value.call.outputs[loop.index0], target, 0, [], indent) }}
+{%- endif -%}
 {%- endfor -%}
 {%- endmacro -%}
 {%- macro if_expression(value) -%}
@@ -815,6 +828,30 @@ static void {{ symbol(c_symbols, name_text(value.name)) }}(
 {%- endfor %}
 {%- endif %}
 {%- endmacro -%}
+{#- The typed pointers for this owner's DESTINATION-PLACED outputs: outputs the
+    checked projection proved may live in a slot the caller already owns, so the
+    caller emits no read-back for them and this owner's region holds no storage
+    for them at all.
+
+    One declaration per placed output, at the destination's own address and with
+    the destination's own array type, so every use below subscripts exactly as a
+    declared member would — the same shape the arena pointers above have, for the
+    same reason. The comment names the model-level binding the placement stands
+    for, which is the sentence the read-back's `/* = a -> b */` used to carry;
+    without it a reviewer would have to un-mangle two region paths to learn which
+    caller object this output IS.
+
+    The permission behind each line is minted in
+    `views::algorithm_code_typed::destination`, which proves the callee has one
+    call site, the destination is a plain member of the caller's region with this
+    output's shape, no operand of the call can reach it, and this body writes all
+    of it. Nothing is decided here. -#}
+{%- macro destination_aliases(value, indent) -%}
+{%- for slot in value.scratch.destinations %}
+{{ pad(indent) }}/* Destination-passed output: `{{ (name_text(slot.name) ~ "` IS `" ~ slot.owner ~ "." ~ slot.member) | replace("*/", "* /") | replace("/*", "/ *") }}`, the caller's own slot. */
+{{ pad(indent) }}{{ c_type(slot.scalar.kind) }} (*const {{ symbol(c_symbols, name_text(slot.name)) }}){% for extent in slot.extents %}[{{ extent }}]{% endfor %} = &{{ region_path(scratch_groups[slot.owner], symbol(c_symbols, slot.owner)) }}.{{ symbol(c_symbols, slot.member) }};
+{%- endfor %}
+{%- endmacro -%}
 {#- Every emitted C function is headed by the GALEC declaration it implements
     and by that declaration's source anchor. This is the unit a reviewer reads
     first, and without it the only thing naming the origin of a 700-line
@@ -824,7 +861,12 @@ static void {{ symbol(c_symbols, name_text(value.name)) }}(
 /* GALEC {{ visibility }} {% if value.kind.kind == "stateless" %}function{% else %}method{% endif %} `{{ name_text(value.name) }}`.
 {% if value.trace is not none %} * Modelica: {% if value.trace.path is not none %}{{ trace_path(value.trace.path) }}:{{ value.trace.line }}:{{ value.trace.column }}-{{ value.trace.end_line }}:{{ value.trace.end_column }}{% else %}source-id {{ value.trace.source_id }}, bytes {{ value.trace.byte_start }}..{{ value.trace.byte_end }} (unresolved source){% endif %}
 {% endif %} * Outputs are left in this owner's context region; the caller reads them back
- * after the call returns. Only inputs are formal parameters. */
+ * after the call returns. Only inputs are formal parameters.
+{%- if value.scratch.destinations|length > 0 %}
+ * Some outputs are placed instead: the caller owns the slot and this function
+ * writes it directly, so there is no read-back. Each one is declared below and
+ * says which caller object it is.
+{%- endif %} */
 {{ function_signature(value) }} {
 {# Unused-parameter suppression is bookkeeping, not algorithm, and each one is
     an executable statement a structural-coverage obligation has to account for.
@@ -847,6 +889,7 @@ static void {{ symbol(c_symbols, name_text(value.name)) }}(
 {%- for parameter in value.input_parameters %}{% if parameter.needs_unused_marker %}
 {{ pad(1) }}(void){{ symbol(c_symbols, name_text(parameter.decl.name)) }};{% endif %}{% endfor %}
 {%- if value.uses_scratch %}{{ region_alias(value.scratch, 1) }}{% endif %}
+{{- destination_aliases(value, 1) }}
 {{ local_declarations(value.c_locals, 1) }}{{ statements(value.statements, 1) }}}
 {%- endmacro -%}
 {#- Section banner. A generated translation unit has no author to group it,
