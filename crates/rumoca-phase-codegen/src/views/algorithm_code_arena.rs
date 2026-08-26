@@ -98,7 +98,7 @@
 
 use std::collections::BTreeMap;
 
-use super::algorithm_code_scopes::{ScopePath, ScopeStep};
+use super::algorithm_code_scopes::{ScopePath, ScopeStep, arm_of};
 
 /// Bytes of one arena element, and the alignment every placement keeps: the
 /// width of the `float` the arena is declared over.
@@ -135,18 +135,6 @@ fn common_step(uses: &[SlotUse], depth: usize) -> Option<&ScopeStep> {
     steps
         .all(|step| step.is_some_and(|step| step == first))
         .then_some(first)
-}
-
-/// Which arm of which conditional a scope step selects, exactly as the arm
-/// overlay prover reads it: the statement index of the conditional and the arm
-/// within it, `else` spelled as `None`. A loop body selects no arm and can
-/// never be half of an exclusion.
-fn arm_of(step: &ScopeStep) -> Option<(usize, Option<usize>)> {
-    match step {
-        ScopeStep::IfBranch { statement, branch } => Some((*statement, Some(*branch))),
-        ScopeStep::IfElse { statement } => Some((*statement, None)),
-        ScopeStep::ForBody { .. } => None,
-    }
 }
 
 /// Whether two use sets can never be live at the same moment, compared at
@@ -224,9 +212,19 @@ impl<'a> SlotUses<'a> {
     /// Whether two slots can never be live at the same moment, and so whether
     /// their arena byte ranges may overlap.
     ///
-    /// This is the whole soundness question, answered in one place. Every
-    /// answer that is not a positive proof is `false`: a slot this map does
-    /// not know, and a slot compared with itself, share storage with nothing.
+    /// This decides one question and only one: whether two slots' recorded
+    /// uses are sequenced apart within a single activation of a single
+    /// region's owner, by statement order or by the arms of one conditional.
+    /// Which **regions** may share storage is not asked here and never is:
+    /// that is [`super::algorithm_code_overlay`], and this prover runs
+    /// strictly inside one region that prover has already placed. The arm
+    /// clause is the relation of [`super::algorithm_code_slot_overlay`],
+    /// reproved from use sets rather than consulted, so that one prover
+    /// carries the whole arena.
+    ///
+    /// Every answer that is not a positive proof is `false`: a slot this map
+    /// does not know, and a slot compared with itself, share storage with
+    /// nothing.
     pub(super) fn never_concurrent(&self, left: &str, right: &str) -> bool {
         if left == right {
             return false;

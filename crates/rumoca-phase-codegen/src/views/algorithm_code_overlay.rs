@@ -130,9 +130,13 @@ impl<'a> CallGraph<'a> {
     /// Whether two owners can never be live at the same moment, and so whether
     /// their regions may share one piece of storage.
     ///
-    /// This is the whole soundness question, answered in one place. Every
-    /// answer that is not a positive proof is `false`: an owner this graph does
-    /// not know, and an owner compared with itself, share storage with nothing.
+    /// This is the whole soundness question, answered in one place. The two
+    /// finer provers ([`super::algorithm_code_slot_overlay`] and
+    /// [`super::algorithm_code_arena`]) subdivide storage *inside* a region
+    /// this one has placed, and neither is ever asked whether two regions may
+    /// share; that is decided here and nowhere else. Every answer that is not
+    /// a positive proof is `false`: an owner this graph does not know, and an
+    /// owner compared with itself, share storage with nothing.
     fn never_concurrent(&self, a: Owner<'a>, b: Owner<'a>) -> bool {
         if a == b || !self.below.contains_key(&a) || !self.below.contains_key(&b) {
             return false;

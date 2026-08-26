@@ -62,7 +62,7 @@
 
 use std::collections::BTreeMap;
 
-use super::algorithm_code_scopes::{ScopePath, ScopeStep};
+use super::algorithm_code_scopes::{ScopePath, ScopeStep, arm_of};
 
 /// Where each slot of one region is live, by slot name.
 ///
@@ -86,9 +86,18 @@ impl<'a> SlotHomes<'a> {
     /// Whether two slots can never be live at the same moment, and so whether
     /// they may share one piece of storage.
     ///
-    /// This is the whole soundness question, answered in one place. Every
-    /// answer that is not a positive proof is `false`: a slot this map does not
-    /// know, and a slot compared with itself, share storage with nothing.
+    /// This decides one question and only one: arm exclusivity, between two
+    /// slots of a single region whose homes are different arms of one
+    /// conditional that is entered at most once per activation. Which
+    /// **regions** may share storage is not asked here and never is: that is
+    /// [`super::algorithm_code_overlay`], and this prover runs strictly inside
+    /// one region that prover has already placed. Sequencing inside a straight
+    /// line, which this relation cannot see at all, belongs to
+    /// [`super::algorithm_code_arena`].
+    ///
+    /// Every answer that is not a positive proof is `false`: a slot this map
+    /// does not know, and a slot compared with itself, share storage with
+    /// nothing.
     fn never_concurrent(&self, left: &str, right: &str) -> bool {
         if left == right {
             return false;
@@ -130,19 +139,6 @@ fn exclusive_arms(left: &[ScopeStep], right: &[ScopeStep]) -> bool {
             conditional == other && arm != other_arm
         }
         _ => false,
-    }
-}
-
-/// Which arm of which conditional a scope step selects: the statement index of
-/// the conditional, and the arm within it, with the `else` spelled as `None`.
-///
-/// A loop body selects no arm of anything, so it answers `None` and can never
-/// be half of an exclusion.
-fn arm_of(step: &ScopeStep) -> Option<(usize, Option<usize>)> {
-    match step {
-        ScopeStep::IfBranch { statement, branch } => Some((*statement, Some(*branch))),
-        ScopeStep::IfElse { statement } => Some((*statement, None)),
-        ScopeStep::ForBody { .. } => None,
     }
 }
 

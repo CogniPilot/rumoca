@@ -13,6 +13,21 @@ pub(super) enum ScopeStep {
 
 pub(super) type ScopePath = Vec<ScopeStep>;
 
+/// Which arm of which conditional a scope step selects: the statement index of
+/// the conditional, and the arm within it, with the `else` spelled as `None`.
+///
+/// A loop body selects no arm of anything, so it answers `None` and can never
+/// be half of an exclusion. Every prover that argues two scopes apart reads a
+/// step this way, so the reading lives with the type: the arm overlay and the
+/// arena must not be able to disagree about what a step selects.
+pub(super) fn arm_of(step: &ScopeStep) -> Option<(usize, Option<usize>)> {
+    match step {
+        ScopeStep::IfBranch { statement, branch } => Some((*statement, Some(*branch))),
+        ScopeStep::IfElse { statement } => Some((*statement, None)),
+        ScopeStep::ForBody { .. } => None,
+    }
+}
+
 /// Where a reference stands, for the purpose of deciding whether the generated
 /// C *reads* the object.
 ///
