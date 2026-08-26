@@ -34,32 +34,58 @@ pub(super) fn vendored_schemas_dir(target: &str) -> PathBuf {
     dir
 }
 
-/// The target a manifest's `schemas` asset bundle borrows from, when it borrows
-/// one rather than vendoring its own.
+/// The target a manifest's **`schemas`** asset bundle borrows from, when it
+/// borrows one rather than vendoring its own.
+///
+/// A manifest may declare several `[[assets]]` bundles, so each table's `source`
+/// is checked before its `shared_from` is believed: answering with some other
+/// bundle's lender would silently point every schema assertion in these suites
+/// at the wrong tree.
 fn schemas_bundle_owner(manifest_path: &Path) -> Option<String> {
     let manifest = fs::read_to_string(manifest_path)
         .unwrap_or_else(|error| panic!("read {}: {error}", manifest_path.display()));
-    let mut in_schemas_bundle = false;
+    let mut in_assets = false;
+    let mut source = None;
+    let mut shared_from = None;
     for line in manifest.lines() {
         let line = line.trim();
         if line.starts_with('[') {
-            in_schemas_bundle = line == "[[assets]]";
+            // A new table header ends the one just scanned. Answer if that was
+            // the schemas bundle, then start the next one with empty slots.
+            if in_assets && source.as_deref() == Some("schemas") {
+                return shared_from;
+            }
+            in_assets = line == "[[assets]]";
+            source = None;
+            shared_from = None;
             continue;
         }
-        if !in_schemas_bundle {
+        if !in_assets {
             continue;
         }
-        if let Some(owner) = line.strip_prefix("shared_from") {
-            return owner
-                .trim_start()
-                .strip_prefix('=')
-                .map(str::trim)
-                .and_then(|value| value.strip_prefix('"'))
-                .and_then(|value| value.split('"').next())
-                .map(ToOwned::to_owned);
+        if let Some(value) = manifest_string_value(line, "source") {
+            source = Some(value);
+        } else if let Some(value) = manifest_string_value(line, "shared_from") {
+            shared_from = Some(value);
         }
     }
+    if in_assets && source.as_deref() == Some("schemas") {
+        return shared_from;
+    }
     None
+}
+
+/// One `key = "value"` line of a target manifest, when it names exactly `key`.
+///
+/// The `=` must follow the key, so `source_root = "..."` is not read as
+/// `source`.
+fn manifest_string_value(line: &str, key: &str) -> Option<String> {
+    let rest = line
+        .strip_prefix(key)?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim();
+    Some(rest.strip_prefix('"')?.split('"').next()?.to_owned())
 }
 
 /// Validate an XML file against an XSD by shelling out to `xmllint`
