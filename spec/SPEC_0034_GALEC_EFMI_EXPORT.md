@@ -84,6 +84,7 @@ rumoca -> generic artifact/checksum/container graph + vendored schemas
 | GAL-037 | C renders checked aggregate operations without constructing, scalarizing, fusing, or rescheduling them. | Solve view + templates | Bound source growth. |
 | GAL-038 | Independent GALEC, Solve, and C execution are compared over all lifecycle-visible effects. | evaluator/codegen tests | Avoid self-confirming defects. |
 | GAL-039 | Generated C working memory is owned by the caller-allocated block instance: distinct state objects have disjoint working storage, and no mutable file-scope scratch arena exists. Header reporting and manifest treatment follow [SPEC_0042](SPEC_0042_GALEC_LANGUAGE_CATALOG.md) §1 D12. | checked view + C templates | Reentrancy and RAM admission must be construction properties, not deployment assumptions. |
+| GAL-040 | Error-signal accumulation is monotone inside a signal-check-free region: `ErrorSignalStatus` is cleared exactly once on entry to each method, every other emitted write ORs a compile-time-constant mask, and nothing reads it. An optimization may therefore change how many times a raising construct is evaluated inside such a region, provided it stays at least once and never becomes reachable where it was not. A signal check consumes what it catches, ending the region. Clauses, permitted rewrites, and enforcement: [SPEC_0042](SPEC_0042_GALEC_LANGUAGE_CATALOG.md) §4. | `rumoca-ir-galec` signal effects + C templates | Evaluation count is otherwise an eFMI-visible output. |
 
 Rationale for GAL-016 and GAL-024 is recorded in
 [SPEC_0042](SPEC_0042_GALEC_LANGUAGE_CATALOG.md) §3.
@@ -103,30 +104,13 @@ Reopening one requires amending this spec.
 | "GALEC language conformance" | Above + round-trip parse of emitted `.alg`: render∘parse∘render idempotence | Earned (`galec`; `rumoca-phase-parse-galec` round-trip integration tests) |
 | "eFMI Production Code export" | Schema-valid co-emitted AC/PC; complete LogicalData/method mapping; exact manifest reference and recomputed checksum web | Earned (`galec-production`): co-emitted AC/PC container, LogicalData/method mapping, and checksum web are machine-checked. The C body is still template-lowered from the Algorithm Code view; the GAL-008/GAL-024 `SolveAlgorithmBlock` refinement is an internal-provenance obligation outside this rung's requirement (pending: 2026-08-08 plan, M3-4) |
 
-### Variable Classification (GAL-020, normative)
+### Variable Classification and Checked Construction Scope
 
-| Modelica (DAE) | GALEC declaration position | Manifest `blockCausality` |
-|----------------|---------------------------|---------------------------|
-| input | `input` before `protected` | `input` |
-| output | `output` before `protected` | `output` |
-| independent parameter | `parameter` before `protected` | `tunableParameter` |
-| parameter-derived value | `parameter` after `protected` | `dependentParameter` |
-| true constant | `constant` | `constant` |
-| discrete state / pre-value | plain declaration (protected) | `state`, `start` mirroring Startup |
-
-XSD enum `dependentParameter` (not `calculatedParameter`); `start` row-major,
-scalar broadcast; method-local variables unlisted; structurally-parametric
-array sizes rejected.
-
-### Checked Construction Scope (`rumoca-ir-galec`, per §3.2.2)
-
-| Analysis | Checks |
-|----------|--------|
-| Name | constructors reject keyword/reserved/`__`/builtin/Appendix C collisions and malformed quoted names |
-| Type/shape | expressions carry exact type/extents; `/` is Real-only; `^`→Real; no implicit promotion; `else` mandatory |
-| Static domain | dimensions, subscripts, and loop bounds carry checked constant-Integer proofs |
-| Calls/effects | branded function IDs make unresolved/recursive calls impossible; body capabilities restrict writes and stateful calls |
-| Signals | construction derives §3.2.5 escape sets, including NAN from Real comparisons; only settable signals testable; ≤16 user signals; method escape ⊆ predefined 6 |
+The Modelica-to-GALEC declaration/causality table and the per-analysis checks
+whole-block construction runs are lookup tables:
+[SPEC_0042 §5](SPEC_0042_GALEC_LANGUAGE_CATALOG.md#5-variable-classification-and-checked-construction-scope).
+GAL-020 and GAL-017 own the governing rules; both tables are normative by
+reference from them.
 
 ### Language Traps (T1–T14)
 
@@ -160,6 +144,7 @@ are normative by reference from them.
 | Every C/H artifact passes profile preflight and deterministic re-render | GAL-029/030 |
 | Pinned MISRA-capable analyzer + checked-in configuration; zero unexplained findings; reviewed per-guideline records and narrow deviations before any compliance claim | GAL-029/031 |
 | Evidence-bundle schema/trace links reproduce from exact input and tool identities; negative tests reject missing/stale links | GAL-032 |
+| Rendered C error-signal surface: exactly three resets, every other write `\|= UINT32_C(<constant>)`, no read; plus a signal-effect classification whose token refuses `Consume`/`Opaque`; plus a differential fixture whose per-tick `ErrorSignalStatus` records which ticks a raising guard ran on | GAL-040 |
 
 ## Non-Goals
 

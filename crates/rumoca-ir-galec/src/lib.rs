@@ -16,6 +16,9 @@
 //! - [`mod@validate`] — the six-analysis validator (name / type /
 //!   dimensionality / termination / side-effect / signals, SPEC_0034
 //!   Validator Scope + GAL-018 escape-set dataflow), collect-all;
+//! - [`signal_effect`] classifies how a construct touches `ErrorSignalStatus`
+//!   and mints the branded permission an optimization needs before it may
+//!   change how many times a raising construct runs (SPEC_0034 GAL-040);
 //! - [`diagnostic`] — SPEC_0008-shaped errors with stable `EG0xx` codes and
 //!   structural AST-path locations (GALEC ASTs are generated, not parsed).
 
@@ -24,10 +27,12 @@ pub mod builtins;
 pub mod diagnostic;
 pub mod lexical;
 pub mod package;
+pub mod signal_effect;
 pub mod validate;
 
 pub use ast::{Block, BlockMethod, BlockMethodKind, Expression, PredefinedSignal, Statement};
 pub use builtins::{BUILTINS, Builtin, is_reserved_name};
 pub use diagnostic::{GalecError, Location, PathSegment};
 pub use lexical::{is_legal_plain_identifier, plain_identifier_shape_error};
+pub use signal_effect::{RepeatableSignalEffect, StatusEffect};
 pub use validate::{SymbolInfo, span_of, symbol_at, validate};
