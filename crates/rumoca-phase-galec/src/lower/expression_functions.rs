@@ -22,6 +22,21 @@ fn selection_indices(indices: &[gast::Expression]) -> Vec<Option<i64>> {
         .collect()
 }
 
+/// One site an eager traversal reports.
+///
+/// A call is reported by its construction-issued owner, never by a scalar
+/// result projection. A conditional is reported so a caller that needs what one
+/// branch evaluates can re-enter it under the branch condition.
+pub(super) enum EagerSite<'dae> {
+    Call {
+        call: dae::ExprId<'dae>,
+        owner: u32,
+    },
+    Conditional {
+        operands: dae::ExpressionOperands<'dae>,
+    },
+}
+
 /// Visit calls whose source expression is evaluated eagerly with `expression`.
 ///
 /// Conditional branches, comprehensions, and function-fold/value references
@@ -29,11 +44,24 @@ fn selection_indices(indices: &[gast::Expression]) -> Vec<Option<i64>> {
 /// All other operands are part of the same eager evaluation. Call identity is
 /// reported by its construction-issued owner rather than by a scalar result
 /// projection.
+///
+/// `inlined` names the expression a coordinate is lowered as when the caller's
+/// lowering substitutes it rather than reading its storage. A caller that
+/// inlines causal algebraic definitions
+/// ([`ExpressionLowerer::inline_algebraic_coordinate`]) must answer here, or
+/// the traversal stops at the coordinate and misses calls the emitted code
+/// really does evaluate eagerly at this point. A caller that reads storage
+/// answers `None` and keeps the traversal as it was.
+///
+/// A conditional is reported rather than entered. Its branches own separate
+/// dynamic executions, so a caller that wants what one branch evaluates has to
+/// re-enter that branch itself and take on stating the branch condition.
 pub(super) fn for_each_eager_call<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
     seen: &mut HashSet<u32>,
-    visit: &mut impl FnMut(dae::ExprId<'dae>, u32),
+    inlined: &impl Fn(dae::CoordinateView<'dae>) -> Option<dae::ExprId<'dae>>,
+    visit: &mut impl FnMut(EagerSite<'dae>),
 ) {
     if !seen.insert(expression.index()) {
         return;
@@ -44,9 +72,11 @@ pub(super) fn for_each_eager_call<'dae>(
         .operation();
     let mut children = Vec::new();
     match operation {
+        dae::ExpressionOperation::Coordinate(coordinate) => children.extend(inlined(coordinate)),
+        dae::ExpressionOperation::Conditional(operands) => {
+            visit(EagerSite::Conditional { operands });
+        }
         dae::ExpressionOperation::Literal(_)
-        | dae::ExpressionOperation::Coordinate(_)
-        | dae::ExpressionOperation::Conditional(_)
         | dae::ExpressionOperation::Comprehension { .. }
         | dae::ExpressionOperation::FunctionValue { .. }
         | dae::ExpressionOperation::FunctionFoldParameter { .. }
@@ -54,7 +84,10 @@ pub(super) fn for_each_eager_call<'dae>(
         dae::ExpressionOperation::Call {
             owner, arguments, ..
         } => {
-            visit(expression, owner.index());
+            visit(EagerSite::Call {
+                call: expression,
+                owner: owner.index(),
+            });
             children.extend(arguments.iter());
         }
         dae::ExpressionOperation::Unary { operand, .. } => children.push(operand),
@@ -105,7 +138,7 @@ pub(super) fn for_each_eager_call<'dae>(
         dae::ExpressionOperation::ClockTransfer { source, .. } => children.push(source),
     }
     for child in children {
-        for_each_eager_call(view, child, seen, visit);
+        for_each_eager_call(view, child, seen, inlined, visit);
     }
 }
 
@@ -246,8 +279,16 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .iter()
             .filter(|(candidate, _)| candidate.dominates(&key))
             .max_by_key(|(candidate, _)| candidate.activation_path.len())
-            .map(|(_, names)| names.clone());
-        let names = if let Some(names) = dominating {
+            .map(|(candidate, names)| (candidate.clone(), names.clone()));
+        let names = if let Some((candidate, names)) = dominating {
+            // Taking a result temporary the clock domain materialized at a
+            // scheduled position is a schedule edge: record the node that wrote
+            // THIS entry, so whatever is being lowered can declare a read of
+            // it. A group and a later node both record here, which is what
+            // keeps two nodes ordered when one takes the other's temporary.
+            if let Some(node) = self.scheduled_shared_calls.get(&candidate) {
+                self.consumed_scheduled_calls.insert(*node);
+            }
             names
         } else {
             let names = self.materialized_result_names(call, function_view, span)?;

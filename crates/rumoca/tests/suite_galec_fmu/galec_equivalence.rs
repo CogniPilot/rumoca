@@ -3309,3 +3309,739 @@ fn assert_substituted_scratch_row(leg: &str, got: &[f64], want: &[f64]) {
         );
     }
 }
+
+// ===========================================================================
+// Fixture 14: one tuple call whose arguments are written in the same tick is
+// evaluated once, at the scheduled position that write establishes.
+//
+// `trajectorySample` is named once. Its three results reach three separate
+// clocked definitions through causal algebraic coordinates, so the DoStep
+// lowering substitutes the call into each of them and, before the scheduled
+// shared-call node existed, called it once per consumer. Its argument is
+// `clockTime`, a clocked discrete state this same tick rewrites, which is
+// exactly the shape the domain-entry preamble may not hoist: entry evaluation
+// would read the previous tick's `clockTime`. Sharing it therefore has to
+// happen after that write and before every consumer, which is what the node
+// under test expresses.
+// ===========================================================================
+
+const SHARED_TUPLE_CALL: &str = r#"
+function trajectorySample
+  input Real t;
+  output Real position;
+  output Real velocity;
+  output Real acceleration;
+algorithm
+  position := t * t;
+  velocity := 2.0 * t;
+  acceleration := t + 2.0;
+end trajectorySample;
+
+model SharedTupleCallSmoke
+  constant Real samplePeriod = 0.1;
+  discrete output Real clockTime(start = 0.0, fixed = true);
+  discrete output Real px(start = 0.0, fixed = true);
+  discrete output Real pv(start = 0.0, fixed = true);
+  discrete output Real pa(start = 0.0, fixed = true);
+  Real sampledPosition;
+  Real sampledVelocity;
+  Real sampledAcceleration;
+equation
+  (sampledPosition, sampledVelocity, sampledAcceleration) =
+    trajectorySample(clockTime);
+  when sample(0.0, samplePeriod) then
+    clockTime = pre(clockTime) + samplePeriod;
+    px = sampledPosition;
+    pv = sampledVelocity;
+    pa = sampledAcceleration;
+  end when;
+end SharedTupleCallSmoke;
+"#;
+
+const SHARED_TUPLE_CALL_DRIVER: &str = r#"#include <stdio.h>
+#include "SharedTupleCallSmoke.h"
+static void row(const char *label, const SharedTupleCallSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%lu\n", label,
+           (double)state->clockTime, (double)state->px,
+           (double)state->pv, (double)state->pa,
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    SharedTupleCallSmokeState state;
+    char label[16];
+    SharedTupleCallSmoke_startup(&state);
+    row("startup", &state);
+    SharedTupleCallSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        SharedTupleCallSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn embedded_c_shares_one_tuple_call_whose_arguments_are_written_in_the_same_tick() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "SharedTupleCallSmoke";
+    let fields = [
+        Field {
+            name: "clockTime",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "px",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "pv",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "pa",
+            kind: FieldKind::Real,
+        },
+    ];
+
+    let projection = project_embedded_c(dir.path(), model, SHARED_TUPLE_CALL);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(&out_dir, model, SHARED_TUPLE_CALL_DRIVER, fields.len());
+    let ref_ticks = reference_ticks(model, SHARED_TUPLE_CALL, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    assert_oracle_agrees(&oracle, &c_run, &ref_ticks, &fields, 0);
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+
+    // Anchor the shared results against the closed form, so three legs agreeing
+    // on one wrongly-shared value is still caught.
+    for tick in 0..5 {
+        let time = 0.1 * (tick + 1) as f64;
+        let expected = [time, time * time, 2.0 * time, time + 2.0];
+        for (leg, values) in [
+            ("generated C", &c_run.steps[tick].values),
+            ("galec oracle", &oracle.steps[tick].values),
+        ] {
+            for (field, (got, want)) in fields.iter().zip(values.iter().zip(expected)) {
+                let (atol, rtol) = F32_PROFILE;
+                let bound = atol + rtol * want.abs();
+                assert!(
+                    (got - want).abs() <= bound,
+                    "{leg} tick {tick} channel `{}`: {got} vs {want}",
+                    field.name
+                );
+            }
+        }
+    }
+
+    // The sharing itself. The three clocked stores read three results of one
+    // invocation, so no call may stand between the first and the last of them:
+    // per-consumer evaluation puts one there. The evaluation itself has to sit
+    // after the `clockTime` store it reads, which is the placement only a
+    // scheduled node can express.
+    let emitted = fs::read_to_string(out_dir.join(format!("{model}.c"))).expect("read emitted C");
+    let do_step = emitted
+        .split_once("void SharedTupleCallSmoke_dostep(")
+        .expect("emitted C declares DoStep")
+        .1;
+    let first = do_step.find("self->px =").expect("DoStep stores px");
+    let last = do_step.find("self->pa =").expect("DoStep stores pa");
+    let store = do_step
+        .find("self->clockTime =")
+        .expect("DoStep stores time");
+    let shared = do_step[..first]
+        .rfind("    trajectorySample(")
+        .expect("DoStep calls the shared function before its first consumer");
+    assert!(
+        !do_step[first..last].contains("    trajectorySample("),
+        "the three clocked stores must read one invocation, but DoStep re-calls between them:\n{}",
+        &do_step[first..last]
+    );
+    assert!(
+        store < shared,
+        "the shared invocation must follow the `clockTime` store whose value it reads"
+    );
+}
+
+// ===========================================================================
+// Fixture 15: a repeated tuple call under a runtime guard runs on exactly the
+// ticks its guard holds.
+//
+// `signallingSplit` is named once and its three results reach three separate
+// clocked definitions, each of which also has an else-arm definition, so each
+// lands in an emission group of its own and the call was emitted once per
+// group. Sharing it is only legal under the guard it already ran under: the
+// function raises the NAN signal on every call, so the compared
+// `ErrorSignalStatus` word is a direct per-tick record of the ticks it ran on.
+// The guard is false on ticks 1 and 2 and true afterwards, so a shared
+// evaluation hoisted anywhere unguarded would raise NAN on ticks 1 and 2 and
+// both executing legs would disagree with the pinned expectation below. That
+// is the property this fixture exists to hold: sharing removes repeats, never
+// adds an evaluation.
+// ===========================================================================
+
+/// `zeroGain` is an independent `parameter`, which GAL-020 forbids the
+/// projection from constant-folding, so `zeroGain / zeroGain` is a genuine
+/// runtime `0/0` and the comparison around it raises NAN on every call. It is
+/// written inline in the condition for the reason fixture 5 records: no model
+/// variable ever holds the NaN, so all three legs execute. The comparison
+/// yields false on a NaN operand in every leg, so `low` is the else value and
+/// the reference leg agrees on values as well.
+const GUARDED_SHARED_CALL: &str = r#"
+function signallingSplit
+  input Real level;
+  input Real zeroGain;
+  output Real low;
+  output Real high;
+  output Real span;
+algorithm
+  low := if zeroGain / zeroGain > 1.0 then -1.0 else 0.5 * level;
+  high := 2.0 * level;
+  span := high - low;
+end signallingSplit;
+
+model GuardedSharedCallSmoke
+  constant Real samplePeriod = 0.1;
+  parameter Real zeroGain = 0.0;
+  discrete output Real ticks(start = 0.0, fixed = true);
+  discrete output Real low(start = 0.0, fixed = true);
+  discrete output Real high(start = 0.0, fixed = true);
+  discrete output Real span(start = 0.0, fixed = true);
+algorithm
+  when sample(0.0, samplePeriod) then
+    ticks := pre(ticks) + 1.0;
+    if ticks > 2.5 then
+      (low, high, span) := signallingSplit(ticks, zeroGain);
+    else
+      low := pre(low);
+      high := pre(high);
+      span := pre(span);
+    end if;
+  end when;
+end GuardedSharedCallSmoke;
+"#;
+
+const GUARDED_SHARED_CALL_DRIVER: &str = r#"#include <stdio.h>
+#include "GuardedSharedCallSmoke.h"
+static void row(const char *label, const GuardedSharedCallSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%lu\n", label,
+           (double)state->ticks, (double)state->low,
+           (double)state->high, (double)state->span,
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    GuardedSharedCallSmokeState state;
+    char label[16];
+    GuardedSharedCallSmoke_startup(&state);
+    row("startup", &state);
+    GuardedSharedCallSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        GuardedSharedCallSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn embedded_c_shares_a_guarded_tuple_call_only_on_the_ticks_its_guard_holds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "GuardedSharedCallSmoke";
+    let fields = [
+        Field {
+            name: "ticks",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "low",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "high",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "span",
+            kind: FieldKind::Real,
+        },
+    ];
+
+    let projection = project_embedded_c(dir.path(), model, GUARDED_SHARED_CALL);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(&out_dir, model, GUARDED_SHARED_CALL_DRIVER, fields.len());
+    let ref_ticks = reference_ticks(model, GUARDED_SHARED_CALL, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+    // The two executing legs, values and life-cycle status. The per-tick status
+    // differs by design here, so it is pinned tick by tick below instead.
+    assert_status("startup", &oracle.startup, &c_run.startup, LIFECYCLE_STATUS);
+    assert_status(
+        "recalibrate",
+        &oracle.recalibrate,
+        &c_run.recalibrate,
+        LIFECYCLE_STATUS,
+    );
+
+    // Ticks 1 and 2 leave the guard false: the call must not run, so no NAN.
+    // Ticks 3 to 5 enter it: the call runs once and raises NAN exactly once.
+    let expected_status = [0, 0, NAN_SIGNAL_BIT, NAN_SIGNAL_BIT, NAN_SIGNAL_BIT];
+    for (tick, want) in expected_status.into_iter().enumerate() {
+        let label = format!("tick {}", tick + 1);
+        assert_status(&label, &oracle.steps[tick], &c_run.steps[tick], want);
+        let time = (tick + 1) as f64;
+        let held = time > 2.5;
+        let level = if held { time } else { 0.0 };
+        let expected = [time, 0.5 * level, 2.0 * level, 1.5 * level];
+        for (leg, values) in [
+            ("generated C", &c_run.steps[tick].values),
+            ("galec oracle", &oracle.steps[tick].values),
+        ] {
+            for (field, (got, want)) in fields.iter().zip(values.iter().zip(expected)) {
+                let (atol, rtol) = F32_PROFILE;
+                assert!(
+                    (got - want).abs() <= atol + rtol * want.abs(),
+                    "{leg} tick {tick} channel `{}`: {got} vs {want}",
+                    field.name
+                );
+            }
+        }
+    }
+
+    // The sharing itself: one call site, and it stands inside the guard, never
+    // ahead of it.
+    let emitted = fs::read_to_string(out_dir.join(format!("{model}.c"))).expect("read emitted C");
+    let do_step = emitted
+        .split_once("void GuardedSharedCallSmoke_dostep(")
+        .expect("emitted C declares DoStep")
+        .1;
+    assert_eq!(
+        do_step.matches("        signallingSplit(").count(),
+        1,
+        "one source call must be emitted once in DoStep:\n{do_step}"
+    );
+    let call = do_step
+        .find("signallingSplit(")
+        .expect("DoStep calls the shared function");
+    let guard = do_step[..call]
+        .rfind("    if (rumoca_galec_compare_gt(")
+        .expect("the shared call must stand under a guard");
+    assert!(
+        !do_step[guard..call].contains('}'),
+        "the shared call must stand inside that guard, not after it:\n{}",
+        &do_step[guard..call]
+    );
+}
+
+// ===========================================================================
+// Fixture 16: a repeated call inside one branch of a conditional runs on
+// exactly the ticks that branch is selected.
+//
+// `echoLow`, `echoHigh` and `echoSpan` read variables the `if` statement above
+// them assigns, so the checked DAE gives each of them a conditional value whose
+// selected branch projects one result of `signallingSplit`. Nothing about that
+// conditional is an activation guard: it is an ordinary expression the value
+// carries, and its branch is what decides whether the call runs. Sharing it is
+// only legal under that branch condition, and the function raises NAN on every
+// call, so the compared `ErrorSignalStatus` word is a per-tick record of the
+// ticks it ran on. The branch is not selected on ticks 1 and 2, so an
+// evaluation hoisted out of it would raise NAN there and both executing legs
+// would disagree with the pinned expectation below.
+//
+// The fixture also carries fixture 15's shape, because the `if` statement that
+// creates the conditional is itself the activation of the three assignments
+// inside it. Both nodes stand under the same predicate, so the compared word
+// pins them together.
+// ===========================================================================
+
+const CONDITIONAL_SHARED_CALL: &str = r#"
+function signallingSplit
+  input Real level;
+  input Real zeroGain;
+  output Real low;
+  output Real high;
+  output Real span;
+algorithm
+  low := if zeroGain / zeroGain > 1.0 then -1.0 else 0.5 * level;
+  high := 2.0 * level;
+  span := high - low;
+end signallingSplit;
+
+model ConditionalSharedCallSmoke
+  constant Real samplePeriod = 0.1;
+  parameter Real zeroGain = 0.0;
+  discrete output Real ticks(start = 0.0, fixed = true);
+  discrete output Real echoLow(start = 0.0, fixed = true);
+  discrete output Real echoHigh(start = 0.0, fixed = true);
+  discrete output Real echoSpan(start = 0.0, fixed = true);
+protected
+  discrete Real low(start = 0.0, fixed = true);
+  discrete Real high(start = 0.0, fixed = true);
+  discrete Real span(start = 0.0, fixed = true);
+algorithm
+  when sample(0.0, samplePeriod) then
+    ticks := pre(ticks) + 1.0;
+    if ticks > 2.5 then
+      (low, high, span) := signallingSplit(ticks, zeroGain);
+    else
+      low := pre(low);
+      high := pre(high);
+      span := pre(span);
+    end if;
+    echoLow := low;
+    echoHigh := high;
+    echoSpan := span;
+  end when;
+end ConditionalSharedCallSmoke;
+"#;
+
+const CONDITIONAL_SHARED_CALL_DRIVER: &str = r#"#include <stdio.h>
+#include "ConditionalSharedCallSmoke.h"
+static void row(const char *label, const ConditionalSharedCallSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%lu\n", label,
+           (double)state->ticks, (double)state->echoLow,
+           (double)state->echoHigh, (double)state->echoSpan,
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    ConditionalSharedCallSmokeState state;
+    char label[16];
+    ConditionalSharedCallSmoke_startup(&state);
+    row("startup", &state);
+    ConditionalSharedCallSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        ConditionalSharedCallSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn embedded_c_shares_a_conditional_branch_call_only_where_that_branch_is_selected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "ConditionalSharedCallSmoke";
+    let fields = [
+        Field {
+            name: "ticks",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "echoLow",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "echoHigh",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "echoSpan",
+            kind: FieldKind::Real,
+        },
+    ];
+
+    let projection = project_embedded_c(dir.path(), model, CONDITIONAL_SHARED_CALL);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(
+        &out_dir,
+        model,
+        CONDITIONAL_SHARED_CALL_DRIVER,
+        fields.len(),
+    );
+    let ref_ticks = reference_ticks(model, CONDITIONAL_SHARED_CALL, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+    assert_status("startup", &oracle.startup, &c_run.startup, LIFECYCLE_STATUS);
+    assert_status(
+        "recalibrate",
+        &oracle.recalibrate,
+        &c_run.recalibrate,
+        LIFECYCLE_STATUS,
+    );
+
+    // Ticks 1 and 2 select the else branch: the call must not run, so no NAN.
+    let expected_status = [0, 0, NAN_SIGNAL_BIT, NAN_SIGNAL_BIT, NAN_SIGNAL_BIT];
+    for (tick, want) in expected_status.into_iter().enumerate() {
+        let label = format!("tick {}", tick + 1);
+        assert_status(&label, &oracle.steps[tick], &c_run.steps[tick], want);
+        let time = (tick + 1) as f64;
+        let level = if time > 2.5 { time } else { 0.0 };
+        let expected = [time, 0.5 * level, 2.0 * level, 1.5 * level];
+        for (leg, values) in [
+            ("generated C", &c_run.steps[tick].values),
+            ("galec oracle", &oracle.steps[tick].values),
+        ] {
+            for (field, (got, want)) in fields.iter().zip(values.iter().zip(expected)) {
+                let (atol, rtol) = F32_PROFILE;
+                assert!(
+                    (got - want).abs() <= atol + rtol * want.abs(),
+                    "{leg} tick {tick} channel `{}`: {got} vs {want}",
+                    field.name
+                );
+            }
+        }
+    }
+
+    // The sharing itself. The three echo stores read one invocation, so no call
+    // may stand between the first and the last of them, and every call site
+    // that remains stands inside a guard rather than ahead of one.
+    let emitted = fs::read_to_string(out_dir.join(format!("{model}.c"))).expect("read emitted C");
+    let do_step = emitted
+        .split_once("void ConditionalSharedCallSmoke_dostep(")
+        .expect("emitted C declares DoStep")
+        .1;
+    let first = do_step
+        .find("self->echoLow =")
+        .expect("DoStep stores echoLow");
+    let last = do_step
+        .find("self->echoSpan =")
+        .expect("DoStep stores echoSpan");
+    assert!(
+        !do_step[first..last].contains("signallingSplit("),
+        "the three echo stores must read one invocation, but DoStep re-calls between them:\n{}",
+        &do_step[first..last]
+    );
+    for (offset, _) in do_step.match_indices("        signallingSplit(") {
+        let guard = do_step[..offset]
+            .rfind("    if (rumoca_galec_compare_gt(")
+            .expect("every remaining call must stand under a guard");
+        assert!(
+            !do_step[guard..offset].contains('}'),
+            "a shared call escaped its guard:\n{}",
+            &do_step[guard..offset]
+        );
+    }
+}
+
+// ===========================================================================
+// Fixture 17: one shared-call node never reads another shared-call node's
+// result temporary before that node has written it.
+//
+// A node is built from the memo the earlier nodes left, so a nested call in a
+// later node's own argument tree can take an earlier node's temporary. That is
+// a schedule edge, and if it is not declared the greedy worklist is free to
+// emit the later node first. This model makes exactly that order tempting:
+// `outr(ia)` sits inside the `if`, `ia` comes from `innr(n)` which is shared at
+// domain entry, and `alt(v)` reads a `v` the `if` writes, so the entry node
+// cannot be emitted first unless the guarded node already ran.
+//
+// The failure mode is silent, which is why this is pinned by value. Reading the
+// stale slot leaves the previous tick's number in it, so `g1` reads 40 instead
+// of 60 on the tick the branch first fires: a plausible one-tick lag, not
+// obvious garbage.
+//
+// **Two executing legs, and a closed form that shares nothing with them.** The
+// trap needs a node whose arguments are rewritten later in the same tick, and
+// `simulate_dae` refuses exactly that as a same-tick discrete loop (EL005), the
+// pre-existing limitation the corpus pin already records for
+// `flight/waypoint-mission`. So the reference leg cannot run here and this
+// fixture is gated on the two executing legs, as `LimitSmoke` is. That is not a
+// weaker guard against the defect it exists for: both executing legs read the
+// same slot and would agree with each other, so what catches a stale read is
+// the hand-computed closed form below, which shares no code with either leg,
+// and the strict compile, which reports the read as a definite-assignment
+// defect whatever number the slot happens to hold.
+// ===========================================================================
+
+/// One compared Real channel of fixture 17.
+const fn shared_call_order_field(name: &'static str) -> Field {
+    Field {
+        name,
+        kind: FieldKind::Real,
+    }
+}
+
+const SHARED_CALL_ORDER: &str = r#"
+function innr
+  input Real t;
+  output Real a;
+  output Real b;
+algorithm
+  a := t * 2.0;
+  b := t + 1.0;
+end innr;
+
+function alt
+  input Real t;
+  output Real c;
+  output Real d;
+algorithm
+  c := t * 5.0;
+  d := t - 5.0;
+end alt;
+
+function outr
+  input Real u;
+  output Real p;
+  output Real q;
+algorithm
+  p := u * 10.0;
+  q := u + 50.0;
+end outr;
+
+model SharedCallOrderSmoke
+  constant Real samplePeriod = 0.1;
+  discrete output Real n(start = 0.0, fixed = true);
+  discrete output Real v(start = 0.0, fixed = true);
+  discrete output Real e1(start = 0.0, fixed = true);
+  discrete output Real e2(start = 0.0, fixed = true);
+  discrete output Real f1(start = 0.0, fixed = true);
+  discrete output Real f2(start = 0.0, fixed = true);
+  discrete output Real g1(start = 0.0, fixed = true);
+  discrete output Real g2(start = 0.0, fixed = true);
+  discrete output Real h1(start = 0.0, fixed = true);
+  discrete output Real h2(start = 0.0, fixed = true);
+protected
+  discrete Real q1(start = 0.0, fixed = true);
+  discrete Real q2(start = 0.0, fixed = true);
+  Real ia;
+  Real ib;
+  Real ca;
+  Real cb;
+  Real oa;
+  Real ob;
+equation
+  (ia, ib) = innr(n);
+  (ca, cb) = alt(v);
+  (oa, ob) = outr(ia);
+algorithm
+  when sample(0.0, samplePeriod) then
+    n := pre(n) + 1.0;
+    e1 := ia;
+    e2 := ib;
+    f1 := ca;
+    f2 := cb;
+    if n > 2.5 then
+      q1 := oa;
+      q2 := ob;
+    else
+      q1 := pre(q1);
+      q2 := pre(q2);
+    end if;
+    g1 := q1;
+    g2 := q2;
+    h1 := q1;
+    h2 := q2;
+    v := q1;
+  end when;
+end SharedCallOrderSmoke;
+"#;
+
+const SHARED_CALL_ORDER_DRIVER: &str = r#"#include <stdio.h>
+#include "SharedCallOrderSmoke.h"
+static void row(const char *label, const SharedCallOrderSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%lu\n",
+           label, (double)state->n, (double)state->v,
+           (double)state->e1, (double)state->e2,
+           (double)state->f1, (double)state->f2,
+           (double)state->g1, (double)state->g2,
+           (double)state->h1, (double)state->h2,
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    SharedCallOrderSmokeState state;
+    char label[16];
+    SharedCallOrderSmoke_startup(&state);
+    row("startup", &state);
+    SharedCallOrderSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        SharedCallOrderSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn embedded_c_orders_one_shared_call_node_after_the_node_it_reads() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "SharedCallOrderSmoke";
+    let fields = [
+        shared_call_order_field("n"),
+        shared_call_order_field("v"),
+        shared_call_order_field("e1"),
+        shared_call_order_field("e2"),
+        shared_call_order_field("f1"),
+        shared_call_order_field("f2"),
+        shared_call_order_field("g1"),
+        shared_call_order_field("g2"),
+        shared_call_order_field("h1"),
+        shared_call_order_field("h2"),
+    ];
+
+    let projection = project_embedded_c(dir.path(), model, SHARED_CALL_ORDER);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(&out_dir, model, SHARED_CALL_ORDER_DRIVER, fields.len());
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    assert_executing_legs_agree(&oracle, &c_run, &fields, 0);
+
+    // The closed form. `q1` is `20n` once the branch fires and `v` follows it,
+    // so `f1 = 5v` is the channel a one-tick-stale read moves, and `g1`/`h1`
+    // are the channels a stale result temporary moves.
+    for tick in 0..5 {
+        let count = (tick + 1) as f64;
+        let held = count > 2.5;
+        let q1 = if held { 20.0 * count } else { 0.0 };
+        let q2 = if held { 2.0 * count + 50.0 } else { 0.0 };
+        let expected = [
+            count,
+            q1,
+            2.0 * count,
+            count + 1.0,
+            5.0 * q1,
+            q1 - 5.0,
+            q1,
+            q2,
+            q1,
+            q2,
+        ];
+        for (leg, values) in [
+            ("generated C", &c_run.steps[tick].values),
+            ("galec oracle", &oracle.steps[tick].values),
+        ] {
+            for (field, (got, want)) in fields.iter().zip(values.iter().zip(expected)) {
+                let (atol, rtol) = F32_PROFILE;
+                assert!(
+                    (got - want).abs() <= atol + rtol * want.abs(),
+                    "{leg} tick {} channel `{}`: {got} vs {want}",
+                    tick + 1,
+                    field.name
+                );
+            }
+        }
+    }
+
+    // A result temporary read before it is written is a definite-assignment
+    // defect the strict profile reports, so the same emitted unit is compiled
+    // once under it. This is the cheap half of the guard: it fires even where a
+    // stale slot happens to hold a plausible number.
+    let compile = cc_support::assurance_c99_cc()
+        .arg("-c")
+        .arg(out_dir.join(format!("{model}.c")))
+        .arg("-o")
+        .arg(dir.path().join("order.o"))
+        .output()
+        .expect("run cc");
+    assert!(
+        compile.status.success(),
+        "the emitted unit must satisfy the strict profile.\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+}

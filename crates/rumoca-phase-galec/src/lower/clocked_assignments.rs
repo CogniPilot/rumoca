@@ -23,7 +23,16 @@ pub(super) struct ClockedAssignments {
     pub(super) locals: Vec<gast::VariableDeclaration>,
     pub(super) called_user_functions: HashSet<u32>,
     pub(super) assignments: Vec<ClockedAssignment>,
+    /// Whether this domain evaluates a shared call at a scheduled position.
+    pub(super) schedules_shared_calls: bool,
 }
+
+mod shared_calls;
+
+use shared_calls::{
+    SharedClockCalls, lower_clock_domain_shared_calls, scheduled_sharing_preserves_arguments,
+    synthetic_schedule_floor, value_activation,
+};
 
 #[cfg(test)]
 pub(super) fn lower_clocked_assignments<'dae>(
@@ -33,7 +42,7 @@ pub(super) fn lower_clocked_assignments<'dae>(
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
 ) -> Result<ClockedAssignments, GalecTargetError> {
-    lower_clocked_assignments_for_domain(view, definitions, clock, by_id, pre_names, true)
+    lower_clocked_assignments_for_domain(view, definitions, clock, by_id, pre_names, true, true)
 }
 
 pub(super) fn lower_clocked_assignments_for_domain<'dae>(
@@ -43,6 +52,7 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
     include_unclocked_actions: bool,
+    allow_scheduled_shared_calls: bool,
 ) -> Result<ClockedAssignments, GalecTargetError> {
     let mut pending = Vec::new();
     let mut locals = Vec::new();
@@ -51,10 +61,11 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
         .with_causal_inlining()
         .with_temporary_namespace(format!("clocked{}", clock.index()));
     let causal = CausalReadExpansion::new(view, definitions);
-    let shared_calls = lower_clock_domain_preamble(
+    let shared_calls = lower_clock_domain_shared_calls(
         view,
         clock,
         include_unclocked_actions,
+        allow_scheduled_shared_calls,
         &causal,
         &mut lowerer,
         &mut pending,
@@ -92,6 +103,19 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
     for assignment in &mut pending {
         assignment.reads = causal.expand(std::mem::take(&mut assignment.reads));
     }
+    if shared_calls.scheduled
+        && !scheduled_sharing_preserves_arguments(&pending, synthetic_schedule_floor(view))
+    {
+        return lower_clocked_assignments_for_domain(
+            view,
+            definitions,
+            clock,
+            by_id,
+            pre_names,
+            include_unclocked_actions,
+            false,
+        );
+    }
     #[cfg(test)]
     let statements = order_assignments(&pending)?;
     Ok(ClockedAssignments {
@@ -100,193 +124,8 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
         locals,
         called_user_functions,
         assignments: pending,
+        schedules_shared_calls: shared_calls.scheduled,
     })
-}
-
-/// Hoist repeated eager calls that are stable across the whole domain entry.
-///
-/// The preamble runs before every clocked assignment of its domain, so a call
-/// may only be hoisted when nothing it reads is written by a clocked assignment
-/// in this `DoStep`. That read set must be taken through the same
-/// [`CausalReadExpansion`] the scheduler uses: a call that names only algebraic
-/// coordinates can still reach discrete state through causal algebraic
-/// inlining, and hoisting it would evaluate it against the previous tick's
-/// value. Admitting only domain-entry-stable calls also keeps the preamble free
-/// of incoming schedule edges, so the barrier every assignment in the domain
-/// places on it can never close a cycle.
-fn lower_clock_domain_preamble<'a, 'dae>(
-    view: dae::DaeView<'dae>,
-    clock: dae::ClockId<'dae>,
-    include_unclocked: bool,
-    causal: &CausalReadExpansion<'a, 'dae>,
-    lowerer: &mut ExpressionLowerer<'_, 'dae>,
-    pending: &mut Vec<ClockedAssignment>,
-) -> Result<SharedMaterializedFunctionCalls, GalecTargetError> {
-    let mutable_targets = view
-        .variables()
-        .filter_map(|(id, variable)| {
-            matches!(
-                variable.identity(),
-                dae::VariableIdentity::DiscreteReal(_) | dae::VariableIdentity::DiscreteValue(_)
-            )
-            .then_some(id.index())
-        })
-        .collect::<HashSet<_>>();
-    let mut occurrences = HashMap::<u32, (dae::ExprId<'dae>, usize)>::new();
-    for root in clock_domain_value_roots(view, clock, include_unclocked)? {
-        let mut seen = HashSet::new();
-        collect_eager_calls(view, root, &mut seen, &mut occurrences);
-    }
-    let mut calls = occurrences
-        .into_values()
-        .filter_map(|(call, count)| {
-            if count < 2 {
-                return None;
-            }
-            let mut reads = HashSet::new();
-            collect_current_reads(view, call, &mut reads);
-            let reads = causal.expand(reads);
-            reads.is_disjoint(&mutable_targets).then_some((call, reads))
-        })
-        .collect::<Vec<_>>();
-    calls.sort_by_key(|(call, _)| call.index());
-    if calls.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let span = view
-        .expression(calls[0].0)
-        .expect("checked eager call resolves")
-        .provenance()
-        .span();
-    let mut reads = HashSet::new();
-    for (call, call_reads) in calls {
-        lowerer.materialize_eager_call(call)?;
-        reads.extend(call_reads);
-    }
-    let statements = lowerer.drain_prefix_statements();
-    let shared = lowerer.shared_materialized_function_calls();
-    if !statements.is_empty() {
-        pending.push(ClockedAssignment {
-            targets: HashSet::new(),
-            reads,
-            statements,
-            span,
-            is_preamble: true,
-            requires_preamble: false,
-        });
-    }
-    Ok(shared)
-}
-
-fn clock_domain_value_roots<'dae>(
-    view: dae::DaeView<'dae>,
-    clock: dae::ClockId<'dae>,
-    include_unclocked: bool,
-) -> Result<Vec<dae::ExprId<'dae>>, GalecTargetError> {
-    let mut roots = Vec::new();
-    let real_clocks = discrete_real_clock_owners(view);
-    let causal_plan = causal_discrete_plan(view)?;
-    for (index, equation) in view.discrete_real_equations().enumerate() {
-        let Some(definition) = causal_plan.discrete_real_definition(index) else {
-            continue;
-        };
-        let target = dae::VariableId::from(definition.target());
-        let value = definition.value();
-        if require_discrete_real_clock_owner(&real_clocks, target, equation.provenance().span())?
-            == clock.index()
-            && activation_allows_domain_preamble(view, equation.activation(), clock)
-        {
-            roots.push(value);
-        }
-    }
-    let value_clocks = discrete_value_clock_owners(view);
-    for index in 0..view.discrete_value_owner_count() {
-        let owner = view
-            .discrete_value_owner(
-                view.discrete_value_owner_id(index)
-                    .expect("dense checked B.1c owner identity"),
-            )
-            .expect("checked B.1c owner resolves");
-        if !discrete_value_owner_runs_in_domain(
-            view,
-            owner,
-            clock,
-            include_unclocked,
-            &value_clocks,
-        )? {
-            continue;
-        }
-        for branch in owner.branches().iter() {
-            let activation_allows_preamble = match branch.activation() {
-                dae::DiscreteBranchActivation::Always => true,
-                dae::DiscreteBranchActivation::When { guard, .. } => {
-                    condition_is_domain_clock_only(view, guard, clock)
-                }
-            };
-            if activation_allows_preamble {
-                roots.extend(branch.values().iter().map(|(value, _)| value));
-            }
-        }
-    }
-    Ok(roots)
-}
-
-fn activation_allows_domain_preamble<'dae>(
-    view: dae::DaeView<'dae>,
-    activation: dae::DiscreteRealActivation<'dae>,
-    clock: dae::ClockId<'dae>,
-) -> bool {
-    match activation {
-        dae::DiscreteRealActivation::Always => true,
-        dae::DiscreteRealActivation::When { guard, .. } => {
-            condition_is_domain_clock_only(view, guard, clock)
-        }
-    }
-}
-
-/// Prove that evaluating a value at domain entry cannot cross a runtime guard.
-///
-/// `Clock` and `Always` add no condition inside the already-selected DoStep
-/// domain. Relations, discrete predicates, negation, and disjunction remain
-/// lazy and therefore forbid preamble hoisting.
-fn condition_is_domain_clock_only<'dae>(
-    view: dae::DaeView<'dae>,
-    condition: dae::ConditionId<'dae>,
-    clock: dae::ClockId<'dae>,
-) -> bool {
-    match view
-        .condition(condition)
-        .expect("checked preamble condition resolves")
-        .operation()
-    {
-        dae::ConditionOperation::Clock(found) => found == clock,
-        dae::ConditionOperation::Always => true,
-        dae::ConditionOperation::And(lhs, rhs) => {
-            condition_is_domain_clock_only(view, lhs, clock)
-                && condition_is_domain_clock_only(view, rhs, clock)
-        }
-        dae::ConditionOperation::Initial
-        | dae::ConditionOperation::Relation(_)
-        | dae::ConditionOperation::Discrete(_)
-        | dae::ConditionOperation::Not(_)
-        | dae::ConditionOperation::Or(_, _)
-        | dae::ConditionOperation::AnyRise(_, _) => false,
-    }
-}
-
-fn collect_eager_calls<'dae>(
-    view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-    seen: &mut HashSet<u32>,
-    occurrences: &mut HashMap<u32, (dae::ExprId<'dae>, usize)>,
-) {
-    expression_functions::for_each_eager_call(view, expression, seen, &mut |call, owner| {
-        // Count construction-issued invocations, not scalar projections.
-        occurrences
-            .entry(owner)
-            .and_modify(|(_, count)| *count += 1)
-            .or_insert((call, 1));
-    });
 }
 
 /// One shared causal-definition proof plus the variable index it is queried by.
@@ -343,6 +182,24 @@ impl<'a, 'dae> CausalReadExpansion<'a, 'dae> {
             );
         }
         reads
+    }
+
+    /// The expression the `DoStep` lowering substitutes for one coordinate.
+    ///
+    /// Only a whole-variable algebraic definition answers, because that is the
+    /// substitution [`ExpressionLowerer::inline_algebraic_coordinate`] takes
+    /// without knowing which coordinate is being projected. A per-scalar
+    /// definition set answers `None`: which of its members a use reaches
+    /// depends on the index, so admitting them here would count a call the
+    /// value never evaluates.
+    fn inlined_definition(
+        &self,
+        coordinate: dae::CoordinateView<'dae>,
+    ) -> Option<dae::ExprId<'dae>> {
+        match coordinate {
+            dae::CoordinateView::Algebraic(variable) => self.definitions.definition(variable),
+            _ => None,
+        }
     }
 
     fn collect_definition_reads(&self, variable: dae::VariableId<'dae>, reads: &mut HashSet<u32>) {
@@ -481,7 +338,7 @@ fn lower_discrete_real_equations<'dae>(
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pending: &mut Vec<ClockedAssignment>,
     lowerer: &mut ExpressionLowerer<'_, 'dae>,
-    shared_calls: &SharedMaterializedFunctionCalls,
+    shared_calls: &SharedClockCalls<'dae>,
 ) -> Result<(), GalecTargetError> {
     let planned = plan_clocked_discrete_reals(view, clock, by_id)?;
     let groups = group_planned_discrete_reals(view, &planned);
@@ -515,12 +372,19 @@ fn lower_discrete_real_group<'dae>(
     view: dae::DaeView<'dae>,
     clock: dae::ClockId<'dae>,
     lowerer: &mut ExpressionLowerer<'_, 'dae>,
-    shared_calls: &SharedMaterializedFunctionCalls,
+    shared_calls: &SharedClockCalls<'dae>,
     planned: &[PlannedDiscreteReal<'_, 'dae>],
     group: &[usize],
 ) -> Result<ClockedAssignment, GalecTargetError> {
     let head = &planned[group[0]];
     let span = head.span;
+    // The memo this group may restore is the one written under its own
+    // activation. Installing it before the guard lowers is what keeps a guard,
+    // which is lowered ahead of the group's first statement boundary, from
+    // taking a temporary a node under a different activation wrote.
+    let activation = value_activation(view, head.activation, clock);
+    let shared = shared_calls.calls_for(activation).clone();
+    lowerer.begin_shared_call_group(&shared);
     let (guard, guard_prefix) = match head.activation {
         dae::DiscreteRealActivation::Always => (None, Vec::new()),
         dae::DiscreteRealActivation::When { trigger, guard } => {
@@ -534,7 +398,7 @@ fn lower_discrete_real_group<'dae>(
                 },
                 guard,
             )?;
-            let prefix = lowerer.take_prefix_statements_with_shared_calls(shared_calls);
+            let prefix = lowerer.take_prefix_statements_with_shared_calls(&shared);
             (guard, prefix)
         }
     };
@@ -568,7 +432,7 @@ fn lower_discrete_real_group<'dae>(
             reads.remove(target);
         }
     }
-    let mut body = lowerer.take_prefix_statements_with_shared_calls(shared_calls);
+    let mut body = lowerer.take_prefix_statements_with_shared_calls(&shared);
     body.extend(assignments);
     let statements = match guard {
         Some(condition) => {
@@ -588,13 +452,17 @@ fn lower_discrete_real_group<'dae>(
         }
         None => body,
     };
+    // A group that took a scheduled shared call's result temporaries reads the
+    // node that wrote them, so the scheduler keeps that node ahead of it.
+    let consumed = lowerer.take_consumed_scheduled_calls();
+    reads.extend(SharedClockCalls::consumed_reads(&consumed));
     Ok(ClockedAssignment {
         targets,
         reads,
         statements,
         span,
         is_preamble: false,
-        requires_preamble: !shared_calls.is_empty(),
+        requires_preamble: !shared.is_empty(),
     })
 }
 
@@ -1033,7 +901,7 @@ struct DiscreteValueLowering<'context, 'refs, 'dae> {
     clock: dae::ClockId<'dae>,
     by_id: &'refs HashMap<u32, ClassifiedVariable<'dae>>,
     lowerer: &'context mut ExpressionLowerer<'refs, 'dae>,
-    shared_calls: &'context SharedMaterializedFunctionCalls,
+    shared_calls: &'context SharedClockCalls<'dae>,
 }
 
 fn lower_discrete_value_owners<'dae>(
@@ -1176,7 +1044,7 @@ fn lower_discrete_value_owner<'dae>(
                 .unwrap_or(gast::Expression::Bool(true));
                 let condition_prefix = context
                     .lowerer
-                    .take_prefix_statements_with_shared_calls(context.shared_calls);
+                    .take_prefix_statements_with_shared_calls(&context.shared_calls.entry);
                 let body = lower_discrete_value_branch(
                     context.lowerer,
                     context.shared_calls,
@@ -1198,6 +1066,10 @@ fn lower_discrete_value_owner<'dae>(
         }
     }
     let statements = compose_discrete_value_branches(conditional, unconditional, span);
+    // A group that took a scheduled shared call's result temporaries reads the
+    // node that wrote them, so the scheduler keeps that node ahead of it.
+    let consumed = context.lowerer.take_consumed_scheduled_calls();
+    reads.extend(SharedClockCalls::consumed_reads(&consumed));
     Ok(ClockedAssignment {
         targets: target_variables
             .into_iter()
@@ -1207,7 +1079,7 @@ fn lower_discrete_value_owner<'dae>(
         statements,
         span,
         is_preamble: false,
-        requires_preamble: !context.shared_calls.is_empty(),
+        requires_preamble: !context.shared_calls.entry.is_empty(),
     })
 }
 
@@ -1262,7 +1134,7 @@ fn compose_discrete_value_branches(
 
 fn lower_discrete_value_branch<'dae>(
     lowerer: &mut ExpressionLowerer<'_, 'dae>,
-    shared_calls: &SharedMaterializedFunctionCalls,
+    shared_calls: &SharedClockCalls<'dae>,
     targets: &[&ClassifiedVariable<'dae>],
     branch: dae::DiscreteValueBranchView<'dae>,
 ) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
@@ -1276,7 +1148,7 @@ fn lower_discrete_value_branch<'dae>(
             &mut assignments,
         )?;
     }
-    let mut statements = lowerer.take_prefix_statements_with_shared_calls(shared_calls);
+    let mut statements = lowerer.take_prefix_statements_with_shared_calls(&shared_calls.entry);
     statements.extend(assignments);
     Ok(statements)
 }

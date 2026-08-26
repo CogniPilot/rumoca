@@ -1457,7 +1457,11 @@ pub(super) fn materialize_eager_aggregate_calls<'a, 'dae>(
         lowerer.view,
         expression,
         &mut seen_expressions,
-        &mut |call, owner| {
+        &|_| None,
+        &mut |site| {
+            let expression_functions::EagerSite::Call { call, owner } = site else {
+                return;
+            };
             let node = lowerer
                 .view
                 .expression(call)
