@@ -27,18 +27,51 @@ pub(super) struct ClockedAssignments {
     pub(super) schedules_shared_calls: bool,
 }
 
-/// One clock domain's shared eager-call materialization.
-struct SharedClockCalls {
-    /// Result temporaries every consumer group restores before it lowers.
-    calls: SharedMaterializedFunctionCalls,
-    /// Synthetic schedule index the scheduled node owns, when one was emitted.
-    scheduled: Option<u32>,
+/// The activation a clock-domain value is evaluated under.
+///
+/// `Entry` is a value the domain clock alone selects: `Always`, or a `when`
+/// whose guard names nothing but that clock. Everything else carries the
+/// runtime guard it ran under, and may only be shared with values carrying the
+/// identical one.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ValueActivation<'dae> {
+    Entry,
+    Guarded {
+        trigger: dae::ConditionId<'dae>,
+        guard: dae::ConditionId<'dae>,
+    },
 }
 
-impl SharedClockCalls {
-    /// The schedule edge a group that consumed `consumed` has to declare.
-    fn consumed_read(&self, consumed: &HashSet<u32>) -> Option<u32> {
-        self.scheduled.filter(|_| !consumed.is_empty())
+/// One clock domain's shared eager-call materialization.
+struct SharedClockCalls<'dae> {
+    /// Result temporaries a consumer selected by the domain clock alone may
+    /// restore: the domain-entry preamble's and the unguarded scheduled
+    /// node's.
+    entry: SharedMaterializedFunctionCalls,
+    /// Result temporaries per guarded activation, readable only by a consumer
+    /// carrying that identical activation.
+    guarded: HashMap<ValueActivation<'dae>, SharedMaterializedFunctionCalls>,
+    /// The schedule node each shared call owner was materialized by.
+    owners: HashMap<u32, u32>,
+    /// Whether any scheduled node was emitted at all.
+    scheduled: bool,
+}
+
+impl<'dae> SharedClockCalls<'dae> {
+    /// The result temporaries a group running under `activation` may restore.
+    ///
+    /// A guarded node's temporaries are written under its own guard, so only a
+    /// group carrying that identical activation is proven to run where they
+    /// hold. Every other group sees the entry set alone.
+    fn calls_for(&self, activation: ValueActivation<'dae>) -> &SharedMaterializedFunctionCalls {
+        self.guarded.get(&activation).unwrap_or(&self.entry)
+    }
+
+    /// The schedule edges a group that consumed `consumed` has to declare.
+    fn consumed_reads<'a>(&'a self, consumed: &'a HashSet<u32>) -> impl Iterator<Item = u32> + 'a {
+        consumed
+            .iter()
+            .filter_map(|owner| self.owners.get(owner).copied())
     }
 }
 
@@ -111,9 +144,7 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
     for assignment in &mut pending {
         assignment.reads = causal.expand(std::mem::take(&mut assignment.reads));
     }
-    if let Some(scheduled) = shared_calls.scheduled
-        && !scheduled_sharing_preserves_arguments(&pending, scheduled)
-    {
+    if shared_calls.scheduled && !scheduled_sharing_preserves_arguments(&pending, &shared_calls) {
         return lower_clocked_assignments_for_domain(
             view,
             definitions,
@@ -132,7 +163,7 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
         locals,
         called_user_functions,
         assignments: pending,
-        schedules_shared_calls: shared_calls.scheduled.is_some(),
+        schedules_shared_calls: shared_calls.scheduled,
     })
 }
 
@@ -147,24 +178,30 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
 /// node reads what the call reads and every consumer reads the node: any writer
 /// of an argument is therefore ordered before the node, and the node before
 /// every consumer.
-fn scheduled_sharing_preserves_arguments(pending: &[ClockedAssignment], scheduled: u32) -> bool {
-    let Some(node) = pending
-        .iter()
-        .find(|assignment| assignment.targets.contains(&scheduled))
-    else {
-        return true;
-    };
-    !pending
-        .iter()
-        .filter(|assignment| assignment.reads.contains(&scheduled))
-        .any(|consumer| !consumer.targets.is_disjoint(&node.reads))
+fn scheduled_sharing_preserves_arguments(
+    pending: &[ClockedAssignment],
+    shared: &SharedClockCalls<'_>,
+) -> bool {
+    let nodes = shared.owners.values().copied().collect::<HashSet<_>>();
+    nodes.iter().all(|id| {
+        let Some(node) = pending
+            .iter()
+            .find(|assignment| assignment.targets.contains(id))
+        else {
+            return true;
+        };
+        !pending
+            .iter()
+            .filter(|assignment| assignment.reads.contains(id))
+            .any(|consumer| !consumer.targets.is_disjoint(&node.reads))
+    })
 }
 
 /// Materialize each repeated eager call of one clock domain exactly once.
 ///
 /// A call occurring in more than one value of the domain is evaluated once and
-/// its result temporaries are handed to every later occurrence. Two placements
-/// are available, and a call takes the first one it qualifies for.
+/// its result temporaries are handed to every later occurrence. Three
+/// placements are available, and a call takes the first one it qualifies for.
 ///
 /// **Domain entry.** The preamble runs before every clocked assignment of its
 /// domain, so a call may only be hoisted there when nothing it reads is written
@@ -181,26 +218,39 @@ fn scheduled_sharing_preserves_arguments(pending: &[ClockedAssignment], schedule
 /// ordering it needs is the one the clock scheduler already derives for
 /// ordinary assignments. Such calls are materialized into one node that reads
 /// what they read and writes one synthetic schedule index
-/// ([`scheduled_shared_call_id`]); every consumer group declares a read of that
+/// ([`ScheduleIdAllocator`]); every consumer group declares a read of that
 /// index. The worklist in `clock_schedule` then places the node after every
 /// assignment that writes an argument and before every consumer, which is the
-/// ordering the preamble could not express. `DoStep` values are the only thing
-/// that moves: the emitted statement sequence of the node is the one the
-/// preamble would have emitted, so no floating-point operation is reordered and
-/// the removed evaluations were bit-identical repeats.
+/// ordering the preamble could not express.
+///
+/// **A scheduled position under the call's own guard.** A value selected by a
+/// runtime guard rather than by the domain clock evaluates its calls only on
+/// the ticks that guard holds, and moving one of them anywhere unguarded would
+/// evaluate it on ticks the model does not, raising assertions and error
+/// signals the model never raises. Such calls are materialized into a node that
+/// re-states the identical guard through the same [`lower_action_guard`] every
+/// consumer group states it with, so the call still runs on exactly its own
+/// ticks. Its result temporaries are offered only to groups carrying that
+/// identical activation ([`SharedClockCalls::calls_for`]), never to a group
+/// under a weaker guard or none.
+///
+/// In every case `DoStep` values are the only thing that moves: the emitted
+/// statement sequence of a node is the one the consumer would have emitted, so
+/// no floating-point operation is reordered and the removed evaluations were
+/// bit-identical repeats.
 ///
 /// The remaining obligation, that no writer of an argument runs between two
 /// consumers, is discharged by [`scheduled_sharing_preserves_arguments`] once
 /// the domain's read and target sets are known.
-fn lower_clock_domain_shared_calls<'a, 'dae>(
+fn lower_clock_domain_shared_calls<'a, 'b, 'dae>(
     view: dae::DaeView<'dae>,
     clock: dae::ClockId<'dae>,
     include_unclocked: bool,
     allow_scheduled: bool,
     causal: &CausalReadExpansion<'a, 'dae>,
-    lowerer: &mut ExpressionLowerer<'_, 'dae>,
+    lowerer: &mut ExpressionLowerer<'b, 'dae>,
     pending: &mut Vec<ClockedAssignment>,
-) -> Result<SharedClockCalls, GalecTargetError> {
+) -> Result<SharedClockCalls<'dae>, GalecTargetError> {
     let mutable_targets = view
         .variables()
         .filter_map(|(id, variable)| {
@@ -211,56 +261,287 @@ fn lower_clock_domain_shared_calls<'a, 'dae>(
             .then_some(id.index())
         })
         .collect::<HashSet<_>>();
-    let mut occurrences = HashMap::<u32, (dae::ExprId<'dae>, usize, u32)>::new();
-    for root in clock_domain_value_roots(view, clock, include_unclocked)? {
-        let mut seen = HashSet::new();
-        collect_eager_calls(view, root, causal, &mut seen, &mut occurrences);
-    }
-    let mut repeated = occurrences
-        .into_values()
-        .filter_map(|(call, count, owner)| {
-            if count < 2 {
-                return None;
-            }
-            let mut reads = HashSet::new();
-            collect_current_reads(view, call, &mut reads);
-            Some((call, causal.expand(reads), owner))
-        })
-        .collect::<Vec<_>>();
-    repeated.sort_by_key(|(call, _, _)| call.index());
-    let (entry_calls, scheduled_calls): (Vec<_>, Vec<_>) = repeated
-        .into_iter()
-        .partition(|(_, reads, _)| reads.is_disjoint(&mutable_targets));
-    let schedule_id = scheduled_shared_call_id(view, clock).filter(|_| allow_scheduled);
-    let scheduled_calls = if schedule_id.is_some() {
-        scheduled_calls
-    } else {
-        Vec::new()
+    let roots = clock_domain_value_roots(view, clock, include_unclocked)?;
+    let (preamble_calls, unguarded_calls): (Vec<_>, Vec<_>) =
+        repeated_calls(view, causal, &roots, ValueActivation::Entry)
+            .into_iter()
+            .partition(|call| call.reads.is_disjoint(&mutable_targets));
+    let entry_owners = preamble_calls
+        .iter()
+        .chain(&unguarded_calls)
+        .map(|call| call.owner)
+        .collect::<HashSet<_>>();
+    let mut shared = SharedClockCalls {
+        entry: HashMap::new(),
+        guarded: HashMap::new(),
+        owners: HashMap::new(),
+        scheduled: false,
     };
-    let has_preamble =
-        materialize_shared_call_group(lowerer, pending, view, &entry_calls, None, false)?;
-    let scheduled = materialize_shared_call_group(
+    let mut slots = ScheduleIdAllocator::new(view, clock);
+    let has_preamble = materialize_shared_call_group(
         lowerer,
         pending,
-        view,
-        &scheduled_calls,
-        schedule_id,
-        has_preamble,
-    )?
-    .then_some(schedule_id)
-    .flatten();
-    if scheduled.is_some() {
-        lowerer.expect_scheduled_shared_calls(
-            scheduled_calls
-                .iter()
-                .map(|(_, _, owner)| *owner)
-                .collect::<HashSet<_>>(),
-        );
+        &preamble_calls,
+        SharedCallPlacement::Preamble,
+    )?;
+    if allow_scheduled
+        && let Some(id) = slots.next()
+        && materialize_shared_call_group(
+            lowerer,
+            pending,
+            &unguarded_calls,
+            SharedCallPlacement::Scheduled {
+                id,
+                requires_preamble: has_preamble,
+            },
+        )?
+    {
+        shared.scheduled = true;
+        shared
+            .owners
+            .extend(unguarded_calls.iter().map(|call| (call.owner, id)));
     }
-    Ok(SharedClockCalls {
-        calls: lowerer.shared_materialized_function_calls(),
-        scheduled,
-    })
+    shared.entry = lowerer.shared_materialized_function_calls();
+    if allow_scheduled {
+        lower_guarded_shared_calls(
+            &mut GuardedShareContext {
+                view,
+                clock,
+                causal,
+                lowerer,
+                pending,
+                slots: &mut slots,
+                has_preamble,
+                entry_owners,
+            },
+            &roots,
+            &mut shared,
+        )?;
+    }
+    lowerer.expect_scheduled_shared_calls(shared.owners.keys().copied().collect());
+    Ok(shared)
+}
+
+/// Everything the per-guard half of the shared-call plan works against.
+struct GuardedShareContext<'ctx, 'a, 'b, 'dae> {
+    view: dae::DaeView<'dae>,
+    clock: dae::ClockId<'dae>,
+    causal: &'ctx CausalReadExpansion<'a, 'dae>,
+    lowerer: &'ctx mut ExpressionLowerer<'b, 'dae>,
+    pending: &'ctx mut Vec<ClockedAssignment>,
+    slots: &'ctx mut ScheduleIdAllocator,
+    has_preamble: bool,
+    entry_owners: HashSet<u32>,
+}
+
+/// Emit one shared-call node per distinct runtime activation of this domain.
+///
+/// A call is admitted only when every occurrence of it in the domain sits under
+/// the one activation the node re-states. An owner seen under two activations,
+/// or under a guard as well as at domain entry, is declined: one node cannot
+/// re-state two guards, and the memo that hands its temporaries on is keyed by
+/// the call owner, not by the guard it ran under.
+fn lower_guarded_shared_calls<'dae>(
+    context: &mut GuardedShareContext<'_, '_, '_, 'dae>,
+    roots: &[DomainValueRoot<'dae>],
+    shared: &mut SharedClockCalls<'dae>,
+) -> Result<(), GalecTargetError> {
+    let activations = guarded_activations(roots);
+    let mut confined = HashMap::<u32, Option<ValueActivation<'dae>>>::new();
+    for activation in &activations {
+        for call in repeated_calls(context.view, context.causal, roots, *activation) {
+            let held = confined.entry(call.owner).or_insert(Some(*activation));
+            *held = held.filter(|held| held == activation);
+        }
+    }
+    for activation in activations {
+        let ValueActivation::Guarded { trigger, guard } = activation else {
+            continue;
+        };
+        let calls = repeated_calls(context.view, context.causal, roots, activation)
+            .into_iter()
+            .filter(|call| {
+                confined.get(&call.owner) == Some(&Some(activation))
+                    && !context.entry_owners.contains(&call.owner)
+            })
+            .collect::<Vec<_>>();
+        let (Some(first), Some(id)) = (calls.first(), context.slots.next()) else {
+            continue;
+        };
+        let span = first.span;
+        // The guard is lowered on a clone: a declined activation must leave no
+        // temporary, cache entry or emitted statement behind.
+        let mut trial = context.lowerer.clone();
+        trial.begin_shared_call_group(&shared.entry);
+        let Some(lowered) = lower_shared_call_guard(
+            context.view,
+            context.clock,
+            context.causal,
+            &mut trial,
+            trigger,
+            guard,
+            span,
+        )?
+        else {
+            continue;
+        };
+        let mut reads = lowered.reads;
+        for call in &calls {
+            trial.materialize_eager_call(call.call)?;
+            reads.extend(call.reads.iter().copied());
+        }
+        let body = trial.drain_prefix_statements();
+        if body.is_empty() {
+            continue;
+        }
+        let mut statements = lowered.prefix;
+        statements.push(gast::Spanned::new(
+            gast::Statement::If(gast::IfStatement {
+                branches: vec![gast::IfBranch {
+                    condition: gast::Condition::Expression(lowered.condition),
+                    body,
+                    span,
+                }],
+                else_body: None,
+            }),
+            span,
+        ));
+        shared
+            .guarded
+            .insert(activation, trial.shared_materialized_function_calls());
+        *context.lowerer = trial;
+        context.pending.push(ClockedAssignment {
+            targets: HashSet::from([id]),
+            reads,
+            statements,
+            span,
+            is_preamble: false,
+            requires_preamble: context.has_preamble,
+        });
+        shared.scheduled = true;
+        shared
+            .owners
+            .extend(calls.iter().map(|call| (call.owner, id)));
+    }
+    Ok(())
+}
+
+/// The distinct runtime activations this domain's values carry, in a stable
+/// order so the emitted nodes do not depend on hash iteration.
+fn guarded_activations<'dae>(roots: &[DomainValueRoot<'dae>]) -> Vec<ValueActivation<'dae>> {
+    let mut activations = roots
+        .iter()
+        .map(|root| root.activation)
+        .filter(|activation| !matches!(activation, ValueActivation::Entry))
+        .collect::<Vec<_>>();
+    activations.sort_by_key(|activation| match activation {
+        ValueActivation::Entry => (0, 0),
+        ValueActivation::Guarded { trigger, guard } => (trigger.index(), guard.index()),
+    });
+    activations.dedup();
+    activations
+}
+
+/// The guard a shared-call node re-states, lowered exactly as its consumer
+/// groups lower it.
+struct SharedCallGuard {
+    prefix: Vec<gast::Spanned<gast::Statement>>,
+    condition: gast::Expression,
+    reads: HashSet<u32>,
+}
+
+/// Lower one activation into the guard a shared-call node re-states.
+///
+/// This is the same [`lower_action_guard`] over the same trigger and guard
+/// conditions `lower_discrete_real_group` states around every consumer, so the
+/// node runs on exactly the ticks its consumers run on. A trigger this `DoStep`
+/// does not own declines, because the consumers refuse it too; a guard that
+/// turns out to add no runtime condition declines as well, because such a value
+/// belongs at domain entry and must not acquire a guarded node.
+fn lower_shared_call_guard<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    clock: dae::ClockId<'dae>,
+    causal: &CausalReadExpansion<'a, 'dae>,
+    lowerer: &mut ExpressionLowerer<'_, 'dae>,
+    trigger: dae::ConditionId<'dae>,
+    guard: dae::ConditionId<'dae>,
+    span: Span,
+) -> Result<Option<SharedCallGuard>, GalecTargetError> {
+    if require_periodic_trigger(view, trigger, clock, span).is_err() {
+        return Ok(None);
+    }
+    let condition = lower_action_guard(
+        &mut ActionGuardContext {
+            view,
+            expected: clock,
+            lowerer,
+            span,
+        },
+        guard,
+    )?;
+    let Some(condition) = condition else {
+        return Ok(None);
+    };
+    let mut reads = HashSet::new();
+    collect_condition_current_reads(view, trigger, &mut reads);
+    collect_condition_current_reads(view, guard, &mut reads);
+    Ok(Some(SharedCallGuard {
+        prefix: lowerer.drain_prefix_statements(),
+        condition,
+        reads: causal.expand(reads),
+    }))
+}
+
+/// One repeated call of one activation, with everything its node needs.
+struct RepeatedCall<'dae> {
+    call: dae::ExprId<'dae>,
+    owner: u32,
+    reads: HashSet<u32>,
+    span: Span,
+}
+
+/// The calls this domain evaluates more than once under `activation`.
+///
+/// Occurrences are counted once per root, so a call two values reach is
+/// repeated even when both reach it through one shared expression identity.
+/// Call identity is the construction-issued owner, never a result projection.
+fn repeated_calls<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    causal: &CausalReadExpansion<'a, 'dae>,
+    roots: &[DomainValueRoot<'dae>],
+    activation: ValueActivation<'dae>,
+) -> Vec<RepeatedCall<'dae>> {
+    let mut occurrences = HashMap::<u32, (dae::ExprId<'dae>, usize)>::new();
+    for root in roots.iter().filter(|root| root.activation == activation) {
+        let mut seen = HashSet::new();
+        collect_eager_calls(view, root.value, causal, &mut seen, &mut occurrences);
+    }
+    let mut calls = occurrences
+        .into_iter()
+        .filter(|(_, (_, count))| *count >= 2)
+        .map(|(owner, (call, _))| {
+            let mut reads = HashSet::new();
+            collect_current_reads(view, call, &mut reads);
+            RepeatedCall {
+                call,
+                owner,
+                reads: causal.expand(reads),
+                span: view
+                    .expression(call)
+                    .expect("checked eager call resolves")
+                    .provenance()
+                    .span(),
+            }
+        })
+        .collect::<Vec<_>>();
+    calls.sort_by_key(|call| call.call.index());
+    calls
+}
+
+/// Where one group of shared calls is emitted.
+enum SharedCallPlacement {
+    Preamble,
+    Scheduled { id: u32, requires_preamble: bool },
 }
 
 /// Emit one group of shared calls as a single schedulable statement block, and
@@ -274,57 +555,91 @@ fn lower_clock_domain_shared_calls<'a, 'dae>(
 fn materialize_shared_call_group<'dae>(
     lowerer: &mut ExpressionLowerer<'_, 'dae>,
     pending: &mut Vec<ClockedAssignment>,
-    view: dae::DaeView<'dae>,
-    calls: &[(dae::ExprId<'dae>, HashSet<u32>, u32)],
-    schedule_id: Option<u32>,
-    requires_preamble: bool,
+    calls: &[RepeatedCall<'dae>],
+    placement: SharedCallPlacement,
 ) -> Result<bool, GalecTargetError> {
-    let Some((first, _, _)) = calls.first() else {
+    let Some(first) = calls.first() else {
         return Ok(false);
     };
-    let span = view
-        .expression(*first)
-        .expect("checked eager call resolves")
-        .provenance()
-        .span();
+    let span = first.span;
     let mut reads = HashSet::new();
-    for (call, call_reads, _) in calls {
-        lowerer.materialize_eager_call(*call)?;
-        reads.extend(call_reads.iter().copied());
+    for call in calls {
+        lowerer.materialize_eager_call(call.call)?;
+        reads.extend(call.reads.iter().copied());
     }
     let statements = lowerer.drain_prefix_statements();
     if statements.is_empty() {
         return Ok(false);
     }
+    let (targets, is_preamble, requires_preamble) = match placement {
+        SharedCallPlacement::Preamble => (HashSet::new(), true, false),
+        SharedCallPlacement::Scheduled {
+            id,
+            requires_preamble,
+        } => (HashSet::from([id]), false, requires_preamble),
+    };
     pending.push(ClockedAssignment {
-        targets: schedule_id.into_iter().collect(),
+        targets,
         reads,
         statements,
         span,
-        is_preamble: schedule_id.is_none(),
+        is_preamble,
         requires_preamble,
     });
     Ok(true)
 }
 
-/// The synthetic schedule index one clock domain's scheduled shared-call node
-/// owns.
+/// The synthetic schedule indices one clock domain's shared-call nodes own.
 ///
-/// Checked DAE variable indices are dense from zero, so one index per clock
-/// domain allocated above `variable_count` is disjoint from every checked
-/// variable a read set can name. A model large enough to exhaust `u32` here
-/// simply gets no scheduled sharing.
-fn scheduled_shared_call_id(view: dae::DaeView<'_>, clock: dae::ClockId<'_>) -> Option<u32> {
-    u32::try_from(view.variable_count())
-        .ok()?
-        .checked_add(clock.index())
+/// Checked DAE variable indices are dense from zero, so indices allocated above
+/// `variable_count` are disjoint from every checked variable a read set can
+/// name; striding by the checked clock count keeps two domains' allocations
+/// disjoint from each other. A model large enough to exhaust `u32` here simply
+/// gets no scheduled sharing.
+struct ScheduleIdAllocator {
+    base: Option<u32>,
+    stride: u32,
+    slot: u32,
 }
 
+impl ScheduleIdAllocator {
+    fn new(view: dae::DaeView<'_>, clock: dae::ClockId<'_>) -> Self {
+        Self {
+            base: u32::try_from(view.variable_count())
+                .ok()
+                .and_then(|count| count.checked_add(clock.index())),
+            stride: u32::try_from(view.clock_count()).unwrap_or(u32::MAX),
+            slot: 0,
+        }
+    }
+
+    fn next(&mut self) -> Option<u32> {
+        let id = self
+            .base?
+            .checked_add(self.slot.checked_mul(self.stride)?)?;
+        self.slot = self.slot.checked_add(1)?;
+        Some(id)
+    }
+}
+/// One value this clock domain evaluates, and the activation it evaluates
+/// under.
+struct DomainValueRoot<'dae> {
+    value: dae::ExprId<'dae>,
+    activation: ValueActivation<'dae>,
+}
+
+/// Every value this clock domain evaluates, classified by activation.
+///
+/// A discrete-value owner branch contributes only `Entry` roots. Its consumer
+/// lowering hands out the entry memo alone, so a guarded call it names would
+/// gain a node no consumer could read; counting such an occurrence would let a
+/// call with one real consumer look repeated. Discrete-value branches under a
+/// runtime guard are therefore left out of the scan entirely.
 fn clock_domain_value_roots<'dae>(
     view: dae::DaeView<'dae>,
     clock: dae::ClockId<'dae>,
     include_unclocked: bool,
-) -> Result<Vec<dae::ExprId<'dae>>, GalecTargetError> {
+) -> Result<Vec<DomainValueRoot<'dae>>, GalecTargetError> {
     let mut roots = Vec::new();
     let real_clocks = discrete_real_clock_owners(view);
     let causal_plan = causal_discrete_plan(view)?;
@@ -333,13 +648,15 @@ fn clock_domain_value_roots<'dae>(
             continue;
         };
         let target = dae::VariableId::from(definition.target());
-        let value = definition.value();
         if require_discrete_real_clock_owner(&real_clocks, target, equation.provenance().span())?
-            == clock.index()
-            && activation_allows_domain_preamble(view, equation.activation(), clock)
+            != clock.index()
         {
-            roots.push(value);
+            continue;
         }
+        roots.push(DomainValueRoot {
+            value: definition.value(),
+            activation: value_activation(view, equation.activation(), clock),
+        });
     }
     let value_clocks = discrete_value_clock_owners(view);
     for index in 0..view.discrete_value_owner_count() {
@@ -359,29 +676,43 @@ fn clock_domain_value_roots<'dae>(
             continue;
         }
         for branch in owner.branches().iter() {
-            let activation_allows_preamble = match branch.activation() {
+            let selected_by_clock = match branch.activation() {
                 dae::DiscreteBranchActivation::Always => true,
                 dae::DiscreteBranchActivation::When { guard, .. } => {
                     condition_is_domain_clock_only(view, guard, clock)
                 }
             };
-            if activation_allows_preamble {
-                roots.extend(branch.values().iter().map(|(value, _)| value));
+            if selected_by_clock {
+                roots.extend(branch.values().iter().map(|(value, _)| DomainValueRoot {
+                    value,
+                    activation: ValueActivation::Entry,
+                }));
             }
         }
     }
     Ok(roots)
 }
 
-fn activation_allows_domain_preamble<'dae>(
+/// Classify one clocked definition's activation.
+///
+/// `Always`, and a `when` whose guard names nothing but this domain's clock,
+/// add no runtime condition inside the already-selected `DoStep`, so their
+/// values are `Entry` and keep the domain-entry placement they have always
+/// had. Everything else carries its trigger and guard identities, which is what
+/// a node must re-state to run on the same ticks.
+fn value_activation<'dae>(
     view: dae::DaeView<'dae>,
     activation: dae::DiscreteRealActivation<'dae>,
     clock: dae::ClockId<'dae>,
-) -> bool {
+) -> ValueActivation<'dae> {
     match activation {
-        dae::DiscreteRealActivation::Always => true,
-        dae::DiscreteRealActivation::When { guard, .. } => {
-            condition_is_domain_clock_only(view, guard, clock)
+        dae::DiscreteRealActivation::Always => ValueActivation::Entry,
+        dae::DiscreteRealActivation::When { trigger, guard } => {
+            if condition_is_domain_clock_only(view, guard, clock) {
+                ValueActivation::Entry
+            } else {
+                ValueActivation::Guarded { trigger, guard }
+            }
         }
     }
 }
@@ -431,7 +762,7 @@ fn collect_eager_calls<'a, 'dae>(
     expression: dae::ExprId<'dae>,
     causal: &CausalReadExpansion<'a, 'dae>,
     seen: &mut HashSet<u32>,
-    occurrences: &mut HashMap<u32, (dae::ExprId<'dae>, usize, u32)>,
+    occurrences: &mut HashMap<u32, (dae::ExprId<'dae>, usize)>,
 ) {
     expression_functions::for_each_eager_call(
         view,
@@ -442,8 +773,8 @@ fn collect_eager_calls<'a, 'dae>(
             // Count construction-issued invocations, not scalar projections.
             occurrences
                 .entry(owner)
-                .and_modify(|(_, count, _)| *count += 1)
-                .or_insert((call, 1, owner));
+                .and_modify(|(_, count)| *count += 1)
+                .or_insert((call, 1));
         },
     );
 }
@@ -658,7 +989,7 @@ fn lower_discrete_real_equations<'dae>(
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pending: &mut Vec<ClockedAssignment>,
     lowerer: &mut ExpressionLowerer<'_, 'dae>,
-    shared_calls: &SharedClockCalls,
+    shared_calls: &SharedClockCalls<'dae>,
 ) -> Result<(), GalecTargetError> {
     let planned = plan_clocked_discrete_reals(view, clock, by_id)?;
     let groups = group_planned_discrete_reals(view, &planned);
@@ -692,12 +1023,19 @@ fn lower_discrete_real_group<'dae>(
     view: dae::DaeView<'dae>,
     clock: dae::ClockId<'dae>,
     lowerer: &mut ExpressionLowerer<'_, 'dae>,
-    shared_calls: &SharedClockCalls,
+    shared_calls: &SharedClockCalls<'dae>,
     planned: &[PlannedDiscreteReal<'_, 'dae>],
     group: &[usize],
 ) -> Result<ClockedAssignment, GalecTargetError> {
     let head = &planned[group[0]];
     let span = head.span;
+    // The memo this group may restore is the one written under its own
+    // activation. Installing it before the guard lowers is what keeps a guard,
+    // which is lowered ahead of the group's first statement boundary, from
+    // taking a temporary a node under a different activation wrote.
+    let activation = value_activation(view, head.activation, clock);
+    let shared = shared_calls.calls_for(activation).clone();
+    lowerer.begin_shared_call_group(&shared);
     let (guard, guard_prefix) = match head.activation {
         dae::DiscreteRealActivation::Always => (None, Vec::new()),
         dae::DiscreteRealActivation::When { trigger, guard } => {
@@ -711,7 +1049,7 @@ fn lower_discrete_real_group<'dae>(
                 },
                 guard,
             )?;
-            let prefix = lowerer.take_prefix_statements_with_shared_calls(&shared_calls.calls);
+            let prefix = lowerer.take_prefix_statements_with_shared_calls(&shared);
             (guard, prefix)
         }
     };
@@ -745,7 +1083,7 @@ fn lower_discrete_real_group<'dae>(
             reads.remove(target);
         }
     }
-    let mut body = lowerer.take_prefix_statements_with_shared_calls(&shared_calls.calls);
+    let mut body = lowerer.take_prefix_statements_with_shared_calls(&shared);
     body.extend(assignments);
     let statements = match guard {
         Some(condition) => {
@@ -768,14 +1106,14 @@ fn lower_discrete_real_group<'dae>(
     // A group that took a scheduled shared call's result temporaries reads the
     // node that wrote them, so the scheduler keeps that node ahead of it.
     let consumed = lowerer.take_consumed_scheduled_calls();
-    reads.extend(shared_calls.consumed_read(&consumed));
+    reads.extend(shared_calls.consumed_reads(&consumed).collect::<Vec<_>>());
     Ok(ClockedAssignment {
         targets,
         reads,
         statements,
         span,
         is_preamble: false,
-        requires_preamble: !shared_calls.calls.is_empty(),
+        requires_preamble: !shared.is_empty(),
     })
 }
 
@@ -1214,7 +1552,7 @@ struct DiscreteValueLowering<'context, 'refs, 'dae> {
     clock: dae::ClockId<'dae>,
     by_id: &'refs HashMap<u32, ClassifiedVariable<'dae>>,
     lowerer: &'context mut ExpressionLowerer<'refs, 'dae>,
-    shared_calls: &'context SharedClockCalls,
+    shared_calls: &'context SharedClockCalls<'dae>,
 }
 
 fn lower_discrete_value_owners<'dae>(
@@ -1357,7 +1695,7 @@ fn lower_discrete_value_owner<'dae>(
                 .unwrap_or(gast::Expression::Bool(true));
                 let condition_prefix = context
                     .lowerer
-                    .take_prefix_statements_with_shared_calls(&context.shared_calls.calls);
+                    .take_prefix_statements_with_shared_calls(&context.shared_calls.entry);
                 let body = lower_discrete_value_branch(
                     context.lowerer,
                     context.shared_calls,
@@ -1382,7 +1720,12 @@ fn lower_discrete_value_owner<'dae>(
     // A group that took a scheduled shared call's result temporaries reads the
     // node that wrote them, so the scheduler keeps that node ahead of it.
     let consumed = context.lowerer.take_consumed_scheduled_calls();
-    reads.extend(context.shared_calls.consumed_read(&consumed));
+    reads.extend(
+        context
+            .shared_calls
+            .consumed_reads(&consumed)
+            .collect::<Vec<_>>(),
+    );
     Ok(ClockedAssignment {
         targets: target_variables
             .into_iter()
@@ -1392,7 +1735,7 @@ fn lower_discrete_value_owner<'dae>(
         statements,
         span,
         is_preamble: false,
-        requires_preamble: !context.shared_calls.calls.is_empty(),
+        requires_preamble: !context.shared_calls.entry.is_empty(),
     })
 }
 
@@ -1447,7 +1790,7 @@ fn compose_discrete_value_branches(
 
 fn lower_discrete_value_branch<'dae>(
     lowerer: &mut ExpressionLowerer<'_, 'dae>,
-    shared_calls: &SharedClockCalls,
+    shared_calls: &SharedClockCalls<'dae>,
     targets: &[&ClassifiedVariable<'dae>],
     branch: dae::DiscreteValueBranchView<'dae>,
 ) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
@@ -1461,7 +1804,7 @@ fn lower_discrete_value_branch<'dae>(
             &mut assignments,
         )?;
     }
-    let mut statements = lowerer.take_prefix_statements_with_shared_calls(&shared_calls.calls);
+    let mut statements = lowerer.take_prefix_statements_with_shared_calls(&shared_calls.entry);
     statements.extend(assignments);
     Ok(statements)
 }

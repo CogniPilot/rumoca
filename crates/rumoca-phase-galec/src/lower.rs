@@ -1459,8 +1459,20 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         self.drain_prefix_statements()
     }
 
+    /// Open one schedulable state-assignment group, naming the shared-call
+    /// temporaries it may restore.
+    ///
+    /// A group's guard lowers before its first statement boundary, so the memo
+    /// has to be installed here rather than only at that boundary: otherwise a
+    /// guard reads whatever the previous group left behind, which for an
+    /// activation-keyed memo is temporaries written under a different guard.
+    fn begin_shared_call_group(&mut self, shared: &SharedMaterializedFunctionCalls) {
+        self.finish_statement_group();
+        self.materialized_function_calls.clone_from(shared);
+    }
+
     /// Finish one schedulable state-assignment group while retaining only
-    /// call temporaries initialized by a dominating clock-domain preamble.
+    /// call temporaries initialized by a dominating shared-call node.
     fn take_prefix_statements_with_shared_calls(
         &mut self,
         shared: &SharedMaterializedFunctionCalls,

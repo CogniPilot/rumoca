@@ -3465,3 +3465,177 @@ fn embedded_c_shares_one_tuple_call_whose_arguments_are_written_in_the_same_tick
         "the shared invocation must follow the `clockTime` store whose value it reads"
     );
 }
+
+// ===========================================================================
+// Fixture 15: a repeated tuple call under a runtime guard runs on exactly the
+// ticks its guard holds.
+//
+// `signallingSplit` is named once and its three results reach three separate
+// clocked definitions, each of which also has an else-arm definition, so each
+// lands in an emission group of its own and the call was emitted once per
+// group. Sharing it is only legal under the guard it already ran under: the
+// function raises the NAN signal on every call, so the compared
+// `ErrorSignalStatus` word is a direct per-tick record of the ticks it ran on.
+// The guard is false on ticks 1 and 2 and true afterwards, so a shared
+// evaluation hoisted anywhere unguarded would raise NAN on ticks 1 and 2 and
+// both executing legs would disagree with the pinned expectation below. That
+// is the property this fixture exists to hold: sharing removes repeats, never
+// adds an evaluation.
+// ===========================================================================
+
+/// `zeroGain` is an independent `parameter`, which GAL-020 forbids the
+/// projection from constant-folding, so `zeroGain / zeroGain` is a genuine
+/// runtime `0/0` and the comparison around it raises NAN on every call. It is
+/// written inline in the condition for the reason fixture 5 records: no model
+/// variable ever holds the NaN, so all three legs execute. The comparison
+/// yields false on a NaN operand in every leg, so `low` is the else value and
+/// the reference leg agrees on values as well.
+const GUARDED_SHARED_CALL: &str = r#"
+function signallingSplit
+  input Real level;
+  input Real zeroGain;
+  output Real low;
+  output Real high;
+  output Real span;
+algorithm
+  low := if zeroGain / zeroGain > 1.0 then -1.0 else 0.5 * level;
+  high := 2.0 * level;
+  span := high - low;
+end signallingSplit;
+
+model GuardedSharedCallSmoke
+  constant Real samplePeriod = 0.1;
+  parameter Real zeroGain = 0.0;
+  discrete output Real ticks(start = 0.0, fixed = true);
+  discrete output Real low(start = 0.0, fixed = true);
+  discrete output Real high(start = 0.0, fixed = true);
+  discrete output Real span(start = 0.0, fixed = true);
+algorithm
+  when sample(0.0, samplePeriod) then
+    ticks := pre(ticks) + 1.0;
+    if ticks > 2.5 then
+      (low, high, span) := signallingSplit(ticks, zeroGain);
+    else
+      low := pre(low);
+      high := pre(high);
+      span := pre(span);
+    end if;
+  end when;
+end GuardedSharedCallSmoke;
+"#;
+
+const GUARDED_SHARED_CALL_DRIVER: &str = r#"#include <stdio.h>
+#include "GuardedSharedCallSmoke.h"
+static void row(const char *label, const GuardedSharedCallSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%lu\n", label,
+           (double)state->ticks, (double)state->low,
+           (double)state->high, (double)state->span,
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    GuardedSharedCallSmokeState state;
+    char label[16];
+    GuardedSharedCallSmoke_startup(&state);
+    row("startup", &state);
+    GuardedSharedCallSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        GuardedSharedCallSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn embedded_c_shares_a_guarded_tuple_call_only_on_the_ticks_its_guard_holds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "GuardedSharedCallSmoke";
+    let fields = [
+        Field {
+            name: "ticks",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "low",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "high",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "span",
+            kind: FieldKind::Real,
+        },
+    ];
+
+    let projection = project_embedded_c(dir.path(), model, GUARDED_SHARED_CALL);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(&out_dir, model, GUARDED_SHARED_CALL_DRIVER, fields.len());
+    let ref_ticks = reference_ticks(model, GUARDED_SHARED_CALL, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+    // The two executing legs, values and life-cycle status. The per-tick status
+    // differs by design here, so it is pinned tick by tick below instead.
+    assert_status("startup", &oracle.startup, &c_run.startup, LIFECYCLE_STATUS);
+    assert_status(
+        "recalibrate",
+        &oracle.recalibrate,
+        &c_run.recalibrate,
+        LIFECYCLE_STATUS,
+    );
+
+    // Ticks 1 and 2 leave the guard false: the call must not run, so no NAN.
+    // Ticks 3 to 5 enter it: the call runs once and raises NAN exactly once.
+    let expected_status = [0, 0, NAN_SIGNAL_BIT, NAN_SIGNAL_BIT, NAN_SIGNAL_BIT];
+    for (tick, want) in expected_status.into_iter().enumerate() {
+        let label = format!("tick {}", tick + 1);
+        assert_status(&label, &oracle.steps[tick], &c_run.steps[tick], want);
+        let time = (tick + 1) as f64;
+        let held = time > 2.5;
+        let level = if held { time } else { 0.0 };
+        let expected = [time, 0.5 * level, 2.0 * level, 1.5 * level];
+        for (leg, values) in [
+            ("generated C", &c_run.steps[tick].values),
+            ("galec oracle", &oracle.steps[tick].values),
+        ] {
+            for (field, (got, want)) in fields.iter().zip(values.iter().zip(expected)) {
+                let (atol, rtol) = F32_PROFILE;
+                assert!(
+                    (got - want).abs() <= atol + rtol * want.abs(),
+                    "{leg} tick {tick} channel `{}`: {got} vs {want}",
+                    field.name
+                );
+            }
+        }
+    }
+
+    // The sharing itself: one call site, and it stands inside the guard, never
+    // ahead of it.
+    let emitted = fs::read_to_string(out_dir.join(format!("{model}.c"))).expect("read emitted C");
+    let do_step = emitted
+        .split_once("void GuardedSharedCallSmoke_dostep(")
+        .expect("emitted C declares DoStep")
+        .1;
+    assert_eq!(
+        do_step.matches("        signallingSplit(").count(),
+        1,
+        "one source call must be emitted once in DoStep:\n{do_step}"
+    );
+    let call = do_step
+        .find("signallingSplit(")
+        .expect("DoStep calls the shared function");
+    let guard = do_step[..call]
+        .rfind("    if (rumoca_galec_compare_gt(")
+        .expect("the shared call must stand under a guard");
+    assert!(
+        !do_step[guard..call].contains('}'),
+        "the shared call must stand inside that guard, not after it:\n{}",
+        &do_step[guard..call]
+    );
+}
