@@ -4045,3 +4045,192 @@ fn embedded_c_orders_one_shared_call_node_after_the_node_it_reads() {
         String::from_utf8_lossy(&compile.stderr)
     );
 }
+
+// ===========================================================================
+// Fixture 18: a loop-invariant guard hoisted out of an argument-staging nest
+// raises exactly the signal bits, on exactly the ticks, that leaving it inside
+// raised.
+//
+// The actual passed to `offsetVector` is a whole-array conditional, so lowering
+// stages it element by element and each element carries the same test. That
+// test is `zeroGain / zeroGain > 1.0`, which is a Real comparison on a qNaN and
+// therefore raises NAN every time it runs: the fixture 15 idiom, used here to
+// turn the per-tick `ErrorSignalStatus` word into a record of whether the guard
+// ran at all this tick.
+//
+// SPEC_0034 GAL-040 says accumulation is idempotent, so evaluating that guard
+// four times (once per element) and once must leave the same word. This fixture
+// is the evidence: with the hoist the guard runs once per tick, without it four
+// times, and the pinned word below is the same either way. The word is also the
+// instrument that would catch the unsound version of the rewrite: the staging
+// nest sits inside `if ticks > 2.5`, so a guard lifted out of THAT would raise
+// NAN on ticks 1 and 2 and both executing legs would disagree with the pin.
+//
+// `high` and `base` are written by the same clock tick that reads them, so the
+// Modelica reference leg cannot sample this model; the two executing legs carry
+// it, which is what the status channel needs anyway.
+// ===========================================================================
+
+const STAGED_GUARD: &str = r#"
+function offsetVector
+  input Real u[4];
+  output Real y[4];
+algorithm
+  for i in 1:4 loop
+    y[i] := u[i] + i;
+  end for;
+end offsetVector;
+
+model StagedGuardSmoke
+  constant Real samplePeriod = 0.1;
+  parameter Real zeroGain = 0.0;
+  discrete output Real ticks(start = 0.0, fixed = true);
+  discrete output Real y[4](each start = 0.0, each fixed = true);
+protected
+  discrete Real high[4](each start = 0.0, each fixed = true);
+  discrete Real base[4](each start = 0.0, each fixed = true);
+algorithm
+  when sample(0.0, samplePeriod) then
+    ticks := pre(ticks) + 1.0;
+    for i in 1:4 loop
+      high[i] := 10.0 * i;
+      base[i] := ticks + i;
+    end for;
+    if ticks > 2.5 then
+      y := offsetVector(if zeroGain / zeroGain > 1.0 then high else base);
+    else
+      y := pre(y);
+    end if;
+  end when;
+end StagedGuardSmoke;
+"#;
+
+const STAGED_GUARD_DRIVER: &str = r#"#include <stdio.h>
+#include "StagedGuardSmoke.h"
+static void row(const char *label, const StagedGuardSmokeState *s) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%.17g,%lu\n", label, (double)s->ticks,
+           (double)s->y[0], (double)s->y[1], (double)s->y[2], (double)s->y[3],
+           (unsigned long)s->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    StagedGuardSmokeState state;
+    char label[16];
+    StagedGuardSmoke_startup(&state);
+    row("startup", &state);
+    StagedGuardSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        StagedGuardSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+/// The exact text of the bound guard: one comparison, evaluated once, ahead of
+/// the nest. Held as a constant so the two assertions below cannot drift apart.
+const STAGED_GUARD_COMPARISON: &str = "rumoca_galec_compare_gt(&self->rumoca_galec_error_signal_status, \
+     (self->zeroGain / self->zeroGain), 1.0f)";
+
+#[test]
+fn embedded_c_hoisting_a_staging_guard_keeps_the_per_tick_signal_word() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "StagedGuardSmoke";
+    let fields = [
+        Field {
+            name: "ticks",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "y[1]",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "y[2]",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "y[3]",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "y[4]",
+            kind: FieldKind::Real,
+        },
+    ];
+
+    let projection = project_embedded_c(dir.path(), model, STAGED_GUARD);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(&out_dir, model, STAGED_GUARD_DRIVER, fields.len());
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    // The per-tick status differs by design here, so only the life-cycle
+    // boundaries are pinned wholesale; every tick is pinned individually below,
+    // on both executing legs, against a closed form.
+    assert_status("startup", &oracle.startup, &c_run.startup, LIFECYCLE_STATUS);
+    assert_status(
+        "recalibrate",
+        &oracle.recalibrate,
+        &c_run.recalibrate,
+        LIFECYCLE_STATUS,
+    );
+
+    // The claim under test. Ticks 1 and 2 never enter the staging nest, so the
+    // guard cannot run and no bit may appear. Ticks 3 to 5 enter it, and the
+    // word must read exactly NAN whether the guard ran once (hoisted) or four
+    // times (not hoisted). That is what "idempotent" has to mean to be worth
+    // anything.
+    let expected_status = [0, 0, NAN_SIGNAL_BIT, NAN_SIGNAL_BIT, NAN_SIGNAL_BIT];
+    for (tick, want) in expected_status.into_iter().enumerate() {
+        let label = format!("tick {}", tick + 1);
+        assert_status(&label, &oracle.steps[tick], &c_run.steps[tick], want);
+        // The values are the other half: the guard is false (a NaN comparison
+        // yields false), so every element takes `base[i] + i = ticks + 2i`, and
+        // the arm the hoisted Boolean selects must still be that one.
+        let time = (tick + 1) as f64;
+        let held = time > 2.5;
+        let element = |index: usize| {
+            if held {
+                time + 2.0 * (index as f64)
+            } else {
+                0.0
+            }
+        };
+        let expected = [time, element(1), element(2), element(3), element(4)];
+        for (leg, values) in [
+            ("generated C", &c_run.steps[tick].values),
+            ("galec oracle", &oracle.steps[tick].values),
+        ] {
+            for (field, (got, want)) in fields.iter().zip(values.iter().zip(expected)) {
+                let (atol, rtol) = F32_PROFILE;
+                assert!(
+                    (got - want).abs() <= atol + rtol * want.abs(),
+                    "{leg} tick {} channel `{}`: {got} vs {want}",
+                    tick + 1,
+                    field.name
+                );
+            }
+        }
+    }
+
+    // The shape the saving rests on: the guard is bound once ahead of the
+    // staging nest, and the nest tests a Boolean. If the hoist stopped firing
+    // every number above would still pass, so this is what pins the rewrite.
+    let source = fs::read_to_string(out_dir.join(format!("{model}.c"))).expect("read emitted C");
+    assert_eq!(
+        source.matches(STAGED_GUARD_COMPARISON).count(),
+        1,
+        "the staged conditional's comparison must be emitted exactly once:\n{source}"
+    );
+    assert!(
+        source.contains(&format!("guard_4 = {STAGED_GUARD_COMPARISON};")),
+        "the comparison must be bound to a Boolean ahead of the nest:\n{source}"
+    );
+    assert!(
+        source.contains("if (rumoca_clocked0_guard_4) {"),
+        "the staging nest must test the bound Boolean:\n{source}"
+    );
+}

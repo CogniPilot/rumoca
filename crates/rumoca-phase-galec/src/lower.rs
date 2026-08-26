@@ -18,6 +18,7 @@ mod expression_function_folds;
 mod expression_functions;
 mod expression_helpers;
 mod expression_projection;
+mod guard_binding;
 mod local_integer_bounds;
 mod pre_references;
 mod start;

@@ -69,6 +69,82 @@ protected state `'previous(x)'` committed at end of DoStep; the sample period is
 BlockMethod), not C naming, is the conformance surface (ch. 5); PC-only is
 non-conformant (§2.2).
 
+### 4. Rule Rationale (SPEC_0034 GAL-040, the error-signal accumulation contract)
+
+Real comparisons signal (T9), so a guard is not a pure test: it writes
+`ErrorSignalStatus`. Any optimization that changes how often a guard runs is
+therefore changing an eFMI-visible output unless something says otherwise.
+GAL-040 is that something. It is a contract on the emitted artifact, not an
+observation about today's templates, and each clause is mechanically enforced.
+
+1. **Reset.** `ErrorSignalStatus` is assigned `0` exactly once, at the top of
+   `Startup`, `Recalibrate` and `DoStep`, before any statement of that method.
+   The word a consumer reads after a method returns records that invocation
+   alone.
+2. **Accumulation.** Every other write is `status |= <constant mask>`: the six
+   predefined bits (§3.2.5 §1.6) OR-ed in by the emitted `signal` statement, by
+   the Real comparison kernels, and by `integer`. `|=` with a constant mask is
+   idempotent (`x | m | m == x | m`) and commutative (`x | a | b == x | b | a`),
+   so within one method the final word depends on the SET of raising evaluations
+   that ran, never on their count or their order.
+3. **No read.** No emitted construct reads the word. `limit` saturation raises
+   nothing and reads nothing.
+4. **The one construct that breaks it.** A signal check (`if signal …`)
+   *catches*: it clears the bits it tests (T10) and branches on them. That is
+   both a read and a non-monotone write, so clauses 2 and 3 hold only between a
+   method's reset and its first signal check. The Modelica → GALEC projection
+   emits no signal check, so every rumoca-generated artifact is one region; a
+   hand-written `.alg` need not be, which is why the permission is a proof
+   obligation rather than a global assumption.
+
+**Permitted rewrites.** Inside one region, and only there: evaluate a construct
+fewer times than the source form does, or at a different point in the region,
+provided it is still evaluated on exactly the executions where the source form
+evaluated it at least once, and provided the bits it raises are the same on each
+of those evaluations. Concretely this licenses hoisting a loop-invariant guard
+out of a loop whose trip count is *proved* to be at least one. It does not
+license hoisting out of a possibly-empty loop, out of a conditional, or across a
+signal check: each can make a raise reachable that the source form never
+reaches, which changes the word.
+
+**Enforcement.** `rumoca_ir_galec::signal_effect` classifies every expression,
+condition and statement as `Inert`, `AccumulateOr`, `Consume` or `Opaque` over
+exhaustive matches, so a construct added to the AST cannot be silently treated as
+safe; `RepeatableSignalEffect` is a branded token with a private constructor,
+mintable only from a repeatable classification. An optimizer holds that token
+plus its own invariance and non-empty-range proofs before it may rewrite; there
+is no boolean predicate to bypass. Clauses 1 to 3 are claims about emitted C,
+which no Rust type constrains, so a test scans both the C template source and
+rendered C and accepts only a reset, an OR with a decimal-literal mask, a
+declaration, or an address handed to a helper the same scan covers.
+
+### 5. Variable Classification and Checked Construction Scope
+
+**Variable classification (SPEC_0034 GAL-020, normative).**
+
+| Modelica (DAE) | GALEC declaration position | Manifest `blockCausality` |
+|----------------|---------------------------|---------------------------|
+| input | `input` before `protected` | `input` |
+| output | `output` before `protected` | `output` |
+| independent parameter | `parameter` before `protected` | `tunableParameter` |
+| parameter-derived value | `parameter` after `protected` | `dependentParameter` |
+| true constant | `constant` | `constant` |
+| discrete state / pre-value | plain declaration (protected) | `state`, `start` mirroring Startup |
+
+XSD enum `dependentParameter` (not `calculatedParameter`); `start` row-major,
+scalar broadcast; method-local variables unlisted; structurally-parametric
+array sizes rejected.
+
+**Checked construction scope (`rumoca-ir-galec`, per §3.2.2).**
+
+| Analysis | Checks |
+|----------|--------|
+| Name | constructors reject keyword/reserved/`__`/builtin/Appendix C collisions and malformed quoted names |
+| Type/shape | expressions carry exact type/extents; `/` is Real-only; `^`→Real; no implicit promotion; `else` mandatory |
+| Static domain | dimensions, subscripts, and loop bounds carry checked constant-Integer proofs |
+| Calls/effects | branded function IDs make unresolved/recursive calls impossible; body capabilities restrict writes and stateful calls |
+| Signals | construction derives §3.2.5 escape sets, including NAN from Real comparisons; only settable signals testable; ≤16 user signals; method escape ⊆ predefined 6 |
+
 
 ## References
 

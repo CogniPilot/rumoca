@@ -972,6 +972,21 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             return Ok(gast::Expression::Ref(gast::Reference::local(name)));
         }
         self.pending_prefix_statements.extend(before);
+        // The nest is about to be built with the guard inside it. Every element
+        // would re-test a condition that mentions no iterator, so bind it once
+        // here instead, under SPEC_0034 GAL-040 and the proofs
+        // `guard_binding::permission` discharges, never unconditionally.
+        for bound in guard_binding::bind_invariant_guards(
+            &mut body,
+            &iterators,
+            dimensions,
+            &self.temporary_namespace,
+            &mut self.temporary_counter,
+            call_span,
+        ) {
+            self.temporary_locals.push(bound.declaration);
+            self.pending_prefix_statements.push(bound.binding);
+        }
         let nest = user_functions::nest_tensor_loops(
             body,
             &iterators,
