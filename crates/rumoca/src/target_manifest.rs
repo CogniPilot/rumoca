@@ -549,7 +549,7 @@ fn compile_manifest_package(
         &manifest.files,
         render,
         &manifest.assets,
-        |source| bundle.asset_files(source),
+        |asset| bundle.asset_files(asset),
         &package,
         &package_root,
     )?;

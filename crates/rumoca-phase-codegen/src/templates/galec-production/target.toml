@@ -91,6 +91,11 @@ host_callbacks = false
 # `shared_from` gives this target the owner's files under the identical
 # relative paths, from the owner's embedded bytes, so the emitted schemas/
 # directory is unchanged and the XSDs are embedded once in the binary.
+#
+# This directory therefore holds no schemas/ of its own, and does not need one:
+# a copy of this directory passed to `--target <dir>` reads the borrowed bytes
+# out of `galec`'s embedded bundle just as the built-in does, so a customized
+# copy emits the same conformant container.
 [[assets]]
 source = "schemas"
 shared_from = "galec"

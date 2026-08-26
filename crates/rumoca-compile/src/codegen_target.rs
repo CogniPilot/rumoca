@@ -244,13 +244,13 @@ pub struct AssetBundle {
     /// The built-in target that owns these bytes, when this target borrows a
     /// bundle instead of vendoring its own copy of it.
     ///
-    /// Like `TargetFile::shared_as`, this is a bundling-time declaration read
-    /// by the codegen crate's build script, which gives the borrower the
-    /// owner's files under the identical relative paths and embeds them once.
-    /// By the time a target reaches this crate the borrowed files are already
-    /// part of its bundle, so resolution here is a no-op and `source` reads
-    /// the same either way. A directory target has no bundle to borrow from
-    /// and simply reads `source` off disk.
+    /// The borrower keeps no directory of its own: the files arrive from the
+    /// owner under the identical relative paths, so nothing downstream can
+    /// tell a borrowed bundle from an owned one. For a built-in target the
+    /// codegen build script grafts them in at bundling time and embeds the
+    /// bytes once; for a directory target [`TargetSource::asset_files`] reads
+    /// them out of the owner's embedded bundle. Both spellings of the same
+    /// target therefore emit the same bytes.
     pub shared_from: Option<String>,
 }
 
@@ -357,7 +357,23 @@ impl TargetBundle {
         })
     }
 
-    pub fn asset_files(&self, source: &str) -> Result<Vec<TargetAssetFile>> {
+    /// Read one declared `[[assets]]` bundle's files.
+    ///
+    /// A bundle that declares `shared_from` names the built-in target that
+    /// owns its bytes, and is read from that target either way: a built-in
+    /// borrower already carries the owner's files, because the codegen build
+    /// script grafts them into its bundle, and a directory target reads them
+    /// straight out of the owner's embedded bundle. A target directory copied
+    /// out of the tree therefore emits the bytes the built-in it came from
+    /// emits. Without that, a borrowing target would work as a built-in and
+    /// fail as a directory, which is the shape `--target <dir>` documents.
+    pub fn asset_files(&self, bundle: &AssetBundle) -> Result<Vec<TargetAssetFile>> {
+        let source = bundle.source.as_str();
+        if let Some(owner) = bundle.shared_from.as_deref()
+            && !matches!(self, Self::Builtin { .. })
+        {
+            return borrowed_asset_files(owner, source);
+        }
         match self {
             Self::Builtin { target } => target
                 .asset_files(source)
@@ -388,6 +404,24 @@ impl TargetBundle {
 pub struct TargetAssetFile {
     pub relative_path: String,
     pub bytes: Vec<u8>,
+}
+
+/// The files a `shared_from` bundle borrows, read from the owning built-in
+/// target's embedded bundle.
+fn borrowed_asset_files(owner: &str, source: &str) -> Result<Vec<TargetAssetFile>> {
+    let target = rumoca_phase_codegen::templates::builtin_target(owner).with_context(|| {
+        format!("[[assets]] source '{source}' borrows from unknown target '{owner}'")
+    })?;
+    let files = target
+        .asset_files(source)
+        .with_context(|| format!("Target '{owner}' lends no asset source '{source}' to borrow"))?;
+    Ok(files
+        .into_iter()
+        .map(|(relative_path, bytes)| TargetAssetFile {
+            relative_path: relative_path.to_owned(),
+            bytes: bytes.to_vec(),
+        })
+        .collect())
 }
 
 fn collect_target_assets(root: &Path) -> Result<Vec<TargetAssetFile>> {

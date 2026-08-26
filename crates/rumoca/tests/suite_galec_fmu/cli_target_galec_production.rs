@@ -1490,3 +1490,76 @@ fn targets_listing_includes_galec_production() {
         "`rumoca targets` must list the galec-production target:\n{stdout}"
     );
 }
+
+/// Copy a target directory tree, so a test can pass it to `--target <dir>`
+/// exactly as a user customizing a built-in target would.
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).expect("create target directory copy");
+    for entry in fs::read_dir(from).expect("read target directory") {
+        let entry = entry.expect("target directory entry");
+        let source = entry.path();
+        let destination = to.join(entry.file_name());
+        if entry.file_type().expect("stat target entry").is_dir() {
+            copy_tree(&source, &destination);
+        } else {
+            fs::copy(&source, &destination).expect("copy target file");
+        }
+    }
+}
+
+/// Row E9: the target directory copied out of the tree is usable as
+/// `--target <dir>` and emits the same container the built-in emits.
+///
+/// `--target <dir>` is the documented way to customize a target: copy the
+/// directory, edit it, pass it. This target's schema bundle is borrowed from
+/// `galec` rather than vendored, so the copy contains no `schemas/` of its own,
+/// and only the runtime resolving `shared_from` keeps the copy shipping the
+/// schemas the eFMU is not conformant without. Nothing else in the repository
+/// copies this directory out, so without this row the borrow could break the
+/// documented workflow silently.
+#[test]
+fn galec_production_directory_copy_is_usable_as_a_directory_target() {
+    let dir = tempdir().expect("temp dir");
+    let target_copy = dir.path().join("galec-production-copy");
+    let builtin_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../rumoca-phase-codegen/src/templates/galec-production");
+    copy_tree(&builtin_dir, &target_copy);
+    assert!(
+        !target_copy.join("schemas").exists(),
+        "this target borrows its schema bundle, so the copy must hold no schemas/ \
+         of its own: that is exactly what makes this row worth running"
+    );
+
+    let file = write_fixture(dir.path(), "GalecProdCliSmoke", DISCRETE_FIXTURE);
+    let out_dir = dir.path().join("out");
+    let output = run_compile_target(
+        &file,
+        target_copy.to_str().expect("UTF-8 target directory"),
+        &out_dir,
+    );
+    assert!(
+        output.status.success(),
+        "compiling with the copied target directory failed.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        strip_ansi(&String::from_utf8_lossy(&output.stderr))
+    );
+
+    // The borrowed bundle must arrive whole and byte for byte (GAL-023): an
+    // eFMU whose schemas/ is short a file, or holds a different file, is not a
+    // conformant container.
+    let emitted_schemas = out_dir.join("GalecProdCliSmoke").join("schemas");
+    let vendored = vendored_schemas_dir("galec-production");
+    let vendored_files = relative_file_paths(&vendored);
+    assert_eq!(
+        relative_file_paths(&emitted_schemas),
+        vendored_files,
+        "a directory target must emit the same borrowed schema tree the built-in emits"
+    );
+    for relative in &vendored_files {
+        assert_eq!(
+            fs::read(emitted_schemas.join(relative)).expect("read emitted schema"),
+            fs::read(vendored.join(relative)).expect("read vendored schema"),
+            "schemas/{relative} must be byte-identical to the lender's file"
+        );
+    }
+}

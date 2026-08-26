@@ -186,7 +186,9 @@ pub fn topo_sort(files: &[TargetFile]) -> Result<Vec<usize>> {
 /// `render(template, checksums)` renders one template string (a `[[files]]`
 /// `path` or its content `template`) against the target's base context plus
 /// the injected checksum keys — keeping this step ignorant of how the base
-/// context is built. `asset_source(source)` resolves a target-relative tree.
+/// context is built. `asset_source(bundle)` resolves one declared tree; it
+/// takes the whole bundle, not just its `source`, because a bundle may declare
+/// that another target owns its bytes (`shared_from`).
 /// Nothing is written until every byte is
 /// rendered and hashed, so a render or topo failure leaves the product path
 /// untouched.
@@ -195,7 +197,7 @@ pub fn render_and_package(
     files: &[TargetFile],
     render: impl Fn(&str, &ArtifactRenderContext<'_>) -> Result<String>,
     assets: &[AssetBundle],
-    asset_source: impl Fn(&str) -> Result<Vec<TargetAssetFile>>,
+    asset_source: impl Fn(&AssetBundle) -> Result<Vec<TargetAssetFile>>,
     package: &PackageSpec,
     out_dir: &Path,
 ) -> Result<()> {
@@ -212,7 +214,7 @@ pub fn render_and_package(
         .map(|asset| {
             Ok((
                 asset.dest.clone(),
-                asset_source(&asset.source)
+                asset_source(asset)
                     .with_context(|| format!("Resolve target asset source '{}'", asset.source))?,
             ))
         })

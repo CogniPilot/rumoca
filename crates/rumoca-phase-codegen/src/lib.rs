@@ -32,7 +32,10 @@
 //! A user customizing a target copies the directory out, edits it, and passes
 //! the directory to `--target`; `rumoca-compile` reads its `target.toml` and
 //! its template files off disk and calls the same render functions with the
-//! text it read.
+//! text it read. A copied directory emits what the built-in emits, including
+//! any `[[assets]]` bundle the manifest borrows with `shared_from`: those
+//! bytes are read out of the lending target's embedded bundle, since the
+//! borrower has no directory of its own to copy.
 //!
 //! # Writing Templates
 //!

@@ -303,8 +303,9 @@ template = "root-template"
             other => other.to_string(), // path templates render to themselves
         })
     };
-    let asset_source = |source: &str| -> Result<Vec<TargetAssetFile>> {
-        assert_eq!(source, "fake-assets");
+    let asset_source = |bundle: &AssetBundle| -> Result<Vec<TargetAssetFile>> {
+        assert_eq!(bundle.source, "fake-assets");
+        assert_eq!(bundle.shared_from, None);
         Ok(vec![TargetAssetFile {
             relative_path: "LICENSE".to_string(),
             bytes: b"license bytes".to_vec(),
