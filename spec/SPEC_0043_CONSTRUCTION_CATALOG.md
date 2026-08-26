@@ -264,7 +264,7 @@ validation, superseded fallbacks, and compatibility are prohibited.
 |---|---|---|
 | `SolveAlgorithmBlock::construct` lends branded scopes over private declaration, method, program, action, call, and correlation arenas | `rumoca-ir-solve` | One controller execution authority |
 | Construction consumes one checked Algorithm Code package identity and one explicit arithmetic profile | `rumoca-phase-solve` | Semantics and target arithmetic cannot drift |
-| Real types carry their checked representation/rounding profile; Integer carries its domain; Boolean remains Boolean | Shared typed program construction | No numeric erasure |
+| Real types carry their checked representation; Integer carries its domain; Boolean remains Boolean. Rounding is not part of a value type and is not carried on the profile either, since one admitted mode discriminates nothing (SPEC_0047 4.20) | Shared typed program construction | No numeric erasure |
 | Slots derive exact scalar/aggregate type, storage class, mutability, shape, and source identity | Algorithm-block storage construction | Parallel layout metadata cannot disagree |
 | Method locals construct inside lexical scopes and cannot become persistent/interface slots | Method construction | Scratch lifetime stays bounded |
 | Startup, Recalibrate, and DoStep are each issued exactly once before root completion | Lifecycle construction | Partial lifecycle is unrepresentable |
