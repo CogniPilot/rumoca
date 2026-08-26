@@ -12,13 +12,18 @@ application needs plain C rather than an eFMU container.
 - Input: the checked Algorithm Code projection of an admissible DAE.
 - Output: C99 header/source with a block-state structure and
   startup/recalibrate/do-step functions.
-- **One block instance per program.** The array intermediates the generated
-  bodies work in, and every generated function's outputs, are working memory,
-  not interface: they live in one file-scope object private to the `.c`, so two
-  block-state objects in one program would share one set of slots. The
-  generated header states this; it is not left for a reader to discover. The
-  three methods must likewise not run concurrently or reentrantly on one state,
-  which is already true of a block whose methods are its only entry points.
+- **Any number of block instances per program (GAL-039).** The array
+  intermediates the generated bodies work in, and every generated function's
+  outputs, are working memory, not interface, and that working memory is a
+  member of the block-state structure: no mutable file-scope scratch arena
+  exists. Distinct state objects therefore have disjoint working storage and may
+  step concurrently. The generated header states this; it is not left for a
+  reader to discover, and it reports the per-instance cost as
+  `CHECKED_SCRATCH_SLOT_BYTES` next to an `AUXILIARY_SCRATCH_BYTES` of zero.
+  Concurrent calls on *one* state object remain forbidden: the three methods
+  share that instance's slots, so they require ordinary exclusive mutable
+  ownership, which is already true of a block whose methods are its only entry
+  points.
 - **A local read before it is written observes another owner's data.** GALEC
   does not require definite assignment of locals, so a body may read one; the
   value it gets was always arbitrary, but with the overlay it is now whatever
