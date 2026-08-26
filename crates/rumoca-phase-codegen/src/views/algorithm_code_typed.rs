@@ -1487,18 +1487,7 @@ fn retype_destinations<'a>(functions: Vec<&mut TypedFunctionView<'a>>) -> Result
                     placed.member
                 ));
             }
-            if extents
-                .iter()
-                .zip(&placed.extents)
-                .enumerate()
-                .any(|(axis, (member, output))| {
-                    if axis == 0 {
-                        member < output
-                    } else {
-                        member != output
-                    }
-                })
-            {
+            if !widened_leading_only(extents, &placed.extents) {
                 return Err(format!(
                     "destination-placed output `{}` and its destination `{}.{}` differ \
                      other than by a widened leading extent",
@@ -1511,6 +1500,26 @@ fn retype_destinations<'a>(functions: Vec<&mut TypedFunctionView<'a>>) -> Result
         }
     }
     Ok(())
+}
+
+/// Whether `member` is `output` with at most its LEADING extent grown.
+///
+/// That is the only difference the bound equalization can introduce, and the
+/// only one a destination pointer may adopt: the leading extent is not a
+/// stride, so growing it moves no element. Every other axis must match exactly.
+fn widened_leading_only(member: &[usize], output: &[usize]) -> bool {
+    member.len() == output.len()
+        && member
+            .iter()
+            .zip(output)
+            .enumerate()
+            .all(|(axis, (member, output))| {
+                if axis == 0 {
+                    member >= output
+                } else {
+                    member == output
+                }
+            })
 }
 
 /// The block's call graph, as the overlay prover wants it: one entry per owner,
@@ -3286,6 +3295,27 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             .collect()
     }
 
+    /// One assignment, whose target is projected through [`Self::call_target`]
+    /// when the value is a call: that is the position a destination placement
+    /// can turn into an unprinted reference.
+    fn assignment(
+        &self,
+        target: &'a ast::Reference,
+        value: &'a ast::Expression,
+    ) -> Result<TypedStatementView<'a>, String> {
+        let target = match value {
+            ast::Expression::Call(call) => self.call_target(target, call, 0)?,
+            _ => self.reference(target)?,
+        };
+        let value = self.expression(value)?;
+        require_equal_shape(
+            ShapeEvidence::of_reference(&target),
+            ShapeEvidence::of_expression(&value),
+            "checked assignment",
+        )?;
+        Ok(TypedStatementView::Assignment { target, value })
+    }
+
     fn statement(
         &self,
         statement: &'a ast::Statement,
@@ -3294,19 +3324,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
         path: &mut ScopePath,
     ) -> Result<TypedStatementView<'a>, String> {
         Ok(match statement {
-            ast::Statement::Assignment { target, value } => {
-                let target = match value {
-                    ast::Expression::Call(call) => self.call_target(target, call, 0)?,
-                    _ => self.reference(target)?,
-                };
-                let value = self.expression(value)?;
-                require_equal_shape(
-                    ShapeEvidence::of_reference(&target),
-                    ShapeEvidence::of_expression(&value),
-                    "checked assignment",
-                )?;
-                TypedStatementView::Assignment { target, value }
-            }
+            ast::Statement::Assignment { target, value } => self.assignment(target, value)?,
             ast::Statement::MultiAssignment { targets, call } => {
                 TypedStatementView::MultiAssignment {
                     targets: targets
