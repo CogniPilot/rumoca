@@ -377,39 +377,25 @@ impl SnapshotRewrite<'_> {
         }
     }
 
+    /// Visit every reference the expression reads.
+    ///
+    /// This is [`any_expression`] with a predicate that never decides anything
+    /// and records instead: the reference-bearing nodes are handled here
+    /// because a reference is not an expression the walk could offer, and every
+    /// other node is left to it.
     fn visit_expression(&self, expression: &gast::Expression, unplaced: &mut bool) {
-        match expression {
-            gast::Expression::Bool(_)
-            | gast::Expression::Integer(_)
-            | gast::Expression::Real(_) => {}
+        any_expression(expression, &mut |node| match node {
             gast::Expression::Ref(reference) | gast::Expression::Neg(reference) => {
                 self.visit_reference(reference, unplaced);
+                Some(false)
             }
             gast::Expression::Size { array, dimension } => {
                 self.visit_reference(array, unplaced);
                 self.visit_expression(dimension, unplaced);
+                Some(false)
             }
-            gast::Expression::Call(call) => self.visit_call(call, unplaced),
-            gast::Expression::Paren(value) | gast::Expression::Not(value) => {
-                self.visit_expression(value, unplaced);
-            }
-            gast::Expression::If(value) => {
-                for (condition, branch) in &value.branches {
-                    self.visit_expression(condition, unplaced);
-                    self.visit_expression(branch, unplaced);
-                }
-                self.visit_expression(&value.else_value, unplaced);
-            }
-            gast::Expression::Array(values) => {
-                for value in values {
-                    self.visit_expression(value, unplaced);
-                }
-            }
-            gast::Expression::Binary { lhs, rhs, .. } => {
-                self.visit_expression(lhs, unplaced);
-                self.visit_expression(rhs, unplaced);
-            }
-        }
+            _ => None,
+        });
     }
 
     fn visit_call(&self, call: &gast::FunctionCall, unplaced: &mut bool) {

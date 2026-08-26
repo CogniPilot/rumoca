@@ -103,43 +103,24 @@ fn is_read_downstream(
             .any(|statement| user_functions::statement_depends_on(statement, names))
 }
 
+/// Collect, in first-seen order, the distinct local names the expression reads.
+///
+/// This is [`any_expression`] with a predicate that never decides anything and
+/// records instead. The reference-bearing nodes are handled here because the
+/// names live on the reference, not on any expression the walk could offer.
 fn read_expression_names(expression: &gast::Expression, names: &mut Vec<gast::Name>) {
-    match expression {
-        gast::Expression::Bool(_) | gast::Expression::Integer(_) | gast::Expression::Real(_) => {}
+    any_expression(expression, &mut |node| match node {
         gast::Expression::Ref(reference) | gast::Expression::Neg(reference) => {
             read_reference_names(reference, names);
+            Some(false)
         }
         gast::Expression::Size { array, dimension } => {
             read_reference_names(array, names);
             read_expression_names(dimension, names);
+            Some(false)
         }
-        gast::Expression::Call(call) => {
-            for argument in &call.arguments {
-                read_expression_names(argument, names);
-            }
-        }
-        gast::Expression::Paren(value) | gast::Expression::Not(value) => {
-            read_expression_names(value, names);
-        }
-        gast::Expression::If(value) => read_conditional_names(value, names),
-        gast::Expression::Array(values) => {
-            for value in values {
-                read_expression_names(value, names);
-            }
-        }
-        gast::Expression::Binary { lhs, rhs, .. } => {
-            read_expression_names(lhs, names);
-            read_expression_names(rhs, names);
-        }
-    }
-}
-
-fn read_conditional_names(value: &gast::IfExpression, names: &mut Vec<gast::Name>) {
-    for (condition, branch) in &value.branches {
-        read_expression_names(condition, names);
-        read_expression_names(branch, names);
-    }
-    read_expression_names(&value.else_value, names);
+        _ => None,
+    });
 }
 
 fn read_reference_names(reference: &gast::Reference, names: &mut Vec<gast::Name>) {

@@ -1841,48 +1841,21 @@ fn raises_signal(statement: &gast::Spanned<gast::Statement>) -> bool {
 
 /// Whether the expression applies a comparison operator anywhere.
 fn expression_compares(expression: &gast::Expression) -> bool {
-    match expression {
-        gast::Expression::Bool(_) | gast::Expression::Integer(_) | gast::Expression::Real(_) => {
-            false
-        }
-        gast::Expression::Ref(reference) | gast::Expression::Neg(reference) => {
-            reference_compares(reference)
-        }
-        gast::Expression::Size { array, dimension } => {
-            reference_compares(array) || expression_compares(dimension)
-        }
-        gast::Expression::Call(call) => call.arguments.iter().any(expression_compares),
-        gast::Expression::Paren(value) | gast::Expression::Not(value) => expression_compares(value),
-        gast::Expression::If(value) => {
-            value.branches.iter().any(|(condition, branch)| {
-                expression_compares(condition) || expression_compares(branch)
-            }) || expression_compares(&value.else_value)
-        }
-        gast::Expression::Array(values) => values.iter().any(expression_compares),
-        gast::Expression::Binary { op, lhs, rhs } => {
-            matches!(
-                op,
-                gast::BinaryOp::Lt
+    any_expression(expression, &mut |node| {
+        matches!(
+            node,
+            gast::Expression::Binary {
+                op: gast::BinaryOp::Lt
                     | gast::BinaryOp::Gt
                     | gast::BinaryOp::Le
                     | gast::BinaryOp::Ge
                     | gast::BinaryOp::Eq
-                    | gast::BinaryOp::Ne
-            ) || expression_compares(lhs)
-                || expression_compares(rhs)
-        }
-    }
-}
-
-fn reference_compares(reference: &gast::Reference) -> bool {
-    let parts = match reference {
-        gast::Reference::Local(part) => std::slice::from_ref(part),
-        gast::Reference::State(parts) => parts,
-    };
-    parts
-        .iter()
-        .flat_map(|part| &part.subscripts)
-        .any(expression_compares)
+                    | gast::BinaryOp::Ne,
+                ..
+            }
+        )
+        .then_some(true)
+    })
 }
 
 fn guarded_tensor_branch(
@@ -2065,39 +2038,9 @@ fn reorderable_statement(statement: &gast::Spanned<gast::Statement>) -> bool {
 }
 
 fn expression_has_call(expression: &gast::Expression) -> bool {
-    match expression {
-        gast::Expression::Call(_) => true,
-        gast::Expression::Bool(_) | gast::Expression::Integer(_) | gast::Expression::Real(_) => {
-            false
-        }
-        gast::Expression::Ref(reference) | gast::Expression::Neg(reference) => {
-            reference_has_call(reference)
-        }
-        gast::Expression::Size { array, dimension } => {
-            reference_has_call(array) || expression_has_call(dimension)
-        }
-        gast::Expression::Paren(value) | gast::Expression::Not(value) => expression_has_call(value),
-        gast::Expression::If(value) => {
-            value.branches.iter().any(|(condition, branch)| {
-                expression_has_call(condition) || expression_has_call(branch)
-            }) || expression_has_call(&value.else_value)
-        }
-        gast::Expression::Array(values) => values.iter().any(expression_has_call),
-        gast::Expression::Binary { lhs, rhs, .. } => {
-            expression_has_call(lhs) || expression_has_call(rhs)
-        }
-    }
-}
-
-fn reference_has_call(reference: &gast::Reference) -> bool {
-    let parts = match reference {
-        gast::Reference::Local(part) => std::slice::from_ref(part),
-        gast::Reference::State(parts) => parts,
-    };
-    parts
-        .iter()
-        .flat_map(|part| &part.subscripts)
-        .any(expression_has_call)
+    any_expression(expression, &mut |node| {
+        matches!(node, gast::Expression::Call(_)).then_some(true)
+    })
 }
 
 #[derive(Clone)]
@@ -2521,41 +2464,26 @@ fn call_depends_on(call: &gast::FunctionCall, names: &[gast::Name]) -> bool {
         .any(|argument| expression_depends_on(argument, names))
 }
 
+/// Whether the expression reads any of `names`.
+///
+/// The reference-bearing nodes are answered here rather than left to the walk,
+/// because the name a reference carries is not an expression the walk can hand
+/// to a predicate; everything below such a node is reached through
+/// [`reference_depends_on`].
 pub(super) fn expression_depends_on(expression: &gast::Expression, names: &[gast::Name]) -> bool {
-    match expression {
-        gast::Expression::Bool(_) | gast::Expression::Integer(_) | gast::Expression::Real(_) => {
-            false
-        }
+    any_expression(expression, &mut |node| match node {
         gast::Expression::Ref(reference) | gast::Expression::Neg(reference) => {
-            reference_depends_on(reference, names)
+            Some(reference_depends_on(reference, names))
         }
         gast::Expression::Size { array, dimension } => {
-            reference_depends_on(array, names) || expression_depends_on(dimension, names)
+            Some(reference_depends_on(array, names) || expression_depends_on(dimension, names))
         }
-        gast::Expression::Call(call) => call_depends_on(call, names),
-        gast::Expression::Paren(value) | gast::Expression::Not(value) => {
-            expression_depends_on(value, names)
-        }
-        gast::Expression::If(value) => {
-            value.branches.iter().any(|(condition, branch)| {
-                expression_depends_on(condition, names) || expression_depends_on(branch, names)
-            }) || expression_depends_on(&value.else_value, names)
-        }
-        gast::Expression::Array(values) => values
-            .iter()
-            .any(|value| expression_depends_on(value, names)),
-        gast::Expression::Binary { lhs, rhs, .. } => {
-            expression_depends_on(lhs, names) || expression_depends_on(rhs, names)
-        }
-    }
+        _ => None,
+    })
 }
 
 fn reference_depends_on(reference: &gast::Reference, names: &[gast::Name]) -> bool {
-    let parts = match reference {
-        gast::Reference::Local(part) => std::slice::from_ref(part),
-        gast::Reference::State(parts) => parts,
-    };
-    parts.iter().any(|part| {
+    reference_parts(reference).iter().any(|part| {
         names.contains(&part.name)
             || part
                 .subscripts

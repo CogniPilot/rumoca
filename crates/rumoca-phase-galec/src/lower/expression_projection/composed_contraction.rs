@@ -126,36 +126,19 @@ fn is_reference_to(value: &gast::Expression, name: &gast::Name) -> bool {
 }
 
 fn mentions(value: &gast::Expression, name: &gast::Name) -> bool {
-    match value {
-        gast::Expression::Bool(_) | gast::Expression::Integer(_) | gast::Expression::Real(_) => {
-            false
-        }
+    any_expression(value, &mut |node| match node {
         gast::Expression::Ref(reference) | gast::Expression::Neg(reference) => {
-            mentions_in_reference(reference, name)
+            Some(mentions_in_reference(reference, name))
         }
         gast::Expression::Size { array, dimension } => {
-            mentions_in_reference(array, name) || mentions(dimension, name)
+            Some(mentions_in_reference(array, name) || mentions(dimension, name))
         }
-        gast::Expression::Call(call) => call.arguments.iter().any(|value| mentions(value, name)),
-        gast::Expression::Paren(inner) | gast::Expression::Not(inner) => mentions(inner, name),
-        gast::Expression::If(selection) => {
-            selection
-                .branches
-                .iter()
-                .any(|(condition, value)| mentions(condition, name) || mentions(value, name))
-                || mentions(&selection.else_value, name)
-        }
-        gast::Expression::Array(values) => values.iter().any(|value| mentions(value, name)),
-        gast::Expression::Binary { lhs, rhs, .. } => mentions(lhs, name) || mentions(rhs, name),
-    }
+        _ => None,
+    })
 }
 
 fn mentions_in_reference(reference: &gast::Reference, name: &gast::Name) -> bool {
-    let parts = match reference {
-        gast::Reference::Local(part) => std::slice::from_ref(part),
-        gast::Reference::State(parts) => parts.as_slice(),
-    };
-    parts
+    reference_parts(reference)
         .iter()
         .any(|part| part.name == *name || part.subscripts.iter().any(|index| mentions(index, name)))
 }

@@ -321,16 +321,6 @@ fn reads_replayed_storage<'dae>(
         .any(|child| reads_replayed_storage(view, target, root, child, written))
 }
 
-fn subscript_expressions<'dae>(
-    subscripts: dae::SubscriptsView<'dae>,
-) -> impl Iterator<Item = dae::ExprId<'dae>> {
-    subscripts.iter().filter_map(|subscript| match subscript {
-        dae::SubscriptView::Index { expression, .. }
-        | dae::SubscriptView::Slice { expression, .. } => Some(expression),
-        dae::SubscriptView::Whole { .. } => None,
-    })
-}
-
 pub(super) fn lower_indexed_function_update<'a, 'dae>(
     view: dae::DaeView<'dae>,
     target: dae::FunctionValueView<'dae>,

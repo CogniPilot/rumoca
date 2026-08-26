@@ -1,5 +1,107 @@
 use super::*;
 
+/// Walk a GALEC expression tree, asking `predicate` about each node, and answer
+/// whether any node said yes.
+///
+/// The predicate answers one of three things about the node it is handed:
+///
+/// * `Some(true)` — yes, and the walk stops here: nothing else can change the
+///   answer;
+/// * `Some(false)` — this subtree's verdict is settled, so the walk does *not*
+///   descend into it. A predicate uses this when it has already inspected the
+///   node's children itself, which is what the reference-bearing nodes
+///   (`Ref`, `Neg`, `Size`) need, since a `Reference` is not an `Expression`
+///   and the walk cannot hand one to an expression predicate;
+/// * `None` — undecided here, so the walk descends into the node's children
+///   and ORs their answers.
+///
+/// A predicate that answers `None` everywhere and records what it sees turns
+/// this into a plain visit-every-node traversal; the `false` it then returns is
+/// simply ignored.
+///
+/// This is the one place the shape of `gast::Expression` is enumerated for a
+/// read-only search. Every question of the form "does this expression contain
+/// X" is the same ten-arm match around a different leaf test, and ten arms
+/// copied per question is ten chances for one copy to miss a new variant.
+pub(super) fn any_expression(
+    expression: &gast::Expression,
+    predicate: &mut impl FnMut(&gast::Expression) -> Option<bool>,
+) -> bool {
+    if let Some(verdict) = predicate(expression) {
+        return verdict;
+    }
+    match expression {
+        gast::Expression::Bool(_) | gast::Expression::Integer(_) | gast::Expression::Real(_) => {
+            false
+        }
+        gast::Expression::Ref(reference) | gast::Expression::Neg(reference) => {
+            any_reference(reference, predicate)
+        }
+        gast::Expression::Size { array, dimension } => {
+            any_reference(array, predicate) || any_expression(dimension, predicate)
+        }
+        gast::Expression::Call(call) => call
+            .arguments
+            .iter()
+            .any(|argument| any_expression(argument, predicate)),
+        gast::Expression::Paren(value) | gast::Expression::Not(value) => {
+            any_expression(value, predicate)
+        }
+        gast::Expression::If(value) => {
+            value.branches.iter().any(|(condition, branch)| {
+                any_expression(condition, predicate) || any_expression(branch, predicate)
+            }) || any_expression(&value.else_value, predicate)
+        }
+        gast::Expression::Array(values) => values
+            .iter()
+            .any(|value| any_expression(value, predicate)),
+        gast::Expression::Binary { lhs, rhs, .. } => {
+            any_expression(lhs, predicate) || any_expression(rhs, predicate)
+        }
+    }
+}
+
+/// The reference counterpart of [`any_expression`]: ask the same predicate
+/// about every expression a reference contains, which is its subscripts.
+///
+/// A reference's *names* are not expressions and are therefore not asked about
+/// here. A predicate that cares about them matches the reference-bearing
+/// expression nodes itself and settles those subtrees with `Some(_)`.
+pub(super) fn any_reference(
+    reference: &gast::Reference,
+    predicate: &mut impl FnMut(&gast::Expression) -> Option<bool>,
+) -> bool {
+    reference_parts(reference)
+        .iter()
+        .flat_map(|part| &part.subscripts)
+        .any(|subscript| any_expression(subscript, predicate))
+}
+
+/// The DAE expressions a checked subscript list evaluates.
+///
+/// A `Whole` subscript names a whole dimension and evaluates nothing, so it
+/// contributes no expression; `Index` and `Slice` each contribute the one they
+/// carry. Every walk over the children of an `Index` or `ArrayUpdate` node
+/// needs exactly this filter, and a walk that forgot it would treat a whole-
+/// dimension subscript as a missing child rather than as no child at all.
+pub(super) fn subscript_expressions<'dae>(
+    subscripts: dae::SubscriptsView<'dae>,
+) -> impl Iterator<Item = dae::ExprId<'dae>> {
+    subscripts.iter().filter_map(|subscript| match subscript {
+        dae::SubscriptView::Index { expression, .. }
+        | dae::SubscriptView::Slice { expression, .. } => Some(expression),
+        dae::SubscriptView::Whole { .. } => None,
+    })
+}
+
+/// The component parts of a reference, whichever spelling it has.
+pub(super) fn reference_parts(reference: &gast::Reference) -> &[gast::RefPart] {
+    match reference {
+        gast::Reference::Local(part) => std::slice::from_ref(part),
+        gast::Reference::State(parts) => parts,
+    }
+}
+
 pub(super) fn exact_integer(value: f64, span: Span) -> Result<i64, GalecTargetError> {
     if value.is_finite()
         && value.fract() == 0.0

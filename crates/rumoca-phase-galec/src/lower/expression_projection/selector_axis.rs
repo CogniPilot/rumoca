@@ -358,49 +358,28 @@ fn reads_any_iterator(expression: &gast::Expression, iterators: &[gast::Name]) -
     found
 }
 
+/// Call `visit` with every name the expression reads.
+///
+/// This is [`any_expression`] with a predicate that never decides anything and
+/// records instead. The reference-bearing nodes are handled here because the
+/// names live on the reference, not on any expression the walk could offer.
 fn read_expression(expression: &gast::Expression, visit: &mut impl FnMut(&gast::Name)) {
-    match expression {
-        gast::Expression::Bool(_) | gast::Expression::Integer(_) | gast::Expression::Real(_) => {}
+    any_expression(expression, &mut |node| match node {
         gast::Expression::Ref(reference) | gast::Expression::Neg(reference) => {
             read_reference(reference, visit);
+            Some(false)
         }
         gast::Expression::Size { array, dimension } => {
             read_reference(array, visit);
             read_expression(dimension, visit);
+            Some(false)
         }
-        gast::Expression::Call(call) => {
-            for argument in &call.arguments {
-                read_expression(argument, visit);
-            }
-        }
-        gast::Expression::Paren(value) | gast::Expression::Not(value) => {
-            read_expression(value, visit);
-        }
-        gast::Expression::If(value) => {
-            for (condition, branch) in &value.branches {
-                read_expression(condition, visit);
-                read_expression(branch, visit);
-            }
-            read_expression(&value.else_value, visit);
-        }
-        gast::Expression::Array(values) => {
-            for value in values {
-                read_expression(value, visit);
-            }
-        }
-        gast::Expression::Binary { lhs, rhs, .. } => {
-            read_expression(lhs, visit);
-            read_expression(rhs, visit);
-        }
-    }
+        _ => None,
+    });
 }
 
 fn read_reference(reference: &gast::Reference, visit: &mut impl FnMut(&gast::Name)) {
-    let parts = match reference {
-        gast::Reference::Local(part) => std::slice::from_ref(part),
-        gast::Reference::State(parts) => parts,
-    };
-    for part in parts {
+    for part in reference_parts(reference) {
         visit(&part.name);
         for subscript in &part.subscripts {
             read_expression(subscript, visit);

@@ -75,7 +75,7 @@ pub(super) fn for_each_eager_call<'dae>(
         }
         dae::ExpressionOperation::Index { base, subscripts } => {
             children.push(base);
-            append_subscript_expressions(subscripts, &mut children);
+            children.extend(subscript_expressions(subscripts));
         }
         dae::ExpressionOperation::ArrayUpdate {
             base,
@@ -83,7 +83,7 @@ pub(super) fn for_each_eager_call<'dae>(
             subscripts,
         } => {
             children.extend([base, value]);
-            append_subscript_expressions(subscripts, &mut children);
+            children.extend(subscript_expressions(subscripts));
         }
         dae::ExpressionOperation::StringConversion { value, format, .. } => {
             children.push(value);
@@ -106,19 +106,6 @@ pub(super) fn for_each_eager_call<'dae>(
     }
     for child in children {
         for_each_eager_call(view, child, seen, visit);
-    }
-}
-
-fn append_subscript_expressions<'dae>(
-    subscripts: dae::SubscriptsView<'dae>,
-    expressions: &mut Vec<dae::ExprId<'dae>>,
-) {
-    for subscript in subscripts.iter() {
-        match subscript {
-            dae::SubscriptView::Index { expression, .. }
-            | dae::SubscriptView::Slice { expression, .. } => expressions.push(expression),
-            dae::SubscriptView::Whole { .. } => {}
-        }
     }
 }
 
