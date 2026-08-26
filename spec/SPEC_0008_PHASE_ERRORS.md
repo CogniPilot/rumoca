@@ -134,6 +134,7 @@ Error codes use mnemonic prefixes for readability:
 | EP0xx | parse | **P**arse | Syntax errors |
 | ER0xx | resolve | **R**esolve | Name resolution errors |
 | ET0xx | typecheck | **T**ype | Type errors |
+| WT0xx | typecheck | **T**ype | Non-fatal type diagnostics (`WT003` variability, `WT006`/`WT007` constant-fold integer coercion and overflow) |
 | EI0xx | instantiate | **I**nstantiate | Modification errors |
 | WI0xx | instantiate | **I**nstantiate | Non-fatal instantiation diagnostics |
 | EF0xx | flatten | **F**latten | Connection errors |

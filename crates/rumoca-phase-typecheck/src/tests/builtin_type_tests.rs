@@ -72,8 +72,8 @@ fn legitimate_integer_conversion_emits_no_warning() {
     assert!(
         diagnostics
             .iter()
-            .all(|diag| diag.code.as_deref() != Some("ET006")
-                && diag.code.as_deref() != Some("ET007")),
+            .all(|diag| diag.code.as_deref() != Some("WT006")
+                && diag.code.as_deref() != Some("WT007")),
         "expected no integer-coercion warnings, got: {diagnostics:?}"
     );
 }
@@ -91,8 +91,8 @@ fn out_of_range_integer_coercion_emits_warning() {
     assert!(
         diagnostics
             .iter()
-            .any(|diag| diag.code.as_deref() == Some("ET006")),
-        "expected ET006 warning, got: {diagnostics:?}"
+            .any(|diag| diag.code.as_deref() == Some("WT006")),
+        "expected WT006 warning, got: {diagnostics:?}"
     );
 }
 
@@ -109,8 +109,8 @@ fn integer_fold_overflow_emits_warning() {
     assert!(
         diagnostics
             .iter()
-            .any(|diag| diag.code.as_deref() == Some("ET007")),
-        "expected ET007 warning, got: {diagnostics:?}"
+            .any(|diag| diag.code.as_deref() == Some("WT007")),
+        "expected WT007 warning, got: {diagnostics:?}"
     );
 }
 

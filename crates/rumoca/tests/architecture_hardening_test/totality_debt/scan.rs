@@ -199,11 +199,28 @@ struct FileScan {
 /// scan in between, which is why the stripper carries every one of them across
 /// lines rather than relying on this assertion.
 pub(crate) fn scan_tracks_file_to_its_end(content: &str) -> bool {
-    scan_file(content).tracked_to_end
+    scan_file(content, CodeStripper::default()).tracked_to_end
 }
 
-fn scan_file(content: &str) -> FileScan {
-    let mut stripper = CodeStripper::default();
+/// The shipped code of a file, as the production lines joined back together
+/// with string-literal text intact.
+///
+/// A scan that answers a question about shipped code must not be answerable by
+/// a comment or by a `#[cfg(test)]` body: neither reaches a release build, so
+/// neither can mint anything. Literal text is kept because an argument written
+/// as a literal (a diagnostic mnemonic, say) is the answer the caller is
+/// after; [`ITEM_PUNCTUATION`] is removed from it so a brace inside a format
+/// string still cannot move the item scan.
+pub(crate) fn production_code(content: &str) -> String {
+    scan_file(content, CodeStripper::keeping_literal_text())
+        .production
+        .into_iter()
+        .map(|(_, code)| code)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn scan_file(content: &str, mut stripper: CodeStripper) -> FileScan {
     let mut state = ItemScan::Production;
     let mut production = Vec::new();
     for (index, line) in content.lines().enumerate() {
@@ -225,7 +242,7 @@ fn scan_file(content: &str) -> FileScan {
 /// yields two entries.
 pub(crate) fn totality_debt_sites(content: &str) -> Vec<(usize, &'static str)> {
     let mut sites = Vec::new();
-    for (index, code) in scan_file(content).production {
+    for (index, code) in scan_file(content, CodeStripper::default()).production {
         for form in TOTALITY_DEBT_FORMS {
             sites.extend(std::iter::repeat_n(
                 (index, *form),
@@ -239,7 +256,7 @@ pub(crate) fn totality_debt_sites(content: &str) -> Vec<(usize, &'static str)> {
 /// Every `.unwrap()` occurrence in production source, as zero-based line indices.
 pub(crate) fn silent_totality_debt_sites(content: &str) -> Vec<usize> {
     let mut sites = Vec::new();
-    for (index, code) in scan_file(content).production {
+    for (index, code) in scan_file(content, CodeStripper::default()).production {
         sites.extend(std::iter::repeat_n(
             index,
             code.matches(SILENT_TOTALITY_DEBT_FORM).count(),
@@ -333,6 +350,27 @@ fn strip_visibility(trimmed: &str) -> &str {
 #[derive(Default)]
 struct CodeStripper {
     carry: Carry,
+    literals: LiteralPolicy,
+}
+
+/// Punctuation that shapes an item, removed from any literal text a policy
+/// keeps: `format!("{value}")` is one balanced pair of braces to the compiler
+/// and none at all to the item scan, and a `,` or a `;` inside a message would
+/// otherwise end a header line early.
+const ITEM_PUNCTUATION: &[char] = &['{', '}', '(', ')', '[', ']', ';', ',', '#', '"', '\\'];
+
+/// What the stripper does with the text inside a string literal.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+enum LiteralPolicy {
+    /// The text is dropped and the literal collapses to a bare `"`. This is
+    /// what a scan for call forms wants: a form named inside a message string
+    /// is prose, not a call.
+    #[default]
+    Collapse,
+    /// The text is kept, with [`ITEM_PUNCTUATION`] removed so it still cannot
+    /// move the item scan. A scan that reads an argument written as a literal
+    /// (a diagnostic mnemonic, say) needs the text the argument holds.
+    KeepText,
 }
 
 /// The construct a line ends inside, and the next line therefore begins inside.
@@ -364,25 +402,41 @@ enum LiteralScan {
 }
 
 impl CodeStripper {
+    /// A stripper that keeps the text inside string literals.
+    fn keeping_literal_text() -> Self {
+        Self {
+            carry: Carry::default(),
+            literals: LiteralPolicy::KeepText,
+        }
+    }
+
     /// Whether the stripper ended in ordinary code rather than part-way through
     /// a block comment or a multi-line string literal.
     fn finished_in_code(&self) -> bool {
         self.carry == Carry::Code
     }
 
-    /// Returns the code of one line. A string literal collapses to a bare `"`
-    /// at the point it opens so the line still reads as one token sequence, and
-    /// a character literal and all comment text are dropped outright. A line
-    /// that resumes a string opened above it contributes only the code that
-    /// follows the closing quote.
+    /// Returns the code of one line. Under the default policy a string literal
+    /// collapses to a bare `"` at the point it opens so the line still reads as
+    /// one token sequence; a character literal and all comment text are dropped
+    /// outright either way. A line that resumes a string opened above it
+    /// contributes only the code that follows the closing quote.
     fn strip(&mut self, line: &str) -> String {
         let mut code = String::with_capacity(line.len());
         let mut index = 0;
         while index < line.len() {
             index = match self.carry {
                 Carry::BlockComment(depth) => self.step_through_block_comment(depth, line, index),
-                Carry::CookedString => self.resume(line, cooked_string_scan(line, index)),
-                Carry::RawString(hashes) => self.resume(line, raw_string_scan(line, index, hashes)),
+                Carry::CookedString => {
+                    self.resume(line, index, 1, cooked_string_scan(line, index), &mut code)
+                }
+                Carry::RawString(hashes) => self.resume(
+                    line,
+                    index,
+                    1 + hashes,
+                    raw_string_scan(line, index, hashes),
+                    &mut code,
+                ),
                 Carry::Code => match self.step_through_code(line, index, &mut code) {
                     Some(next) => next,
                     None => break,
@@ -405,7 +459,8 @@ impl CodeStripper {
         if let Some((body, hashes)) = raw_string_open(line, index) {
             code.push('"');
             self.carry = Carry::RawString(hashes);
-            return Some(self.resume(line, raw_string_scan(line, body, hashes)));
+            let scan = raw_string_scan(line, body, hashes);
+            return Some(self.resume(line, body, 1 + hashes, scan, code));
         }
         if let Some(end) = char_literal_end(line, index) {
             return Some(end);
@@ -415,7 +470,8 @@ impl CodeStripper {
             code.push('"');
             self.carry = Carry::CookedString;
             let body = index + ch.len_utf8();
-            return Some(self.resume(line, cooked_string_scan(line, body)));
+            let scan = cooked_string_scan(line, body);
+            return Some(self.resume(line, body, 1, scan, code));
         }
         code.push(ch);
         Some(index + ch.len_utf8())
@@ -423,14 +479,40 @@ impl CodeStripper {
 
     /// Applies a literal scan: a literal that closed returns the scan to code,
     /// and one still open consumes the rest of the line and stays carried.
-    fn resume(&mut self, line: &str, scan: LiteralScan) -> usize {
+    ///
+    /// `body` is the first byte of the literal's text and `closer` the width of
+    /// the delimiter that ends it, so a policy that keeps the text knows which
+    /// bytes are text rather than delimiter.
+    fn resume(
+        &mut self,
+        line: &str,
+        body: usize,
+        closer: usize,
+        scan: LiteralScan,
+        code: &mut String,
+    ) -> usize {
         match scan {
             LiteralScan::Closed(end) => {
                 self.carry = Carry::Code;
+                self.keep(&line[body..end - closer], code);
+                if self.literals == LiteralPolicy::KeepText {
+                    code.push('"');
+                }
                 end
             }
-            LiteralScan::Open => line.len(),
+            LiteralScan::Open => {
+                self.keep(&line[body..], code);
+                line.len()
+            }
         }
+    }
+
+    /// Appends the text a literal holds, when the policy keeps it.
+    fn keep(&self, text: &str, code: &mut String) {
+        if self.literals == LiteralPolicy::Collapse {
+            return;
+        }
+        code.extend(text.chars().filter(|ch| !ITEM_PUNCTUATION.contains(ch)));
     }
 
     /// Advances one step inside a block comment. Rust nests block comments, so

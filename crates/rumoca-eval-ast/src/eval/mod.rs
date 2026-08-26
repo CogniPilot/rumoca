@@ -241,8 +241,8 @@ impl DimensionInferenceContext for TypeCheckEvalContext {
     }
 }
 
-const ET006_INVALID_INT_COERCION: &str = "ET006";
-const ET007_INT_FOLD_OVERFLOW: &str = "ET007";
+const WT006_INVALID_INT_COERCION: &str = "WT006";
+const WT007_INT_FOLD_OVERFLOW: &str = "WT007";
 
 fn checked_real_to_i64(
     value: f64,
@@ -252,7 +252,7 @@ fn checked_real_to_i64(
 ) -> Option<i64> {
     if !value.is_finite() {
         ctx.emit_warning(
-            ET006_INVALID_INT_COERCION,
+            WT006_INVALID_INT_COERCION,
             format!(
                 "non-finite real value {value} cannot be used as a compile-time integer while evaluating {context}; skipping constant fold"
             ),
@@ -263,7 +263,7 @@ fn checked_real_to_i64(
     }
     if value < i64::MIN as f64 || value > i64::MAX as f64 {
         ctx.emit_warning(
-            ET006_INVALID_INT_COERCION,
+            WT006_INVALID_INT_COERCION,
             format!(
                 "real value {value} is outside i64 range while evaluating {context}; skipping constant fold"
             ),
@@ -289,7 +289,7 @@ fn checked_integral_real_to_i64(
 
 fn emit_integer_overflow_warning(ctx: &TypeCheckEvalContext, span: Span, context: &str) {
     ctx.emit_warning(
-        ET007_INT_FOLD_OVERFLOW,
+        WT007_INT_FOLD_OVERFLOW,
         format!("compile-time integer overflow while evaluating {context}; skipping constant fold"),
         span,
         "integer overflow during constant evaluation",
@@ -355,7 +355,7 @@ fn eval_integer_binary_with_warning(
         )
     {
         ctx.emit_warning(
-            ET007_INT_FOLD_OVERFLOW,
+            WT007_INT_FOLD_OVERFLOW,
             format!(
                 "compile-time integer overflow while evaluating {lhs} {op:?} {rhs}; skipping constant fold"
             ),
@@ -937,7 +937,7 @@ impl AstScalarContext for TypeCheckScalarAdapter<'_> {
         let value = value.checked_neg();
         if value.is_none() {
             self.ctx.emit_warning(
-                ET007_INT_FOLD_OVERFLOW,
+                WT007_INT_FOLD_OVERFLOW,
                 "compile-time integer overflow while evaluating unary minus; skipping constant fold",
                 span,
                 "integer overflow during constant evaluation",

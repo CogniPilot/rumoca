@@ -186,7 +186,7 @@ fn production_source_files(crate_name: &str) -> Vec<PathBuf> {
 /// let a rename or a move hide a shipped obligation while the count fell. A
 /// file earns its exclusion only by being reachable from a `#[cfg(test)]`
 /// declaration, which is the same fact the compiler acts on.
-fn production_source_files_under(src: &Path) -> Vec<PathBuf> {
+pub(crate) fn production_source_files_under(src: &Path) -> Vec<PathBuf> {
     if !src.is_dir() {
         return Vec::new();
     }
