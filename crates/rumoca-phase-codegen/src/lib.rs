@@ -11,23 +11,28 @@
 //!
 //! # Template Loading
 //!
-//! Templates can be loaded from files (recommended for customization) or
-//! the built-in defaults can be used for convenience:
+//! Every render function in this crate takes template **source text**, never a
+//! path: loading is the caller's, so that one renderer serves both a built-in
+//! target and a user's directory target without a second code path.
+//!
+//! The compiler's own path is the built-in target bundles that `build.rs`
+//! embeds from `src/templates/`. A bundle names its templates, its manifest,
+//! and its assets, and it is what `--target <name>` resolves to:
 //!
 //! ```ignore
-//! use rumoca_phase_codegen::{render_template, render_template_file};
+//! use rumoca_phase_codegen::{render_template, templates};
 //!
-//! // From file (recommended - users can customize)
-//! let code = render_template_file(&dae, "my_template.py.jinja")?;
-//!
-//! // From built-in (convenience for quick use)
-//! use rumoca_phase_codegen::templates;
 //! let target = templates::builtin_target("dae-modelica").unwrap();
 //! let code = render_template(
 //!     &dae,
 //!     target.template_source("dae_modelica.mo.jinja").unwrap(),
 //! )?;
 //! ```
+//!
+//! A user customizing a target copies the directory out, edits it, and passes
+//! the directory to `--target`; `rumoca-compile` reads its `target.toml` and
+//! its template files off disk and calls the same render functions with the
+//! text it read.
 //!
 //! # Writing Templates
 //!
@@ -52,16 +57,15 @@
 
 mod codegen;
 mod errors;
-pub mod views;
+pub(crate) mod views;
 
 pub use codegen::{
     AlgorithmCodeTemplateRenderer, CodegenInput, SolveTemplateRenderer, dae_template_json,
     explicit_algebraic_assignment_complete, render_algorithm_code_template_with_artifact,
-    render_ast_template, render_ast_template_with_name,
-    render_checked_algorithm_block_template_with_artifact,
+    render_ast_template_with_name, render_checked_algorithm_block_template_with_artifact,
     render_checked_algorithm_block_template_with_sources, render_flat_template_with_name,
-    render_solve_template_with_name, render_template, render_template_file,
-    render_template_for_input, render_template_with_name, render_template_with_name_for_input,
+    render_solve_template_with_name, render_template, render_template_for_input,
+    render_template_with_name, render_template_with_name_for_input,
 };
 pub use errors::CodegenError;
 

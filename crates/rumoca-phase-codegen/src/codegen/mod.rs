@@ -8,7 +8,6 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rumoca_ir_solve as solve;
 use serde::Serialize;
-use std::path::Path;
 
 mod algorithm_code_renderer;
 #[cfg(test)]
@@ -615,30 +614,6 @@ pub fn render_template_with_name(
     render_template_with_name_for_input(CodegenInput::Dae(dae), template, model_name)
 }
 
-/// Render a DAE using a template file.
-///
-/// This is the recommended approach for customizable templates.
-///
-/// # Example
-///
-/// ```ignore
-/// let code = render_template_file(&dae, "templates/casadi.py.jinja")?;
-/// ```
-pub fn render_template_file(
-    dae: &dae::Dae,
-    path: impl AsRef<Path>,
-) -> Result<String, CodegenError> {
-    let path_ref = path.as_ref();
-    let template = std::fs::read_to_string(path_ref)
-        .map_err(|e| CodegenError::template(format!("Failed to read template: {e}")))?;
-
-    let mut env = create_environment();
-    env.add_template("file", &template)?;
-
-    let tmpl = env.get_template("file")?;
-    render_with_input_context(&tmpl, CodegenInput::Dae(dae), None)
-}
-
 /// Render a Model using a template string, with an additional model name in context.
 ///
 /// The template receives `flat` (the Model) and `model_name` as context variables.
@@ -672,13 +647,6 @@ pub fn render_solve_template_with_name(
         template,
         model_name,
     )
-}
-
-/// Render an AST class tree using a template string.
-///
-/// The template receives the AST structure as `ast`.
-pub fn render_ast_template(ast: &ast::ClassTree, template: &str) -> Result<String, CodegenError> {
-    render_template_for_input(CodegenInput::Ast(ast), template)
 }
 
 /// Render an AST class tree using a template string and model name.
