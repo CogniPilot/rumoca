@@ -2311,21 +2311,21 @@ fn mark_arena_in_expression<'a>(value: &mut TypedExpressionView<'a>, placed: &Ha
     }
 }
 
-/// Whether a declaration is delivered through the owner's context region
-/// rather than the frame.
+/// Whether a **local** declaration is delivered through the owner's context
+/// region rather than the frame.
 ///
-/// Two rules, and only two:
+/// One rule: array locals go to the region. They are what fills a frame — a
+/// 15x15 `float` intermediate is 900 bytes — and they are the reason a
+/// worst-case stack depth has to be argued rather than read off a link map.
+/// Scalars stay in the frame: they cost a word, and pushing them behind the
+/// context pointer would take registers away from the arithmetic for nothing.
 ///
-/// * **Array locals.** They are what fills a frame — a 15x15 `float`
-///   intermediate is 900 bytes — and they are the reason a worst-case stack
-///   depth has to be argued rather than read off a link map. Scalars stay in
-///   the frame: they cost a word, and pushing them behind the context pointer
-///   would take registers away from the arithmetic for nothing.
-/// * **Output parameters, whatever their rank.** These carry two costs today:
-///   a full-size frame buffer inside the callee *and* a formal parameter at
-///   every signature. Delivering them through the region removes both.
-fn context_resident(declaration: &ast::VariableDeclaration, is_output: bool) -> bool {
-    is_output || !declaration.dimensions.is_empty()
+/// Output parameters are region-resident too, whatever their rank, but they
+/// are not locals and never reach this predicate: each caller appends them to
+/// its slot list directly, because they carry a second rule this one cannot
+/// state (see the function projection).
+fn context_resident(declaration: &ast::VariableDeclaration) -> bool {
+    !declaration.dimensions.is_empty()
 }
 
 /// The declarations the marshalling rewrite may remove from a region: the
@@ -2682,7 +2682,7 @@ impl<'a> BlockShapes<'a> {
                 .iter()
                 .filter(|declaration| {
                     placements.is_placed(declaration.name.lexeme())
-                        && context_resident(declaration, false)
+                        && context_resident(declaration)
                         && !retired.contains(declaration.name.lexeme())
                 })
                 .collect::<Vec<_>>();
@@ -2728,12 +2728,21 @@ impl<'a> BlockShapes<'a> {
             // Declaration order inside the region: reachable array locals, then
             // the outputs. Both are addressed by name, so the order is only
             // about producing the same struct from the same block every time.
+            //
+            // Every output parameter is region-resident, whatever its rank and
+            // whatever the placements say, which is why they are appended
+            // rather than filtered: they carry two costs a local does not, a
+            // full-size frame buffer inside the callee *and* a formal
+            // parameter at every signature, and delivering them through the
+            // region removes both. Their lifetime is the caller's, not this
+            // body's, so they are also withheld from arena placement and from
+            // marshalling retirement further down.
             let slots = function
                 .locals
                 .iter()
                 .filter(|declaration| {
                     placements.is_placed(declaration.name.lexeme())
-                        && context_resident(declaration, false)
+                        && context_resident(declaration)
                         && !retired.contains(declaration.name.lexeme())
                 })
                 .chain(output_parameters(function).map(|parameter| &parameter.decl))
