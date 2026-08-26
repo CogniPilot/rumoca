@@ -77,9 +77,9 @@
 //!    wherever the callee writes none. The two agree exactly when the callee
 //!    writes the whole output, so `place` demands a syntactic witness: one
 //!    top-level statement writes the output, nothing else writes it anywhere,
-//!    and that statement covers every element (a whole-object assignment, a
-//!    whole-object multi-assignment slot, or a perfect unguarded nest over the
-//!    declared extents).
+//!    nothing reads it at or before that write, and that statement covers every
+//!    element (a whole-object assignment, a whole-object multi-assignment slot,
+//!    or a perfect unguarded nest over the declared extents).
 //! 5. **Error paths.** GALEC has no early return: `signal` sets status bits and
 //!    execution continues to the end of the body (`ast::Statement::Signal`). A
 //!    function that raises therefore still reaches its total write, so the
@@ -272,6 +272,23 @@ fn mentions_expression(expression: &ast::Expression, output: &str) -> bool {
     let mut found = HashSet::new();
     mentions(expression, &mut found);
     found.contains(output)
+}
+
+/// Whether a STORE target reads `output` on its way to the store.
+///
+/// Naming the target is the write itself, not a read. Its subscripts are
+/// expressions the emission evaluates before the store, so a mention there is a
+/// genuine read of whatever the object held on entry.
+fn reads_reference(reference: &ast::Reference, output: &str) -> bool {
+    let parts = match reference {
+        ast::Reference::Local(part) => std::slice::from_ref(part),
+        ast::Reference::State(parts) => parts.as_slice(),
+    };
+    parts.iter().any(|part| {
+        part.subscripts
+            .iter()
+            .any(|subscript| mentions_expression(subscript, output))
+    })
 }
 
 fn mentioned_in_call(call: &ast::FunctionCall, output: &str) -> bool {
@@ -531,18 +548,27 @@ mod permission {
     ///    `d` is disjoint from every operand `f` reads.
     /// 4. Exactly one statement of `f` writes `o`, it is at top level, and it
     ///    writes every element.
-    /// 5. `d` is claimed by no other placement.
+    /// 5. Nothing in `f` reads `o` at or before that write. This is the
+    ///    precondition it is easiest to leave unstated: `o` is persistent
+    ///    storage either way, so a body that read it first would read its own
+    ///    previous activation without a placement and the caller's destination
+    ///    with one. The front end already refuses such a body (`ED019`), and
+    ///    [`writes_whole_output`] checks it here regardless, because a proof
+    ///    that leans on another phase's diagnostic without naming it stops
+    ///    holding the moment that phase changes.
+    /// 6. `d` is claimed by no other placement.
     ///
     /// Before the call, `d` holds some value and `f`'s slot another; both are
     /// dead, because (4) makes the call's write total and (2) makes it cover
-    /// exactly `d`. During the call `f` reads only its actuals, which by (3) are
-    /// disjoint from `d`, so every value `f` computes is the value it computed
-    /// before. `f` writes those values over `d` rather than over its own slot,
-    /// and by (4) it writes all of them, so on return `d` holds exactly what the
-    /// read-back would have moved into it. Nothing observes `d` between the call
-    /// and the dropped read-back: the read-back is emitted inside the call's own
-    /// macro, with no statement between. By (5) no other callee writes `d`, and
-    /// by (1) no other activation of `f` does. ∎
+    /// exactly `d`. During the call `f` reads only its actuals and, by (5), no
+    /// prior value of `o`; the actuals are disjoint from `d` by (3), so every
+    /// value `f` computes is the value it computed before. `f` writes those
+    /// values over `d` rather than over its own slot, and by (4) it writes all
+    /// of them, so on return `d` holds exactly what the read-back would have
+    /// moved into it. Nothing observes `d` between the call and the dropped
+    /// read-back: the read-back is emitted inside the call's own macro, with no
+    /// statement between. By (6) no other callee writes `d`, and by (1) no other
+    /// activation of `f` does. ∎
     pub(super) struct Placement<'a> {
         output: &'a str,
         destination: Destination<'a>,
@@ -675,14 +701,28 @@ mod permission {
     }
 
     /// Whether `output` is written by exactly one top-level statement of
-    /// `function`, that statement writes every element, and nothing else in the
-    /// body writes it.
+    /// `function`, that statement writes every element, nothing else in the body
+    /// writes it, and nothing reads it before that write.
     ///
     /// `writes` counts every write inside a top-level statement, so a second
     /// writer anywhere — nested or not — makes some top-level statement's count
     /// exceed the one its total-write shape accounts for, or makes a second
     /// top-level statement report a write. Both are refused.
+    ///
+    /// The read half is the other precondition the theorem needs and the one
+    /// that is easy to miss. Without a placement, a callee that reads its own
+    /// output before writing it reads ITS OWN slot, which holds whatever the
+    /// previous activation left. With one it reads the caller's destination,
+    /// which holds whatever the caller last put there — a different value. The
+    /// front end refuses such a body today (`ED019`: a function output is not
+    /// readable before assignment), so this is a precondition the compiler
+    /// already enforces upstream; it is checked here anyway, because a proof
+    /// that rests on another phase's diagnostic without saying so is a proof
+    /// that silently stops holding when that phase changes.
     fn writes_whole_output(function: &ast::UserFunction, output: &str, extents: &[usize]) -> bool {
+        if reads_before_writing(&function.statements, output) {
+            return false;
+        }
         let mut witnessed = false;
         for statement in &function.statements {
             // Exactly one write, and it is the one the shape accounts for.
@@ -700,6 +740,73 @@ mod permission {
             witnessed = true;
         }
         witnessed
+    }
+
+    /// Whether any read of `output` can precede the statement that writes it.
+    ///
+    /// Deliberately blunt: the first top-level statement that writes `output`
+    /// ends the scan, and any read at or before it — in an earlier statement,
+    /// in that statement's own operands, or anywhere nested inside either —
+    /// answers `true`. A read inside the writing statement is included because
+    /// the total-write shapes admit a loop nest, whose later iterations read
+    /// what earlier ones wrote; that is a self-read the placement would give a
+    /// different starting value.
+    fn reads_before_writing(statements: &[ast::Spanned<ast::Statement>], output: &str) -> bool {
+        for statement in statements {
+            let written = writes(&statement.node, output) > 0;
+            if reads(&statement.node, output) {
+                return true;
+            }
+            if written {
+                return false;
+            }
+        }
+        false
+    }
+
+    /// Whether `statement`, or anything nested inside it, READS `output`: any
+    /// mention that is not an assignment or limit target, including a subscript
+    /// on a target, which is evaluated before the store.
+    fn reads(statement: &ast::Statement, output: &str) -> bool {
+        match statement {
+            ast::Statement::Assignment { target, value } => {
+                super::reads_reference(target, output) || super::mentions_expression(value, output)
+            }
+            ast::Statement::MultiAssignment { targets, call } => {
+                targets
+                    .iter()
+                    .any(|target| super::reads_reference(target, output))
+                    || super::mentioned_in_call(call, output)
+            }
+            ast::Statement::Call(call) => super::mentioned_in_call(call, output),
+            ast::Statement::Signal(_) => false,
+            ast::Statement::Limit(targets) => targets.iter().any(|target| match target {
+                ast::LimitTarget::SelfState => false,
+                ast::LimitTarget::Reference(reference) => super::reads_reference(reference, output),
+            }),
+            ast::Statement::If(conditional) => {
+                conditional.branches.iter().any(|branch| {
+                    super::mentions_condition(&branch.condition, output)
+                        || branch.body.iter().any(|inner| reads(&inner.node, output))
+                }) || conditional
+                    .else_body
+                    .iter()
+                    .flatten()
+                    .any(|inner| reads(&inner.node, output))
+            }
+            ast::Statement::For(loop_statement) => {
+                super::mentions_expression(&loop_statement.start, output)
+                    || loop_statement
+                        .step
+                        .as_ref()
+                        .is_some_and(|step| super::mentions_expression(step, output))
+                    || super::mentions_expression(&loop_statement.stop, output)
+                    || loop_statement
+                        .body
+                        .iter()
+                        .any(|inner| reads(&inner.node, output))
+            }
+        }
     }
 
     /// How many writes to `output` one statement performs, counting the writes
