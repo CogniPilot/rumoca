@@ -280,13 +280,22 @@ fn mentioned_in_call(call: &ast::FunctionCall, output: &str) -> bool {
         .any(|argument| mentions_expression(argument, output))
 }
 
+/// Whether a branch condition names `output`.
+///
+/// A signal check tests signals rather than values, and its only expression is
+/// the optional `or expr` fallback, so that is the one place a mention can hide
+/// and this walks it rather than guessing. Guessing was wrong in both
+/// directions: answering "named" for every check declared a pointer the body
+/// never spells, which is the unused declaration this liveness question exists
+/// to remove, and answering "not named" blindly would drop a pointer a fallback
+/// still reads.
 fn mentions_condition(condition: &ast::Condition, output: &str) -> bool {
     match condition {
         ast::Condition::Expression(expression) => mentions_expression(expression, output),
-        // A signal check's fallback is a checked expression this view never
-        // projected, so a mention inside it is invisible here. Answering
-        // "named" keeps the declaration, which is the safe direction.
-        ast::Condition::SignalCheck(_) => true,
+        ast::Condition::SignalCheck(check) => check
+            .fallback
+            .as_ref()
+            .is_some_and(|fallback| mentions_expression(fallback, output)),
     }
 }
 
