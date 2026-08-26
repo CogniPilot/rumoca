@@ -6,8 +6,8 @@ use rumoca_ir_solve::{
     SolveArithmeticProfile, SolveBinaryOperator, SolveCompareOperator, SolveConversionOperator,
     SolveIntegerDomain, SolveProgramConstructionError, SolvePureCallIdentity, SolvePureCallOutput,
     SolvePureCallOwnerId, SolvePureCallTable, SolveRealFormat, SolveReductionOperator,
-    SolveScalarType, SolveUnaryOperator, SolveValue, SolveValueKind,
-    SolveValueType, TypedProgramBuilder,
+    SolveScalarType, SolveUnaryOperator, SolveValue, SolveValueKind, SolveValueType,
+    TypedProgramBuilder,
 };
 
 use super::{

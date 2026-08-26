@@ -136,44 +136,56 @@ fn specialized_kernel_counts_agree_across_the_three_hand_written_lists() {
     }
 }
 
+/// Every `<target>/<file>.jinja` of the two C-emitting GALEC targets, as
+/// (display name, source text), sorted by display name.
+fn c_target_templates() -> Vec<(String, String)> {
+    let templates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/templates");
+    let mut found = Vec::new();
+    for target in ["embedded-c-galec", "galec-production"] {
+        let dir = templates.join(target);
+        let entries = fs::read_dir(&dir).expect("read target template directory");
+        let paths = entries
+            .map(|entry| entry.expect("template directory entry").path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "jinja")
+            });
+        found.extend(paths.map(|path| {
+            let name = format!("{target}/{}", path.file_name().unwrap().to_string_lossy());
+            (name, fs::read_to_string(&path).expect("read template"))
+        }));
+    }
+    found.sort();
+    found
+}
+
+/// The templates whose source contains `needle`, by display name.
+fn templates_containing(templates: &[(String, String)], needle: &str) -> Vec<String> {
+    templates
+        .iter()
+        .filter(|(_, source)| source.contains(needle))
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
 #[test]
 fn the_count_lists_have_exactly_one_home_per_role() {
     // `galec-production` renders the same kernels through `{% extends %}`
     // (its `kernels.*.jinja` carry no bodies of their own) and its C model
     // template likewise. Re-declaring a count list there would reintroduce the
     // drift this guard exists to prevent, so no second copy may appear.
-    let templates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/templates");
+    let templates = c_target_templates();
     for (selector, kernel) in FAMILIES {
-        let needle = format!("specialized_{selector}_counts");
-        let mut homes = Vec::new();
-        let mut definers = Vec::new();
-        for target in ["embedded-c-galec", "galec-production"] {
-            let dir = templates.join(target);
-            for entry in fs::read_dir(&dir).expect("read target template directory") {
-                let path = entry.expect("template directory entry").path();
-                if path.extension().is_none_or(|extension| extension != "jinja") {
-                    continue;
-                }
-                let source = fs::read_to_string(&path).expect("read template");
-                let name = format!("{target}/{}", path.file_name().unwrap().to_string_lossy());
-                if source.contains(&format!("set {needle} =")) {
-                    homes.push(name.clone());
-                }
-                if source.contains(&format!("rumoca_galec_{kernel}_real_{{{{ count }}}}(")) {
-                    definers.push(name);
-                }
-            }
-        }
-        homes.sort();
-        definers.sort();
+        let selection = format!("set specialized_{selector}_counts =");
+        let definition = format!("rumoca_galec_{kernel}_real_{{{{ count }}}}(");
         assert_eq!(
-            homes,
-            vec![format!("embedded-c-galec/model.c.jinja")],
-            "{needle} must be declared in exactly one template"
+            templates_containing(&templates, &selection),
+            vec!["embedded-c-galec/model.c.jinja".to_string()],
+            "specialized_{selector}_counts must be declared in exactly one template"
         );
         assert_eq!(
-            definers,
-            vec![format!("embedded-c-galec/kernels.c.jinja")],
+            templates_containing(&templates, &definition),
+            vec!["embedded-c-galec/kernels.c.jinja".to_string()],
             "rumoca_galec_{kernel}_real_N must be defined in exactly one template"
         );
     }

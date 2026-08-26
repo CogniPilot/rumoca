@@ -1242,9 +1242,14 @@ fn p_slice_returns_none_for_y_slot_variable() {
 fn y_slice_returns_none_for_scalar_variable_without_shape() {
     let mut bindings = IndexMap::new();
     bindings.insert("s".to_string(), scalar_slot_y(0));
-    let layout =
-        VarLayout::from_parts_with_shapes_and_spans(bindings, IndexMap::new(), IndexMap::new(), 1, 0)
-            .expect("scalar variable fixture layout should satisfy shape contract");
+    let layout = VarLayout::from_parts_with_shapes_and_spans(
+        bindings,
+        IndexMap::new(),
+        IndexMap::new(),
+        1,
+        0,
+    )
+    .expect("scalar variable fixture layout should satisfy shape contract");
     assert!(
         layout.y_slice("s").is_none(),
         "scalar variable with no recorded shape must not yield YSlice"

@@ -717,7 +717,11 @@ fn render_target_constants(out: &mut String, manifest_dir: &Path, target: &Targe
     }
     // A borrowed asset is embedded once, by the target that owns the bytes.
     // Every borrower's bundle names that same constant.
-    for asset in target.assets.iter().filter(|asset| asset.owner == target.name) {
+    for asset in target
+        .assets
+        .iter()
+        .filter(|asset| asset.owner == target.name)
+    {
         let include_path = include_path(manifest_dir, &asset.source_path);
         out.push_str(&format!(
             "const {}: &[u8] = include_bytes!(\"{}\");\n",

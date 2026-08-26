@@ -272,5 +272,4 @@ mod tests {
                 || code == Some("rumoca::codegen::EC002".to_string())
         );
     }
-
 }

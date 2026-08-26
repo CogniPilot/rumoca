@@ -52,9 +52,9 @@ pub(super) fn any_expression(
                 any_expression(condition, predicate) || any_expression(branch, predicate)
             }) || any_expression(&value.else_value, predicate)
         }
-        gast::Expression::Array(values) => values
-            .iter()
-            .any(|value| any_expression(value, predicate)),
+        gast::Expression::Array(values) => {
+            values.iter().any(|value| any_expression(value, predicate))
+        }
         gast::Expression::Binary { lhs, rhs, .. } => {
             any_expression(lhs, predicate) || any_expression(rhs, predicate)
         }

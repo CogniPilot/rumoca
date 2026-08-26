@@ -12,11 +12,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The target-owned eFMI Beta-1 schema tree (GAL-023).
+/// The eFMI Beta-1 schema tree a target ships (GAL-023).
+///
+/// A target that declares `shared_from` on its `schemas` asset bundle keeps no
+/// tree of its own: it emits the owning target's bytes, so that is the tree its
+/// container must mirror and validate against. Following the declaration here
+/// keeps the assertion about the emitted bytes rather than about which
+/// directory they were vendored in.
 pub(super) fn vendored_schemas_dir(target: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../rumoca-phase-codegen/src/templates")
-        .join(target)
+    let templates =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../rumoca-phase-codegen/src/templates");
+    let owner = schemas_bundle_owner(&templates.join(target).join("target.toml"));
+    let dir = templates
+        .join(owner.as_deref().unwrap_or(target))
         .join("schemas");
     assert!(
         dir.is_dir(),
@@ -24,6 +32,34 @@ pub(super) fn vendored_schemas_dir(target: &str) -> PathBuf {
         dir.display()
     );
     dir
+}
+
+/// The target a manifest's `schemas` asset bundle borrows from, when it borrows
+/// one rather than vendoring its own.
+fn schemas_bundle_owner(manifest_path: &Path) -> Option<String> {
+    let manifest = fs::read_to_string(manifest_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", manifest_path.display()));
+    let mut in_schemas_bundle = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_schemas_bundle = line == "[[assets]]";
+            continue;
+        }
+        if !in_schemas_bundle {
+            continue;
+        }
+        if let Some(owner) = line.strip_prefix("shared_from") {
+            return owner
+                .trim_start()
+                .strip_prefix('=')
+                .map(str::trim)
+                .and_then(|value| value.strip_prefix('"'))
+                .and_then(|value| value.split('"').next())
+                .map(ToOwned::to_owned);
+        }
+    }
+    None
 }
 
 /// Validate an XML file against an XSD by shelling out to `xmllint`

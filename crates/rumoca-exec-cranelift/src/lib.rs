@@ -782,8 +782,7 @@ mod tests {
     fn compiled_conditional_projections_share_issued_native_call_storage() {
         use rumoca_ir_solve::{
             SolveArithmeticProfile, SolveBinaryOperator, SolveIntegerDomain, SolvePureCallIdentity,
-            SolvePureCallOutput, SolveRealFormat, SolveScalarType, SolveValue,
-            SolveValueType,
+            SolvePureCallOutput, SolveRealFormat, SolveScalarType, SolveValue, SolveValueType,
         };
 
         let span = fixture_span();
