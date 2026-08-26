@@ -710,6 +710,7 @@ fn create_environment() -> Environment<'static> {
     // eFMI manifest render env (contract §3b): autoescape is OFF, so every
     // text value is escaped explicitly and every raw f64 is rendered as a
     // valid xs:double lexical.
+    env.add_filter("modelica_string", modelica_string_filter);
     env.add_filter("xml_escape", xml_escape_filter);
     env.add_filter("xs_double", xs_double_filter);
     // Declared-range decisions in a target's own numeric domain: a template
@@ -855,6 +856,16 @@ pub(crate) fn xml_escape_str(text: &str) -> String {
 
 fn xml_escape_filter(value: String) -> String {
     xml_escape_str(&value)
+}
+
+/// Quote and escape a string as a Modelica string literal.
+///
+/// `tojson` is NOT a substitute: JSON renders BEL and VT as `\u0007` and
+/// `\u000b`, which are not Modelica escapes, so an emitted `dae-mo` carrying
+/// either does not re-parse. Modelica spells them `\a` and `\v`, which is
+/// what `escape_modelica_string` already produces for `Literal::String`.
+fn modelica_string_filter(value: String) -> String {
+    format!("\"{}\"", rumoca_core::escape_modelica_string(&value))
 }
 
 /// Render a finite `f64` as a portable real literal with explicit decimal

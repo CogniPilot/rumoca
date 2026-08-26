@@ -308,3 +308,46 @@ fn inspect_structure_on_compile() {
         "`compile --inspect structure` failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
+
+/// A description carrying control characters must re-parse after `--emit
+/// dae-mo`.
+///
+/// The emitter used to render string literals with the `tojson` filter. JSON
+/// spells BEL and VT as `\u0007` and `\u000b`, and Modelica has no `\u`
+/// escape at all, so any emitted model whose description or unit carried one
+/// was not readable by the parser that produced it. Modelica spells them
+/// `\a` and `\v`, which is what `escape_modelica_string` already produced for
+/// every other string rendering path.
+#[test]
+fn emitted_dae_modelica_escapes_control_characters_the_parser_accepts() {
+    let source = concat!(
+        "model Esc \"desc bell \\a vtab \\v tab \\t\"\n",
+        "  Real x(unit = \"m\", start = 1.0) \"state bell \\a vtab \\v\";\n",
+        "equation\n",
+        "  der(x) = 0.0;\n",
+        "end Esc;\n"
+    );
+    let (_dir, file) = named_fixture_file("Esc.mo", source);
+    let emitted = assert_emit_ok(&file, "dae-mo");
+
+    assert!(
+        emitted.contains("\\a") && emitted.contains("\\v"),
+        "emitted dae-mo lost the Modelica control-character escapes:\n{emitted}"
+    );
+    assert!(
+        !emitted.contains("\\u0007") && !emitted.contains("\\u000b"),
+        "emitted dae-mo used JSON escapes the Modelica grammar rejects:\n{emitted}"
+    );
+
+    // The round trip is the actual obligation: what we emit, we must read.
+    let round_trip = tempdir().expect("tempdir");
+    let reparsed = round_trip.path().join("Esc.mo");
+    std::fs::write(&reparsed, &emitted).expect("write emitted model");
+    let output = compile_emit(&reparsed, "dae-mo");
+    assert!(
+        output.status.success(),
+        "emitted dae-mo did not re-parse (status {:?}).\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

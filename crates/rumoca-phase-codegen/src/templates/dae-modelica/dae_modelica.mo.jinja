@@ -73,7 +73,7 @@
   {%- elif op.value.integer is defined -%}{{ op.value.integer }}
   {%- elif op.value.enumeration is defined -%}{{ op.value.enumeration }}
   {%- elif op.value.boolean is defined -%}{{ op.value.boolean }}
-  {%- elif op.value.string is defined -%}{{ op.value.string | tojson }}
+  {%- elif op.value.string is defined -%}{{ op.value.string | modelica_string }}
   {%- else -%}{{ fail_at("unsupported-feature:dae-modelica-literal", e.provenance) }}
   {%- endif -%}
 {%- elif op.kind == "coordinate" -%}{{ coordinate(op.coordinate, e.provenance) }}
@@ -198,12 +198,12 @@ end {{ function.name }};
   {%- if a.maximum is not none -%}{%- set parts = parts + ["max = " ~ expr(a.maximum)] -%}{%- endif -%}
   {%- if a.nominal is not none -%}{%- set parts = parts + ["nominal = " ~ expr(a.nominal)] -%}{%- endif -%}
   {%- if a.fixed is not none -%}{%- set parts = parts + ["fixed = " ~ a.fixed] -%}{%- endif -%}
-  {%- if a.unit is not none -%}{%- set parts = parts + ["unit = " ~ (a.unit | tojson)] -%}{%- endif -%}
+  {%- if a.unit is not none -%}{%- set parts = parts + ["unit = " ~ (a.unit | modelica_string)] -%}{%- endif -%}
   {{- parts | join(", ") -}}
 )
 {%- endif -%}
 {%- if a.binding is not none %} = {{ expr(a.binding) }}{% endif -%}
-{%- if a.description is not none %} {{ a.description | tojson }}{% endif %};
+{%- if a.description is not none %} {{ a.description | modelica_string }}{% endif %};
 {%- endmacro %}
 
 {% macro residual(id) -%}
