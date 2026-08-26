@@ -58,7 +58,7 @@ pub use refresh::*;
 pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
 pub use typed_program::*;
 pub use visitor::{
-    LinearOpSliceKind, SolveVisitor, VisitScope, walk_compute_block, walk_compute_node,
+    LinearOpSliceKind, SolveVisitor, walk_compute_block, walk_compute_node,
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
