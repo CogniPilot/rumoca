@@ -257,7 +257,41 @@ impl VarLayout {
         }
     }
 
-    pub fn from_parts_with_shapes(
+    /// Build a layout from its parts, deriving each shaped variable's indexed
+    /// element slots from its shape.
+    ///
+    /// This is the constructor a compilation takes. A shaped Y or P variable's
+    /// elements occupy a contiguous run, so the element slots follow from the
+    /// base slot and the shape and are never supplied.
+    pub fn from_parts_with_shapes_and_spans(
+        bindings: IndexMap<String, ScalarSlot>,
+        shapes: IndexMap<String, Vec<usize>>,
+        shape_spans: IndexMap<String, Span>,
+        y_scalars: usize,
+        p_scalars: usize,
+    ) -> Result<Self, VarLayoutShapeContractError> {
+        let bindings = intern_key_map(bindings);
+        let shapes = intern_key_map(shapes);
+        let shape_spans = intern_key_map(shape_spans);
+        let indexed_bindings =
+            indexed_bindings_from_shapes(&bindings, &shapes, &shape_spans, y_scalars, p_scalars)?;
+        Self::checked(
+            bindings,
+            shapes,
+            shape_spans,
+            indexed_bindings,
+            y_scalars,
+            p_scalars,
+        )
+    }
+
+    /// The span-free spelling of [`Self::from_parts_with_shapes_and_spans`].
+    ///
+    /// A layout built without shape spans reports a shape-contract violation
+    /// with no source to point at, so a compilation always carries them. Only
+    /// fixtures, which have no source in the first place, go without.
+    #[cfg(test)]
+    fn from_parts_with_shapes(
         bindings: IndexMap<String, ScalarSlot>,
         shapes: IndexMap<String, Vec<usize>>,
         y_scalars: usize,
@@ -272,91 +306,45 @@ impl VarLayout {
         )
     }
 
-    pub fn from_parts_with_shapes_and_spans(
+    /// Build a layout from parts that already carry their indexed element
+    /// slots, for a shape whose elements do not follow from a base slot.
+    ///
+    /// A constant array is that case: its elements hold distinct values rather
+    /// than occupying a run, so nothing derives them. No production path builds
+    /// a layout this way, so this exists only for the tests that hold the shape
+    /// contract to that case.
+    #[cfg(test)]
+    fn from_parts_with_shapes_and_indexed_bindings(
         bindings: IndexMap<String, ScalarSlot>,
         shapes: IndexMap<String, Vec<usize>>,
-        shape_spans: IndexMap<String, Span>,
+        indexed_bindings: IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
         y_scalars: usize,
         p_scalars: usize,
     ) -> Result<Self, VarLayoutShapeContractError> {
-        let bindings = intern_key_map(bindings);
-        let shapes = intern_key_map(shapes);
-        let shape_spans = intern_key_map(shape_spans);
-        let indexed_bindings =
-            indexed_bindings_from_shapes(&bindings, &shapes, &shape_spans, y_scalars, p_scalars)?;
+        Self::checked(
+            intern_key_map(bindings),
+            intern_key_map(shapes),
+            IndexMap::new(),
+            indexed_bindings,
+            y_scalars,
+            p_scalars,
+        )
+    }
+
+    /// Name each shaped variable's indexed-binding key, hold the parts to the
+    /// shape contract, and construct.
+    ///
+    /// Every constructor ends here, so the contract is checked on the way in
+    /// however the indexed bindings were arrived at.
+    fn checked(
+        bindings: IndexMap<VarName, ScalarSlot>,
+        shapes: IndexMap<VarName, Vec<usize>>,
+        shape_spans: IndexMap<VarName, Span>,
+        indexed_bindings: IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
+        y_scalars: usize,
+        p_scalars: usize,
+    ) -> Result<Self, VarLayoutShapeContractError> {
         let shape_indexed_keys = generated_shape_indexed_keys(&shapes, &indexed_bindings);
-        validate_shape_contract(
-            &bindings,
-            &shapes,
-            &shape_spans,
-            &shape_indexed_keys,
-            &indexed_bindings,
-            y_scalars,
-            p_scalars,
-        )?;
-        Ok(Self {
-            indexed_bindings,
-            bindings,
-            shapes,
-            shape_spans,
-            shape_indexed_keys,
-            y_scalars,
-            p_scalars,
-        })
-    }
-
-    pub fn from_parts_with_shapes_and_indexed_bindings(
-        bindings: IndexMap<String, ScalarSlot>,
-        shapes: IndexMap<String, Vec<usize>>,
-        indexed_bindings: IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
-        y_scalars: usize,
-        p_scalars: usize,
-    ) -> Result<Self, VarLayoutShapeContractError> {
-        Self::from_parts_with_shapes_spans_and_indexed_bindings(
-            bindings,
-            shapes,
-            IndexMap::new(),
-            indexed_bindings,
-            y_scalars,
-            p_scalars,
-        )
-    }
-
-    pub fn from_parts_with_shapes_spans_and_indexed_bindings(
-        bindings: IndexMap<String, ScalarSlot>,
-        shapes: IndexMap<String, Vec<usize>>,
-        shape_spans: IndexMap<String, Span>,
-        indexed_bindings: IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
-        y_scalars: usize,
-        p_scalars: usize,
-    ) -> Result<Self, VarLayoutShapeContractError> {
-        Self::from_parts_with_shapes_spans_keys_and_indexed_bindings(
-            bindings,
-            shapes,
-            shape_spans,
-            IndexMap::new(),
-            indexed_bindings,
-            y_scalars,
-            p_scalars,
-        )
-    }
-
-    pub fn from_parts_with_shapes_spans_keys_and_indexed_bindings(
-        bindings: IndexMap<String, ScalarSlot>,
-        shapes: IndexMap<String, Vec<usize>>,
-        shape_spans: IndexMap<String, Span>,
-        shape_indexed_keys: IndexMap<String, ComponentReferenceKey>,
-        indexed_bindings: IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
-        y_scalars: usize,
-        p_scalars: usize,
-    ) -> Result<Self, VarLayoutShapeContractError> {
-        let bindings = intern_key_map(bindings);
-        let shapes = intern_key_map(shapes);
-        let shape_spans = intern_key_map(shape_spans);
-        let mut shape_indexed_keys = intern_key_map(shape_indexed_keys);
-        for (name, key) in generated_shape_indexed_keys(&shapes, &indexed_bindings) {
-            shape_indexed_keys.entry(name).or_insert(key);
-        }
         validate_shape_contract(
             &bindings,
             &shapes,
