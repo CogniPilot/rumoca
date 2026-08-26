@@ -539,8 +539,14 @@ mod permission {
     fn writes_whole_output(function: &ast::UserFunction, output: &str, extents: &[usize]) -> bool {
         let mut witnessed = false;
         for statement in &function.statements {
-            if writes(&statement.node, output) == 0 {
-                continue;
+            // Exactly one write, and it is the one the shape accounts for.
+            // Every shape `covers_whole` admits performs a single write to the
+            // output, so a second one inside the same statement is a partial
+            // write the coverage argument does not cover.
+            match writes(&statement.node, output) {
+                0 => continue,
+                1 => {}
+                _ => return false,
             }
             if witnessed || !covers_whole(&statement.node, output, extents) {
                 return false;

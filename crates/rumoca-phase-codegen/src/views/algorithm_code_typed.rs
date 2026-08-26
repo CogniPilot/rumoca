@@ -4907,6 +4907,7 @@ fn scale_operand_roots<'a>(value: &TypedExpressionView<'a>, roots: &mut Vec<&'a 
 fn same_reference(left: &TypedReferenceView<'_>, right: &TypedReferenceView<'_>) -> bool {
     if left.context_resident != right.context_resident
         || left.context_overlay != right.context_overlay
+        || left.context_arena != right.context_arena
     {
         return false;
     }
