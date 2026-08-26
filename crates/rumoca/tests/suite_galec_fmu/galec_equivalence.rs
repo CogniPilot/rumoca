@@ -4045,3 +4045,173 @@ fn embedded_c_orders_one_shared_call_node_after_the_node_it_reads() {
         String::from_utf8_lossy(&compile.stderr)
     );
 }
+
+// ===========================================================================
+// Fixture 18: destination placement, and the aliasing case that refuses it.
+//
+// A callee's array output may be emitted into a slot the caller already owns,
+// so the read-back copy is never generated
+// (`views::algorithm_code_typed::destination`). The whole risk of that is
+// aliasing: the callee writes the destination WHILE its own body runs, so an
+// operand that shares storage with the destination would stop seeing its
+// pre-call value.
+//
+// `stage` calls two identical blends. `mixed := blendA(hold)` writes a slot no
+// operand names and is the placement's own case. `hold := blendB(hold)` assigns
+// its result back over the very argument it read, which the permission refuses,
+// and both bodies read `u[1]` on every iteration AFTER writing `y[1]` on the
+// first — so a placement taken there would feed the second and third elements a
+// value the model never computes. The two channels differ in exactly that way,
+// which is what makes this fixture evidence rather than a smoke test.
+// ===========================================================================
+
+const DESTINATION_ALIAS: &str = r#"
+function blendA
+  input Real u[3];
+  output Real y[3];
+algorithm
+  for i in 1:3 loop
+    y[i] := 3.0 * u[1] + u[i];
+  end for;
+end blendA;
+
+function blendB
+  input Real u[3];
+  output Real y[3];
+algorithm
+  for i in 1:3 loop
+    y[i] := 3.0 * u[1] + u[i];
+  end for;
+end blendB;
+
+function stage
+  input Real u[3];
+  output Real y[3];
+protected
+  Real hold[3];
+  Real mixed[3];
+algorithm
+  hold := u;
+  mixed := blendA(hold);
+  hold := blendB(hold);
+  for i in 1:3 loop
+    y[i] := mixed[i] + hold[i];
+  end for;
+end stage;
+
+model DestinationAliasSmoke
+  constant Real samplePeriod = 0.1;
+  discrete Real k(start = 0.0, fixed = true);
+  discrete output Real o[3](each start = 0.0);
+equation
+  when sample(0.0, samplePeriod) then
+    k = pre(k) + 1.0;
+    o = stage({k + 1.0, k + 2.0, k + 3.0});
+  end when;
+end DestinationAliasSmoke;
+"#;
+
+const DESTINATION_ALIAS_DRIVER: &str = r#"#include <stdio.h>
+#include "DestinationAliasSmoke.h"
+static void row(const char *label, const DestinationAliasSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%lu\n", label,
+           (double)state->k, (double)state->o[0],
+           (double)state->o[1], (double)state->o[2],
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    DestinationAliasSmokeState state;
+    char label[16];
+    DestinationAliasSmoke_startup(&state);
+    row("startup", &state);
+    DestinationAliasSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        DestinationAliasSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+const fn destination_alias_field(name: &'static str) -> Field {
+    Field {
+        name,
+        kind: FieldKind::Real,
+    }
+}
+
+#[test]
+fn embedded_c_places_a_result_only_where_no_operand_can_reach_the_destination() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "DestinationAliasSmoke";
+    let fields = [
+        destination_alias_field("k"),
+        destination_alias_field("o[1]"),
+        destination_alias_field("o[2]"),
+        destination_alias_field("o[3]"),
+    ];
+
+    let projection = project_embedded_c(dir.path(), model, DESTINATION_ALIAS);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(&out_dir, model, DESTINATION_ALIAS_DRIVER, fields.len());
+    let ref_ticks = reference_ticks(model, DESTINATION_ALIAS, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    assert_oracle_agrees(&oracle, &c_run, &ref_ticks, &fields, 0);
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+
+    // The closed form, which every leg has to reproduce. With
+    // `s = (k+1, k+2, k+3)` both blends give `3*s[1] + s[i]` and `stage`
+    // returns twice that. A placement taken on the aliasing call would instead
+    // feed elements 2 and 3 the already-overwritten `y[1] = 4*s[1]`, which is a
+    // different number on every tick from the first.
+    for tick in 0..5 {
+        let count = (tick + 1) as f64;
+        let seed = [count + 1.0, count + 2.0, count + 3.0];
+        let expected = [
+            count,
+            2.0 * (3.0 * seed[0] + seed[0]),
+            2.0 * (3.0 * seed[0] + seed[1]),
+            2.0 * (3.0 * seed[0] + seed[2]),
+        ];
+        for (leg, values) in [
+            ("generated C", &c_run.steps[tick].values),
+            ("galec oracle", &oracle.steps[tick].values),
+        ] {
+            for (field, (got, want)) in fields.iter().zip(values.iter().zip(expected)) {
+                let (atol, rtol) = F32_PROFILE;
+                assert!(
+                    (got - want).abs() <= atol + rtol * want.abs(),
+                    "{leg} tick {} channel `{}`: {got} vs {want}",
+                    tick + 1,
+                    field.name
+                );
+            }
+        }
+    }
+
+    // And the emission itself, so a future change that silently stopped placing
+    // (or started placing the aliasing call) is a failing test rather than a
+    // slower or wronger artifact.
+    let source = fs::read_to_string(out_dir.join(format!("{model}.c"))).expect("read emitted C");
+    assert!(
+        source.contains("/* Destination-passed output: `y` IS `stage.mixed`"),
+        "the non-aliasing call must deliver its result into the caller's slot:\n{source}"
+    );
+    assert!(
+        !source.contains("`y` IS `stage.hold`"),
+        "the call whose target is also its argument must not be placed:\n{source}"
+    );
+    assert!(
+        source.contains(".blendB.y);"),
+        "the refused call must still read its result back:\n{source}"
+    );
+    assert!(
+        !source.contains(".blendA.y);"),
+        "the placed call must emit no read-back at all:\n{source}"
+    );
+}

@@ -88,7 +88,7 @@
 //!
 //! Everything else fails closed. Declining costs one copy and nothing else.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use rumoca_ir_galec::ast;
 
@@ -96,7 +96,11 @@ use super::{LocalPlacements, Owner, output_parameters, slot_shape};
 
 /// The storage a placed output is reached through: a slot of some owner's
 /// region, named by the owner and the member.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Ordered, not hashed: the plan decides emitted storage, so every set and map
+/// it keeps has to iterate in one order on every run, and a derived `Hash` over
+/// string-shaped fields is refused by the string-hashing architecture gate.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Destination<'a> {
     /// The owner whose region holds the member. Always a user function.
     pub(super) owner: &'a str,
@@ -108,8 +112,8 @@ pub(super) struct Destination<'a> {
 /// places.
 #[derive(Debug, Default)]
 pub(super) struct Plan<'a> {
-    placed: HashMap<(&'a str, &'a str), Destination<'a>>,
-    pinned: HashMap<&'a str, HashSet<&'a str>>,
+    placed: BTreeMap<(&'a str, &'a str), Destination<'a>>,
+    pinned: BTreeMap<&'a str, BTreeSet<&'a str>>,
 }
 
 impl<'a> Plan<'a> {
@@ -139,7 +143,11 @@ impl<'a> Plan<'a> {
     /// every destination some callee was placed at.
     pub(super) fn pinned_slots(&self, owner: Owner<'a>) -> HashSet<&'a str> {
         match owner {
-            Owner::Function(name) => self.pinned.get(name).cloned().unwrap_or_default(),
+            Owner::Function(name) => self
+                .pinned
+                .get(name)
+                .map(|slots| slots.iter().copied().collect())
+                .unwrap_or_default(),
             Owner::Method(_) => HashSet::new(),
         }
     }
@@ -182,8 +190,8 @@ pub(super) fn plan<'a>(
 
     // Declaration order, never hash order: the plan decides emitted storage, so
     // the same block must produce the same layout on every run.
-    let mut placed: HashMap<(&'a str, &'a str), Destination<'a>> = HashMap::new();
-    let mut claimed: HashSet<Destination<'a>> = HashSet::new();
+    let mut placed: BTreeMap<(&'a str, &'a str), Destination<'a>> = BTreeMap::new();
+    let mut claimed: BTreeSet<Destination<'a>> = BTreeSet::new();
     for callee in &block.protected_functions {
         let name = callee.name.lexeme();
         let Some([site]) = sites.get(name).map(Vec::as_slice) else {
@@ -207,7 +215,7 @@ pub(super) fn plan<'a>(
 /// taken there. The walk is bounded by the number of placements and drops a
 /// placement it cannot bottom out — the block's acyclic call graph makes a cycle
 /// impossible, and this refuses to depend on that proof having run.
-fn resolve<'a>(placed: HashMap<(&'a str, &'a str), Destination<'a>>) -> Plan<'a> {
+fn resolve<'a>(placed: BTreeMap<(&'a str, &'a str), Destination<'a>>) -> Plan<'a> {
     let limit = placed.len();
     let mut plan = Plan::default();
     for (key, destination) in &placed {
@@ -338,7 +346,7 @@ fn mentions_in_reference<'a>(reference: &'a ast::Reference, found: &mut HashSet<
 
 /// Permission to place one output, and the only place it is minted.
 mod permission {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeSet, HashMap, HashSet};
 
     use rumoca_ir_galec::ast;
 
@@ -400,7 +408,7 @@ mod permission {
         callee: &'a ast::UserFunction,
         site: &CallSite<'a>,
         functions: &HashMap<&'a str, &'a ast::UserFunction>,
-        claimed: &HashSet<Destination<'a>>,
+        claimed: &BTreeSet<Destination<'a>>,
     ) -> Vec<Placement<'a>> {
         let mut minted = Vec::new();
         // A block method never lends a destination: its array locals are the
