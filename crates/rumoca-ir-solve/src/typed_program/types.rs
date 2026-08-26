@@ -70,7 +70,7 @@ impl SolveIntegerDomain {
 /// nearest, ties to even, on every backend it reaches, so a field carrying that
 /// one choice discriminated nothing and made every profile equality a
 /// tautology. SPEC_0047 §4.3 reserves a real rounding *contract* for this
-/// profile — accumulator, order, per-step and result rounding, contraction —
+/// profile (accumulator, order, per-step and result rounding, contraction),
 /// and that contract arrives with the operations that can differ under it, not
 /// before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

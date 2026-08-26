@@ -2314,8 +2314,8 @@ fn mark_arena_in_expression<'a>(value: &mut TypedExpressionView<'a>, placed: &Ha
 /// Whether a **local** declaration is delivered through the owner's context
 /// region rather than the frame.
 ///
-/// One rule: array locals go to the region. They are what fills a frame — a
-/// 15x15 `float` intermediate is 900 bytes — and they are the reason a
+/// One rule: array locals go to the region. They are what fills a frame (a
+/// 15x15 `float` intermediate is 900 bytes), and they are the reason a
 /// worst-case stack depth has to be argued rather than read off a link map.
 /// Scalars stay in the frame: they cost a word, and pushing them behind the
 /// context pointer would take registers away from the arithmetic for nothing.

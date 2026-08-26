@@ -5,15 +5,15 @@ use super::*;
 ///
 /// The predicate answers one of three things about the node it is handed:
 ///
-/// * `Some(true)` — yes, and the walk stops here: nothing else can change the
-///   answer;
-/// * `Some(false)` — this subtree's verdict is settled, so the walk does *not*
+/// * `Some(true)`: yes, and the walk stops here, since nothing else can change
+///   the answer;
+/// * `Some(false)`: this subtree's verdict is settled, so the walk does *not*
 ///   descend into it. A predicate uses this when it has already inspected the
 ///   node's children itself, which is what the reference-bearing nodes
 ///   (`Ref`, `Neg`, `Size`) need, since a `Reference` is not an `Expression`
 ///   and the walk cannot hand one to an expression predicate;
-/// * `None` — undecided here, so the walk descends into the node's children
-///   and ORs their answers.
+/// * `None`: undecided here, so the walk descends into the node's children and
+///   ORs their answers.
 ///
 /// A predicate that answers `None` everywhere and records what it sees turns
 /// this into a plain visit-every-node traversal; the `false` it then returns is
