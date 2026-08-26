@@ -28,6 +28,20 @@
 //! Note that the `__` prefix of `__content.xml.jinja` carries no meaning for
 //! this classification: `__content.xml` is the eFMI container registry file
 //! name, and that template is an ordinary `[[files]]` artifact.
+//!
+//! # Shared asset bundles
+//!
+//! A `[[assets]]` bundle names a directory of non-template files copied into
+//! the product verbatim. Two targets that must ship the *same* bytes declare
+//! one owning copy and borrow it: the borrower writes `shared_from = "<owning
+//! target>"` on its `[[assets]]` entry and keeps no directory of its own. The
+//! borrowed files enter the borrower's bundle under the identical relative
+//! paths, so nothing downstream can tell a borrowed bundle from an owned one,
+//! and they enter it through the owner's `include_bytes!` constants, so the
+//! bytes are embedded once however many targets ship them. This is the asset
+//! counterpart of `[[files]].shared_as`, and it exists for the same reason:
+//! two vendored copies of one upstream tree drift, and a drifted copy is a
+//! non-conformant container.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -43,6 +57,10 @@ struct TargetDir {
     readme_path: PathBuf,
     templates: Vec<TemplateFile>,
     assets: Vec<AssetFile>,
+    /// `[[assets]]` bundles this target borrows from another target, as
+    /// (`source`, owning target name). Resolved once every target directory
+    /// has been read, since the owner may be discovered later.
+    borrowed_assets: Vec<(String, String)>,
 }
 
 #[derive(Debug)]
@@ -74,11 +92,16 @@ impl TemplateRole {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct AssetFile {
     path: String,
     const_name: String,
     source_path: PathBuf,
+    /// The target whose directory holds these bytes, which is this target for
+    /// an owned asset and the lending target for a borrowed one. Only the
+    /// owner emits the `include_bytes!` constant; every borrower's bundle
+    /// points at that same constant.
+    owner: String,
 }
 
 fn main() -> BuildResult<()> {
@@ -118,7 +141,71 @@ fn discover_targets(templates_dir: &Path) -> BuildResult<Vec<TargetDir>> {
         }
     }
     targets.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
+    resolve_borrowed_assets(&mut targets)?;
     Ok(targets)
+}
+
+/// Copy every `shared_from` bundle's file list from its owning target into the
+/// borrower, under the identical relative paths and pointing at the owner's
+/// byte constants.
+///
+/// The lender snapshot is taken before any borrow is applied, so a target can
+/// only lend what its own directory holds: borrowing a bundle that is itself
+/// borrowed reports the lender as bundling no such files, which is the right
+/// answer, because the owning target is the one to name.
+fn resolve_borrowed_assets(targets: &mut [TargetDir]) -> BuildResult<()> {
+    let owned: BTreeMap<String, Vec<AssetFile>> = targets
+        .iter()
+        .map(|target| (target.name.clone(), target.assets.clone()))
+        .collect();
+    for target in targets.iter_mut() {
+        let borrowed = std::mem::take(&mut target.borrowed_assets);
+        for (source, owner) in borrowed {
+            let prefix = format!("{}/", source.trim_end_matches('/'));
+            if owner == target.name {
+                return Err(build_error(format!(
+                    "{}: [[assets]] source {source} declares shared_from = \"{owner}\", \
+                     which is the declaring target itself",
+                    target.manifest_path.display()
+                ))
+                .into());
+            }
+            let Some(owner_assets) = owned.get(&owner) else {
+                return Err(build_error(format!(
+                    "{}: [[assets]] source {source} borrows from unknown target {owner}",
+                    target.manifest_path.display()
+                ))
+                .into());
+            };
+            if target.assets.iter().any(|asset| {
+                asset.path.starts_with(&prefix) || asset.path == source.trim_end_matches('/')
+            }) {
+                return Err(build_error(format!(
+                    "{}: [[assets]] source {source} borrows from {owner} but this target \
+                     also bundles files under {prefix}; a borrowed bundle must have no \
+                     local copy to drift from",
+                    target.manifest_path.display()
+                ))
+                .into());
+            }
+            let lent = owner_assets
+                .iter()
+                .filter(|asset| asset.path.starts_with(&prefix))
+                .cloned()
+                .collect::<Vec<_>>();
+            if lent.is_empty() {
+                return Err(build_error(format!(
+                    "{}: [[assets]] source {source} borrows from {owner}, which bundles no \
+                     files under {prefix}",
+                    target.manifest_path.display()
+                ))
+                .into());
+            }
+            target.assets.extend(lent);
+        }
+        target.assets.sort_by(|lhs, rhs| lhs.path.cmp(&rhs.path));
+    }
+    Ok(())
 }
 
 fn discover_target_dir(dir: &Path) -> BuildResult<TargetDir> {
@@ -177,16 +264,18 @@ fn discover_target_dir(dir: &Path) -> BuildResult<TargetDir> {
                 const_name: generated_asset_const_name(&name, &path),
                 path,
                 source_path,
+                owner: name.clone(),
             })
         })
         .collect::<BuildResult<Vec<_>>>()?;
-    validate_manifest_assets(&manifest_path, dir, &assets)?;
+    let borrowed_assets = validate_manifest_assets(&manifest_path, dir, &assets)?;
     Ok(TargetDir {
         name,
         manifest_path,
         readme_path,
         templates,
         assets,
+        borrowed_assets,
     })
 }
 
@@ -264,13 +353,31 @@ fn collect_asset_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Build
     Ok(())
 }
 
+/// Check that every `[[assets]]` bundle the manifest declares is backed by
+/// files, and return the bundles this target borrows from another one.
+///
+/// A borrowed bundle has no directory here by construction, so it is checked
+/// after discovery instead, once its lender is known
+/// (`resolve_borrowed_assets`).
 fn validate_manifest_assets(
     manifest_path: &Path,
     target_dir: &Path,
     assets: &[AssetFile],
-) -> BuildResult<()> {
+) -> BuildResult<Vec<(String, String)>> {
     let manifest = fs::read_to_string(manifest_path)?;
-    for source in manifest_asset_sources(&manifest) {
+    let mut borrowed = Vec::new();
+    for (source, shared_from) in manifest_asset_sources(&manifest) {
+        if let Some(owner) = shared_from {
+            if owner.is_empty() {
+                return Err(build_error(format!(
+                    "{}: [[assets]] source {source} declares an empty shared_from target",
+                    manifest_path.display()
+                ))
+                .into());
+            }
+            borrowed.push((source, owner));
+            continue;
+        }
         let prefix = format!("{}/", source.trim_end_matches('/'));
         if !target_dir.join(&source).is_dir() {
             return Err(build_error(format!(
@@ -287,19 +394,18 @@ fn validate_manifest_assets(
             .into());
         }
     }
-    Ok(())
+    Ok(borrowed)
 }
 
-fn manifest_asset_sources(manifest: &str) -> Vec<String> {
-    manifest
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            let value = trimmed.strip_prefix("source")?.trim();
-            let value = value.strip_prefix('=')?.trim();
-            let value = value.strip_prefix('"')?;
-            let end = value.find('"')?;
-            Some(value[..end].to_string())
+/// Every `[[assets]]` bundle as (`source`, `shared_from`).
+fn manifest_asset_sources(manifest: &str) -> Vec<(String, Option<String>)> {
+    scan_manifest_tables(manifest)
+        .into_iter()
+        .filter(|(table, _)| table == "assets")
+        .filter_map(|(_, row)| {
+            let source = row_value(&row, "source")?.to_string();
+            let shared_from = row_value(&row, "shared_from").map(ToOwned::to_owned);
+            Some((source, shared_from))
         })
         .collect()
 }
@@ -609,7 +715,9 @@ fn render_target_constants(out: &mut String, manifest_dir: &Path, target: &Targe
             template.const_name, include_path
         ));
     }
-    for asset in &target.assets {
+    // A borrowed asset is embedded once, by the target that owns the bytes.
+    // Every borrower's bundle names that same constant.
+    for asset in target.assets.iter().filter(|asset| asset.owner == target.name) {
         let include_path = include_path(manifest_dir, &asset.source_path);
         out.push_str(&format!(
             "const {}: &[u8] = include_bytes!(\"{}\");\n",

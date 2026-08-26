@@ -67,7 +67,8 @@ host_callbacks = false
 # declaration is the SOLE mechanism that installs the schemas: the generic
 # declarative build step (contract §4b) copies this bundle, and there is no
 # separate typed schema-install path — removing this bundle ships a schema-less
-# eFMU. (Matches galec-production/target.toml.)
+# eFMU. `galec-production` borrows this same bundle with `shared_from`, so this
+# directory is the only vendored copy in the tree.
 [[assets]]
 source = "schemas"
 dest = "schemas/"

@@ -241,6 +241,17 @@ pub enum ChecksumAlgorithm {
 pub struct AssetBundle {
     pub source: String,
     pub dest: String,
+    /// The built-in target that owns these bytes, when this target borrows a
+    /// bundle instead of vendoring its own copy of it.
+    ///
+    /// Like `TargetFile::shared_as`, this is a bundling-time declaration read
+    /// by the codegen crate's build script, which gives the borrower the
+    /// owner's files under the identical relative paths and embeds them once.
+    /// By the time a target reaches this crate the borrowed files are already
+    /// part of its bundle, so resolution here is a no-op and `source` reads
+    /// the same either way. A directory target has no bundle to borrow from
+    /// and simply reads `source` off disk.
+    pub shared_from: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1216,6 +1227,16 @@ fn validate_asset_bundles(assets: &[AssetBundle]) -> Result<()> {
         if asset.dest.trim().is_empty() {
             bail!(
                 "[[assets]] dest must not be empty (source '{}')",
+                asset.source
+            );
+        }
+        if asset
+            .shared_from
+            .as_deref()
+            .is_some_and(|owner| owner.trim().is_empty())
+        {
+            bail!(
+                "[[assets]] shared_from must name the owning target when present (source '{}')",
                 asset.source
             );
         }

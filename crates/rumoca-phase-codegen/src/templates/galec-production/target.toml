@@ -84,8 +84,16 @@ host_callbacks = false
 # its BSD-3-Clause LICENSE (GAL-023), copied verbatim into schemas/ by the
 # generic build step. Assets sit OUTSIDE the render/hash checksum DAG — nothing
 # checksums the XSDs.
+#
+# The tree is BORROWED from the `galec` target rather than vendored a second
+# time: both targets emit an eFMU that must validate against the identical
+# eFMI Beta-1 schema release, so two copies could only ever be equal or wrong.
+# `shared_from` gives this target the owner's files under the identical
+# relative paths, from the owner's embedded bytes, so the emitted schemas/
+# directory is unchanged and the XSDs are embedded once in the binary.
 [[assets]]
 source = "schemas"
+shared_from = "galec"
 dest = "schemas/"
 
 # The `id` + `[[files.checksums]]` declarations wire the generic declarative
