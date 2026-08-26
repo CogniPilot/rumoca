@@ -678,6 +678,20 @@ mod permission {
             // of `A` can alias. The question is asked of the shape rather than
             // of whether that further placement has been decided yet, so the
             // answer does not depend on the order the plan considers callees in.
+            //
+            // KEPT DELIBERATELY, AND IT COSTS. An adversarial review argued it
+            // redundant and could not make it matter: mutating it away changed
+            // no emitted model, and the argument is that a descendant's formal
+            // can alias an ancestor slot `s` only if `s` was passed at the very
+            // call whose result lands there, which `operands.contains` already
+            // refuses one line above. That argument is believable and it is
+            // also an inductive claim about everything a formal can alias, made
+            // over the whole call graph. It is the kind of reasoning this
+            // calling convention exists to avoid having to get right, so the
+            // cheaper answer stands: on the Bezier planner this refusal keeps
+            // 20 read-back copies a tick that a relaxation would remove, about
+            // 0.7 percent of the step. Retire it against evidence, not against
+            // the argument alone.
             if outputs_of_caller.contains(member) && array_formal_operand {
                 continue;
             }
