@@ -564,10 +564,6 @@ impl SessionSnapshot {
         self.with_session_ref(Session::namespace_class_names_cached)
     }
 
-    pub fn all_class_names_cached(&self) -> Vec<String> {
-        self.with_session_ref(Session::all_class_names_cached)
-    }
-
     pub fn namespace_children_cached(&self, prefix: &str) -> Vec<(String, String, bool)> {
         self.with_session_ref(|session| session.namespace_children_cached(prefix))
     }

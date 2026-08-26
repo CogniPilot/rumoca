@@ -158,13 +158,6 @@ impl SimulationSession {
         self.inner.set_input(name, value)
     }
 
-    pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
-        for (name, value) in inputs {
-            self.inner.set_input(name, *value)?;
-        }
-        Ok(())
-    }
-
     pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
         self.inner.advance_to(target_time)
     }

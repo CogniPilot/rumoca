@@ -4,7 +4,6 @@
 //! corresponding features are enabled, the diffsol/rk45 solver entry points
 //! and the scheduled simulation module that drives scheduled scenario simulations.
 
-use indexmap::IndexSet;
 use rumoca_core::Span;
 use rumoca_ir_solve as solve;
 use serde::{Deserialize, Serialize};
@@ -633,14 +632,6 @@ fn runtime_preparation(message: String, span: Span) -> SimulationDiagnosticError
         message,
         span: Some(span),
     }
-}
-
-pub fn runtime_defined_unknown_names(dae_model: &dae::Dae) -> IndexSet<String> {
-    rumoca_phase_structural::runtime_defined_unknown_names(dae_model)
-}
-
-pub fn runtime_defined_continuous_unknown_names(dae_model: &dae::Dae) -> IndexSet<String> {
-    rumoca_phase_structural::runtime_defined_continuous_unknown_names(dae_model)
 }
 
 pub fn compiled_layout_binding_debug(

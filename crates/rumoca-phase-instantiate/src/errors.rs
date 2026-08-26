@@ -535,16 +535,6 @@ pub enum InstantiationOutcome {
 }
 
 impl InstantiationOutcome {
-    /// Returns true if this is a successful instantiation.
-    pub fn is_success(&self) -> bool {
-        matches!(self, Self::Success(_))
-    }
-
-    /// Returns true if this model needs inner declarations (has outer without inner).
-    pub fn needs_inner(&self) -> bool {
-        matches!(self, Self::NeedsInner { .. })
-    }
-
     /// Returns true if this is an actual error (not context-dependent).
     pub fn is_error(&self) -> bool {
         matches!(self, Self::Error(_))

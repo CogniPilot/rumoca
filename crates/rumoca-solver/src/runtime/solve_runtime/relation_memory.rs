@@ -98,25 +98,6 @@ impl SolveRuntime {
         !self.model.problem.events.dynamic_time_event_rhs.is_empty()
     }
 
-    pub fn eval_scalar_program_block(
-        &self,
-        block: &solve::ScalarProgramBlock,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-    ) -> Result<Vec<f64>, RuntimeSolveError> {
-        let mut values = zero_runtime_values(block.len(), "scalar program block output")?;
-        solve_eval::eval_scalar_program_block_with_context(
-            block,
-            y,
-            p,
-            t,
-            self.row_eval_context(),
-            &mut values,
-        )?;
-        Ok(values)
-    }
-
     pub fn apply_initialization_updates(
         &self,
         y: &mut [f64],

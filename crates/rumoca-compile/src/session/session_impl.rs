@@ -906,20 +906,6 @@ impl Session {
             .unwrap_or_default()
     }
 
-    /// Get cached class names without triggering a planning rebuild.
-    ///
-    /// Returns declared class names from either a completed Resolve artifact or
-    /// an incomplete planning tree. This is safe for syntax-facing completion;
-    /// it does not claim that semantic resolution completed.
-    pub fn all_class_names_cached(&self) -> Vec<String> {
-        self.query_state
-            .resolved
-            .builds
-            .any_tree()
-            .map(|tree| collect_qualified_class_names(&tree.definitions))
-            .unwrap_or_default()
-    }
-
     /// Returns true when a resolved tree is already cached in the session.
     ///
     /// This is useful for latency-sensitive paths (like editor completion)

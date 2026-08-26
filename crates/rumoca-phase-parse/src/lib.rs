@@ -303,14 +303,6 @@ impl<'t> modelica_grammar_trait::ModelicaGrammarTrait for ModelicaGrammar<'t> {
     }
 }
 
-use std::path::Path;
-
-/// Parse a Modelica source file.
-pub fn parse_file(path: &Path) -> anyhow::Result<()> {
-    let source = std::fs::read_to_string(path)?;
-    parse_string(&source, path.to_string_lossy().as_ref())
-}
-
 /// Parse a Modelica source string.
 ///
 /// Returns `Ok(())` if parsing succeeds.

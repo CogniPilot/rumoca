@@ -1,16 +1,34 @@
+//! Dead public-surface gate.
+//!
+//! Rust's `dead_code` lint deliberately treats externally reachable `pub` items
+//! as potential downstream API, so an unused public item never warns. This gate
+//! recovers that signal: [`engine`] resolves every workspace reference to the
+//! declaration it names, and a public declaration nothing resolves to must be
+//! narrowed, deleted, or written down as a documented contract. DO-178C treats
+//! deactivated code as an objective in its own right, so the disposition has to
+//! be explicit either way.
+//!
+//! Prose is not a reference, so `spec/` and `docs/` are outside the usage
+//! corpus; a name is only kept alive by code that could actually call it.
+
+mod engine;
+
 use crate::architecture_hardening_support::{collect_rs_files, workspace_root};
-use std::collections::{BTreeMap, BTreeSet};
+use engine::{Corpus, crate_name};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use syn::visit::{self, Visit};
 
 /// Declaration-only surfaces removed by the workspace API audit.
 ///
-/// Rust's `dead_code` lint deliberately treats externally reachable `pub`
-/// items as potential downstream API. These path/name pairs were separately
-/// proved to have no workspace caller or documented external contract. Pinning
-/// them here prevents a compatibility shim or copied abstraction from silently
-/// restoring the dead surface.
+/// These path/name pairs were separately proved to have no workspace caller or
+/// documented external contract. Pinning them here prevents a compatibility
+/// shim or copied abstraction from silently restoring the dead surface.
+///
+/// A removed item can only be pinned when its name is unique within its file,
+/// since the key is `(path, name)`. `SimExecutionPolicy::from_external_name`
+/// was removed without a pin because `SimSolverMode::from_external_name` lives
+/// in the same file and is live.
 const REMOVED_DECLARATION_ONLY_SURFACES: &[(&str, &str)] = &[
     (
         "crates/rumoca-compile/src/session.rs",
@@ -95,103 +113,87 @@ const REMOVED_DECLARATION_ONLY_SURFACES: &[(&str, &str)] = &[
         "crates/rumoca-tool-lsp/src/util.rs",
         "token_to_range_in_source",
     ),
+    (
+        "crates/rumoca-compile/src/session/session_impl.rs",
+        "all_class_names_cached",
+    ),
+    (
+        "crates/rumoca-compile/src/session/session_snapshot.rs",
+        "all_class_names_cached",
+    ),
+    ("crates/rumoca-compile/src/session.rs", "is_success"),
+    ("crates/rumoca-compile/src/session.rs", "needs_inner"),
+    ("crates/rumoca-ir-solve/src/model.rs", "empty_with_span"),
+    ("crates/rumoca-opt/src/model.rs", "set_parameter_value"),
+    (
+        "crates/rumoca-phase-instantiate/src/errors.rs",
+        "is_success",
+    ),
+    (
+        "crates/rumoca-phase-instantiate/src/errors.rs",
+        "needs_inner",
+    ),
+    ("crates/rumoca-phase-parse/src/lib.rs", "parse_file"),
+    ("crates/rumoca-phase-typecheck/src/lib.rs", "type_mismatch"),
+    ("crates/rumoca-sim/src/diffsol.rs", "set_parameter_value"),
+    (
+        "crates/rumoca-sim/src/lib.rs",
+        "runtime_defined_unknown_names",
+    ),
+    (
+        "crates/rumoca-sim/src/lib.rs",
+        "runtime_defined_continuous_unknown_names",
+    ),
+    ("crates/rumoca-sim/src/rk45.rs", "set_inputs"),
+    ("crates/rumoca-sim/src/simulation_session.rs", "set_inputs"),
+    (
+        "crates/rumoca-solver/src/runtime/solve_runtime/relation_memory.rs",
+        "eval_scalar_program_block",
+    ),
+    ("crates/rumoca-transport-udp/src/lib.rs", "send_addr"),
 ];
 
-#[derive(Default)]
-struct PublicDeclarations {
-    declarations: BTreeSet<(PathBuf, String)>,
-    current_path: PathBuf,
-}
+/// Public items a specification or an out-of-corpus consumer names as an owned
+/// contract, so their disposition is "kept on purpose" rather than "no caller
+/// found".
+///
+/// Each entry is `(path, name, owning document)`, and that document must still
+/// name the item: the exemption dies with the row that grants it.
+const DOCUMENTED_CONTRACT_SURFACES: &[(&str, &str, &str)] = &[
+    (
+        "crates/rumoca-core/src/lib.rs",
+        "source_temporal_function_short_name",
+        "spec/SPEC_0041_CRATE_OWNERSHIP_CATALOG.md",
+    ),
+    (
+        "crates/rumoca-core/src/lib.rs",
+        "source_dae_forbidden_builtin_name",
+        "spec/SPEC_0041_CRATE_OWNERSHIP_CATALOG.md",
+    ),
+];
 
-#[derive(Default)]
-struct SyntaxIdentifiers {
-    counts: BTreeMap<String, usize>,
-}
+/// Workspace directories whose sources can reference a public item.
+///
+/// `spec/` and `docs/` are absent on purpose: a mnemonic in a specification
+/// table or a name in a guide is prose about the code, not a caller of it.
+const USAGE_CORPUS_ROOTS: &[&str] = &["crates", "packages", "infra", "examples"];
 
-impl<'ast> Visit<'ast> for SyntaxIdentifiers {
-    fn visit_ident(&mut self, ident: &'ast syn::Ident) {
-        *self.counts.entry(ident.to_string()).or_default() += 1;
-        visit::visit_ident(self, ident);
-    }
-
-    fn visit_macro(&mut self, item: &'ast syn::Macro) {
-        visit::visit_path(self, &item.path);
-        self.visit_token_stream(item.tokens.clone());
-    }
-}
-
-impl SyntaxIdentifiers {
-    fn visit_token_stream(&mut self, tokens: proc_macro2::TokenStream) {
-        for token in tokens {
-            match token {
-                proc_macro2::TokenTree::Group(group) => self.visit_token_stream(group.stream()),
-                proc_macro2::TokenTree::Ident(ident) => {
-                    *self.counts.entry(ident.to_string()).or_default() += 1;
-                }
-                proc_macro2::TokenTree::Punct(_) | proc_macro2::TokenTree::Literal(_) => {}
-            }
-        }
-    }
-}
-
-impl PublicDeclarations {
-    fn record(&mut self, visibility: &syn::Visibility, ident: &syn::Ident) {
-        if matches!(visibility, syn::Visibility::Public(_)) {
-            self.declarations
-                .insert((self.current_path.clone(), ident.to_string()));
-        }
-    }
-}
-
-impl<'ast> Visit<'ast> for PublicDeclarations {
-    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
-        self.record(&item.vis, &item.sig.ident);
-        visit::visit_item_fn(self, item);
-    }
-
-    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
-        self.record(&item.vis, &item.ident);
-        visit::visit_item_struct(self, item);
-    }
-
-    fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
-        self.record(&item.vis, &item.ident);
-        visit::visit_item_enum(self, item);
-    }
-
-    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
-        self.record(&item.vis, &item.ident);
-        visit::visit_item_const(self, item);
-    }
-
-    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
-        self.record(&item.vis, &item.ident);
-        visit::visit_item_static(self, item);
-    }
-
-    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
-        self.record(&item.vis, &item.ident);
-        visit::visit_item_trait(self, item);
-    }
-
-    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
-        self.record(&item.vis, &item.ident);
-        visit::visit_item_type(self, item);
-    }
-
-    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
-        self.record(&item.vis, &item.sig.ident);
-        visit::visit_impl_item_fn(self, item);
-    }
-}
+/// Non-Rust source extensions that can hold a real call site (binding
+/// consumers, build tooling, examples).
+const NON_RUST_CALLER_EXTENSIONS: &[&str] = &["mjs", "js", "py", "ts"];
 
 fn is_generated(path: &Path) -> bool {
     path.components()
         .any(|component| component.as_os_str() == "generated")
 }
 
+/// This gate's own sources, whose mention of a name is a record about the item
+/// rather than a use of it.
 fn is_audit_source(path: &Path) -> bool {
     path.ends_with("crates/rumoca/tests/architecture_hardening_test/public_api_surface.rs")
+        || path.ends_with(
+            "crates/rumoca/tests/architecture_hardening_test/public_api_surface/engine.rs",
+        )
 }
 
 fn collect_audited_text_files(dir: &Path, files: &mut Vec<PathBuf>) {
@@ -216,84 +218,67 @@ fn collect_audited_text_files(dir: &Path, files: &mut Vec<PathBuf>) {
             continue;
         }
         let extension = path.extension().and_then(|extension| extension.to_str());
-        if matches!(extension, Some("rs" | "md" | "mjs" | "js" | "py" | "ts")) {
+        if extension.is_some_and(|extension| {
+            extension == "rs" || NON_RUST_CALLER_EXTENSIONS.contains(&extension)
+        }) {
             files.push(path);
         }
     }
 }
 
-fn count_identifiers(source: &str, counts: &mut BTreeMap<String, usize>) {
-    for identifier in source.split(|ch: char| !(ch.is_alphanumeric() || ch == '_')) {
-        if identifier.is_empty() {
-            continue;
-        }
-        *counts.entry(identifier.to_string()).or_default() += 1;
-    }
-}
-
-fn declaration_only_public_surfaces(root: &Path) -> BTreeSet<(PathBuf, String)> {
-    let mut crate_rust_files = Vec::new();
-    collect_rs_files(&root.join("crates"), &mut crate_rust_files);
-    crate_rust_files.retain(|path| !is_generated(path));
-    crate_rust_files.sort();
-
-    let mut declarations = PublicDeclarations::default();
-    for path in &crate_rust_files {
-        let source = fs::read_to_string(path).expect("read Rust source for public API inventory");
-        let file = syn::parse_file(&source).unwrap_or_else(|error| {
-            panic!("parse {} for public API inventory: {error}", path.display())
-        });
-        declarations.current_path = path.clone();
-        declarations.visit_file(&file);
-    }
-
+fn workspace_corpus(root: &Path) -> Corpus {
     let mut audited_files = Vec::new();
-    for relative in [
-        "crates",
-        "packages",
-        "infra",
-        "examples",
-        "spec",
-        "docs/dev-guide/src",
-        "docs/user-guide/src",
-    ] {
-        let path = root.join(relative);
-        collect_audited_text_files(&path, &mut audited_files);
+    for relative in USAGE_CORPUS_ROOTS {
+        collect_audited_text_files(&root.join(relative), &mut audited_files);
     }
     audited_files.sort();
     audited_files.dedup();
+    audited_files.retain(|path| !is_generated(path));
 
-    let mut identifier_counts = BTreeMap::new();
+    let mut corpus = Corpus::default();
     for path in audited_files {
-        let source = fs::read_to_string(&path).expect("read source for public API usage inventory");
+        let source = fs::read_to_string(&path).expect("read source for the API audit");
         if path.extension().is_some_and(|extension| extension == "rs") {
-            let file = syn::parse_file(&source).unwrap_or_else(|error| {
-                panic!("parse {} for API usage inventory: {error}", path.display())
-            });
-            let mut identifiers = SyntaxIdentifiers::default();
-            identifiers.visit_file(&file);
-            for (name, count) in identifiers.counts {
-                *identifier_counts.entry(name).or_default() += count;
-            }
+            corpus.add_rust_source(crate_name(&path).as_deref(), &path, &source);
         } else {
-            count_identifiers(&source, &mut identifier_counts);
+            corpus.add_text_source(&source);
         }
     }
+    corpus
+}
 
-    declarations
-        .declarations
-        .into_iter()
-        .filter(|(_, name)| identifier_counts.get(name).copied() == Some(1))
-        .collect()
+fn has_documented_contract(root: &Path, path: &Path, name: &str) -> bool {
+    DOCUMENTED_CONTRACT_SURFACES
+        .iter()
+        .any(|(owner_path, owner_name, _)| *owner_name == name && root.join(owner_path) == path)
+}
+
+#[test]
+fn documented_contract_surfaces_are_named_by_the_document_that_owns_them() {
+    let root = workspace_root();
+    let unnamed: Vec<String> = DOCUMENTED_CONTRACT_SURFACES
+        .iter()
+        .filter(|(_, name, owner)| {
+            let text = fs::read_to_string(root.join(owner))
+                .unwrap_or_else(|error| panic!("read {owner}: {error}"));
+            !text.contains(name)
+        })
+        .map(|(path, name, owner)| format!("{path}: {name} (claims {owner})"))
+        .collect();
+    assert!(
+        unnamed.is_empty(),
+        "a public surface is only exempt while the document still names it as owned: {unnamed:#?}"
+    );
 }
 
 #[test]
 fn new_declaration_only_public_surfaces_require_explicit_disposition() {
     let root = workspace_root();
-    let candidates = declaration_only_public_surfaces(&root);
+    let mut candidates = workspace_corpus(&root).unreferenced_public_declarations();
+    candidates.retain(|(path, name)| !has_documented_contract(&root, path, name));
     assert!(
         candidates.is_empty(),
-        "public declarations with no syntactic workspace use or external contract must be narrowed to pub(crate); dead_code = deny will then prove whether to delete them:\n  {}",
+        "public declarations no workspace reference resolves to must be narrowed to pub(crate); dead_code = deny will then prove whether to delete them:\n  {}",
         candidates
             .iter()
             .map(|(path, name)| format!(
@@ -306,26 +291,6 @@ fn new_declaration_only_public_surfaces_require_explicit_disposition() {
 }
 
 #[test]
-fn public_surface_inventory_ignores_source_comments_and_sees_facade_reexports() {
-    let file = syn::parse_file(
-        r#"
-        /// dead_leaf is deliberately mentioned in its own documentation.
-        pub fn dead_leaf() {}
-        mod implementation { pub struct Exported; }
-        pub use implementation::Exported;
-        pub const USED_IN_MACRO: &str = "value";
-        fn consume() { print!("{}", USED_IN_MACRO); }
-        "#,
-    )
-    .expect("parse public surface inventory control");
-    let mut identifiers = SyntaxIdentifiers::default();
-    identifiers.visit_file(&file);
-    assert_eq!(identifiers.counts.get("dead_leaf"), Some(&1));
-    assert_eq!(identifiers.counts.get("Exported"), Some(&2));
-    assert_eq!(identifiers.counts.get("USED_IN_MACRO"), Some(&2));
-}
-
-#[test]
 fn removed_declaration_only_public_items_do_not_return() {
     let root = workspace_root();
     let mut files = Vec::new();
@@ -333,29 +298,35 @@ fn removed_declaration_only_public_items_do_not_return() {
     files.retain(|path| !is_generated(path));
     files.sort();
 
-    let mut inventory = PublicDeclarations::default();
+    let mut corpus = Corpus::default();
     for path in files {
         let source = fs::read_to_string(&path).expect("read Rust source for public API audit");
-        let file = syn::parse_file(&source).unwrap_or_else(|error| {
-            panic!("parse {} for public API audit: {error}", path.display())
-        });
-        inventory.current_path = path;
-        inventory.visit_file(&file);
+        corpus.add_rust_source(crate_name(&path).as_deref(), &path, &source);
     }
 
+    let inventory: BTreeSet<(PathBuf, String)> = corpus
+        .declarations
+        .iter()
+        .map(|declaration| (declaration.path.clone(), declaration.name.clone()))
+        .collect();
     let restored = REMOVED_DECLARATION_ONLY_SURFACES
         .iter()
-        .filter(|(path, name)| {
-            inventory
-                .declarations
-                .contains(&(root.join(path), (*name).to_owned()))
-        })
+        .filter(|(path, name)| inventory.contains(&(root.join(path), (*name).to_owned())))
         .map(|(path, name)| format!("{path}: {name}"))
         .collect::<Vec<_>>();
     assert!(
         restored.is_empty(),
         "audited declaration-only public surfaces were restored:\n{}",
         restored.join("\n")
+    );
+}
+
+#[test]
+fn prose_directories_stay_out_of_the_usage_corpus() {
+    assert!(
+        !USAGE_CORPUS_ROOTS.contains(&"spec") && !USAGE_CORPUS_ROOTS.contains(&"docs"),
+        "a name in a specification table or a guide is prose about the code, not a caller of \
+it, and a text caller is credited to every declaration of the name: {USAGE_CORPUS_ROOTS:?}"
     );
 }
 

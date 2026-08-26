@@ -146,12 +146,6 @@ impl PreparedSimulation {
     pub fn check_initialization(&self) -> Result<(), SimError> {
         check_prepared_component(self)
     }
-
-    pub fn set_parameter_value(&mut self, _name: &str, _value: f64) -> Result<(), SimError> {
-        Err(SimError::SolverError(
-            "parameter overrides are not yet supported after Solve IR lowering".to_string(),
-        ))
-    }
 }
 
 pub fn build_simulation(

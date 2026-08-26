@@ -159,13 +159,6 @@ impl DifferentiableModel {
         &self.params
     }
 
-    /// Set one model parameter by exact lowered name.
-    pub fn set_parameter_value(&mut self, name: &str, value: f64) -> Result<(), OptError> {
-        let parameter = self.parameter_by_name(name)?;
-        self.params[parameter.slot] = value;
-        Ok(())
-    }
-
     /// Current value of one model parameter by exact lowered name.
     pub fn parameter_value(&self, name: &str) -> Result<f64, OptError> {
         let parameter = self.parameter_by_name(name)?;

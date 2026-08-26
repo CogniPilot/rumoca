@@ -129,16 +129,6 @@ impl SimExecutionPolicy {
         }
     }
 
-    /// Parse the external CLI/scenario spelling, or `None` when unknown.
-    #[must_use]
-    pub fn from_external_name(name: &str) -> Option<Self> {
-        match name.trim().to_ascii_lowercase().as_str() {
-            "auto" => Some(Self::Auto),
-            "interpreter" => Some(Self::Interpreter),
-            _ => None,
-        }
-    }
-
     /// True when compiled native execution may be used.
     #[must_use]
     pub const fn allows_native(self) -> bool {

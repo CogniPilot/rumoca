@@ -67,13 +67,6 @@ impl SimulationSession {
         }
     }
 
-    pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimulationDiagnosticError> {
-        for (name, value) in inputs {
-            self.set_input(name, *value)?;
-        }
-        Ok(())
-    }
-
     pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
             #[cfg(feature = "solver-diffsol")]

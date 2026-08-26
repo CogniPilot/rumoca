@@ -1482,27 +1482,6 @@ pub struct SolveVariableMeta {
     pub description: Option<String>,
 }
 
-impl SolveVariableMeta {
-    pub fn empty_with_span(source_span: Span) -> Self {
-        Self {
-            name: String::new(),
-            source_span,
-            role: String::new(),
-            is_state: bool::default(),
-            value_type: None,
-            variability: None,
-            time_domain: None,
-            unit: None,
-            start: None,
-            min: None,
-            max: None,
-            nominal: None,
-            fixed: None,
-            description: None,
-        }
-    }
-}
-
 /// Solver-facing Solve IR package.
 ///
 /// This is pure data. DAE inspection, scalarization, start evaluation, and

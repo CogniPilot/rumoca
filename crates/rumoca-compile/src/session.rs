@@ -1822,18 +1822,6 @@ pub enum PhaseResult {
     },
 }
 
-impl PhaseResult {
-    /// Returns true if this is a successful compilation.
-    pub fn is_success(&self) -> bool {
-        matches!(self, Self::Success(_))
-    }
-
-    /// Returns true if this model needs inner declarations.
-    pub fn needs_inner(&self) -> bool {
-        matches!(self, Self::NeedsInner { .. })
-    }
-}
-
 /// Summary statistics for bulk compilation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CompilationSummary {

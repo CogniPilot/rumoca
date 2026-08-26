@@ -117,19 +117,6 @@ impl TypeCheckError {
         }
     }
 
-    /// Create a TypeMismatch error.
-    pub fn type_mismatch(
-        expected: impl Into<String>,
-        found: impl Into<String>,
-        span: Span,
-    ) -> Self {
-        Self::TypeMismatch {
-            expected: expected.into(),
-            found: found.into(),
-            span,
-        }
-    }
-
     pub fn missing_source_context(reason: impl Into<String>) -> Self {
         Self::MissingSourceContext {
             reason: reason.into(),
