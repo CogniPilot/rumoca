@@ -292,13 +292,15 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .iter()
             .filter(|(candidate, _)| candidate.dominates(&key))
             .max_by_key(|(candidate, _)| candidate.activation_path.len())
-            .map(|(_, names)| names.clone());
-        let names = if let Some(names) = dominating {
+            .map(|(candidate, names)| (candidate.clone(), names.clone()));
+        let names = if let Some((candidate, names)) = dominating {
             // Taking a result temporary the clock domain materialized at a
-            // scheduled position is a schedule edge: record it so the group
-            // being lowered can declare a read of that node.
-            if self.scheduled_shared_calls.contains(&owner) {
-                self.consumed_scheduled_calls.insert(owner);
+            // scheduled position is a schedule edge: record the node that wrote
+            // THIS entry, so whatever is being lowered can declare a read of
+            // it. A group and a later node both record here, which is what
+            // keeps two nodes ordered when one takes the other's temporary.
+            if let Some(node) = self.scheduled_shared_calls.get(&candidate) {
+                self.consumed_scheduled_calls.insert(*node);
             }
             names
         } else {

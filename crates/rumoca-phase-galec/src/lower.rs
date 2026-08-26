@@ -9,6 +9,8 @@ mod assigned_primitives;
 mod causal_outputs;
 mod clock_schedule;
 mod clocked_assignments;
+mod shared_call_memo;
+use shared_call_memo::{MaterializedFunctionCallKey, SharedMaterializedFunctionCalls};
 mod conditionals;
 mod dependent_folding;
 mod expression_array_update;
@@ -1206,14 +1208,18 @@ struct ExpressionLowerer<'a, 'dae> {
     capture_assertions: bool,
     seen_assertion_calls: HashSet<FunctionAssertionCallKey>,
     pending_prefix_statements: Vec<gast::Spanned<gast::Statement>>,
-    /// Issued call owners this clock domain materializes once at a scheduled
-    /// position of its own instead of at domain entry.
+    /// The schedule node that wrote each shared-call memo entry this clock
+    /// domain materialized at a scheduled position of its own.
     ///
-    /// A group that takes one of those result temporaries has to be scheduled
-    /// after the node that wrote them, so it must declare that edge.
-    scheduled_shared_calls: HashSet<u32>,
-    /// The subset of [`Self::scheduled_shared_calls`] the group currently being
-    /// lowered has actually taken, drained per group into that group's reads.
+    /// Keyed by the memo entry rather than by the call owner: one owner can be
+    /// materialized by two nodes under two different activations, and a group
+    /// that takes one of them must be ordered after THAT node, not after
+    /// whichever node happened to materialize the owner last.
+    scheduled_shared_calls: HashMap<MaterializedFunctionCallKey, u32>,
+    /// The schedule nodes whose result temporaries the group currently being
+    /// lowered has taken, drained per group into that group's reads. A node
+    /// under construction records here too, which is how one node that reuses
+    /// an earlier node's temporary declares the edge that keeps it later.
     consumed_scheduled_calls: HashSet<u32>,
     /// Lazily-built index from a classified block variable's GALEC name to its
     /// declared shape. `by_id` is keyed by variable identity, but a `gast`
@@ -1271,39 +1277,6 @@ struct MaterializedCallKey {
     arguments: Vec<u32>,
     indices: Vec<Option<i64>>,
 }
-
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct MaterializedFunctionCallKey {
-    call_path: Vec<MaterializedCallKey>,
-    activation_path: Vec<ConditionalActivationKey>,
-    owner: u32,
-    function: u32,
-    arguments: Vec<u32>,
-}
-
-impl MaterializedFunctionCallKey {
-    /// Whether this already-emitted call dominates a use in `current`.
-    ///
-    /// The construction-issued owner distinguishes source invocations. Within
-    /// that owner, every guard fact required by the earlier emission must also
-    /// hold at the later use. The projection kind is deliberately absent from
-    /// a guard fact: one checked DAE conditional can reach GALEC through the
-    /// function-correlation and scalar-expression views, but its ordered
-    /// condition identities and selected branch remain the same proof.
-    fn dominates(&self, current: &Self) -> bool {
-        self.owner == current.owner
-            && self.function == current.function
-            && self.arguments == current.arguments
-            && self.call_path == current.call_path
-            && self.activation_path.iter().all(|required| {
-                current.activation_path.iter().any(|active| {
-                    required.operands == active.operands && required.branch == active.branch
-                })
-            })
-    }
-}
-
-type SharedMaterializedFunctionCalls = HashMap<MaterializedFunctionCallKey, Vec<gast::Name>>;
 
 #[derive(Clone)]
 struct ConditionalMaterializationSnapshot {
@@ -1418,7 +1391,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             seen_assertion_calls: HashSet::new(),
             state_shapes_by_name: None,
             pending_prefix_statements: Vec::new(),
-            scheduled_shared_calls: HashSet::new(),
+            scheduled_shared_calls: HashMap::new(),
             consumed_scheduled_calls: HashSet::new(),
         }
     }
@@ -1457,43 +1430,6 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     fn take_prefix_statements(&mut self) -> Vec<gast::Spanned<gast::Statement>> {
         self.finish_statement_group();
         self.drain_prefix_statements()
-    }
-
-    /// Open one schedulable state-assignment group, naming the shared-call
-    /// temporaries it may restore.
-    ///
-    /// A group's guard lowers before its first statement boundary, so the memo
-    /// has to be installed here rather than only at that boundary: otherwise a
-    /// guard reads whatever the previous group left behind, which for an
-    /// activation-keyed memo is temporaries written under a different guard.
-    fn begin_shared_call_group(&mut self, shared: &SharedMaterializedFunctionCalls) {
-        self.finish_statement_group();
-        self.materialized_function_calls.clone_from(shared);
-    }
-
-    /// Finish one schedulable state-assignment group while retaining only
-    /// call temporaries initialized by a dominating shared-call node.
-    fn take_prefix_statements_with_shared_calls(
-        &mut self,
-        shared: &SharedMaterializedFunctionCalls,
-    ) -> Vec<gast::Spanned<gast::Statement>> {
-        self.finish_statement_group();
-        self.materialized_function_calls.clone_from(shared);
-        self.drain_prefix_statements()
-    }
-
-    fn shared_materialized_function_calls(&self) -> SharedMaterializedFunctionCalls {
-        self.materialized_function_calls.clone()
-    }
-
-    /// Name the calls this domain materializes at a scheduled position.
-    fn expect_scheduled_shared_calls(&mut self, owners: HashSet<u32>) {
-        self.scheduled_shared_calls = owners;
-    }
-
-    /// Take the scheduled shared calls the group just lowered has consumed.
-    fn take_consumed_scheduled_calls(&mut self) -> HashSet<u32> {
-        std::mem::take(&mut self.consumed_scheduled_calls)
     }
 
     fn conditional_materialization_snapshot(&self) -> ConditionalMaterializationSnapshot {

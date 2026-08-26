@@ -3824,3 +3824,224 @@ fn embedded_c_shares_a_conditional_branch_call_only_where_that_branch_is_selecte
         );
     }
 }
+
+// ===========================================================================
+// Fixture 17: one shared-call node never reads another shared-call node's
+// result temporary before that node has written it.
+//
+// A node is built from the memo the earlier nodes left, so a nested call in a
+// later node's own argument tree can take an earlier node's temporary. That is
+// a schedule edge, and if it is not declared the greedy worklist is free to
+// emit the later node first. This model makes exactly that order tempting:
+// `outr(ia)` sits inside the `if`, `ia` comes from `innr(n)` which is shared at
+// domain entry, and `alt(v)` reads a `v` the `if` writes, so the entry node
+// cannot be emitted first unless the guarded node already ran.
+//
+// The failure mode is silent, which is why this is pinned by value. Reading the
+// stale slot leaves the previous tick's number in it, so `g1` reads 40 instead
+// of 60 on the tick the branch first fires: a plausible one-tick lag, not
+// obvious garbage.
+//
+// **Two executing legs, and a closed form that shares nothing with them.** The
+// trap needs a node whose arguments are rewritten later in the same tick, and
+// `simulate_dae` refuses exactly that as a same-tick discrete loop (EL005), the
+// pre-existing limitation the corpus pin already records for
+// `flight/waypoint-mission`. So the reference leg cannot run here and this
+// fixture is gated on the two executing legs, as `LimitSmoke` is. That is not a
+// weaker guard against the defect it exists for: both executing legs read the
+// same slot and would agree with each other, so what catches a stale read is
+// the hand-computed closed form below, which shares no code with either leg,
+// and the strict compile, which reports the read as a definite-assignment
+// defect whatever number the slot happens to hold.
+// ===========================================================================
+
+/// One compared Real channel of fixture 17.
+const fn shared_call_order_field(name: &'static str) -> Field {
+    Field {
+        name,
+        kind: FieldKind::Real,
+    }
+}
+
+const SHARED_CALL_ORDER: &str = r#"
+function innr
+  input Real t;
+  output Real a;
+  output Real b;
+algorithm
+  a := t * 2.0;
+  b := t + 1.0;
+end innr;
+
+function alt
+  input Real t;
+  output Real c;
+  output Real d;
+algorithm
+  c := t * 5.0;
+  d := t - 5.0;
+end alt;
+
+function outr
+  input Real u;
+  output Real p;
+  output Real q;
+algorithm
+  p := u * 10.0;
+  q := u + 50.0;
+end outr;
+
+model SharedCallOrderSmoke
+  constant Real samplePeriod = 0.1;
+  discrete output Real n(start = 0.0, fixed = true);
+  discrete output Real v(start = 0.0, fixed = true);
+  discrete output Real e1(start = 0.0, fixed = true);
+  discrete output Real e2(start = 0.0, fixed = true);
+  discrete output Real f1(start = 0.0, fixed = true);
+  discrete output Real f2(start = 0.0, fixed = true);
+  discrete output Real g1(start = 0.0, fixed = true);
+  discrete output Real g2(start = 0.0, fixed = true);
+  discrete output Real h1(start = 0.0, fixed = true);
+  discrete output Real h2(start = 0.0, fixed = true);
+protected
+  discrete Real q1(start = 0.0, fixed = true);
+  discrete Real q2(start = 0.0, fixed = true);
+  Real ia;
+  Real ib;
+  Real ca;
+  Real cb;
+  Real oa;
+  Real ob;
+equation
+  (ia, ib) = innr(n);
+  (ca, cb) = alt(v);
+  (oa, ob) = outr(ia);
+algorithm
+  when sample(0.0, samplePeriod) then
+    n := pre(n) + 1.0;
+    e1 := ia;
+    e2 := ib;
+    f1 := ca;
+    f2 := cb;
+    if n > 2.5 then
+      q1 := oa;
+      q2 := ob;
+    else
+      q1 := pre(q1);
+      q2 := pre(q2);
+    end if;
+    g1 := q1;
+    g2 := q2;
+    h1 := q1;
+    h2 := q2;
+    v := q1;
+  end when;
+end SharedCallOrderSmoke;
+"#;
+
+const SHARED_CALL_ORDER_DRIVER: &str = r#"#include <stdio.h>
+#include "SharedCallOrderSmoke.h"
+static void row(const char *label, const SharedCallOrderSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%lu\n",
+           label, (double)state->n, (double)state->v,
+           (double)state->e1, (double)state->e2,
+           (double)state->f1, (double)state->f2,
+           (double)state->g1, (double)state->g2,
+           (double)state->h1, (double)state->h2,
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    SharedCallOrderSmokeState state;
+    char label[16];
+    SharedCallOrderSmoke_startup(&state);
+    row("startup", &state);
+    SharedCallOrderSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        SharedCallOrderSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn embedded_c_orders_one_shared_call_node_after_the_node_it_reads() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "SharedCallOrderSmoke";
+    let fields = [
+        shared_call_order_field("n"),
+        shared_call_order_field("v"),
+        shared_call_order_field("e1"),
+        shared_call_order_field("e2"),
+        shared_call_order_field("f1"),
+        shared_call_order_field("f2"),
+        shared_call_order_field("g1"),
+        shared_call_order_field("g2"),
+        shared_call_order_field("h1"),
+        shared_call_order_field("h2"),
+    ];
+
+    let projection = project_embedded_c(dir.path(), model, SHARED_CALL_ORDER);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(&out_dir, model, SHARED_CALL_ORDER_DRIVER, fields.len());
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    assert_executing_legs_agree(&oracle, &c_run, &fields, 0);
+
+    // The closed form. `q1` is `20n` once the branch fires and `v` follows it,
+    // so `f1 = 5v` is the channel a one-tick-stale read moves, and `g1`/`h1`
+    // are the channels a stale result temporary moves.
+    for tick in 0..5 {
+        let count = (tick + 1) as f64;
+        let held = count > 2.5;
+        let q1 = if held { 20.0 * count } else { 0.0 };
+        let q2 = if held { 2.0 * count + 50.0 } else { 0.0 };
+        let expected = [
+            count,
+            q1,
+            2.0 * count,
+            count + 1.0,
+            5.0 * q1,
+            q1 - 5.0,
+            q1,
+            q2,
+            q1,
+            q2,
+        ];
+        for (leg, values) in [
+            ("generated C", &c_run.steps[tick].values),
+            ("galec oracle", &oracle.steps[tick].values),
+        ] {
+            for (field, (got, want)) in fields.iter().zip(values.iter().zip(expected)) {
+                let (atol, rtol) = F32_PROFILE;
+                assert!(
+                    (got - want).abs() <= atol + rtol * want.abs(),
+                    "{leg} tick {} channel `{}`: {got} vs {want}",
+                    tick + 1,
+                    field.name
+                );
+            }
+        }
+    }
+
+    // A result temporary read before it is written is a definite-assignment
+    // defect the strict profile reports, so the same emitted unit is compiled
+    // once under it. This is the cheap half of the guard: it fires even where a
+    // stale slot happens to hold a plausible number.
+    let compile = cc_support::assurance_c99_cc()
+        .arg("-c")
+        .arg(out_dir.join(format!("{model}.c")))
+        .arg("-o")
+        .arg(dir.path().join("order.o"))
+        .output()
+        .expect("run cc");
+    assert!(
+        compile.status.success(),
+        "the emitted unit must satisfy the strict profile.\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+}
