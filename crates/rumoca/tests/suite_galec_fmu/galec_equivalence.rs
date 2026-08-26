@@ -3309,3 +3309,159 @@ fn assert_substituted_scratch_row(leg: &str, got: &[f64], want: &[f64]) {
         );
     }
 }
+
+// ===========================================================================
+// Fixture 14: one tuple call whose arguments are written in the same tick is
+// evaluated once, at the scheduled position that write establishes.
+//
+// `trajectorySample` is named once. Its three results reach three separate
+// clocked definitions through causal algebraic coordinates, so the DoStep
+// lowering substitutes the call into each of them and, before the scheduled
+// shared-call node existed, called it once per consumer. Its argument is
+// `clockTime`, a clocked discrete state this same tick rewrites, which is
+// exactly the shape the domain-entry preamble may not hoist: entry evaluation
+// would read the previous tick's `clockTime`. Sharing it therefore has to
+// happen after that write and before every consumer, which is what the node
+// under test expresses.
+// ===========================================================================
+
+const SHARED_TUPLE_CALL: &str = r#"
+function trajectorySample
+  input Real t;
+  output Real position;
+  output Real velocity;
+  output Real acceleration;
+algorithm
+  position := t * t;
+  velocity := 2.0 * t;
+  acceleration := t + 2.0;
+end trajectorySample;
+
+model SharedTupleCallSmoke
+  constant Real samplePeriod = 0.1;
+  discrete output Real clockTime(start = 0.0, fixed = true);
+  discrete output Real px(start = 0.0, fixed = true);
+  discrete output Real pv(start = 0.0, fixed = true);
+  discrete output Real pa(start = 0.0, fixed = true);
+  Real sampledPosition;
+  Real sampledVelocity;
+  Real sampledAcceleration;
+equation
+  (sampledPosition, sampledVelocity, sampledAcceleration) =
+    trajectorySample(clockTime);
+  when sample(0.0, samplePeriod) then
+    clockTime = pre(clockTime) + samplePeriod;
+    px = sampledPosition;
+    pv = sampledVelocity;
+    pa = sampledAcceleration;
+  end when;
+end SharedTupleCallSmoke;
+"#;
+
+const SHARED_TUPLE_CALL_DRIVER: &str = r#"#include <stdio.h>
+#include "SharedTupleCallSmoke.h"
+static void row(const char *label, const SharedTupleCallSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%lu\n", label,
+           (double)state->clockTime, (double)state->px,
+           (double)state->pv, (double)state->pa,
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    SharedTupleCallSmokeState state;
+    char label[16];
+    SharedTupleCallSmoke_startup(&state);
+    row("startup", &state);
+    SharedTupleCallSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        SharedTupleCallSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn embedded_c_shares_one_tuple_call_whose_arguments_are_written_in_the_same_tick() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "SharedTupleCallSmoke";
+    let fields = [
+        Field {
+            name: "clockTime",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "px",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "pv",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "pa",
+            kind: FieldKind::Real,
+        },
+    ];
+
+    let projection = project_embedded_c(dir.path(), model, SHARED_TUPLE_CALL);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(&out_dir, model, SHARED_TUPLE_CALL_DRIVER, fields.len());
+    let ref_ticks = reference_ticks(model, SHARED_TUPLE_CALL, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    assert_oracle_agrees(&oracle, &c_run, &ref_ticks, &fields, 0);
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+
+    // Anchor the shared results against the closed form, so three legs agreeing
+    // on one wrongly-shared value is still caught.
+    for tick in 0..5 {
+        let time = 0.1 * (tick + 1) as f64;
+        let expected = [time, time * time, 2.0 * time, time + 2.0];
+        for (leg, values) in [
+            ("generated C", &c_run.steps[tick].values),
+            ("galec oracle", &oracle.steps[tick].values),
+        ] {
+            for (field, (got, want)) in fields.iter().zip(values.iter().zip(expected)) {
+                let (atol, rtol) = F32_PROFILE;
+                let bound = atol + rtol * want.abs();
+                assert!(
+                    (got - want).abs() <= bound,
+                    "{leg} tick {tick} channel `{}`: {got} vs {want}",
+                    field.name
+                );
+            }
+        }
+    }
+
+    // The sharing itself. The three clocked stores read three results of one
+    // invocation, so no call may stand between the first and the last of them:
+    // per-consumer evaluation puts one there. The evaluation itself has to sit
+    // after the `clockTime` store it reads, which is the placement only a
+    // scheduled node can express.
+    let emitted = fs::read_to_string(out_dir.join(format!("{model}.c"))).expect("read emitted C");
+    let do_step = emitted
+        .split_once("void SharedTupleCallSmoke_dostep(")
+        .expect("emitted C declares DoStep")
+        .1;
+    let first = do_step.find("self->px =").expect("DoStep stores px");
+    let last = do_step.find("self->pa =").expect("DoStep stores pa");
+    let store = do_step
+        .find("self->clockTime =")
+        .expect("DoStep stores time");
+    let shared = do_step[..first]
+        .rfind("    trajectorySample(")
+        .expect("DoStep calls the shared function before its first consumer");
+    assert!(
+        !do_step[first..last].contains("    trajectorySample("),
+        "the three clocked stores must read one invocation, but DoStep re-calls between them:\n{}",
+        &do_step[first..last]
+    );
+    assert!(
+        store < shared,
+        "the shared invocation must follow the `clockTime` store whose value it reads"
+    );
+}

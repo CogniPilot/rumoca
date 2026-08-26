@@ -1206,6 +1206,15 @@ struct ExpressionLowerer<'a, 'dae> {
     capture_assertions: bool,
     seen_assertion_calls: HashSet<FunctionAssertionCallKey>,
     pending_prefix_statements: Vec<gast::Spanned<gast::Statement>>,
+    /// Issued call owners this clock domain materializes once at a scheduled
+    /// position of its own instead of at domain entry.
+    ///
+    /// A group that takes one of those result temporaries has to be scheduled
+    /// after the node that wrote them, so it must declare that edge.
+    scheduled_shared_calls: HashSet<u32>,
+    /// The subset of [`Self::scheduled_shared_calls`] the group currently being
+    /// lowered has actually taken, drained per group into that group's reads.
+    consumed_scheduled_calls: HashSet<u32>,
     /// Lazily-built index from a classified block variable's GALEC name to its
     /// declared shape. `by_id` is keyed by variable identity, but a `gast`
     /// state reference carries only the name — this index is built once, on
@@ -1409,6 +1418,8 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             seen_assertion_calls: HashSet::new(),
             state_shapes_by_name: None,
             pending_prefix_statements: Vec::new(),
+            scheduled_shared_calls: HashSet::new(),
+            consumed_scheduled_calls: HashSet::new(),
         }
     }
 
@@ -1461,6 +1472,16 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     fn shared_materialized_function_calls(&self) -> SharedMaterializedFunctionCalls {
         self.materialized_function_calls.clone()
+    }
+
+    /// Name the calls this domain materializes at a scheduled position.
+    fn expect_scheduled_shared_calls(&mut self, owners: HashSet<u32>) {
+        self.scheduled_shared_calls = owners;
+    }
+
+    /// Take the scheduled shared calls the group just lowered has consumed.
+    fn take_consumed_scheduled_calls(&mut self) -> HashSet<u32> {
+        std::mem::take(&mut self.consumed_scheduled_calls)
     }
 
     fn conditional_materialization_snapshot(&self) -> ConditionalMaterializationSnapshot {

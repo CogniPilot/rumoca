@@ -1457,6 +1457,7 @@ pub(super) fn materialize_eager_aggregate_calls<'a, 'dae>(
         lowerer.view,
         expression,
         &mut seen_expressions,
+        &|_| None,
         &mut |call, owner| {
             let node = lowerer
                 .view

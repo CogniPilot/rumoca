@@ -29,10 +29,19 @@ fn selection_indices(indices: &[gast::Expression]) -> Vec<Option<i64>> {
 /// All other operands are part of the same eager evaluation. Call identity is
 /// reported by its construction-issued owner rather than by a scalar result
 /// projection.
+///
+/// `inlined` names the expression a coordinate is lowered as when the caller's
+/// lowering substitutes it rather than reading its storage. A caller that
+/// inlines causal algebraic definitions
+/// ([`ExpressionLowerer::inline_algebraic_coordinate`]) must answer here, or
+/// the traversal stops at the coordinate and misses calls the emitted code
+/// really does evaluate eagerly at this point. A caller that reads storage
+/// answers `None` and keeps the traversal as it was.
 pub(super) fn for_each_eager_call<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
     seen: &mut HashSet<u32>,
+    inlined: &impl Fn(dae::CoordinateView<'dae>) -> Option<dae::ExprId<'dae>>,
     visit: &mut impl FnMut(dae::ExprId<'dae>, u32),
 ) {
     if !seen.insert(expression.index()) {
@@ -44,8 +53,8 @@ pub(super) fn for_each_eager_call<'dae>(
         .operation();
     let mut children = Vec::new();
     match operation {
+        dae::ExpressionOperation::Coordinate(coordinate) => children.extend(inlined(coordinate)),
         dae::ExpressionOperation::Literal(_)
-        | dae::ExpressionOperation::Coordinate(_)
         | dae::ExpressionOperation::Conditional(_)
         | dae::ExpressionOperation::Comprehension { .. }
         | dae::ExpressionOperation::FunctionValue { .. }
@@ -105,7 +114,7 @@ pub(super) fn for_each_eager_call<'dae>(
         dae::ExpressionOperation::ClockTransfer { source, .. } => children.push(source),
     }
     for child in children {
-        for_each_eager_call(view, child, seen, visit);
+        for_each_eager_call(view, child, seen, inlined, visit);
     }
 }
 
@@ -261,6 +270,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .max_by_key(|(candidate, _)| candidate.activation_path.len())
             .map(|(_, names)| names.clone());
         let names = if let Some(names) = dominating {
+            // Taking a result temporary the clock domain materialized at a
+            // scheduled position is a schedule edge: record it so the group
+            // being lowered can declare a read of that node.
+            if self.scheduled_shared_calls.contains(&owner) {
+                self.consumed_scheduled_calls.insert(owner);
+            }
             names
         } else {
             let names = self.materialized_result_names(call, function_view, span)?;
