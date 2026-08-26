@@ -10,10 +10,9 @@ use serde::Serialize;
 use super::{algorithm_code_symbols, algorithm_code_typed};
 
 #[derive(Debug, Clone, Serialize)]
-pub struct AlgorithmCodeView<'a> {
+pub(crate) struct AlgorithmCodeView<'a> {
     package: PackageRoot<'a>,
     block_name: &'a str,
-    block_name_quoted: bool,
     symbol_names: Vec<&'a str>,
     variable_names: Vec<&'a str>,
     variables: Vec<VariableView<'a>>,
@@ -40,12 +39,12 @@ impl<'a> AlgorithmCodeView<'a> {
     /// against. It is what turns a statement span into the `path:line:column`
     /// anchor a certification reviewer can act on; passing an empty map is
     /// legal and degrades every trace to its hash-and-byte-range form.
-    pub fn new(
+    pub(crate) fn new(
         package: &'a AlgorithmCodePackage,
         sources: &'a rumoca_core::SourceMap,
     ) -> Result<Self, String> {
         let block = package.block();
-        let (block_name, block_name_quoted) = name_parts(&block.name);
+        let block_name = name_of(&block.name);
         let declarations = block
             .interface
             .iter()
@@ -86,7 +85,6 @@ impl<'a> AlgorithmCodeView<'a> {
                 clock_variable_ordinal: package.clock_variable_ordinal(),
             },
             block_name,
-            block_name_quoted,
             symbol_names: algorithm_code_symbols::collect(block),
             variable_names,
             variables,
@@ -209,10 +207,9 @@ fn signal_names(signals: &[ast::PredefinedSignal]) -> Vec<&'static str> {
 
 /// Target-neutral view for a validated standalone `.alg` block.
 #[derive(Debug, Clone, Serialize)]
-pub struct CheckedAlgorithmBlockView<'a> {
+pub(crate) struct CheckedAlgorithmBlockView<'a> {
     package: CheckedBlockRoot<'a>,
     block_name: &'a str,
-    block_name_quoted: bool,
     symbol_names: Vec<&'a str>,
     variable_names: Vec<&'a str>,
     variables: Vec<CheckedBlockVariable<'a>>,
@@ -252,12 +249,12 @@ struct CheckedBlockVariable<'a> {
 impl<'a> CheckedAlgorithmBlockView<'a> {
     /// Project a standalone checked block; `sources` carries the same meaning
     /// as in [`AlgorithmCodeView::new`].
-    pub fn new(
+    pub(crate) fn new(
         checked: &'a CheckedAlgorithmBlock,
         sources: &'a rumoca_core::SourceMap,
     ) -> Result<Self, String> {
         let block = checked.block();
-        let (block_name, block_name_quoted) = name_parts(&block.name);
+        let block_name = name_of(&block.name);
         let variables = block
             .interface
             .iter()
@@ -309,7 +306,6 @@ impl<'a> CheckedAlgorithmBlockView<'a> {
         Ok(Self {
             package: CheckedBlockRoot { block: typed_block },
             block_name,
-            block_name_quoted,
             symbol_names: algorithm_code_symbols::collect(block),
             variable_names,
             variables,
@@ -319,10 +315,14 @@ impl<'a> CheckedAlgorithmBlockView<'a> {
     }
 }
 
-fn name_parts(name: &ast::Name) -> (&str, bool) {
+/// The block's name as a target renders it. A quoted GALEC name renders as the
+/// text between the quotes, exactly as an identifier one does: no target has
+/// ever needed to tell the two spellings apart, because every target that
+/// prints the name into an artifact re-escapes it for its own language.
+fn name_of(name: &ast::Name) -> &str {
     match name {
-        ast::Name::Ident(identifier, _) => (identifier.as_str(), false),
-        ast::Name::Quoted(value, _) => (value.as_str(), true),
+        ast::Name::Ident(identifier, _) => identifier.as_str(),
+        ast::Name::Quoted(value, _) => value.as_str(),
     }
 }
 
