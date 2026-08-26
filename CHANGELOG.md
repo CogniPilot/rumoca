@@ -2,6 +2,11 @@
 
 High-level release summary by `0.x` line. Patch releases are rolled up into their parent series.
 
+## 0.10.x
+
+- **Changed `--emit solve-json`**: the solver-IR dump no longer carries `rounding`. Every `"rounding": "nearest_ties_to_even"` entry is gone, from both `SolveScalarType::Real` and the arithmetic profile, and nothing else about the dump changed: deleting exactly those entries from a 0.9.x dump reproduces the new one byte for byte. The field named the only mode every backend has ever used, so it discriminated nothing; rounding returns as the SPEC_0047 §4.3 contract, together with the operations that can differ under it. Generated code is unaffected: `--target` output is byte-identical.
+- The `galec` and `galec-production` targets now share one copy of the vendored eFMI schema tree instead of carrying a byte-identical copy each, so `galec-production/` holds no `schemas/` directory of its own. Emitted eFMU containers are unchanged, including all 46 schema files, whether the target is named as a built-in or copied out and passed to `--target <dir>`.
+
 ## 0.9.x
 
 - Added a new SymForce codegen backend with native automatic-differentiation support.
