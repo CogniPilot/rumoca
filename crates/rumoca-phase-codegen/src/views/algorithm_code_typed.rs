@@ -2984,6 +2984,17 @@ impl<'a> BlockShapes<'a> {
                 let destination = self
                     .destinations
                     .destination_of(function.name.lexeme(), name)?;
+                // A middle link of a chain names its output nowhere: the write
+                // it owned was a read-back the placement dropped, and every
+                // read is the caller's. Its pointer would be a declaration no
+                // path reaches, which the assurance profile reports as an
+                // unused variable and a reviewer has to account for either way.
+                if !self
+                    .destinations
+                    .body_names_output(function, name, &self.functions)
+                {
+                    return None;
+                }
                 let (scalar, extents) = slot_shape(&parameter.decl)?;
                 Some(DestinationSlotView {
                     name: &parameter.decl.name,

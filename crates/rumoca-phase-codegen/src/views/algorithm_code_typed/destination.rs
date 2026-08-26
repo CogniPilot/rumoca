@@ -151,6 +151,135 @@ impl<'a> Plan<'a> {
     pub(super) fn is_empty(&self) -> bool {
         self.placed.is_empty()
     }
+
+    /// Whether the emitted body of `function` still spells `output` anywhere.
+    ///
+    /// A placed output is written by exactly one statement (the total-write
+    /// witness) and read by nothing but its caller. When that one statement is
+    /// itself a call whose result this plan placed at `output`, the read-back
+    /// that named `output` is dropped and the emitted body mentions it nowhere
+    /// at all: the middle link of a chain passes the value through and adds no
+    /// text of its own. Its pointer would then be a declaration no path
+    /// reaches, which the assurance profile reports as an unused variable, so
+    /// this is what the emission asks before declaring one.
+    pub(super) fn body_names_output(
+        &self,
+        function: &ast::UserFunction,
+        output: &'a str,
+        functions: &HashMap<&'a str, &'a ast::UserFunction>,
+    ) -> bool {
+        self.names(&function.statements, output, functions)
+    }
+
+    fn names(
+        &self,
+        statements: &[ast::Spanned<ast::Statement>],
+        output: &str,
+        functions: &HashMap<&'a str, &'a ast::UserFunction>,
+    ) -> bool {
+        statements.iter().any(|statement| match &statement.node {
+            // The one shape whose target the emission drops. Every other
+            // mention, including a subscripted target and any read, is printed.
+            ast::Statement::Assignment {
+                target,
+                value: ast::Expression::Call(call),
+            } => {
+                let dropped = whole_named(target, output) && self.delivers(call, 0, functions);
+                (!dropped && mentions_reference(target, output)) || mentioned_in_call(call, output)
+            }
+            ast::Statement::MultiAssignment { targets, call } => {
+                targets.iter().enumerate().any(|(index, target)| {
+                    let dropped =
+                        whole_named(target, output) && self.delivers(call, index, functions);
+                    !dropped && mentions_reference(target, output)
+                }) || mentioned_in_call(call, output)
+            }
+            ast::Statement::Assignment { target, value } => {
+                mentions_reference(target, output) || mentions_expression(value, output)
+            }
+            ast::Statement::Call(call) => mentioned_in_call(call, output),
+            ast::Statement::If(conditional) => {
+                conditional.branches.iter().any(|branch| {
+                    mentions_condition(&branch.condition, output)
+                        || self.names(&branch.body, output, functions)
+                }) || conditional
+                    .else_body
+                    .as_ref()
+                    .is_some_and(|body| self.names(body, output, functions))
+            }
+            ast::Statement::For(loop_statement) => {
+                mentions_expression(&loop_statement.start, output)
+                    || loop_statement
+                        .step
+                        .as_ref()
+                        .is_some_and(|step| mentions_expression(step, output))
+                    || mentions_expression(&loop_statement.stop, output)
+                    || self.names(&loop_statement.body, output, functions)
+            }
+            ast::Statement::Limit(targets) => targets.iter().any(|target| match target {
+                ast::LimitTarget::SelfState => false,
+                ast::LimitTarget::Reference(reference) => mentions_reference(reference, output),
+            }),
+            ast::Statement::Signal(_) => false,
+        })
+    }
+
+    /// Whether result `index` of `call` is placed, which is exactly when the
+    /// emission drops that result's read-back.
+    ///
+    /// Asked by signature position, exactly as the template asks it: a target's
+    /// place in the statement is the callee's output parameter at the same
+    /// place, and a placement is keyed by the callee's own name for it.
+    fn delivers(
+        &self,
+        call: &ast::FunctionCall,
+        index: usize,
+        functions: &HashMap<&'a str, &'a ast::UserFunction>,
+    ) -> bool {
+        let callee = call.function.lexeme();
+        let Some(declared) = functions.get(callee) else {
+            return false;
+        };
+        output_parameters(declared)
+            .nth(index)
+            .is_some_and(|parameter| {
+                self.placed
+                    .contains_key(&(callee, parameter.decl.name.lexeme()))
+            })
+    }
+}
+
+fn whole_named(reference: &ast::Reference, output: &str) -> bool {
+    matches!(reference, ast::Reference::Local(part)
+        if part.name.lexeme() == output && part.subscripts.is_empty())
+}
+
+fn mentions_reference(reference: &ast::Reference, output: &str) -> bool {
+    let mut found = HashSet::new();
+    mentions_in_reference(reference, &mut found);
+    found.contains(output)
+}
+
+fn mentions_expression(expression: &ast::Expression, output: &str) -> bool {
+    let mut found = HashSet::new();
+    mentions(expression, &mut found);
+    found.contains(output)
+}
+
+fn mentioned_in_call(call: &ast::FunctionCall, output: &str) -> bool {
+    call.arguments
+        .iter()
+        .any(|argument| mentions_expression(argument, output))
+}
+
+fn mentions_condition(condition: &ast::Condition, output: &str) -> bool {
+    match condition {
+        ast::Condition::Expression(expression) => mentions_expression(expression, output),
+        // A signal check's fallback is a checked expression this view never
+        // projected, so a mention inside it is invisible here. Answering
+        // "named" keeps the declaration, which is the safe direction.
+        ast::Condition::SignalCheck(_) => true,
+    }
 }
 
 /// One call statement, as the search over the block sees it.
