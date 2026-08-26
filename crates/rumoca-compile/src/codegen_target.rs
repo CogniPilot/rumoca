@@ -248,7 +248,7 @@ pub struct AssetBundle {
     /// owner under the identical relative paths, so nothing downstream can
     /// tell a borrowed bundle from an owned one. For a built-in target the
     /// codegen build script grafts them in at bundling time and embeds the
-    /// bytes once; for a directory target [`TargetSource::asset_files`] reads
+    /// bytes once; for a directory target [`TargetBundle::asset_files`] reads
     /// them out of the owner's embedded bundle. Both spellings of the same
     /// target therefore emit the same bytes.
     pub shared_from: Option<String>,
