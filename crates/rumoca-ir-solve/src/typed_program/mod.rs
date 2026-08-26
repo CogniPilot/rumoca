@@ -17,6 +17,6 @@ pub use program::{
     TypedProgram, TypedProgramBuilder, promoted_concatenate_dimensions,
 };
 pub use types::{
-    SolveArithmeticProfile, SolveIntegerDomain, SolveRealFormat, SolveRoundingMode,
-    SolveScalarType, SolveTypeConstructionError, SolveValue, SolveValueKind, SolveValueType,
+    SolveArithmeticProfile, SolveIntegerDomain, SolveRealFormat, SolveScalarType,
+    SolveTypeConstructionError, SolveValue, SolveValueKind, SolveValueType,
 };

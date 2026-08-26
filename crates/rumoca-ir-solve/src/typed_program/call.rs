@@ -299,7 +299,6 @@ impl Default for SolvePureCallTable {
         Self {
             arithmetic: SolveArithmeticProfile::construct(
                 super::types::SolveRealFormat::Binary64,
-                super::types::SolveRoundingMode::NearestTiesToEven,
                 super::types::SolveIntegerDomain::FULL,
             ),
             owners: Box::new([]),
@@ -643,7 +642,7 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SolveIntegerDomain, SolveRealFormat, SolveRoundingMode, SolveValue};
+    use crate::{SolveIntegerDomain, SolveRealFormat, SolveValue};
     use rumoca_core::SourceId;
 
     fn span(start: usize) -> Span {
@@ -657,7 +656,6 @@ mod tests {
     fn profile() -> SolveArithmeticProfile {
         SolveArithmeticProfile::construct(
             SolveRealFormat::Binary64,
-            SolveRoundingMode::NearestTiesToEven,
             SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
         )
     }

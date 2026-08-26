@@ -530,7 +530,6 @@ mod tests {
             .expect("full Integer domain");
         let profile = rumoca_ir_solve::SolveArithmeticProfile::construct(
             rumoca_ir_solve::SolveRealFormat::Binary64,
-            rumoca_ir_solve::SolveRoundingMode::NearestTiesToEven,
             integer_domain,
         );
         let real = rumoca_ir_solve::SolveValueType::scalar(rumoca_ir_solve::SolveScalarType::real(
@@ -594,7 +593,6 @@ mod tests {
             .expect("full Integer domain");
         let profile = rumoca_ir_solve::SolveArithmeticProfile::construct(
             rumoca_ir_solve::SolveRealFormat::Binary64,
-            rumoca_ir_solve::SolveRoundingMode::NearestTiesToEven,
             integer_domain,
         );
         let tensor = rumoca_ir_solve::SolveValueType::tensor(
@@ -656,7 +654,6 @@ mod tests {
             .expect("fixture span is source-backed");
         let profile = rumoca_ir_solve::SolveArithmeticProfile::construct(
             rumoca_ir_solve::SolveRealFormat::Binary64,
-            rumoca_ir_solve::SolveRoundingMode::NearestTiesToEven,
             rumoca_ir_solve::SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
         );
         let real = rumoca_ir_solve::SolveValueType::scalar(rumoca_ir_solve::SolveScalarType::real(
@@ -719,7 +716,6 @@ mod tests {
             .unwrap();
         let profile = rumoca_ir_solve::SolveArithmeticProfile::construct(
             rumoca_ir_solve::SolveRealFormat::Binary64,
-            rumoca_ir_solve::SolveRoundingMode::NearestTiesToEven,
             rumoca_ir_solve::SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
         );
         let real = rumoca_ir_solve::SolveValueType::scalar(rumoca_ir_solve::SolveScalarType::real(
@@ -786,14 +782,13 @@ mod tests {
     fn compiled_conditional_projections_share_issued_native_call_storage() {
         use rumoca_ir_solve::{
             SolveArithmeticProfile, SolveBinaryOperator, SolveIntegerDomain, SolvePureCallIdentity,
-            SolvePureCallOutput, SolveRealFormat, SolveRoundingMode, SolveScalarType, SolveValue,
+            SolvePureCallOutput, SolveRealFormat, SolveScalarType, SolveValue,
             SolveValueType,
         };
 
         let span = fixture_span();
         let profile = SolveArithmeticProfile::construct(
             SolveRealFormat::Binary64,
-            SolveRoundingMode::NearestTiesToEven,
             SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
         );
         let boolean = SolveValueType::scalar(SolveScalarType::Boolean);

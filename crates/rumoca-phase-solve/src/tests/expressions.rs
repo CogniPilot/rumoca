@@ -62,7 +62,6 @@ fn pure_call_ad_invokes_one_checked_directional_owner() {
         .expect("fixture span is source-backed");
     let arithmetic = rumoca_ir_solve::SolveArithmeticProfile::construct(
         rumoca_ir_solve::SolveRealFormat::Binary64,
-        rumoca_ir_solve::SolveRoundingMode::NearestTiesToEven,
         rumoca_ir_solve::SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
     );
     let real =

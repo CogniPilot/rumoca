@@ -1,5 +1,5 @@
 use super::*;
-use crate::{SolveRealFormat, SolveRoundingMode, SolveTypeConstructionError, SolveValueKind};
+use crate::{SolveRealFormat, SolveTypeConstructionError, SolveValueKind};
 use rumoca_core::{SourceId, StructuredIndexBinder, StructuredIndexDomain};
 
 fn span(start: usize) -> Span {
@@ -13,7 +13,6 @@ fn span(start: usize) -> Span {
 fn profile() -> SolveArithmeticProfile {
     SolveArithmeticProfile::construct(
         SolveRealFormat::Binary32,
-        SolveRoundingMode::NearestTiesToEven,
         crate::SolveIntegerDomain::construct(i32::MIN.into(), i32::MAX.into()).unwrap(),
     )
 }

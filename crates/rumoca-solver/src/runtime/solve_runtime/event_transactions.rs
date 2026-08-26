@@ -444,7 +444,6 @@ mod tests {
         let integer_domain = solve::SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap();
         let arithmetic = solve::SolveArithmeticProfile::construct(
             solve::SolveRealFormat::Binary64,
-            solve::SolveRoundingMode::NearestTiesToEven,
             integer_domain,
         );
         let real = solve::SolveValueType::scalar(solve::SolveScalarType::real(arithmetic));

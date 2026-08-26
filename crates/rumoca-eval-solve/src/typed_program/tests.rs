@@ -6,7 +6,7 @@ use rumoca_ir_solve::{
     SolveArithmeticProfile, SolveBinaryOperator, SolveCompareOperator, SolveConversionOperator,
     SolveIntegerDomain, SolveProgramConstructionError, SolvePureCallIdentity, SolvePureCallOutput,
     SolvePureCallOwnerId, SolvePureCallTable, SolveRealFormat, SolveReductionOperator,
-    SolveRoundingMode, SolveScalarType, SolveUnaryOperator, SolveValue, SolveValueKind,
+    SolveScalarType, SolveUnaryOperator, SolveValue, SolveValueKind,
     SolveValueType, TypedProgramBuilder,
 };
 
@@ -26,7 +26,6 @@ fn span(start: usize) -> Span {
 fn profile(format: SolveRealFormat) -> SolveArithmeticProfile {
     SolveArithmeticProfile::construct(
         format,
-        SolveRoundingMode::NearestTiesToEven,
         SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
     )
 }
@@ -576,7 +575,6 @@ fn binary32_rounds_at_each_typed_operation() {
 fn real_to_integer_conversion_checks_the_declared_domain() {
     let arithmetic = SolveArithmeticProfile::construct(
         SolveRealFormat::Binary64,
-        SolveRoundingMode::NearestTiesToEven,
         SolveIntegerDomain::construct(-10, 10).unwrap(),
     );
     let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));
@@ -617,7 +615,6 @@ fn real_to_integer_conversion_checks_the_declared_domain() {
 fn structured_conditional_executes_only_its_selected_checked_region() {
     let arithmetic = SolveArithmeticProfile::construct(
         SolveRealFormat::Binary64,
-        SolveRoundingMode::NearestTiesToEven,
         SolveIntegerDomain::construct(-10, 10).unwrap(),
     );
     let boolean = SolveValueType::scalar(SolveScalarType::Boolean);

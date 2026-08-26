@@ -262,12 +262,11 @@ pub enum SolveRealFormat { Binary32, Binary64 }
 
 pub struct SolveArithmeticProfile {
     real_format: SolveRealFormat,
-    rounding: SolveRoundingMode,     // enum SolveRoundingMode { NearestTiesToEven }
     integer_domain: SolveIntegerDomain, // struct { minimum: i64, maximum: i64 }
 }
 
 pub enum SolveScalarType {
-    Real { format: SolveRealFormat, rounding: SolveRoundingMode },
+    Real { format: SolveRealFormat },
     Integer(SolveIntegerDomain),
     Boolean,
 }
@@ -282,8 +281,8 @@ pub struct SolveValueType {
 | Type | Proposed delta | Bound by |
 |---|---|---|
 | `SolveRealFormat` | Gains the reserved descriptor shapes (Binary16, BFloat16, fixed point) only once evaluator, conversion, and status contracts exist; Complex becomes an element type over an admitted format, not a record | SEV-012, SEV-017 |
-| `SolveArithmeticProfile` | Gains the full §4.3 contract set — accumulator, order, per-step and result rounding, contraction, signed zero, NaN payload and quieting, infinity, subnormal/FTZ, status, transcendentals — and becomes root-identity-bearing | SEV-020, SEV-024 |
-| `SolveScalarType` | `Real` drops `rounding`, since rounding is operation and profile policy, not a value-type discriminator. `Integer(SolveIntegerDomain)` becomes `Integer { repr: IntRepr }` over the §4.21 set: today's `SolveIntegerDomain { minimum, maximum }` conflates representation with range and is the transitional state, since range belongs to separate root-bound facts. Branded enums join the union | SEV-010, SEV-011, SEV-014, SEV-018 |
+| `SolveArithmeticProfile` | Gains the full §4.3 contract set — accumulator, order, per-step and result rounding, contraction, signed zero, NaN payload and quieting, infinity, subnormal/FTZ, status, transcendentals — and becomes root-identity-bearing. It carries no rounding field in the meantime: every admitted Real operation rounds to nearest, ties to even, on every backend, so the single-variant field discriminated nothing and made profile equality a tautology. Rounding re-enters as the §4.3 contract, together with the operations that can differ under it | SEV-020, SEV-024 |
+| `SolveScalarType` | `Real` has dropped `rounding`, since rounding is operation and profile policy, not a value-type discriminator, and does not regain it. `Integer(SolveIntegerDomain)` becomes `Integer { repr: IntRepr }` over the §4.21 set: today's `SolveIntegerDomain { minimum, maximum }` conflates representation with range and is the transitional state, since range belongs to separate root-bound facts. Branded enums join the union | SEV-010, SEV-011, SEV-014, SEV-018 |
 | `SolveValueType` | Gains finite acyclic by-value records with nominal field identity, and empty extents that keep type, field path, occurrence, ABI ordinal, and wire identity | SEV-013, SEV-015 |
 
 ### 5. Product Closure Matrix

@@ -1778,7 +1778,6 @@ mod storage_tests {
     fn arithmetic() -> solve::SolveArithmeticProfile {
         solve::SolveArithmeticProfile::construct(
             solve::SolveRealFormat::Binary64,
-            solve::SolveRoundingMode::NearestTiesToEven,
             solve::SolveIntegerDomain::construct(i32::MIN.into(), i32::MAX.into()).unwrap(),
         )
     }

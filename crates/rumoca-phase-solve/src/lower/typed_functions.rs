@@ -501,7 +501,6 @@ fn boolean_map_type<'dae>(
 fn arithmetic_profile() -> solve::SolveArithmeticProfile {
     solve::SolveArithmeticProfile::construct(
         solve::SolveRealFormat::Binary64,
-        solve::SolveRoundingMode::NearestTiesToEven,
         solve::SolveIntegerDomain::construct(i64::MIN, i64::MAX)
             .expect("the full i64 domain is nonempty"),
     )

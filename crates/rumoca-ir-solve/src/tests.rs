@@ -874,7 +874,6 @@ fn solve_variable_declaration_wire_replays_time_domain_proof() {
 fn event_transaction_fixture_with_table() -> (EventTransactionProgram, SolvePureCallTable) {
     let arithmetic = SolveArithmeticProfile::construct(
         SolveRealFormat::Binary64,
-        SolveRoundingMode::NearestTiesToEven,
         SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
     );
     let tensor = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![2]).unwrap();

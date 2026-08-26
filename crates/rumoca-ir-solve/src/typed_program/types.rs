@@ -7,12 +7,6 @@ pub enum SolveRealFormat {
     Binary64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SolveRoundingMode {
-    NearestTiesToEven,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct SolveIntegerDomain {
     minimum: i64,
@@ -69,10 +63,19 @@ impl SolveIntegerDomain {
     }
 }
 
+/// The arithmetic a program's values are evaluated in: the Real format and the
+/// Integer domain.
+///
+/// Rounding is not among them. Every Real operation this IR admits rounds to
+/// nearest, ties to even, on every backend it reaches, so a field carrying that
+/// one choice discriminated nothing and made every profile equality a
+/// tautology. SPEC_0047 §4.3 reserves a real rounding *contract* for this
+/// profile — accumulator, order, per-step and result rounding, contraction —
+/// and that contract arrives with the operations that can differ under it, not
+/// before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SolveArithmeticProfile {
     real_format: SolveRealFormat,
-    rounding: SolveRoundingMode,
     integer_domain: SolveIntegerDomain,
 }
 
@@ -80,12 +83,10 @@ impl SolveArithmeticProfile {
     #[must_use]
     pub const fn construct(
         real_format: SolveRealFormat,
-        rounding: SolveRoundingMode,
         integer_domain: SolveIntegerDomain,
     ) -> Self {
         Self {
             real_format,
-            rounding,
             integer_domain,
         }
     }
@@ -93,11 +94,6 @@ impl SolveArithmeticProfile {
     #[must_use]
     pub const fn real_format(self) -> SolveRealFormat {
         self.real_format
-    }
-
-    #[must_use]
-    pub const fn rounding(self) -> SolveRoundingMode {
-        self.rounding
     }
 
     #[must_use]
@@ -109,10 +105,7 @@ impl SolveArithmeticProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "profile", rename_all = "snake_case")]
 pub enum SolveScalarType {
-    Real {
-        format: SolveRealFormat,
-        rounding: SolveRoundingMode,
-    },
+    Real { format: SolveRealFormat },
     Integer(SolveIntegerDomain),
     Boolean,
 }
@@ -122,7 +115,6 @@ impl SolveScalarType {
     pub const fn real(profile: SolveArithmeticProfile) -> Self {
         Self::Real {
             format: profile.real_format,
-            rounding: profile.rounding,
         }
     }
 
@@ -139,9 +131,7 @@ impl SolveScalarType {
     #[must_use]
     pub fn belongs_to(self, profile: SolveArithmeticProfile) -> bool {
         match self {
-            Self::Real { format, rounding } => {
-                format == profile.real_format && rounding == profile.rounding
-            }
+            Self::Real { format } => format == profile.real_format,
             Self::Integer(domain) => {
                 domain.minimum == profile.integer_domain.minimum
                     && domain.maximum == profile.integer_domain.maximum
