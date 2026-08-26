@@ -3195,6 +3195,41 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
         }
     }
 
+    /// Project the target a call writes at signature position `index`.
+    ///
+    /// The projection is the ordinary one; what this decides is whether the
+    /// target counts towards `uses_scratch`. That flag is a question about
+    /// EMITTED references — the region alias exists to be read by printed code
+    /// — and the read-back that names this target is the one statement a
+    /// destination placement removes. A placed target is therefore projected
+    /// (the checked Algorithm Code still spells the assignment, and `model.alg`
+    /// still prints it) but never printed, so it must not be the reason a `ctx`
+    /// is declared. Where it was the region's only printed reference, the alias
+    /// became an unused declaration: a `-Wall -Werror` build failure under the
+    /// assurance profile, and an unreachable declaration a structural-coverage
+    /// argument has to account for either way.
+    ///
+    /// The same question about the destination POINTER is answered by
+    /// `destination::Plan::body_names_output`; this is its other half.
+    fn call_target(
+        &self,
+        target: &'a ast::Reference,
+        call: &'a ast::FunctionCall,
+        index: usize,
+    ) -> Result<TypedReferenceView<'a>, String> {
+        if !self
+            .block
+            .destinations
+            .drops_read_back(call, index, &self.block.functions)
+        {
+            return self.reference(target);
+        }
+        let printed = *self.block.context_reads.borrow();
+        let projected = self.reference(target);
+        *self.block.context_reads.borrow_mut() = printed;
+        projected
+    }
+
     fn statements(
         &self,
         statements: &'a [ast::Spanned<ast::Statement>],
@@ -3223,7 +3258,10 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
     ) -> Result<TypedStatementView<'a>, String> {
         Ok(match statement {
             ast::Statement::Assignment { target, value } => {
-                let target = self.reference(target)?;
+                let target = match value {
+                    ast::Expression::Call(call) => self.call_target(target, call, 0)?,
+                    _ => self.reference(target)?,
+                };
                 let value = self.expression(value)?;
                 require_equal_shape(
                     ShapeEvidence::of_reference(&target),
@@ -3236,7 +3274,8 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 TypedStatementView::MultiAssignment {
                     targets: targets
                         .iter()
-                        .map(|target| self.reference(target))
+                        .enumerate()
+                        .map(|(index, target)| self.call_target(target, call, index))
                         .collect::<Result<_, _>>()?,
                     call: self.call(call)?,
                 }

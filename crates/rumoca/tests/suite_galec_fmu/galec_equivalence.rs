@@ -4215,3 +4215,173 @@ fn embedded_c_places_a_result_only_where_no_operand_can_reach_the_destination() 
         "the placed call must emit no read-back at all:\n{source}"
     );
 }
+
+// ===========================================================================
+// Fixture 19: a wrapper whose only emitted use of its region was the read-back.
+//
+// Both liveness questions the placement raises are asked here, because a thin
+// pass-through is where they bite. `mid` stages its argument and returns
+// `leaf`'s result unchanged, and it is called twice, so `mid.y` stays a member
+// of `mid`'s own region while `leaf.y` is placed there.
+//
+// What is left of `mid` after both rewrites is one call: marshalling retires
+// the staging temporary, and the placement drops the read-back that was the ONE
+// statement naming `mid`'s region. A projection that decided `uses_scratch`
+// from the checked statements rather than from the printed ones emitted a `ctx`
+// alias nothing reads, which the assurance profile reports as an unused
+// variable and a structural-coverage argument has to account for either way.
+// The compile below is the load-bearing half of this test; the value legs prove
+// the pass-through still computes what it always did.
+// ===========================================================================
+
+const PASS_THROUGH_WRAPPER: &str = r#"
+function leaf
+  input Real u[3];
+  output Real y[3];
+algorithm
+  for i in 1:3 loop
+    y[i] := 2.0 * u[1] + u[i];
+  end for;
+end leaf;
+
+function mid
+  input Real u[3];
+  output Real y[3];
+protected
+  Real t[3];
+algorithm
+  t := u;
+  y := leaf(t);
+end mid;
+
+function stage
+  input Real u[3];
+  output Real y[3];
+protected
+  Real d[3];
+  Real e[3];
+algorithm
+  d := u;
+  d := mid(d);
+  e := mid(d);
+  for i in 1:3 loop
+    y[i] := d[i] + e[i];
+  end for;
+end stage;
+
+model PassThroughWrapperSmoke
+  constant Real samplePeriod = 0.1;
+  discrete Real k(start = 0.0, fixed = true);
+  discrete output Real o[3](each start = 0.0);
+equation
+  when sample(0.0, samplePeriod) then
+    k = pre(k) + 1.0;
+    o = stage({k + 1.0, k + 2.0, k + 3.0});
+  end when;
+end PassThroughWrapperSmoke;
+"#;
+
+const PASS_THROUGH_WRAPPER_DRIVER: &str = r#"#include <stdio.h>
+#include "PassThroughWrapperSmoke.h"
+static void row(const char *label, const PassThroughWrapperSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%lu\n", label,
+           (double)state->k, (double)state->o[0],
+           (double)state->o[1], (double)state->o[2],
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    PassThroughWrapperSmokeState state;
+    char label[16];
+    PassThroughWrapperSmoke_startup(&state);
+    row("startup", &state);
+    PassThroughWrapperSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        PassThroughWrapperSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn embedded_c_emits_no_region_alias_for_a_wrapper_whose_read_back_was_dropped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "PassThroughWrapperSmoke";
+    let fields = [
+        destination_alias_field("k"),
+        destination_alias_field("o[1]"),
+        destination_alias_field("o[2]"),
+        destination_alias_field("o[3]"),
+    ];
+
+    let projection = project_embedded_c(dir.path(), model, PASS_THROUGH_WRAPPER);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(&out_dir, model, PASS_THROUGH_WRAPPER_DRIVER, fields.len());
+    let ref_ticks = reference_ticks(model, PASS_THROUGH_WRAPPER, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    assert_oracle_agrees(&oracle, &c_run, &ref_ticks, &fields, 0);
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+
+    // The closed form. `mid` is the identity on `leaf`, `leaf(v)[i]` is
+    // `2*v[1] + v[i]`, and `stage` returns `d + leaf(d)` for `d = leaf(seed)`.
+    for tick in 0..5 {
+        let count = (tick + 1) as f64;
+        let seed = [count + 1.0, count + 2.0, count + 3.0];
+        let d: Vec<f64> = (0..3).map(|i| 2.0 * seed[0] + seed[i]).collect();
+        let e: Vec<f64> = (0..3).map(|i| 2.0 * d[0] + d[i]).collect();
+        let expected = [count, d[0] + e[0], d[1] + e[1], d[2] + e[2]];
+        for (leg, values) in [
+            ("generated C", &c_run.steps[tick].values),
+            ("galec oracle", &oracle.steps[tick].values),
+        ] {
+            for (field, (got, want)) in fields.iter().zip(values.iter().zip(expected)) {
+                let (atol, rtol) = F32_PROFILE;
+                assert!(
+                    (got - want).abs() <= atol + rtol * want.abs(),
+                    "{leg} tick {} channel `{}`: {got} vs {want}",
+                    tick + 1,
+                    field.name
+                );
+            }
+        }
+    }
+
+    // The shape this fixture exists for, read off the emitted unit: `leaf`
+    // delivers into `mid`'s slot, and `mid` is left with nothing that reads its
+    // region, so it declares no alias to one.
+    let source = fs::read_to_string(out_dir.join(format!("{model}.c"))).expect("read emitted C");
+    assert!(
+        source.contains("/* Destination-passed output: `y` IS `mid.y`"),
+        "the wrapper's callee must deliver into the wrapper's own slot:\n{source}"
+    );
+    let wrapper = source
+        .split("static void mid(")
+        .nth(1)
+        .and_then(|tail| tail.split("\n}").next())
+        .expect("the emitted unit must define `mid`");
+    assert!(
+        !wrapper.contains("*const ctx = &"),
+        "a wrapper whose only region reference was the dropped read-back must \
+         declare no region alias:\n{wrapper}"
+    );
+
+    // And the load-bearing half: an unused declaration is a failed build under
+    // the profile every GALEC C product is preflighted with.
+    let compile = cc_support::assurance_c99_cc()
+        .arg("-c")
+        .arg(out_dir.join(format!("{model}.c")))
+        .arg("-o")
+        .arg(dir.path().join("wrapper.o"))
+        .output()
+        .expect("run cc");
+    assert!(
+        compile.status.success(),
+        "the emitted unit must satisfy the strict profile.\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+}

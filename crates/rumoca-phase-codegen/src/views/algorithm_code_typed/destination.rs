@@ -184,13 +184,14 @@ impl<'a> Plan<'a> {
                 target,
                 value: ast::Expression::Call(call),
             } => {
-                let dropped = whole_named(target, output) && self.delivers(call, 0, functions);
+                let dropped =
+                    whole_named(target, output) && self.drops_read_back(call, 0, functions);
                 (!dropped && mentions_reference(target, output)) || mentioned_in_call(call, output)
             }
             ast::Statement::MultiAssignment { targets, call } => {
                 targets.iter().enumerate().any(|(index, target)| {
                     let dropped =
-                        whole_named(target, output) && self.delivers(call, index, functions);
+                        whole_named(target, output) && self.drops_read_back(call, index, functions);
                     !dropped && mentions_reference(target, output)
                 }) || mentioned_in_call(call, output)
             }
@@ -230,7 +231,14 @@ impl<'a> Plan<'a> {
     /// Asked by signature position, exactly as the template asks it: a target's
     /// place in the statement is the callee's output parameter at the same
     /// place, and a placement is keyed by the callee's own name for it.
-    fn delivers(
+    ///
+    /// This is the one question both liveness answers rest on. The projection
+    /// asks it about a call TARGET, to keep a dropped read-back from being the
+    /// reason a caller declares a region alias; [`Self::names`] asks it about a
+    /// callee's own output, to keep a dropped read-back from being the reason
+    /// that callee declares a destination pointer. Two unused declarations, one
+    /// rule.
+    pub(super) fn drops_read_back(
         &self,
         call: &ast::FunctionCall,
         index: usize,
