@@ -40,7 +40,7 @@ fn project(model: &dae::Dae) -> Result<Vec<gast::Spanned<gast::Statement>>, Gale
                 definitions: &definitions,
                 by_id: &by_id,
                 pre_names: &pre_names,
-                policy: EmissionPolicy::reviewable(),
+                emission: EmissionFacts::structured(),
             },
             clock,
         )

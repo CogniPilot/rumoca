@@ -986,6 +986,16 @@ void {{ c_model }}_dostep({{ c_model }}State *self) {
  *   inline policy:    {{ algorithm_code.emission.inline }}
  *   scalarize policy: {{ algorithm_code.emission.scalarize }}
  *
+ * What that produced, in the units the settings act on. Compare these against
+ * the same model built with every boundary and every tensor kept; a compiler
+ * that took a structural decision and then declined to say what it bought is
+ * asking a reviewer to take the decision on faith.
+ *   emitted statements: {{ algorithm_code.emission.emitted_statements }}
+ *   emitted functions:  {{ algorithm_code.emission.emitted_functions }}
+{%- if scratch_layout.bytes is not none %}
+ *   working memory:     {{ scratch_layout.bytes }} bytes{% if scratch_layout.least_bytes is not none %} (floor for any sound overlay of these regions: {{ scratch_layout.least_bytes }}){% endif %}
+{%- endif %}
+ *
 {%- if algorithm_code.emission.certifiable %}
  * ELIGIBLE for the certification path. Inlining moves arithmetic between
  * functions; it does not delete a structural fact. Every substituted statement

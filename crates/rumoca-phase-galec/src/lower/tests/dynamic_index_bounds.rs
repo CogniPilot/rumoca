@@ -143,7 +143,7 @@ fn lower_conditional_pivot(guarded: &GuardedPivot) -> Result<Vec<gast::UserFunct
             view,
             &definitions,
             HashSet::from([pick.index()]),
-            EmissionPolicy::reviewable(),
+            EmissionFacts::structured(),
         )
         .map_err(|error| format!("{error:?}"))
     })

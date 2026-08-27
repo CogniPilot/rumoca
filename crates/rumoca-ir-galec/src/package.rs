@@ -66,13 +66,18 @@ impl CheckedAlgorithmBlock {
 pub enum InlinePolicy {
     /// Every call the GALEC ABI can represent stays a call, whatever the model
     /// asks for. The emitted functions are exactly the model's functions.
+    ///
+    /// The default, so a caller that passes no setting gets the artifact a
+    /// compiler with no dial emits. That is not a claim that keeping every
+    /// boundary is better; it is the rule that a structural decision is taken
+    /// deliberately or not at all.
+    #[default]
     None,
     /// Only what a function's own `annotation(Inline = true)` or
     /// `LateInline = true` asks for.
     Annotated,
     /// Annotated requests, plus the call sites the cost model decides pay for
     /// themselves.
-    #[default]
     CostModel,
     /// Every call site the legality rules allow.
     All,

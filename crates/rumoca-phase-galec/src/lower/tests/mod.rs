@@ -174,7 +174,7 @@ fn rank_two_dependent_parameter_preserves_one_checked_whole_array_move() {
                 definitions: &definitions,
                 by_id: &by_id,
                 pre_names: &previous,
-                policy: EmissionPolicy::reviewable(),
+                emission: EmissionFacts::structured(),
             },
             guidance,
         )
@@ -595,7 +595,7 @@ fn causally_defined_output_remains_an_interface_and_gets_an_assignment() {
                 definitions: &definitions,
                 by_id: &by_id,
                 pre_names: &pre_names,
-                policy: EmissionPolicy::reviewable(),
+                emission: EmissionFacts::structured(),
             },
             classified.as_slice(),
             &mut locals,
@@ -1104,7 +1104,7 @@ fn assert_atomic_multi_output_group(model: &dae::Dae) {
             view,
             &definitions,
             HashSet::from([caller.index()]),
-            EmissionPolicy::reviewable(),
+            EmissionFacts::structured(),
         )
         .expect("the atomic multi-output group lowers");
         let caller = lowered
@@ -1498,7 +1498,7 @@ fn record_field_of_checked_function_call_is_projected_before_scalar_lowering() {
             view,
             &definitions,
             HashSet::from([function.index()]),
-            EmissionPolicy::reviewable(),
+            EmissionFacts::structured(),
         )
         .unwrap();
         assert_eq!(lowered_functions.len(), 1);
@@ -1604,7 +1604,7 @@ fn function_identity_assignments_are_not_emitted() {
             view,
             &definitions,
             HashSet::from([function.index()]),
-            EmissionPolicy::reviewable(),
+            EmissionFacts::structured(),
         )
         .expect("identity assignment lowers");
         assert_eq!(lowered.len(), 1);

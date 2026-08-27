@@ -194,15 +194,21 @@ fn defines_function(generated: &str, name: &str) -> bool {
     generated.contains(&format!("static void {name}("))
 }
 
-/// The fully structured emission is reachable two ways and is the same artifact
-/// both ways, with nothing to disclose.
+/// The fully structured emission is what no flag produces, is reachable by
+/// preset and by axis, is one artifact all three ways, and discloses nothing.
 ///
-/// This is the invariant the whole feature rests on: a dial can only be trusted
-/// as a choice if the point that changes nothing provably changes nothing.
+/// This is the invariant the whole feature rests on. A structural decision is
+/// taken deliberately or not at all, so the point that changes nothing has to
+/// be both the default and provably a no-op.
 #[test]
-fn the_fully_structured_emission_is_one_artifact_under_either_spelling() {
+fn the_fully_structured_emission_is_one_artifact_under_every_spelling() {
+    let absent = generate(&[]);
     let preset = generate(&["--emission-policy", "reviewable"]);
     let axes = generate(&["--inline-policy", "none", "--scalarize-policy", "never"]);
+    assert_eq!(
+        absent, preset,
+        "no flag must be exactly the `reviewable` preset"
+    );
     assert_eq!(
         preset, axes,
         "the `reviewable` preset must be exactly (inline none, scalarize never)"
@@ -316,6 +322,146 @@ fn an_inline_true_annotation_is_honored_from_annotated_upward() {
         assert!(
             !defines_function(&generated, "squareTwice"),
             "`Inline = true` must be honored under `{inline}`:\n{generated}"
+        );
+    }
+}
+
+/// The cost model's one rule: a callee called from exactly one place is
+/// substituted, and `annotated` leaves it alone.
+///
+/// `scaleOnce` carries no annotation and has one call site. There is nothing to
+/// duplicate, so the rule has no threshold and nothing to tune: the body moves
+/// rather than being copied, and the boundary it crossed once was buying
+/// nothing.
+#[test]
+fn a_callee_with_one_call_site_is_substituted_by_the_cost_model() {
+    let annotated = generate(&["--inline-policy", "annotated"]);
+    assert!(
+        defines_function(&annotated, "scaleOnce"),
+        "`annotated` answers only to annotations, and `scaleOnce` carries none:\n{annotated}"
+    );
+    let cost_model = generate(&["--inline-policy", "cost-model"]);
+    assert!(
+        !defines_function(&cost_model, "scaleOnce"),
+        "a callee with one call site must be substituted by the cost model:\n{cost_model}"
+    );
+}
+
+/// Substituting every legal call loses no anchor on any line of arithmetic.
+///
+/// This is the traceability gate stated as something checkable. Substituting a
+/// body moves arithmetic between functions; if the emitted statement then took
+/// the CALL SITE's span, the callee's line would stop being named by the
+/// artifact at all, and a whole source file could vanish from the trace legend
+/// while the code it wrote is still executing. That is what this pins: every
+/// line the structured artifact anchored is still anchored, and anchors may be
+/// added by flattening, as they are.
+///
+/// The exception is exact and is the removed calls themselves. A call the
+/// policy substituted has no emitted statement left to anchor, so the span of
+/// the call EXPRESSION goes with it, while every line of the callee's body it
+/// executed stays anchored. Each such loss is checked to be exactly that: a
+/// line of the model that writes one of the substituted calls, and nothing
+/// else. Naming those call sites in the emitted artifact is the inline-chain
+/// breadcrumb that D6 asks for and this projection does not yet emit, because
+/// the GALEC statement carries a span and no annotation channel.
+#[test]
+fn substituting_every_legal_call_loses_no_anchor_on_a_line_of_arithmetic() {
+    let structured = source_anchors(&generate(&["--inline-policy", "none"]));
+    assert!(
+        !structured.is_empty(),
+        "the fixture must carry source anchors for this to mean anything"
+    );
+    let flattened = source_anchors(&generate(&["--inline-policy", "all"]));
+    let unexplained = structured
+        .difference(&flattened)
+        .filter(|anchor| !writes_a_substituted_call(anchor))
+        .collect::<Vec<_>>();
+    assert!(
+        unexplained.is_empty(),
+        "substituting every legal call dropped anchors that no removed call \
+         accounts for: {unexplained:#?}"
+    );
+    // A vacuous pass would be the failure this test cannot detect on its own,
+    // so the accounted-for losses are required to exist.
+    assert!(
+        structured.difference(&flattened).next().is_some(),
+        "the fixture must actually have calls that get substituted"
+    );
+}
+
+/// Whether an anchor points at a line of the fixture that writes a call the
+/// policy substitutes.
+///
+/// The fixture is right here, so the model line an anchor names is read from
+/// the source rather than guessed from the anchor's shape.
+fn writes_a_substituted_call(anchor: &str) -> bool {
+    const SUBSTITUTED: [&str; 2] = ["scaleOnce(", "squareTwice("];
+    let Some((_, position)) = anchor.split_once(&format!("{MODEL}.mo:")) else {
+        return false;
+    };
+    let Some(line) = position
+        .split(':')
+        .next()
+        .and_then(|number| number.parse::<usize>().ok())
+        .and_then(|number| FIXTURE.lines().nth(number - 1))
+    else {
+        return false;
+    };
+    SUBSTITUTED.iter().any(|call| line.contains(call))
+}
+
+/// The `path:line:column-line:column` anchors a translation unit carries.
+///
+/// Read off the emitted comment rather than reconstructed, because the emitted
+/// comment IS the traceability artifact: what a reviewer can act on is exactly
+/// what these lines say.
+fn source_anchors(generated: &str) -> std::collections::BTreeSet<String> {
+    const OPEN: &str = "/* Modelica trace: ";
+    const CLOSE: &str = " */";
+    generated
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(OPEN))
+        .filter_map(|rest| rest.strip_suffix(CLOSE))
+        .map(|anchor| anchor.trim_end_matches(['.']).to_owned())
+        .collect()
+}
+
+/// An eFMI container's AlgorithmCode representation stays structured, because
+/// it is the reviewable semantic reference the container exists to ship.
+///
+/// This compiler renders both container representations from one projection, so
+/// a policy that collapsed call structure would collapse it in the `.alg` too.
+/// Until the transform moves into the GALEC-to-Solve refinement, where the two
+/// representations can legitimately diverge, a container target refuses the
+/// flag rather than silently dropping it: an artifact that does not match what
+/// was asked for is worse than an error saying so.
+#[test]
+fn an_efmi_container_refuses_a_policy_that_would_reshape_its_reference() {
+    for target in ["galec", "galec-production"] {
+        let dir = tempdir().expect("tempdir");
+        let out_dir = dir.path().join("out");
+        let file = write_fixture(dir.path(), MODEL, FIXTURE);
+        // The default is admitted: a container still compiles, it just compiles
+        // the structured artifact.
+        let structured = run_compile_target_with(&file, target, &out_dir, &[]);
+        assert!(
+            structured.status.success(),
+            "`{target}` must still compile under the default.\nstderr:\n{}",
+            String::from_utf8_lossy(&structured.stderr)
+        );
+        let out_dir = dir.path().join("out-policy");
+        let refused =
+            run_compile_target_with(&file, target, &out_dir, &["--inline-policy", "cost-model"]);
+        assert!(
+            !refused.status.success(),
+            "`{target}` must refuse a policy that would reshape its AlgorithmCode reference"
+        );
+        let stderr = super::cli_support::strip_ansi(&String::from_utf8_lossy(&refused.stderr))
+            .replace('\n', " ");
+        assert!(
+            stderr.contains("AlgorithmCode") || stderr.contains("eFMI container"),
+            "the refusal must say which representation it is protecting:\n{stderr}"
         );
     }
 }

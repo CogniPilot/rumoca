@@ -4,11 +4,114 @@
 //! Every decision here is a DECLINE-by-default decision. The GALEC ABI can
 //! represent the calls this module is asked about, so emitting the call is
 //! always legal and always available; substituting the body is the option that
-//! has to earn itself. That is what makes the certifiable default provably a
+//! has to earn itself. That is what makes the default emission provably a
 //! no-op, and what makes every refusal below a missed optimization rather than
 //! a rejected model.
+//!
+//! # RELOCATION DEBT: this is not where the transform belongs
+//!
+//! An eFMI container ships two representations of one model, and only one of
+//! them is meant to be optimized: `AlgorithmCode` is the reviewable semantic
+//! reference and `ProductionCode` is its optimized C rendering. A transform
+//! that runs during DAE-to-GALEC lowering reshapes the reference itself, which
+//! is why a container target refuses a non-default policy outright
+//! (`target_manifest::admitted_emission_policy`) and only the container-free
+//! `embedded-c-galec` export can use one.
+//!
+//! The end-state home is the GALEC-to-Solve refinement, where the two
+//! representations can legitimately diverge: the `.alg` stays the structured
+//! reference, and only the Solve program the C emitter consumes is optimized.
+//! Moving this module there is owed work, not a settled location, and the
+//! refusal above is the seam that keeps the interim placement honest instead of
+//! letting it quietly become the design.
 
 use super::*;
+
+/// How many distinct call sites each checked function has.
+///
+/// Counted once per projection over the whole expression arena and keyed by the
+/// construction-issued call OWNER, never by the expression: one source-level
+/// call to a four-result function reaches lowering as many scalar projections
+/// of one owner, and counting projections would make every multi-result call
+/// look duplicated when it is not.
+///
+/// The census covers the entire DAE, not one block, which is the conservative
+/// direction: a callee with one owner anywhere has at most one owner here.
+pub(super) struct CallSiteCensus {
+    owners: std::collections::BTreeMap<u32, std::collections::BTreeSet<u32>>,
+}
+
+/// The census a lowering that was never handed the projection's own has.
+///
+/// It reports no call sites for anything, so every cost-model question answers
+/// "not a single-site callee" and the lowering decides nothing. That is the
+/// right answer for a unit-test construction that builds a lowerer directly:
+/// deciding from facts it does not have is the failure mode to design out.
+static NO_CALL_SITES: CallSiteCensus = CallSiteCensus {
+    owners: std::collections::BTreeMap::new(),
+};
+
+impl CallSiteCensus {
+    pub(super) fn derive(view: dae::DaeView<'_>) -> Self {
+        let mut owners: std::collections::BTreeMap<u32, std::collections::BTreeSet<u32>> =
+            std::collections::BTreeMap::new();
+        for index in 0..view.expression_count() {
+            let Some(node) = view.expression_id(index).and_then(|id| view.expression(id)) else {
+                continue;
+            };
+            if let dae::ExpressionOperation::Call {
+                function, owner, ..
+            } = node.operation()
+            {
+                owners
+                    .entry(function.index())
+                    .or_default()
+                    .insert(owner.index());
+            }
+        }
+        Self { owners }
+    }
+
+    /// Whether this callee is called from exactly one place.
+    ///
+    /// A callee with one call site is the one population that needs no cost
+    /// model at all. Substituting it duplicates nothing, because there is
+    /// nothing to duplicate: the body moves rather than being copied. What it
+    /// removes is unconditional, namely the argument staging and result
+    /// read-back at that boundary, and one edge of the call chain that the
+    /// storage overlay refuses to let a caller and a callee share.
+    ///
+    /// The rule is therefore not a heuristic and has no threshold to tune. It
+    /// is the statement that a boundary crossed once is a boundary that buys
+    /// nothing.
+    fn is_single_site(&self, function: u32) -> bool {
+        self.owners
+            .get(&function)
+            .is_some_and(|owners| owners.len() == 1)
+    }
+}
+
+/// The emission decisions and the facts they are decided from, as one value.
+///
+/// The policy alone is not enough to decide a call site: the cost model needs
+/// the call-site census, and a lowering that held one without the other could
+/// not answer. They travel together for the same reason the block facts do.
+#[derive(Clone, Copy)]
+pub(super) struct EmissionFacts<'a> {
+    pub(super) policy: EmissionPolicy,
+    pub(super) call_sites: &'a CallSiteCensus,
+}
+
+impl EmissionFacts<'_> {
+    /// The facts a lowering starts from before the projection hands it its own:
+    /// keep every call, and know nothing about call sites.
+    pub(super) const fn structured() -> Self {
+        Self {
+            policy: EmissionPolicy::reviewable(),
+            call_sites: &NO_CALL_SITES,
+        }
+    }
+}
 
 impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     /// Whether the policy, the model, legality and termination all admit
@@ -30,7 +133,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     /// fail deeper in. Refusing means the call is emitted as a call, which is
     /// what a recursive Modelica function has to become anyway.
     pub(super) fn admits_inline(&self, function: dae::FunctionId<'dae>) -> bool {
-        if matches!(self.emission_policy.inline, InlinePolicy::None) {
+        if matches!(self.emission.policy.inline, InlinePolicy::None) {
             return false;
         }
         // Declining is free (D2), so an identity this view cannot resolve is a
@@ -45,10 +148,15 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         {
             return false;
         }
-        match self.emission_policy.inline {
+        match self.emission.policy.inline {
             InlinePolicy::None => false,
             InlinePolicy::Annotated => requested == rumoca_core::InlineAnnotation::Requested,
-            InlinePolicy::CostModel => requested == rumoca_core::InlineAnnotation::Requested,
+            // The one cost-model rule that needs no tuning: a callee called
+            // from exactly one place has no duplication to pay for.
+            InlinePolicy::CostModel => {
+                requested == rumoca_core::InlineAnnotation::Requested
+                    || self.emission.call_sites.is_single_site(function.index())
+            }
             InlinePolicy::All => true,
         }
     }
@@ -77,7 +185,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     /// mechanism does not exist yet; refusing is how its absence stays a missed
     /// optimization instead of becoming an emitted defect.
     fn substitution_preserves_tensors(&self, function: dae::FunctionView<'dae>) -> bool {
-        if !self.emission_policy.is_certifiable() {
+        if !self.emission.policy.is_certifiable() {
             // A caller that asked for expansion has accepted it; nothing here
             // has to refuse on the tensors' behalf. Unreachable today, because
             // the projection refuses a non-default scalarization axis outright.
@@ -170,8 +278,15 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .map(|frame| self.function_label(frame.function.index()))
             .collect::<Vec<_>>()
             .join(".");
+        // The call identity and the ordinal share ONE trailing segment, and
+        // that is not cosmetic. A target's symbol allocator spells a dotted
+        // name as its shortest unambiguous suffix, so a trailing `.value7`
+        // would reach the emitted C as `value7` and the call site would be
+        // gone from the identifier a reviewer actually reads. Keeping them
+        // together makes the shortest suffix `call1751_value7`, which carries
+        // the same facts the materialized form's `call1751_result3` does.
         crate::mangle::galec_variable_name(&format!(
-            "rumoca.tmp.{}.{}.{}.call{}.value{counter}",
+            "rumoca.tmp.{}.{}.{}.call{}_value{counter}",
             self.temporary_namespace,
             chain,
             self.substituted_value_label(key),

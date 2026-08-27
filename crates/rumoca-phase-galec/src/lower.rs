@@ -20,6 +20,7 @@ mod expression_helpers;
 mod expression_projection;
 mod guard_binding;
 mod inline_policy;
+use inline_policy::EmissionFacts;
 mod local_integer_bounds;
 mod pre_references;
 mod start;
@@ -101,7 +102,7 @@ struct BlockLowering<'a, 'dae> {
     definitions: &'a rumoca_phase_structural::CausalDefinitions<'dae>,
     by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &'a HashMap<u32, gast::Name>,
-    policy: EmissionPolicy,
+    emission: EmissionFacts<'a>,
 }
 
 struct ParameterDependencyProof {
@@ -200,12 +201,19 @@ fn lower_view<'dae>(
     let referenced_pre = referenced_pre_variables(view)?;
     let pre_names = build_pre_names(&referenced_pre, &by_id)?;
 
+    // Counted once for the whole projection, not per call site: the census is a
+    // whole-arena scan, and asking it per site would make the cost model
+    // quadratic in the number of calls for an answer that cannot change.
+    let call_sites = inline_policy::CallSiteCensus::derive(view);
     let lowering = BlockLowering {
         view,
         definitions,
         by_id: &by_id,
         pre_names: &pre_names,
-        policy: options.emission_policy,
+        emission: EmissionFacts {
+            policy: options.emission_policy,
+            call_sites: &call_sites,
+        },
     };
     let mut parts = build_variable_parts(lowering, &classified, &referenced_pre)?;
 
@@ -259,16 +267,20 @@ fn lower_view<'dae>(
     block.startup.statements = parts.startup;
     block.recalibrate.locals = parts.startup_locals;
     block.recalibrate.statements = parts.recalibrate;
-    block.protected_functions =
-        user_functions::lower_reachable(view, definitions, called_user_functions, lowering.policy)
-            .map_err(single)?;
+    block.protected_functions = user_functions::lower_reachable(
+        view,
+        definitions,
+        called_user_functions,
+        lowering.emission,
+    )
+    .map_err(single)?;
     block.do_step.locals = parts.do_step_locals;
     block.do_step.statements = do_step;
     AlgorithmCodePackage::construct(block, parts.nominals, &period_ref)
         .map(|package| {
             package
                 .with_constant_folded_parameters(parts.constant_folded)
-                .with_emission_policy(lowering.policy)
+                .with_emission_policy(lowering.emission.policy)
         })
         .map_err(|error| {
             vec![GalecTargetError::LoweringInternal {
@@ -1132,12 +1144,12 @@ struct ExpressionLowerer<'a, 'dae> {
     conditional_activation_path: Vec<ConditionalActivationKey>,
     materialize_function_values: bool,
     inline_causal_locals: bool,
-    /// The ceiling on how much call structure this lowering may collapse.
+    /// The emission decisions, and the facts they are decided from.
     ///
     /// Read only at the call-lowering decision point. Every other lowering
-    /// question is unaffected, which is what makes the default setting
+    /// question is unaffected, which is what makes the fully structured setting
     /// byte-identical to a build that has no dial at all.
-    emission_policy: EmissionPolicy,
+    emission: EmissionFacts<'a>,
     conditional_depth: usize,
     materialized_function_values: HashMap<MaterializedFunctionValueKey, gast::Name>,
     materialized_function_calls: HashMap<MaterializedFunctionCallKey, Vec<gast::Name>>,
@@ -1344,7 +1356,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             conditional_activation_path: Vec::new(),
             materialize_function_values: false,
             inline_causal_locals: false,
-            emission_policy: EmissionPolicy::reviewable(),
+            emission: EmissionFacts::structured(),
             conditional_depth: 0,
             materialized_function_values: HashMap::new(),
             materialized_function_calls: HashMap::new(),
@@ -1506,9 +1518,9 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         self
     }
 
-    /// Set the ceiling on how much call structure this lowering may collapse.
-    fn with_emission_policy(mut self, policy: EmissionPolicy) -> Self {
-        self.emission_policy = policy;
+    /// Set the emission decisions and the facts they are decided from.
+    fn with_emission(mut self, emission: EmissionFacts<'a>) -> Self {
+        self.emission = emission;
         self
     }
 

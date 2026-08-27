@@ -316,7 +316,7 @@ pub(super) fn dependent_assignment<'dae>(
         definitions,
         by_id,
         pre_names,
-        policy,
+        emission,
     } = lowering;
     let expression = classified
         .variable
@@ -337,7 +337,7 @@ pub(super) fn dependent_assignment<'dae>(
     // Startup proportional to the function, and keeps the function's own
     // locals, which is also what makes the generated C worth embedding.
     let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names)
-        .with_emission_policy(policy);
+        .with_emission(emission);
     let node = view
         .expression(expression)
         .expect("checked dependent-parameter expression resolves");

@@ -50,12 +50,13 @@ impl From<CompilePhase> for TemplateIr {
 /// boundary and for the call chain that pins working memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum InlinePolicyArg {
-    /// Every call stays a call, whatever the model asks for.
+    /// Every call stays a call, whatever the model asks for. The default: a
+    /// structural decision is taken deliberately or not at all.
+    #[default]
     None,
     /// Only what `annotation(Inline = true)` / `LateInline = true` asks for.
     Annotated,
     /// Annotated requests plus the sites the cost model decides pay off.
-    #[default]
     CostModel,
     /// Every call site the legality rules allow.
     All,

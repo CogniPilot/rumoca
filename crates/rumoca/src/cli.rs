@@ -321,9 +321,9 @@ pub struct CompileArgs {
     #[arg(long, value_enum, requires = "target")]
     pub phase: Option<CompilePhase>,
 
-    /// How much call structure a GALEC-derived target keeps (default
-    /// `cost-model`). Information-preserving and bit-identical at every
-    /// setting, so every setting stays eligible for the certification path.
+    /// How much call structure a GALEC-derived target keeps (default `none`, so
+    /// no flag emits what a compiler with no dial emits). Information-preserving
+    /// and bit-identical at every setting, so all stay certification-eligible.
     #[arg(
         long,
         value_enum,
@@ -334,8 +334,7 @@ pub struct CompileArgs {
 
     /// Whether tensor operations may be expanded into per-element statements
     /// (default `never`). Expansion destroys index sets, symmetry and
-    /// bandedness, so any other setting taints the artifact for the
-    /// certification path and the emitted block header says so.
+    /// bandedness, so any other setting taints the artifact and says so.
     #[arg(
         long,
         value_enum,
@@ -346,9 +345,8 @@ pub struct CompileArgs {
 
     /// Shorthand for one point in the (`--inline-policy`, `--scalarize-policy`)
     /// space: `reviewable` = (none, never), `balanced` = (cost-model, never),
-    /// `flat` = (all, all). Every point a preset names is also reachable by
-    /// setting the two axes, and the useful combinations they do not name are
-    /// reachable only that way.
+    /// `flat` = (all, all). A preset is never the only way to name a point: the
+    /// useful combinations it does not name need the two axes.
     #[arg(long, value_enum, requires = "target")]
     pub emission_policy: Option<EmissionPolicyArg>,
 

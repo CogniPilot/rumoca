@@ -419,7 +419,7 @@ fn function_array_updates_preserve_nested_writes_without_replaying_prior_definit
                 view,
                 &definitions,
                 HashSet::from([function.id().index()]),
-                EmissionPolicy::reviewable(),
+                EmissionFacts::structured(),
             )
             .unwrap();
             let name = function.name().as_str();
@@ -492,7 +492,7 @@ fn a_write_reading_the_chain_root_diverts_instead_of_replaying_in_place() {
             view,
             &definitions,
             HashSet::from([function.id().index()]),
-            EmissionPolicy::reviewable(),
+            EmissionFacts::structured(),
         )
         .unwrap();
         let statements = &lowered
@@ -658,7 +658,7 @@ fn aggregate_call_is_materialized_once_before_scalar_projection() {
             view,
             &definitions,
             HashSet::from([consumer.id().index()]),
-            EmissionPolicy::reviewable(),
+            EmissionFacts::structured(),
         )
         .expect("aggregate projections should lower from one materialized call");
         let statements = &lowered
@@ -759,7 +759,7 @@ fn a_diverted_conditional_update_keeps_each_materialized_call_inside_its_guard()
             view,
             &definitions,
             HashSet::from([1]),
-            EmissionPolicy::reviewable(),
+            EmissionFacts::structured(),
         )
         .unwrap();
         let function = lowered

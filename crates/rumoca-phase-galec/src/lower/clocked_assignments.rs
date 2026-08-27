@@ -53,7 +53,7 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
         definitions,
         by_id,
         pre_names,
-        policy,
+        emission,
     } = lowering;
     let mut pending = Vec::new();
     let mut locals = Vec::new();
@@ -61,7 +61,7 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
     let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names)
         .with_causal_inlining()
         .with_temporary_namespace(format!("clocked{}", clock.index()))
-        .with_emission_policy(policy);
+        .with_emission(emission);
     let causal = CausalReadExpansion::new(view, definitions);
     let shared_calls = lower_clock_domain_shared_calls(
         view,
@@ -785,11 +785,11 @@ fn lower_event_actions<'dae>(
         definitions,
         by_id,
         pre_names,
-        policy,
+        emission,
     } = lowering;
     let mut lowerer = ExpressionLowerer::with_assertions(view, definitions, by_id, pre_names)
         .with_causal_inlining()
-        .with_emission_policy(policy);
+        .with_emission(emission);
     for (_, action) in view.event_actions() {
         let span = action.provenance().span();
         let dae::EventActionOperation::Assert { level: None, .. } = action.operation() else {

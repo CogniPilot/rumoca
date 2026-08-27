@@ -13,11 +13,11 @@ pub(super) fn append_causal_assignments<'dae>(
         definitions,
         by_id,
         pre_names,
-        policy,
+        emission,
     } = lowering;
     let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names)
         .with_temporary_namespace("causal")
-        .with_emission_policy(policy);
+        .with_emission(emission);
     for algebraic in definitions.order() {
         let id = dae::VariableId::from(*algebraic);
         let Some(local) = classified
