@@ -24,12 +24,64 @@ pub(crate) struct AlgorithmCodeView<'a> {
     /// anchors refer to, and so no build-machine path reaches the artifact
     /// (SPEC_0034 GAL-032).
     traces: super::source_trace::TraceLegend,
+    /// How the block was built: the emission policy in force, and whether that
+    /// policy leaves the artifact eligible for the certification path.
+    ///
+    /// A target emits this so a reviewer reads how the artifact was generated
+    /// from the artifact itself rather than from the command line that
+    /// produced it, which nothing downstream retains.
+    emission: EmissionView,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct PackageRoot<'a> {
     block: algorithm_code_typed::TypedBlockView<'a>,
     clock_variable_ordinal: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct EmissionView {
+    /// Whether this render path knows the policies the block was projected
+    /// under.
+    ///
+    /// False on the standalone `.alg` path: that path receives a block some
+    /// earlier run projected, so the settings that chose its shape are not
+    /// visible here and the emitted C must not invent them.
+    recorded: bool,
+    /// How much of the source call structure survived (`none` .. `all`).
+    inline: &'static str,
+    /// Whether tensor operations were expanded (`never` .. `all`).
+    scalarize: &'static str,
+    /// Whether the artifact stays eligible for the certification path. Only
+    /// the scalarization axis can take that away.
+    certifiable: bool,
+    /// Whether every call boundary and every tensor operation the model wrote
+    /// is still present, which is the one case with nothing to disclose.
+    fully_structured: bool,
+}
+
+impl EmissionView {
+    fn new(policy: rumoca_ir_galec::package::EmissionPolicy) -> Self {
+        Self {
+            recorded: true,
+            inline: policy.inline.as_str(),
+            scalarize: policy.scalarize.as_str(),
+            certifiable: policy.is_certifiable(),
+            fully_structured: policy.keeps_every_structure(),
+        }
+    }
+
+    /// An unrecorded provenance discloses nothing and claims nothing: it
+    /// reports neither that the artifact is certifiable nor that it is not.
+    const fn unrecorded() -> Self {
+        Self {
+            recorded: false,
+            inline: "unrecorded",
+            scalarize: "unrecorded",
+            certifiable: false,
+            fully_structured: false,
+        }
+    }
 }
 
 impl<'a> AlgorithmCodeView<'a> {
@@ -90,6 +142,7 @@ impl<'a> AlgorithmCodeView<'a> {
             variables,
             methods: MethodsView::new(block),
             traces,
+            emission: EmissionView::new(package.emission_policy()),
         })
     }
 }
@@ -217,6 +270,9 @@ pub(crate) struct CheckedAlgorithmBlockView<'a> {
     /// See [`AlgorithmCodeView::traces`]; the two render paths carry the
     /// same trace legend so a target template reads one name.
     traces: super::source_trace::TraceLegend,
+    /// See [`AlgorithmCodeView::emission`]. Always unrecorded here: this path
+    /// renders a block it did not project.
+    emission: EmissionView,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -311,6 +367,7 @@ impl<'a> CheckedAlgorithmBlockView<'a> {
             variables,
             methods: MethodsView::new(block),
             traces,
+            emission: EmissionView::unrecorded(),
         })
     }
 }

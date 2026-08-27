@@ -14,8 +14,11 @@
 mod cli_report_tests;
 #[cfg(test)]
 mod cli_tests;
+mod compile_selectors;
 mod model_resolution;
 mod value;
+
+pub use compile_selectors::{CompilePhase, EmissionPolicyArg, InlinePolicyArg, ScalarizePolicyArg};
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -318,6 +321,37 @@ pub struct CompileArgs {
     #[arg(long, value_enum, requires = "target")]
     pub phase: Option<CompilePhase>,
 
+    /// How much call structure a GALEC-derived target keeps (default
+    /// `cost-model`). Information-preserving and bit-identical at every
+    /// setting, so every setting stays eligible for the certification path.
+    #[arg(
+        long,
+        value_enum,
+        requires = "target",
+        conflicts_with = "emission_policy"
+    )]
+    pub inline_policy: Option<InlinePolicyArg>,
+
+    /// Whether tensor operations may be expanded into per-element statements
+    /// (default `never`). Expansion destroys index sets, symmetry and
+    /// bandedness, so any other setting taints the artifact for the
+    /// certification path and the emitted block header says so.
+    #[arg(
+        long,
+        value_enum,
+        requires = "target",
+        conflicts_with = "emission_policy"
+    )]
+    pub scalarize_policy: Option<ScalarizePolicyArg>,
+
+    /// Shorthand for one point in the (`--inline-policy`, `--scalarize-policy`)
+    /// space: `reviewable` = (none, never), `balanced` = (cost-model, never),
+    /// `flat` = (all, all). Every point a preset names is also reachable by
+    /// setting the two axes, and the useful combinations they do not name are
+    /// reachable only that way.
+    #[arg(long, value_enum, requires = "target")]
+    pub emission_policy: Option<EmissionPolicyArg>,
+
     /// Output path. For an `--emit` IR dump this is a file (defaults to stdout);
     /// for a `--target` codegen run it may be a file or a directory.
     #[arg(short, long)]
@@ -349,30 +383,6 @@ pub struct CompileArgs {
 
     #[command(flatten)]
     pub diagnostics: DiagnosticsArgs,
-}
-
-/// Compiler stage whose IR a raw `.jinja` `--target` consumes (`compile --phase`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CompilePhase {
-    /// Abstract syntax tree (resolved).
-    Ast,
-    /// Flattened model.
-    Flat,
-    /// DAE system.
-    Dae,
-    /// Solver IR.
-    Solve,
-}
-
-impl From<CompilePhase> for TemplateIr {
-    fn from(phase: CompilePhase) -> Self {
-        match phase {
-            CompilePhase::Ast => TemplateIr::Ast,
-            CompilePhase::Flat => TemplateIr::Flat,
-            CompilePhase::Dae => TemplateIr::Dae,
-            CompilePhase::Solve => TemplateIr::Solve,
-        }
-    }
 }
 
 /// An IR dump selected by `compile --emit`: a compiler stage plus output format.
@@ -1112,6 +1122,11 @@ fn run_compile(args: CompileArgs) -> Result<()> {
         };
     }
 
+    let emission_policy = compile_selectors::resolve_emission_policy(
+        args.emission_policy,
+        args.inline_policy,
+        args.scalarize_policy,
+    );
     match (args.emit, args.target) {
         // IR dump of one compiler stage (--emit conflicts with --target).
         (Some(emit), _) => run_ir_dump(&result, &model, emit.phase(), emit.is_json(), args.output),
@@ -1123,6 +1138,7 @@ fn run_compile(args: CompileArgs) -> Result<()> {
             &target,
             args.output,
             args.phase.map(TemplateIr::from),
+            emission_policy,
         ),
         // Neither: just report the compilation summary. There is no artifact to
         // write here, so `--output` would be a silent no-op — reject it instead

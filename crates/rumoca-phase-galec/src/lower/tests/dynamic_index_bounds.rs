@@ -139,8 +139,13 @@ fn lower_conditional_pivot(guarded: &GuardedPivot) -> Result<Vec<gast::UserFunct
     model.inspect(|view| {
         let pick = view.function_id(0).unwrap();
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        user_functions::lower_reachable(view, &definitions, HashSet::from([pick.index()]))
-            .map_err(|error| format!("{error:?}"))
+        user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([pick.index()]),
+            EmissionPolicy::reviewable(),
+        )
+        .map_err(|error| format!("{error:?}"))
     })
 }
 

@@ -419,6 +419,7 @@ fn function_array_updates_preserve_nested_writes_without_replaying_prior_definit
                 view,
                 &definitions,
                 HashSet::from([function.id().index()]),
+                EmissionPolicy::reviewable(),
             )
             .unwrap();
             let name = function.name().as_str();
@@ -491,6 +492,7 @@ fn a_write_reading_the_chain_root_diverts_instead_of_replaying_in_place() {
             view,
             &definitions,
             HashSet::from([function.id().index()]),
+            EmissionPolicy::reviewable(),
         )
         .unwrap();
         let statements = &lowered
@@ -656,6 +658,7 @@ fn aggregate_call_is_materialized_once_before_scalar_projection() {
             view,
             &definitions,
             HashSet::from([consumer.id().index()]),
+            EmissionPolicy::reviewable(),
         )
         .expect("aggregate projections should lower from one materialized call");
         let statements = &lowered
@@ -752,8 +755,13 @@ fn a_diverted_conditional_update_keeps_each_materialized_call_inside_its_guard()
 
     model.inspect(|view| {
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let lowered =
-            user_functions::lower_reachable(view, &definitions, HashSet::from([1])).unwrap();
+        let lowered = user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([1]),
+            EmissionPolicy::reviewable(),
+        )
+        .unwrap();
         let function = lowered
             .iter()
             .find(|function| function.name.lexeme() == "guardedUpdate")

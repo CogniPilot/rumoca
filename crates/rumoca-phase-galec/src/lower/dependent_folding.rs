@@ -39,7 +39,10 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_galec::ast as gast;
 use rumoca_ir_galec::package::ConstantFoldedParameter;
 
-use super::{ClassifiedVariable, ProjectionParts, VariableClass, state_reference};
+use super::{
+    BlockLowering, ClassifiedVariable, ExpressionLowerer, ProjectionParts, VariableClass, coerce,
+    expression_span, state_reference, unsupported,
+};
 use crate::diagnostic::GalecTargetError;
 
 /// Largest dependent parameter, in scalars, the projection will fold.
@@ -69,13 +72,12 @@ struct Unfrozen {
 /// what makes the frozen-input proof transitive: a dependent parameter is
 /// frozen exactly when every parameter it reads is already known frozen.
 pub(super) fn append_dependent_parameters<'dae>(
-    view: dae::DaeView<'dae>,
-    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+    lowering: BlockLowering<'_, 'dae>,
     order: &[u32],
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
-    pre_names: &HashMap<u32, gast::Name>,
     parts: &mut ProjectionParts,
 ) -> Result<(), GalecTargetError> {
+    let view = lowering.view;
+    let by_id = lowering.by_id;
     let mut frozen = HashSet::new();
     let mut unfrozen_roots: HashMap<u32, Unfrozen> = HashMap::new();
     for id in order {
@@ -98,7 +100,7 @@ pub(super) fn append_dependent_parameters<'dae>(
             parts.recalibrate.push(statement);
             continue;
         }
-        let lowered = super::dependent_assignment(view, definitions, classified, by_id, pre_names)?;
+        let lowered = dependent_assignment(lowering, classified)?;
         parts.startup.extend(lowered.statements.iter().cloned());
         parts.recalibrate.extend(lowered.statements);
         parts.startup_locals.extend(lowered.locals);
@@ -295,4 +297,92 @@ const fn class_remedy(class: VariableClass) -> &'static str {
         | VariableClass::Constant
         | VariableClass::State => "",
     }
+}
+/// Lower one dependent parameter binding into the statements that establish it.
+///
+/// A dependent parameter may be bound by a call to a function that asserts on
+/// its arguments, which is how a model states a precondition on geometry or
+/// tuning that only holds for admissible parameter values. Those assertions are
+/// captured here and emitted ahead of the assignment, so an inadmissible
+/// parameter raises the eFMI error signal from `Startup`/`Recalibrate` instead
+/// of being rejected at projection time. The returned vector is therefore the
+/// assertion guards followed by the assignment itself.
+pub(super) fn dependent_assignment<'dae>(
+    lowering: BlockLowering<'_, 'dae>,
+    classified: &ClassifiedVariable<'dae>,
+) -> Result<DependentParameterLowering, GalecTargetError> {
+    let BlockLowering {
+        view,
+        definitions,
+        by_id,
+        pre_names,
+        policy,
+    } = lowering;
+    let expression = classified
+        .variable
+        .binding()
+        .or(classified.variable.start())
+        .ok_or_else(|| GalecTargetError::AttributeNotEvaluable {
+            variable: classified.variable.name().to_string(),
+            attribute: "binding",
+            reason: "dependent parameter has no defining expression".to_owned(),
+            span: Some(classified.variable.declaration().span()),
+        })?;
+    // Materialize calls instead of inlining them. A dependent parameter may be
+    // bound by a real algorithm: the rotor allocation matrix of a multirotor is
+    // a dense solve of the rotor effectiveness tensor. Inlining unrolls that
+    // solve into one expression, and because each array update names the array
+    // the previous update produced, the expression grows multiplicatively with
+    // the number of updates rather than additively. Emitting a call keeps
+    // Startup proportional to the function, and keeps the function's own
+    // locals, which is also what makes the generated C worth embedding.
+    let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names)
+        .with_emission_policy(policy);
+    let node = view
+        .expression(expression)
+        .expect("checked dependent-parameter expression resolves");
+    let target_type = classified.variable.value_type();
+    if node.value_type() != target_type {
+        return Err(unsupported(
+            "array-projection",
+            format!(
+                "dependent parameter `{}` has shape {:?}, but its binding has shape {:?}",
+                classified.variable.name(),
+                target_type.dimensions(),
+                node.value_type().dimensions()
+            ),
+            node.provenance().span(),
+        ));
+    }
+    let value = if target_type.dimensions().is_empty() {
+        let scalar = lowerer.lower(expression)?;
+        coerce(scalar, classified.scalar_type, node.provenance().span())?
+    } else if let Some(reference) = lowerer.direct_whole_aggregate_reference(expression)? {
+        reference
+    } else {
+        lowerer.lower_aggregate_expression_as(expression, classified.scalar_type)?
+    };
+    let mut statements = lowerer.take_prefix_statements();
+    statements.push(gast::Spanned::new(
+        gast::Statement::Assignment {
+            target: state_reference(
+                classified.name.clone(),
+                classified.variable.declaration().span(),
+            ),
+            value,
+        },
+        expression_span(view, expression),
+    ));
+    Ok(DependentParameterLowering {
+        statements,
+        locals: lowerer.take_temporary_locals(),
+        called_user_functions: lowerer.take_called_user_functions(),
+    })
+}
+
+/// One dependent parameter's contribution to `Startup` and `Recalibrate`.
+pub(super) struct DependentParameterLowering {
+    pub(super) statements: Vec<gast::Spanned<gast::Statement>>,
+    pub(super) locals: Vec<gast::VariableDeclaration>,
+    pub(super) called_user_functions: HashSet<u32>,
 }

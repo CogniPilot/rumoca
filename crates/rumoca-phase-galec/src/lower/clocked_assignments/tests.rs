@@ -33,8 +33,18 @@ fn project(model: &dae::Dae) -> Result<Vec<gast::Spanned<gast::Statement>>, Gale
                 )
             })
             .expect("test has one periodic clock");
-        lower_clocked_assignments(view, &definitions, clock, &by_id, &HashMap::new())
-            .map(|assignments| assignments.statements)
+        let pre_names = HashMap::new();
+        lower_clocked_assignments(
+            BlockLowering {
+                view,
+                definitions: &definitions,
+                by_id: &by_id,
+                pre_names: &pre_names,
+                policy: EmissionPolicy::reviewable(),
+            },
+            clock,
+        )
+        .map(|assignments| assignments.statements)
     })
 }
 

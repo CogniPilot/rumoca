@@ -22,6 +22,7 @@ pub(super) fn lower_reachable<'dae>(
     view: dae::DaeView<'dae>,
     definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     roots: HashSet<u32>,
+    policy: EmissionPolicy,
 ) -> Result<Vec<gast::UserFunction>, GalecTargetError> {
     let mut pending = roots.into_iter().collect::<Vec<_>>();
     pending.sort_unstable();
@@ -35,7 +36,7 @@ pub(super) fn lower_reachable<'dae>(
                 .ok_or_else(|| GalecTargetError::LoweringInternal {
                     detail: format!("reachable function identity {raw} does not resolve"),
                 })?;
-        let (function, calls) = lower_function(view, definitions, id)?;
+        let (function, calls) = lower_function(view, definitions, id, policy)?;
         lowered.insert(raw, function);
         for call in calls {
             if !lowered.contains_key(&call) {
@@ -173,6 +174,7 @@ fn lower_function<'dae>(
     view: dae::DaeView<'dae>,
     definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     id: dae::FunctionId<'dae>,
+    policy: EmissionPolicy,
 ) -> Result<(gast::UserFunction, HashSet<u32>), GalecTargetError> {
     if !is_directly_lowerable(view, id) {
         return Err(unsupported(
@@ -191,7 +193,8 @@ fn lower_function<'dae>(
     let variables = HashMap::new();
     let previous = HashMap::new();
     let mut lowerer =
-        ExpressionLowerer::with_do_step_effects(view, definitions, &variables, &previous);
+        ExpressionLowerer::with_do_step_effects(view, definitions, &variables, &previous)
+            .with_emission_policy(policy);
     lowerer.function_scope = Some(id);
     let parameters = function_parameters(view, function)?;
     let locals = function_locals(view, function)?;

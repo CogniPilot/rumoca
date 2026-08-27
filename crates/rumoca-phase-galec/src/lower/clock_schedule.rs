@@ -29,15 +29,15 @@ struct ScheduledAssignment<'dae> {
 }
 
 pub(super) fn lower_clock_schedule<'dae>(
-    view: dae::DaeView<'dae>,
-    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+    lowering: BlockLowering<'_, 'dae>,
     schedule: &AdmittedClock,
     classified: &[ClassifiedVariable<'dae>],
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
-    pre_names: &HashMap<u32, gast::Name>,
     declarations: &mut ProtectedDeclarations<'_>,
 ) -> Result<ScheduledClockAssignments, GalecTargetError> {
-    let mut domains = lower_clock_domains(view, definitions, schedule, by_id, pre_names, true)?;
+    let BlockLowering {
+        by_id, pre_names, ..
+    } = lowering;
+    let mut domains = lower_clock_domains(lowering, schedule, true)?;
     let mut ordered = order_clocked_assignments(take_pending(&mut domains), by_id);
     // Evaluating a repeated call once at a scheduled position is an
     // optimization, never a reason to refuse a model. If its node cannot be
@@ -47,7 +47,7 @@ pub(super) fn lower_clock_schedule<'dae>(
             .iter()
             .any(|domain| domain.assignments.schedules_shared_calls)
     {
-        domains = lower_clock_domains(view, definitions, schedule, by_id, pre_names, false)?;
+        domains = lower_clock_domains(lowering, schedule, false)?;
         ordered = order_clocked_assignments(take_pending(&mut domains), by_id);
     }
     let ordered = ordered?;
@@ -104,13 +104,11 @@ pub(super) fn lower_clock_schedule<'dae>(
 }
 
 fn lower_clock_domains<'dae>(
-    view: dae::DaeView<'dae>,
-    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+    lowering: BlockLowering<'_, 'dae>,
     schedule: &AdmittedClock,
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
-    pre_names: &HashMap<u32, gast::Name>,
     allow_scheduled_shared_calls: bool,
 ) -> Result<Vec<ClockDomain<'dae>>, GalecTargetError> {
+    let view = lowering.view;
     let unclocked_owner = schedule
         .domains
         .iter()
@@ -127,11 +125,8 @@ fn lower_clock_domains<'dae>(
                 .expect("admissibility retained a checked clock index");
             let clock_view = view.clock(clock).expect("admitted clock resolves");
             let assignments = lower_clocked_assignments_for_domain(
-                view,
-                definitions,
+                lowering,
                 clock,
-                by_id,
-                pre_names,
                 domain.clock_index == unclocked_owner,
                 allow_scheduled_shared_calls,
             )?;
