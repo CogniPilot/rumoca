@@ -161,6 +161,13 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 detail: "an eager-call plan referenced a non-call expression".to_owned(),
             });
         };
+        // Hoisting a call to a scheduled position exists to evaluate it once
+        // for every reader. A call the policy substitutes is already evaluated
+        // once for every reader, by the value memo the substituted body shares,
+        // so hoisting it would emit a second evaluation nothing reads.
+        if self.admits_inline(function) {
+            return Ok(());
+        }
         self.materialize_function_call(call, function, arguments, node.provenance().span())?;
         Ok(())
     }
@@ -177,10 +184,22 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         if self.materialize_function_values
             && user_functions::is_directly_lowerable(self.view, function)
         {
+            // The GALEC ABI can represent this call, so emitting it is always
+            // legal and inlining is a choice rather than a necessity. A choice
+            // must be free to decline, so the substitution runs speculatively
+            // and the call is emitted when it does not work out.
+            if self.admits_inline(function)
+                && let Some(inlined) =
+                    self.try_inline_call(call, function, output, arguments, indices, span)
+            {
+                return Ok(inlined);
+            }
             return self.lower_materialized_function_call(
                 call, function, output, arguments, indices, span,
             );
         }
+        // No representable ABI form. Substituting the body is the only emission
+        // there is, so its failure is the model's refusal, not a decline.
         let result = self.enter_function_call(call, function, output, arguments, indices, span)?;
         let lowered = self.lower_at(result, indices);
         self.call_frames.pop();
@@ -1125,7 +1144,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         Ok(gast::Expression::Array(elements))
     }
 
-    fn enter_function_call(
+    pub(super) fn enter_function_call(
         &mut self,
         call: dae::ExprId<'dae>,
         function: dae::FunctionId<'dae>,
@@ -1165,6 +1184,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             // the result *after* this call executes and therefore are not part
             // of the call identity.
             indices: selection_indices(call_indices),
+            substituted_by_policy: false,
         });
         if let Err(error) = self.capture_function_assertions(function) {
             self.call_frames.pop();

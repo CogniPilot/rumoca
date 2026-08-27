@@ -7,6 +7,10 @@
 //! metadata.
 
 use rumoca_ir_dae::Dae;
+// SPEC_0029 §8: imported, never re-exported. `EmissionPolicy` is owned by
+// `rumoca-ir-galec` because the projected package carries it to the targets
+// that must disclose it, so every consumer names that crate directly.
+use rumoca_ir_galec::package::EmissionPolicy;
 
 /// Options controlling the projection.
 #[derive(Debug, Clone, Default)]
@@ -15,6 +19,13 @@ pub struct GalecOptions {
     /// named after [`GalecInput::model_name`] (mangled per GAL-015 if the
     /// Modelica name is not a legal GALEC identifier).
     pub block_name: Option<String>,
+    /// The two axes the projection emits under: how much call structure it
+    /// keeps, and whether it may expand a tensor operation.
+    ///
+    /// The default keeps every tensor, so a caller that does not think about
+    /// this gets an artifact that is still eligible for the certification path.
+    /// It does NOT decline inlining, because inlining takes nothing away.
+    pub emission_policy: EmissionPolicy,
 }
 
 /// Borrowed projection input: the untouched canonical DAE plus auxiliary

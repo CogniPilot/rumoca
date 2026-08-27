@@ -690,6 +690,7 @@ fn the_block_name_option_overrides_the_model_name() {
         &GalecInput::new(&model, "TickOrder"),
         &GalecOptions {
             block_name: Some("Renamed".to_owned()),
+            ..GalecOptions::default()
         },
     )
     .expect("fixture projects");

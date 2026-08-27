@@ -3,16 +3,21 @@
 use super::*;
 
 pub(super) fn append_causal_assignments<'dae>(
-    view: dae::DaeView<'dae>,
-    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+    lowering: BlockLowering<'_, 'dae>,
     classified: &[ClassifiedVariable<'dae>],
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
-    pre_names: &HashMap<u32, gast::Name>,
     method_locals: &mut Vec<gast::VariableDeclaration>,
     statements: &mut Vec<gast::Spanned<gast::Statement>>,
 ) -> Result<HashSet<u32>, GalecTargetError> {
+    let BlockLowering {
+        view,
+        definitions,
+        by_id,
+        pre_names,
+        emission,
+    } = lowering;
     let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names)
-        .with_temporary_namespace("causal");
+        .with_temporary_namespace("causal")
+        .with_emission(emission);
     for algebraic in definitions.order() {
         let id = dae::VariableId::from(*algebraic);
         let Some(local) = classified

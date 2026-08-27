@@ -1420,6 +1420,31 @@ pub struct ExternalFunction {
     pub annotations: Vec<ExternalFunctionAnnotation>,
 }
 
+/// What a function declaration's `Inline`/`LateInline` annotation asks for
+/// (MLS §18.3).
+///
+/// This is the author's request, not the compiler's decision. A backend that
+/// can substitute a body reads it as the highest authority it has to answer to
+/// (`Never` is absolute; `Requested` asks and may still be declined for
+/// legality), and a backend that cannot substitute bodies ignores it, since
+/// both spellings are annotations and neither changes what the function means.
+///
+/// `LateInline = true` reads as `Requested` here. The two differ in *when* a
+/// symbolic pipeline substitutes the body, and a compiler that substitutes at
+/// one point only has one answer to give: the author asked for the call to
+/// disappear.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum InlineAnnotation {
+    /// The declaration wrote neither `Inline` nor `LateInline`, or wrote
+    /// `LateInline = false`, which asks for nothing.
+    #[default]
+    Unstated,
+    /// `annotation(Inline = true)` or `annotation(LateInline = true)`.
+    Requested,
+    /// `annotation(Inline = false)`. Absolute: no policy raises it.
+    Never,
+}
+
 /// Function derivative annotation (MLS §12.7.1).
 ///
 /// Specifies the derivative function for automatic differentiation.

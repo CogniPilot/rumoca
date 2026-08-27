@@ -21,6 +21,21 @@ pub(super) fn write_fixture(dir: &Path, model: &str, source: &str) -> PathBuf {
 /// real binary, so the whole chain is exercised: CLI dispatch → generic
 /// capability gate → projection facade → templates → packaging.
 pub(super) fn run_compile_target(file: &Path, target: &str, out_dir: &Path) -> Output {
+    run_compile_target_with(file, target, out_dir, &[])
+}
+
+/// As [`run_compile_target`], with additional `compile` flags appended.
+///
+/// The emission-policy suite needs the same invocation under several values of
+/// one flag, and running the real binary is what makes the flag's whole path
+/// (clap parse, CLI dispatch, target manifest, GALEC projection, templates)
+/// part of what the assertion covers.
+pub(super) fn run_compile_target_with(
+    file: &Path,
+    target: &str,
+    out_dir: &Path,
+    extra: &[&str],
+) -> Output {
     Command::new(env!("CARGO_BIN_EXE_rumoca"))
         .arg("compile")
         .arg(file)
@@ -28,6 +43,7 @@ pub(super) fn run_compile_target(file: &Path, target: &str, out_dir: &Path) -> O
         .arg(target)
         .arg("-o")
         .arg(out_dir)
+        .args(extra)
         .output()
         .unwrap_or_else(|error| panic!("run rumoca compile --target {target}: {error}"))
 }

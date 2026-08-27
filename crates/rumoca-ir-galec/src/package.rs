@@ -46,6 +46,158 @@ impl CheckedAlgorithmBlock {
     }
 }
 
+/// How much of the source CALL structure the emitted artifact keeps.
+///
+/// Inlining is information-PRESERVING. Substituting a callee's body moves a
+/// contraction; it does not stop it being a contraction, and its shape, index
+/// sets and structure arrive intact. It reorders no floating-point operation,
+/// so every setting computes bit-identical values. What it costs is flash per
+/// duplicated site, compile time, and a flatter artifact to read. What it buys
+/// is the marshalling at each boundary and, decisively, the call chain itself:
+/// a caller and any transitive callee are refused a shared storage class, so
+/// the chain is the working-memory floor until inlining removes it.
+///
+/// Because nothing structural is lost, this axis has a permissive default and
+/// does NOT taint the artifact for the certification path. Traceability is
+/// preserved by construction rather than by declining: a substituted statement
+/// keeps its own span and its temporaries extend their provenance path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InlinePolicy {
+    /// Every call the GALEC ABI can represent stays a call, whatever the model
+    /// asks for. The emitted functions are exactly the model's functions.
+    ///
+    /// The default, so a caller that passes no setting gets the artifact a
+    /// compiler with no dial emits. That is not a claim that keeping every
+    /// boundary is better; it is the rule that a structural decision is taken
+    /// deliberately or not at all.
+    #[default]
+    None,
+    /// Only what a function's own `annotation(Inline = true)` or
+    /// `LateInline = true` asks for.
+    Annotated,
+    /// Annotated requests, plus the call sites the cost model decides pay for
+    /// themselves.
+    CostModel,
+    /// Every call site the legality rules allow.
+    All,
+}
+
+impl InlinePolicy {
+    /// Spelling used on the command line and in the emitted disclosure.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Annotated => "annotated",
+            Self::CostModel => "cost-model",
+            Self::All => "all",
+        }
+    }
+}
+
+/// Whether a tensor operation may be expanded into per-element statements.
+///
+/// Scalarization is information-DESTROYING, and it is the one transform in
+/// this compiler that is. Index sets, symmetry, bandedness and the tensor
+/// identity itself are gone the moment a contraction becomes N statements, and
+/// nothing downstream can recover them except a recognizer guessing from
+/// emitted shapes. Every category of measured waste this campaign found
+/// (structural zeros computed and then eliminated, `identity(3)` evaluated per
+/// element, loop-invariant recomputation, structurally duplicate DAE nodes) is
+/// downstream of an expansion that did not have to happen.
+///
+/// So the default declines, and any other setting TAINTS the artifact as
+/// outside the certification path and says so in the emitted header.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScalarizePolicy {
+    /// A tensor operation stays one operation. The default, and the only
+    /// setting that keeps every structural right the model carried.
+    #[default]
+    Never,
+    /// Expand where a cost model decides the per-element form is cheaper.
+    CostModel,
+    /// Expand every tensor operation.
+    All,
+}
+
+impl ScalarizePolicy {
+    /// Spelling used on the command line and in the emitted disclosure.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::CostModel => "cost-model",
+            Self::All => "all",
+        }
+    }
+}
+
+/// The two independent axes an emission runs under.
+///
+/// They are separate because they differ in kind, not in degree: inlining
+/// changes call structure and preserves information, scalarization changes
+/// data structure and destroys it. Bundling them into one dial would make a
+/// user who wants inlined code that KEEPS its tensors unable to ask for it,
+/// and that combination is the one this compiler is uniquely able to emit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
+pub struct EmissionPolicy {
+    pub inline: InlinePolicy,
+    pub scalarize: ScalarizePolicy,
+}
+
+impl EmissionPolicy {
+    /// Every boundary and every tensor kept: the fully structured emission.
+    #[must_use]
+    pub const fn reviewable() -> Self {
+        Self {
+            inline: InlinePolicy::None,
+            scalarize: ScalarizePolicy::Never,
+        }
+    }
+
+    /// The cost model may collapse call sites; tensors stay tensors.
+    #[must_use]
+    pub const fn balanced() -> Self {
+        Self {
+            inline: InlinePolicy::CostModel,
+            scalarize: ScalarizePolicy::Never,
+        }
+    }
+
+    /// Collapse every call site and expand every tensor: the CasADi shape.
+    #[must_use]
+    pub const fn flat() -> Self {
+        Self {
+            inline: InlinePolicy::All,
+            scalarize: ScalarizePolicy::All,
+        }
+    }
+
+    /// Whether an artifact built under this pair stays eligible for the
+    /// certification path.
+    ///
+    /// Only the scalarization axis can take eligibility away. Inlining moves
+    /// arithmetic between functions while keeping its span, its provenance
+    /// path and its structure; scalarization deletes the structural artifact a
+    /// reviewer and a sparsity argument both depend on.
+    #[must_use]
+    pub const fn is_certifiable(self) -> bool {
+        matches!(self.scalarize, ScalarizePolicy::Never)
+    }
+
+    /// Whether this pair emits the fully structured artifact, with every call
+    /// boundary and every tensor operation the model wrote still present.
+    ///
+    /// This is the one setting that needs no disclosure, because there is
+    /// nothing to disclose: what was emitted is what the model declared.
+    #[must_use]
+    pub const fn keeps_every_structure(self) -> bool {
+        matches!(self.inline, InlinePolicy::None) && self.is_certifiable()
+    }
+}
+
 /// One dependent parameter whose defining call was evaluated while the code
 /// was generated and emitted as a literal.
 ///
@@ -73,6 +225,13 @@ pub struct AlgorithmCodePackage {
     /// One-based ordinal in the block declaration order.
     clock_variable_ordinal: usize,
     constant_folded_parameters: Vec<ConstantFoldedParameter>,
+    /// The emission policy this package was projected under.
+    ///
+    /// Carried on the package rather than recomputed by a target, because a
+    /// target cannot see the projection's flags and an artifact that has to
+    /// disclose how it was built must not be able to disagree with the run
+    /// that built it.
+    emission_policy: EmissionPolicy,
 }
 
 impl AlgorithmCodePackage {
@@ -101,6 +260,7 @@ impl AlgorithmCodePackage {
             variable_nominals,
             clock_variable_ordinal,
             constant_folded_parameters: Vec::new(),
+            emission_policy: EmissionPolicy::reviewable(),
         })
     }
 
@@ -112,6 +272,19 @@ impl AlgorithmCodePackage {
     ) -> Self {
         self.constant_folded_parameters = parameters;
         self
+    }
+
+    /// Record the emission policy the projection ran under.
+    #[must_use]
+    pub const fn with_emission_policy(mut self, policy: EmissionPolicy) -> Self {
+        self.emission_policy = policy;
+        self
+    }
+
+    /// The emission policy this package was projected under.
+    #[must_use]
+    pub const fn emission_policy(&self) -> EmissionPolicy {
+        self.emission_policy
     }
 
     #[must_use]

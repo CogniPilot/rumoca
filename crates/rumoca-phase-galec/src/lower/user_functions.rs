@@ -18,10 +18,11 @@ pub(super) use tensor_loops::nest_tensor_loops;
 pub(in crate::lower) use update_aliasing::same_index;
 use update_aliasing::{GroupDefinition, UpdatedAggregate, order_by_value_dependency};
 
-pub(super) fn lower_reachable<'dae>(
+pub(super) fn lower_reachable<'a, 'dae>(
     view: dae::DaeView<'dae>,
     definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     roots: HashSet<u32>,
+    emission: EmissionFacts<'a>,
 ) -> Result<Vec<gast::UserFunction>, GalecTargetError> {
     let mut pending = roots.into_iter().collect::<Vec<_>>();
     pending.sort_unstable();
@@ -35,7 +36,7 @@ pub(super) fn lower_reachable<'dae>(
                 .ok_or_else(|| GalecTargetError::LoweringInternal {
                     detail: format!("reachable function identity {raw} does not resolve"),
                 })?;
-        let (function, calls) = lower_function(view, definitions, id)?;
+        let (function, calls) = lower_function(view, definitions, id, emission)?;
         lowered.insert(raw, function);
         for call in calls {
             if !lowered.contains_key(&call) {
@@ -169,10 +170,11 @@ pub(super) fn dimensions(extents: &[u32]) -> Vec<gast::Dimension> {
         .collect()
 }
 
-fn lower_function<'dae>(
+fn lower_function<'a, 'dae>(
     view: dae::DaeView<'dae>,
     definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     id: dae::FunctionId<'dae>,
+    emission: EmissionFacts<'a>,
 ) -> Result<(gast::UserFunction, HashSet<u32>), GalecTargetError> {
     if !is_directly_lowerable(view, id) {
         return Err(unsupported(
@@ -191,7 +193,8 @@ fn lower_function<'dae>(
     let variables = HashMap::new();
     let previous = HashMap::new();
     let mut lowerer =
-        ExpressionLowerer::with_do_step_effects(view, definitions, &variables, &previous);
+        ExpressionLowerer::with_do_step_effects(view, definitions, &variables, &previous)
+            .with_emission(emission);
     lowerer.function_scope = Some(id);
     let parameters = function_parameters(view, function)?;
     let locals = function_locals(view, function)?;

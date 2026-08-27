@@ -1191,6 +1191,11 @@ fn convert_function<'tree>(
     // Extract derivative annotations (MLS §12.7.1)
     func.derivatives = extract_derivative_annotations(&class_def.annotation);
 
+    // MLS §18.3 Inline / LateInline. Carried, not acted on here: whether a call
+    // is substituted is a backend question, and this phase is the last place
+    // the annotation expressions still exist.
+    func.inline = extract_inline_annotation(&class_def.annotation);
+
     rewrite_function_extends_aliases_in_function(&mut func, tree, class_index)?;
     contextualize_record_param_type_names(tree, class_index, qualified_name, &mut func)?;
     crate::function_lowering::coalesce_proven_record_output_assignments(&mut func);

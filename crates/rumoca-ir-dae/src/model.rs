@@ -17,7 +17,8 @@ mod wire;
 use std::marker::PhantomData;
 
 use rumoca_core::{
-    ComponentReference, SourceMap, Span, StateSelect, StructuredIndexDomain, TypeId, VarName,
+    ComponentReference, InlineAnnotation, SourceMap, Span, StateSelect, StructuredIndexDomain,
+    TypeId, VarName,
 };
 use serde::{Deserialize, Serialize};
 
@@ -322,6 +323,7 @@ pub(crate) struct FunctionEntry {
     pub(crate) definition_scopes: Vec<Option<u32>>,
     pub(crate) folds: Vec<u32>,
     declaration: DaeProvenance,
+    inline: InlineAnnotation,
     definition: Option<FunctionBodyEntry>,
     build: Option<FunctionBuildState>,
 }
@@ -686,6 +688,7 @@ pub struct FunctionSignature<'dae> {
     parameters: Vec<ValueTypeId<'dae>>,
     results: Vec<ValueTypeId<'dae>>,
     declaration: DaeProvenance,
+    inline: InlineAnnotation,
 }
 
 impl<'dae> FunctionSignature<'dae> {
@@ -700,7 +703,19 @@ impl<'dae> FunctionSignature<'dae> {
             parameters: parameters.into_iter().collect(),
             results: results.into_iter().collect(),
             declaration,
+            inline: InlineAnnotation::Unstated,
         }
+    }
+
+    /// Carry the declaration's MLS §18.3 `Inline`/`LateInline` request.
+    ///
+    /// Absent, the function reads as [`InlineAnnotation::Unstated`], which is
+    /// the answer for a declaration that wrote no such annotation and the
+    /// conservative answer for a construction that does not model one.
+    #[must_use]
+    pub fn with_inline(mut self, inline: InlineAnnotation) -> Self {
+        self.inline = inline;
+        self
     }
 }
 
@@ -1193,6 +1208,7 @@ impl<'dae> Functions<'_, 'dae> {
             parameters,
             results,
             declaration,
+            inline,
         } = signature;
         check_provenance(self.source_map, declaration)?;
         let parameters = parameters
@@ -1218,6 +1234,7 @@ impl<'dae> Functions<'_, 'dae> {
             definition_scopes: Vec::new(),
             folds: Vec::new(),
             declaration,
+            inline,
             definition: None,
             build: None,
         });

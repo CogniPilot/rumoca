@@ -971,6 +971,51 @@ void {{ c_model }}_dostep({{ c_model }}State *self) {
  * GALEC-derived embedded C export (SPEC_0034 GAL-024).
  * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
  * MISRA compliance and DO-178C compliance are not claimed. */{% endblock %}
+{#- How this block was built (D7). Emitted by every C target that extends this
+    template, because the command line that chose the two axes is not retained
+    anywhere downstream and a reviewer must be able to read the answer off the
+    artifact. Nothing is emitted when nothing was collapsed or expanded: the
+    absence of this notice IS the statement that the emitted functions are the
+    model's functions and the emitted tensor operations are the model's tensor
+    operations. The standalone `.alg` render path reports nothing either,
+    because it prints a block some earlier run projected and must not invent
+    that run's settings. -#}
+{%- if algorithm_code.emission.recorded and not algorithm_code.emission.fully_structured %}
+/* ---------------------------------------------------------------------------
+ * How this block was built
+ *   inline policy:    {{ algorithm_code.emission.inline }}
+ *   scalarize policy: {{ algorithm_code.emission.scalarize }}
+ *
+ * What that produced, in the units the settings act on. Compare these against
+ * the same model built with every boundary and every tensor kept; a compiler
+ * that took a structural decision and then declined to say what it bought is
+ * asking a reviewer to take the decision on faith.
+ *   emitted statements: {{ algorithm_code.emission.emitted_statements }}
+ *   emitted functions:  {{ algorithm_code.emission.emitted_functions }}
+{%- if scratch_layout.bytes is not none %}
+ *   working memory:     {{ scratch_layout.bytes }} bytes{% if scratch_layout.least_bytes is not none %} (floor for any sound overlay of these regions: {{ scratch_layout.least_bytes }}){% endif %}
+{%- endif %}
+ *
+{%- if algorithm_code.emission.certifiable %}
+ * ELIGIBLE for the certification path. Inlining moves arithmetic between
+ * functions; it does not delete a structural fact. Every substituted statement
+ * below still carries the source span of the line that wrote it, and every
+ * temporary that replaces a call result still names the callee and the call
+ * site it came from. Tensor operations were not expanded, so index sets,
+ * symmetry and bandedness are intact.
+{%- else %}
+ * OUTSIDE THE CERTIFICATION PATH: tensor operations were expanded into
+ * per-element statements. Index sets, symmetry, bandedness and tensor identity
+ * are not recoverable from this file, so a sparsity or symmetry argument made
+ * against it is an argument about emitted text rather than about the model.
+{%- endif %}
+ *
+ * What it computes is unchanged either way. Both transforms move and copy
+ * without reordering any floating-point operation, so this file produces
+ * bit-identical results to the same model built with every boundary and every
+ * tensor kept.
+ * ------------------------------------------------------------------------ */
+{%- endif %}
 #include "{{ model_name }}.h"
 
 #include "rumoca_galec_kernels.h"

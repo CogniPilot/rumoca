@@ -695,6 +695,7 @@ fn compile_target_flat_modelica_uses_flat_template_context() {
         "flat-modelica",
         Some(output.path().to_path_buf()),
         None,
+        rumoca_ir_galec::package::EmissionPolicy::reviewable(),
     )
     .expect("flat-modelica target should render");
 

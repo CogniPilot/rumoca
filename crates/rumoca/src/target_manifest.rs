@@ -18,6 +18,7 @@ use rumoca_compile::codegen::targets::{
 #[cfg(any(feature = "scheduled-sim", feature = "fmu-packaging"))]
 use rumoca_compile::codegen::targets::{TargetArchiveFormat, TargetArchiveRoot, safe_target_join};
 use rumoca_core::{PhaseError, SourceMap};
+use rumoca_ir_galec::package::EmissionPolicy;
 use rumoca_phase_galec::{GalecInput, GalecOptions, GalecTargetError};
 
 struct TargetModelIdentity<'a> {
@@ -41,6 +42,7 @@ pub(crate) fn compile_target(
     target: &str,
     output: Option<PathBuf>,
     phase: Option<TemplateIr>,
+    emission_policy: EmissionPolicy,
 ) -> Result<()> {
     if raw_template_target(target) {
         let identity = TargetModelIdentity::new(model);
@@ -54,7 +56,7 @@ pub(crate) fn compile_target(
         );
     }
     let (bundle, manifest) = resolve_manifest_target(target, phase)?;
-    compile_manifest_target(result, model, &bundle, &manifest, output)
+    compile_manifest_target(result, model, &bundle, &manifest, output, emission_policy)
 }
 
 /// Invalidate artifacts from a previous built-in target invocation before the
@@ -162,7 +164,10 @@ pub fn compile_packaged_target(
     ensure_target_has_rendered_files(&manifest)?;
     validate_target_requirements(result, &manifest)?;
     let identity = TargetModelIdentity::new(model);
-    let renderer = resolve_manifest_renderer(result, &manifest, &identity)?;
+    // Packaging CI drives the certifiable default; the dial is a `compile`
+    // flag, and this entry point deliberately owns packaging only.
+    let renderer =
+        resolve_manifest_renderer(result, &manifest, &identity, EmissionPolicy::reviewable())?;
     compile_manifest_package(
         result,
         &renderer,
@@ -255,8 +260,12 @@ pub fn render_target_files(
     // topological render + hash-inject the CLI writes, minus the on-disk
     // packaging — so CI exercises the exact web the container writer will.
     if manifest.ir == TargetTemplateIr::AlgorithmCode {
-        let package =
-            lower_algorithm_code(result, identity.semantic_name, manifest.name.as_deref())?;
+        let package = lower_algorithm_code(
+            result,
+            identity.semantic_name,
+            manifest.name.as_deref(),
+            EmissionPolicy::reviewable(),
+        )?;
         let renderer = rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::new(
             &package,
             result.dae.source_map(),
@@ -264,7 +273,8 @@ pub fn render_target_files(
         let render = algorithm_code_web_render(&renderer, &bundle, &identity.artifact_stem);
         return crate::packaging::render_web_files(&manifest.files, render);
     }
-    let renderer = resolve_manifest_renderer(result, &manifest, &identity)?;
+    let renderer =
+        resolve_manifest_renderer(result, &manifest, &identity, EmissionPolicy::reviewable())?;
     render_manifest_files(
         result,
         &renderer,
@@ -278,14 +288,56 @@ pub fn render_target_files(
 /// `galec`/`galec-production` targets, or `None` for any other target. The
 /// GALEC projection runs here — once, before any filesystem effect — so a
 /// rejection surfaces before an output directory is created.
+/// The emission policy one target is allowed to run under.
+///
+/// An eFMI container ships TWO representations of one model: `AlgorithmCode` is
+/// the reviewable semantic reference and `ProductionCode` is its optimized C
+/// rendering. This compiler renders both from ONE projected package, so a
+/// policy that collapses call structure would collapse it in the reference too,
+/// and the container would stop containing the thing it exists to contain.
+///
+/// So a target that ships a container runs fully structured, and a request to
+/// do otherwise is refused rather than ignored: silently dropping the flag
+/// would hand back an artifact that does not match what was asked for.
+///
+/// RELOCATION DEBT. The transform's end-state home is the GALEC to Solve
+/// refinement, where the two representations can legitimately diverge: the
+/// `.alg` stays the structured reference and only the Solve program the C
+/// emitter consumes is optimized. Hosting it in DAE to GALEC lowering is an
+/// interim placement for the container-free `embedded-c-galec` target, and this
+/// refusal is the seam that keeps the interim honest. When the refinement
+/// lands, this function should stop existing rather than grow cases.
+fn admitted_emission_policy(
+    manifest: &TargetManifest,
+    requested: EmissionPolicy,
+) -> Result<EmissionPolicy> {
+    if manifest.package.is_none() || requested == EmissionPolicy::reviewable() {
+        return Ok(requested);
+    }
+    bail!(
+        "target '{}' packages an eFMI container, whose AlgorithmCode representation is the \
+         reviewable semantic reference and must stay structured whatever the emitted C does. \
+         This compiler renders both representations from one projection, so it cannot yet honour \
+         `--inline-policy {}` / `--scalarize-policy {}` here. Use `--target embedded-c-galec` for \
+         a policy-shaped export, or drop the flags for the container.",
+        manifest.name.as_deref().unwrap_or("custom"),
+        requested.inline.as_str(),
+        requested.scalarize.as_str()
+    )
+}
+
 fn lower_algorithm_code(
     result: &CompilationResult,
     model: &str,
     target: Option<&str>,
+    emission_policy: EmissionPolicy,
 ) -> Result<rumoca_ir_galec::package::AlgorithmCodePackage> {
     rumoca_phase_galec::lower_to_algorithm_code(
         &GalecInput::new(&result.dae, model),
-        &GalecOptions::default(),
+        &GalecOptions {
+            emission_policy,
+            ..GalecOptions::default()
+        },
     )
     .map_err(|diagnostics| galec_projection_error(result, diagnostics, target.unwrap_or("custom")))
 }
@@ -444,6 +496,7 @@ fn compile_manifest_target(
     bundle: &TargetBundle,
     manifest: &TargetManifest,
     output: Option<PathBuf>,
+    emission_policy: EmissionPolicy,
 ) -> Result<()> {
     ensure_target_has_rendered_files(manifest)?;
     validate_target_requirements(result, manifest)?;
@@ -452,7 +505,7 @@ fn compile_manifest_target(
 
     // Resolved before any filesystem effect: a renderer-level rejection
     // (e.g. the GALEC projection) must not leave an output directory behind.
-    let renderer = resolve_manifest_renderer(result, manifest, &identity)?;
+    let renderer = resolve_manifest_renderer(result, manifest, &identity, emission_policy)?;
     let out_dir =
         output.unwrap_or_else(|| default_target_output_dir(manifest, &identity.artifact_stem));
 
@@ -702,13 +755,18 @@ fn resolve_manifest_renderer(
     result: &CompilationResult,
     manifest: &TargetManifest,
     identity: &TargetModelIdentity<'_>,
+    emission_policy: EmissionPolicy,
 ) -> Result<ManifestRenderer> {
     if manifest.ir == TargetTemplateIr::Solve && manifest.name.as_deref() == Some("wgsl-ode") {
         return Ok(ManifestRenderer::WgslSolve);
     }
     if manifest.ir == TargetTemplateIr::AlgorithmCode {
-        let package =
-            lower_algorithm_code(result, identity.semantic_name, manifest.name.as_deref())?;
+        let package = lower_algorithm_code(
+            result,
+            identity.semantic_name,
+            manifest.name.as_deref(),
+            admitted_emission_policy(manifest, emission_policy)?,
+        )?;
         let renderer = rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::new(
             &package,
             result.dae.source_map(),
@@ -1261,6 +1319,7 @@ stencil = "native"
             &bundle,
             &manifest,
             Some(out_dir.path().to_path_buf()),
+            EmissionPolicy::reviewable(),
         )
         .expect("rust-fixed-ode should render scalarized MatMul derivative sources");
 
@@ -1291,6 +1350,7 @@ stencil = "native"
             &bundle,
             &manifest,
             Some(out_dir.path().to_path_buf()),
+            EmissionPolicy::reviewable(),
         )
         .expect_err("rust-fixed-ode must reject LinSolve before writing source");
         let message = format!("{err:#}");
@@ -1337,6 +1397,7 @@ scalar_fallback = false
             &bundle,
             &manifest,
             Some(out_dir.path().to_path_buf()),
+            EmissionPolicy::reviewable(),
         )
         .expect("cuda-ode target should render its declared scalar MatMul fallback");
 
@@ -1365,6 +1426,7 @@ scalar_fallback = false
             &bundle,
             &manifest,
             Some(out_dir.path().to_path_buf()),
+            EmissionPolicy::reviewable(),
         )
         .expect_err("cuda-ode must reject LinSolve without a device linear-solve ABI");
         let message = format!("{error:#}");
@@ -1401,6 +1463,7 @@ scalar_fallback = false
             &bundle,
             &manifest,
             Some(out_dir.path().to_path_buf()),
+            EmissionPolicy::reviewable(),
         )
         .expect("cuda-ode target should render scalar smoke source");
 

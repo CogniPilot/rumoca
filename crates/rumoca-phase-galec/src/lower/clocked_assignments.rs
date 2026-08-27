@@ -36,30 +36,32 @@ use shared_calls::{
 
 #[cfg(test)]
 pub(super) fn lower_clocked_assignments<'dae>(
-    view: dae::DaeView<'dae>,
-    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+    lowering: BlockLowering<'_, 'dae>,
     clock: dae::ClockId<'dae>,
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
-    pre_names: &HashMap<u32, gast::Name>,
 ) -> Result<ClockedAssignments, GalecTargetError> {
-    lower_clocked_assignments_for_domain(view, definitions, clock, by_id, pre_names, true, true)
+    lower_clocked_assignments_for_domain(lowering, clock, true, true)
 }
 
 pub(super) fn lower_clocked_assignments_for_domain<'dae>(
-    view: dae::DaeView<'dae>,
-    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+    lowering: BlockLowering<'_, 'dae>,
     clock: dae::ClockId<'dae>,
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
-    pre_names: &HashMap<u32, gast::Name>,
     include_unclocked_actions: bool,
     allow_scheduled_shared_calls: bool,
 ) -> Result<ClockedAssignments, GalecTargetError> {
+    let BlockLowering {
+        view,
+        definitions,
+        by_id,
+        pre_names,
+        emission,
+    } = lowering;
     let mut pending = Vec::new();
     let mut locals = Vec::new();
     let mut called_user_functions = HashSet::new();
     let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names)
         .with_causal_inlining()
-        .with_temporary_namespace(format!("clocked{}", clock.index()));
+        .with_temporary_namespace(format!("clocked{}", clock.index()))
+        .with_emission(emission);
     let causal = CausalReadExpansion::new(view, definitions);
     let shared_calls = lower_clock_domain_shared_calls(
         view,
@@ -91,15 +93,7 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
     )?;
     locals.extend(lowerer.take_temporary_locals());
     called_user_functions.extend(lowerer.take_called_user_functions());
-    lower_event_actions(
-        view,
-        definitions,
-        clock,
-        by_id,
-        pre_names,
-        include_unclocked_actions,
-        &mut pending,
-    )?;
+    lower_event_actions(lowering, clock, include_unclocked_actions, &mut pending)?;
     for assignment in &mut pending {
         assignment.reads = causal.expand(std::mem::take(&mut assignment.reads));
     }
@@ -107,11 +101,8 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
         && !scheduled_sharing_preserves_arguments(&pending, synthetic_schedule_floor(view))
     {
         return lower_clocked_assignments_for_domain(
-            view,
-            definitions,
+            lowering,
             clock,
-            by_id,
-            pre_names,
             include_unclocked_actions,
             false,
         );
@@ -784,16 +775,21 @@ fn discrete_real_clock_owners(view: dae::DaeView<'_>) -> HashMap<u32, u32> {
 }
 
 fn lower_event_actions<'dae>(
-    view: dae::DaeView<'dae>,
-    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+    lowering: BlockLowering<'_, 'dae>,
     clock: dae::ClockId<'dae>,
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
-    pre_names: &HashMap<u32, gast::Name>,
     include_unclocked: bool,
     pending: &mut Vec<ClockedAssignment>,
 ) -> Result<(), GalecTargetError> {
+    let BlockLowering {
+        view,
+        definitions,
+        by_id,
+        pre_names,
+        emission,
+    } = lowering;
     let mut lowerer = ExpressionLowerer::with_assertions(view, definitions, by_id, pre_names)
-        .with_causal_inlining();
+        .with_causal_inlining()
+        .with_emission(emission);
     for (_, action) in view.event_actions() {
         let span = action.provenance().span();
         let dae::EventActionOperation::Assert { level: None, .. } = action.operation() else {

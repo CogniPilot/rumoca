@@ -359,6 +359,62 @@ fn unsupported_external_annotation(expression: &ast::Expression, reason: &str) -
     ))
 }
 
+/// Read the MLS §18.3 `Inline`/`LateInline` annotation off a function
+/// declaration.
+///
+/// Both spellings are recognized because both ask the same question of a
+/// compiler that substitutes bodies at one point: whether this call should
+/// disappear. `Inline = false` outranks everything else in the clause, because
+/// it is a refusal and a refusal a compiler may override is not a refusal; a
+/// declaration writing both spellings therefore reads as
+/// [`rumoca_core::InlineAnnotation::Never`] whatever order it wrote them in.
+///
+/// Anything else, including `LateInline = false` and a non-literal value, asks
+/// for nothing and reads as `Unstated`: an annotation this function cannot
+/// evaluate must not be turned into a request the author did not make.
+pub(super) fn extract_inline_annotation(
+    annotations: &[ast::Expression],
+) -> rumoca_core::InlineAnnotation {
+    let mut requested = false;
+    for annotation in annotations {
+        match inline_clause(annotation) {
+            Some(("Inline", false)) => return rumoca_core::InlineAnnotation::Never,
+            Some(("Inline" | "LateInline", true)) => requested = true,
+            _ => {}
+        }
+    }
+    if requested {
+        rumoca_core::InlineAnnotation::Requested
+    } else {
+        rumoca_core::InlineAnnotation::Unstated
+    }
+}
+
+/// One `<name> = <Boolean literal>` annotation argument, in either of the two
+/// shapes the parser produces for it.
+fn inline_clause(annotation: &ast::Expression) -> Option<(&str, bool)> {
+    let (name, value) = match annotation {
+        ast::Expression::NamedArgument { name, value, .. } => (name.text.as_ref(), value.as_ref()),
+        ast::Expression::Modification { target, value, .. } => {
+            (target.parts.first()?.ident.text.as_ref(), value.as_ref())
+        }
+        _ => return None,
+    };
+    let ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::Bool,
+        token,
+        ..
+    } = value
+    else {
+        return None;
+    };
+    match token.text.as_ref() {
+        "true" => Some((name, true)),
+        "false" => Some((name, false)),
+        _ => None,
+    }
+}
+
 /// Extract derivative annotations from function annotation expressions (MLS §12.7.1).
 ///
 /// Looks for annotations like:

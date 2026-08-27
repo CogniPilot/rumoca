@@ -168,8 +168,17 @@ fn rank_two_dependent_parameter_preserves_one_checked_whole_array_move() {
         );
 
         let previous = HashMap::new();
-        let mut lowered =
-            dependent_assignment(view, &definitions, guidance, &by_id, &previous).unwrap();
+        let mut lowered = dependent_folding::dependent_assignment(
+            BlockLowering {
+                view,
+                definitions: &definitions,
+                by_id: &by_id,
+                pre_names: &previous,
+                emission: EmissionFacts::structured(),
+            },
+            guidance,
+        )
+        .unwrap();
         assert!(
             lowered.locals.is_empty(),
             "a whole-array copy needs no local of its own"
@@ -579,12 +588,16 @@ fn causally_defined_output_remains_an_interface_and_gets_an_assignment() {
             .collect::<HashMap<_, _>>();
         let mut statements = Vec::new();
         let mut locals = Vec::new();
+        let pre_names = HashMap::new();
         causal_outputs::append_causal_assignments(
-            view,
-            &definitions,
+            BlockLowering {
+                view,
+                definitions: &definitions,
+                by_id: &by_id,
+                pre_names: &pre_names,
+                emission: EmissionFacts::structured(),
+            },
             classified.as_slice(),
-            &by_id,
-            &HashMap::new(),
             &mut locals,
             &mut statements,
         )
@@ -1087,9 +1100,13 @@ fn assert_atomic_multi_output_group(model: &dae::Dae) {
                 if definitions.len() == 2
         ));
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let lowered =
-            user_functions::lower_reachable(view, &definitions, HashSet::from([caller.index()]))
-                .expect("the atomic multi-output group lowers");
+        let lowered = user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([caller.index()]),
+            EmissionFacts::structured(),
+        )
+        .expect("the atomic multi-output group lowers");
         let caller = lowered
             .iter()
             .find(|function| function.name.lexeme() == "caller")
@@ -1477,9 +1494,13 @@ fn record_field_of_checked_function_call_is_projected_before_scalar_lowering() {
     model.inspect(|view| {
         let function = view.function_id(0).unwrap();
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let lowered_functions =
-            user_functions::lower_reachable(view, &definitions, HashSet::from([function.index()]))
-                .unwrap();
+        let lowered_functions = user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([function.index()]),
+            EmissionFacts::structured(),
+        )
+        .unwrap();
         assert_eq!(lowered_functions.len(), 1);
         let field = (0..view.expression_count())
             .filter_map(|index| view.expression_id(index))
@@ -1579,9 +1600,13 @@ fn function_identity_assignments_are_not_emitted() {
     model.inspect(|view| {
         let function = view.function_id(0).unwrap();
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let lowered =
-            user_functions::lower_reachable(view, &definitions, HashSet::from([function.index()]))
-                .expect("identity assignment lowers");
+        let lowered = user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([function.index()]),
+            EmissionFacts::structured(),
+        )
+        .expect("identity assignment lowers");
         assert_eq!(lowered.len(), 1);
         assert_eq!(lowered[0].statements.len(), 2);
         assert!(lowered[0].statements.iter().all(|statement| {

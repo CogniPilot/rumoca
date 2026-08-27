@@ -24,12 +24,120 @@ pub(crate) struct AlgorithmCodeView<'a> {
     /// anchors refer to, and so no build-machine path reaches the artifact
     /// (SPEC_0034 GAL-032).
     traces: super::source_trace::TraceLegend,
+    /// How the block was built: the emission policy in force, and whether that
+    /// policy leaves the artifact eligible for the certification path.
+    ///
+    /// A target emits this so a reviewer reads how the artifact was generated
+    /// from the artifact itself rather than from the command line that
+    /// produced it, which nothing downstream retains.
+    emission: EmissionView,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct PackageRoot<'a> {
     block: algorithm_code_typed::TypedBlockView<'a>,
     clock_variable_ordinal: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct EmissionView {
+    /// Whether this render path knows the policies the block was projected
+    /// under.
+    ///
+    /// False on the standalone `.alg` path: that path receives a block some
+    /// earlier run projected, so the settings that chose its shape are not
+    /// visible here and the emitted C must not invent them.
+    recorded: bool,
+    /// How much of the source call structure survived (`none` .. `all`).
+    inline: &'static str,
+    /// Whether tensor operations were expanded (`never` .. `all`).
+    scalarize: &'static str,
+    /// Whether the artifact stays eligible for the certification path. Only
+    /// the scalarization axis can take that away.
+    certifiable: bool,
+    /// Whether every call boundary and every tensor operation the model wrote
+    /// is still present, which is the one case with nothing to disclose.
+    fully_structured: bool,
+    /// The block's operation budget: statements the block emits, across its
+    /// three methods and every function it still declares.
+    ///
+    /// This is what the settings above cost or saved, in the unit the settings
+    /// act on. SymForce prints `// Total ops:` for the same reason; a compiler
+    /// that made a structural decision and then declined to say what it bought
+    /// is asking a reviewer to take the decision on faith.
+    emitted_statements: usize,
+    /// Functions the block still declares. Under a policy that substituted
+    /// bodies this is smaller than the count of functions the model wrote, and
+    /// the difference is what a reviewer no longer finds as a named object.
+    emitted_functions: usize,
+}
+
+impl EmissionView {
+    fn new(policy: rumoca_ir_galec::package::EmissionPolicy, block: &ast::Block) -> Self {
+        Self {
+            recorded: true,
+            inline: policy.inline.as_str(),
+            scalarize: policy.scalarize.as_str(),
+            certifiable: policy.is_certifiable(),
+            fully_structured: policy.keeps_every_structure(),
+            emitted_statements: block_statement_count(block),
+            emitted_functions: block.protected_functions.len() + block.public_functions.len(),
+        }
+    }
+
+    /// An unrecorded provenance discloses nothing and claims nothing: it
+    /// reports neither that the artifact is certifiable nor that it is not.
+    const fn unrecorded() -> Self {
+        Self {
+            recorded: false,
+            inline: "unrecorded",
+            scalarize: "unrecorded",
+            certifiable: false,
+            fully_structured: false,
+            emitted_statements: 0,
+            emitted_functions: 0,
+        }
+    }
+}
+
+/// Statements the block emits, counting the bodies of loops and conditionals.
+///
+/// A budget that stopped at the top level of each method would report a nested
+/// loop as one operation, which is the opposite of what a budget is for.
+fn block_statement_count(block: &ast::Block) -> usize {
+    let methods = [&block.startup, &block.recalibrate, &block.do_step]
+        .into_iter()
+        .map(|method| statements_count(&method.statements))
+        .sum::<usize>();
+    let functions = block
+        .protected_functions
+        .iter()
+        .chain(&block.public_functions)
+        .map(|function| statements_count(&function.statements))
+        .sum::<usize>();
+    methods + functions
+}
+
+fn statements_count(statements: &[ast::Spanned<ast::Statement>]) -> usize {
+    statements
+        .iter()
+        .map(|statement| 1 + nested_statements_count(&statement.node))
+        .sum()
+}
+
+fn nested_statements_count(statement: &ast::Statement) -> usize {
+    match statement {
+        ast::Statement::If(branches) => {
+            branches
+                .branches
+                .iter()
+                .map(|branch| statements_count(&branch.body))
+                .sum::<usize>()
+                + branches.else_body.as_deref().map_or(0, statements_count)
+        }
+        ast::Statement::For(loop_statement) => statements_count(&loop_statement.body),
+        _ => 0,
+    }
 }
 
 impl<'a> AlgorithmCodeView<'a> {
@@ -90,6 +198,7 @@ impl<'a> AlgorithmCodeView<'a> {
             variables,
             methods: MethodsView::new(block),
             traces,
+            emission: EmissionView::new(package.emission_policy(), block),
         })
     }
 }
@@ -217,6 +326,9 @@ pub(crate) struct CheckedAlgorithmBlockView<'a> {
     /// See [`AlgorithmCodeView::traces`]; the two render paths carry the
     /// same trace legend so a target template reads one name.
     traces: super::source_trace::TraceLegend,
+    /// See [`AlgorithmCodeView::emission`]. Always unrecorded here: this path
+    /// renders a block it did not project.
+    emission: EmissionView,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -311,6 +423,7 @@ impl<'a> CheckedAlgorithmBlockView<'a> {
             variables,
             methods: MethodsView::new(block),
             traces,
+            emission: EmissionView::unrecorded(),
         })
     }
 }

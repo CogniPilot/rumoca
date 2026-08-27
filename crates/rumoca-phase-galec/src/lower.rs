@@ -19,6 +19,8 @@ mod expression_functions;
 mod expression_helpers;
 mod expression_projection;
 mod guard_binding;
+mod inline_policy;
+use inline_policy::EmissionFacts;
 mod local_integer_bounds;
 mod pre_references;
 mod start;
@@ -36,6 +38,7 @@ use crate::admissibility::{AdmittedClock, check_view as check_admissibility_view
 use crate::diagnostic::GalecTargetError;
 use crate::input::{GalecInput, GalecOptions};
 use rumoca_ir_galec::package::AlgorithmCodePackage;
+use rumoca_ir_galec::package::{EmissionPolicy, InlinePolicy};
 
 use assigned_primitives::{
     AssignedPrimitiveSnapshot, AssignedPrimitives, ConditionalActivationKey,
@@ -82,6 +85,24 @@ impl<'dae> ClassifiedVariables<'dae> {
     fn as_slice(&self) -> &[ClassifiedVariable<'dae>] {
         &self.variables
     }
+}
+
+/// The block-wide facts every DoStep/Startup lowering step reads.
+///
+/// These five travel together through the whole projection: the checked DAE,
+/// its causal definitions, the classified block variables keyed by identity,
+/// the name each `pre(x)` state got, and the ceiling on how much call structure
+/// the projection may collapse. They are carried as one value rather than as
+/// five parallel parameters because a step that had four of them and not the
+/// fifth would be a step that cannot build an [`ExpressionLowerer`], and every
+/// one of these steps builds one.
+#[derive(Clone, Copy)]
+struct BlockLowering<'a, 'dae> {
+    view: dae::DaeView<'dae>,
+    definitions: &'a rumoca_phase_structural::CausalDefinitions<'dae>,
+    by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
+    pre_names: &'a HashMap<u32, gast::Name>,
+    emission: EmissionFacts<'a>,
 }
 
 struct ParameterDependencyProof {
@@ -137,6 +158,25 @@ pub fn lower_to_algorithm_code(
     input: &GalecInput<'_>,
     options: &GalecOptions,
 ) -> Result<AlgorithmCodePackage, Vec<GalecTargetError>> {
+    // Expanding a tensor operation into per-element statements is not built.
+    // A setting that asks for it must say so, because the alternative is an
+    // artifact that silently keeps every structure the caller asked to trade
+    // away and a header that then claims a tradeoff the code did not make.
+    if !options.emission_policy.is_certifiable() {
+        // No span: the setting came from the command line, not from the model,
+        // so there is no source position to point a reader at and inventing one
+        // would be worse than saying so.
+        return Err(vec![GalecTargetError::UnsupportedFeature {
+            feature: "scalarize-policy".to_owned(),
+            detail: format!(
+                "`--scalarize-policy {}` is not implemented: this projection never expands a \
+                 tensor operation into per-element statements. Use `never` (the default), which \
+                 keeps every index set, symmetry and bandedness the model carried",
+                options.emission_policy.scalarize.as_str()
+            ),
+            span: None,
+        }]);
+    }
     input.dae.inspect(|view| {
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
         let clock = check_admissibility_view(view, &definitions)?;
@@ -161,14 +201,21 @@ fn lower_view<'dae>(
     let referenced_pre = referenced_pre_variables(view)?;
     let pre_names = build_pre_names(&referenced_pre, &by_id)?;
 
-    let mut parts = build_variable_parts(
+    // Counted once for the whole projection, not per call site: the census is a
+    // whole-arena scan, and asking it per site would make the cost model
+    // quadratic in the number of calls for an answer that cannot change.
+    let call_sites = inline_policy::CallSiteCensus::derive(view);
+    let lowering = BlockLowering {
         view,
         definitions,
-        &classified,
-        &by_id,
-        &referenced_pre,
-        &pre_names,
-    )?;
+        by_id: &by_id,
+        pre_names: &pre_names,
+        emission: EmissionFacts {
+            policy: options.emission_policy,
+            call_sites: &call_sites,
+        },
+    };
+    let mut parts = build_variable_parts(lowering, &classified, &referenced_pre)?;
 
     let period_ref = append_clock_period(
         &clock,
@@ -182,12 +229,9 @@ fn lower_view<'dae>(
     )?;
 
     let clocked = lower_clock_schedule(
-        view,
-        definitions,
+        lowering,
         &clock,
         classified.as_slice(),
-        &by_id,
-        &pre_names,
         &mut parts.protected_declarations(),
     )
     .map_err(single)?;
@@ -197,11 +241,8 @@ fn lower_view<'dae>(
     called_user_functions.extend(parts.startup_called_user_functions.iter().copied());
     called_user_functions.extend(
         causal_outputs::append_causal_assignments(
-            view,
-            definitions,
+            lowering,
             classified.as_slice(),
-            &by_id,
-            &pre_names,
             &mut parts.do_step_locals,
             &mut do_step,
         )
@@ -226,13 +267,21 @@ fn lower_view<'dae>(
     block.startup.statements = parts.startup;
     block.recalibrate.locals = parts.startup_locals;
     block.recalibrate.statements = parts.recalibrate;
-    block.protected_functions =
-        user_functions::lower_reachable(view, definitions, called_user_functions)
-            .map_err(single)?;
+    block.protected_functions = user_functions::lower_reachable(
+        view,
+        definitions,
+        called_user_functions,
+        lowering.emission,
+    )
+    .map_err(single)?;
     block.do_step.locals = parts.do_step_locals;
     block.do_step.statements = do_step;
     AlgorithmCodePackage::construct(block, parts.nominals, &period_ref)
-        .map(|package| package.with_constant_folded_parameters(parts.constant_folded))
+        .map(|package| {
+            package
+                .with_constant_folded_parameters(parts.constant_folded)
+                .with_emission_policy(lowering.emission.policy)
+        })
         .map_err(|error| {
             vec![GalecTargetError::LoweringInternal {
                 detail: format!("lowering produced an invalid Algorithm Code package: {error}"),
@@ -241,13 +290,16 @@ fn lower_view<'dae>(
 }
 
 fn build_variable_parts<'dae>(
-    view: dae::DaeView<'dae>,
-    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+    lowering: BlockLowering<'_, 'dae>,
     classified: &ClassifiedVariables<'dae>,
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     referenced_pre: &[dae::VariableId<'dae>],
-    pre_names: &HashMap<u32, gast::Name>,
 ) -> Result<ProjectionParts, Vec<GalecTargetError>> {
+    let BlockLowering {
+        view,
+        by_id,
+        pre_names,
+        ..
+    } = lowering;
     let mut evaluator = NumericEvaluator::new(view);
     let mut parts = ProjectionParts {
         nominals: Vec::new(),
@@ -267,11 +319,8 @@ fn build_variable_parts<'dae>(
         append_variable(view, variable, &mut evaluator, &mut parts)?;
     }
     dependent_folding::append_dependent_parameters(
-        view,
-        definitions,
+        lowering,
         &classified.dependent_parameter_order,
-        by_id,
-        pre_names,
         &mut parts,
     )
     .map_err(single)?;
@@ -838,90 +887,6 @@ fn initial_assignment(
     )
 }
 
-/// Lower one dependent parameter binding into the statements that establish it.
-///
-/// A dependent parameter may be bound by a call to a function that asserts on
-/// its arguments, which is how a model states a precondition on geometry or
-/// tuning that only holds for admissible parameter values. Those assertions are
-/// captured here and emitted ahead of the assignment, so an inadmissible
-/// parameter raises the eFMI error signal from `Startup`/`Recalibrate` instead
-/// of being rejected at projection time. The returned vector is therefore the
-/// assertion guards followed by the assignment itself.
-fn dependent_assignment<'dae>(
-    view: dae::DaeView<'dae>,
-    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
-    classified: &ClassifiedVariable<'dae>,
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
-    pre_names: &HashMap<u32, gast::Name>,
-) -> Result<DependentParameterLowering, GalecTargetError> {
-    let expression = classified
-        .variable
-        .binding()
-        .or(classified.variable.start())
-        .ok_or_else(|| GalecTargetError::AttributeNotEvaluable {
-            variable: classified.variable.name().to_string(),
-            attribute: "binding",
-            reason: "dependent parameter has no defining expression".to_owned(),
-            span: Some(classified.variable.declaration().span()),
-        })?;
-    // Materialize calls instead of inlining them. A dependent parameter may be
-    // bound by a real algorithm: the rotor allocation matrix of a multirotor is
-    // a dense solve of the rotor effectiveness tensor. Inlining unrolls that
-    // solve into one expression, and because each array update names the array
-    // the previous update produced, the expression grows multiplicatively with
-    // the number of updates rather than additively. Emitting a call keeps
-    // Startup proportional to the function, and keeps the function's own
-    // locals, which is also what makes the generated C worth embedding.
-    let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names);
-    let node = view
-        .expression(expression)
-        .expect("checked dependent-parameter expression resolves");
-    let target_type = classified.variable.value_type();
-    if node.value_type() != target_type {
-        return Err(unsupported(
-            "array-projection",
-            format!(
-                "dependent parameter `{}` has shape {:?}, but its binding has shape {:?}",
-                classified.variable.name(),
-                target_type.dimensions(),
-                node.value_type().dimensions()
-            ),
-            node.provenance().span(),
-        ));
-    }
-    let value = if target_type.dimensions().is_empty() {
-        let scalar = lowerer.lower(expression)?;
-        coerce(scalar, classified.scalar_type, node.provenance().span())?
-    } else if let Some(reference) = lowerer.direct_whole_aggregate_reference(expression)? {
-        reference
-    } else {
-        lowerer.lower_aggregate_expression_as(expression, classified.scalar_type)?
-    };
-    let mut statements = lowerer.take_prefix_statements();
-    statements.push(gast::Spanned::new(
-        gast::Statement::Assignment {
-            target: state_reference(
-                classified.name.clone(),
-                classified.variable.declaration().span(),
-            ),
-            value,
-        },
-        expression_span(view, expression),
-    ));
-    Ok(DependentParameterLowering {
-        statements,
-        locals: lowerer.take_temporary_locals(),
-        called_user_functions: lowerer.take_called_user_functions(),
-    })
-}
-
-/// One dependent parameter's contribution to `Startup` and `Recalibrate`.
-struct DependentParameterLowering {
-    statements: Vec<gast::Spanned<gast::Statement>>,
-    locals: Vec<gast::VariableDeclaration>,
-    called_user_functions: HashSet<u32>,
-}
-
 fn build_pre_names<'dae>(
     referenced: &[dae::VariableId<'dae>],
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
@@ -1179,6 +1144,12 @@ struct ExpressionLowerer<'a, 'dae> {
     conditional_activation_path: Vec<ConditionalActivationKey>,
     materialize_function_values: bool,
     inline_causal_locals: bool,
+    /// The emission decisions, and the facts they are decided from.
+    ///
+    /// Read only at the call-lowering decision point. Every other lowering
+    /// question is unaffected, which is what makes the fully structured setting
+    /// byte-identical to a build that has no dial at all.
+    emission: EmissionFacts<'a>,
     conditional_depth: usize,
     materialized_function_values: HashMap<MaterializedFunctionValueKey, gast::Name>,
     materialized_function_calls: HashMap<MaterializedFunctionCallKey, Vec<gast::Name>>,
@@ -1235,6 +1206,15 @@ struct CallFrame<'dae> {
     function: dae::FunctionId<'dae>,
     arguments: Vec<dae::ExprId<'dae>>,
     indices: Vec<Option<i64>>,
+    /// Whether the emission policy chose to substitute this body, rather than
+    /// the GALEC ABI being unable to represent the call.
+    ///
+    /// The distinction is a traceability one. A call the policy deleted had a
+    /// call form that would have named its results after the callee, the result
+    /// and the call site, so the values that replace it must carry that path or
+    /// the transform has reduced traceability. A call the ABI never had a form
+    /// for had no such names to lose.
+    substituted_by_policy: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -1376,6 +1356,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             conditional_activation_path: Vec::new(),
             materialize_function_values: false,
             inline_causal_locals: false,
+            emission: EmissionFacts::structured(),
             conditional_depth: 0,
             materialized_function_values: HashMap::new(),
             materialized_function_calls: HashMap::new(),
@@ -1534,6 +1515,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     fn with_causal_inlining(mut self) -> Self {
         self.inline_causal_locals = true;
+        self
+    }
+
+    /// Set the emission decisions and the facts they are decided from.
+    fn with_emission(mut self, emission: EmissionFacts<'a>) -> Self {
+        self.emission = emission;
         self
     }
 
@@ -1748,7 +1735,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         })
     }
 
-    fn lower_function_value(
+    pub(super) fn lower_function_value(
         &mut self,
         definition: dae::FunctionDefinitionView<'dae>,
         indices: &[gast::Expression],
@@ -1841,10 +1828,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         scalar_type: gast::ScalarType,
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
-        let name = gast::Name::ident(format!(
-            "rumoca_{}_value_{}",
-            self.temporary_namespace, self.temporary_counter
-        ));
+        let name = self.substituted_value_name(&key)?;
         self.temporary_counter += 1;
         self.temporary_locals.push(gast::VariableDeclaration {
             ty: gast::TypeRef::Primitive(scalar_type),
