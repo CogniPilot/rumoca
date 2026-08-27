@@ -336,7 +336,17 @@ pub(super) fn dependent_assignment<'dae>(
     // the number of updates rather than additively. Emitting a call keeps
     // Startup proportional to the function, and keeps the function's own
     // locals, which is also what makes the generated C worth embedding.
+    // Every dependent parameter gets its own lowerer, so every one of them
+    // restarts the temporary counter at zero. Their locals are not scoped per
+    // parameter, though: `append_dependent_parameters` merges them all into the
+    // single `startup_locals` list that both Startup and Recalibrate declare.
+    // Under the shared default namespace two parameters that each materialize a
+    // conditional would both mint `rumoca_value_conditional_0` and collide as a
+    // duplicate declaration (EG012). Naming the namespace after the parameter
+    // that owns the lowerer makes that collision unconstructible, the same way
+    // clocked lowering names its namespace after the clock it belongs to.
     let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names)
+        .with_temporary_namespace(format!("dependent{}", classified.id.index()))
         .with_emission(emission);
     let node = view
         .expression(expression)

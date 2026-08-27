@@ -123,6 +123,27 @@ algorithm
 end GalecProdAlgebraicComponent;
 ";
 
+/// Two dependent parameters whose bindings each hold a conditional. Every
+/// dependent parameter is lowered by its own `ExpressionLowerer`, so each one
+/// restarts the temporary counter at zero, while their locals all land in the
+/// one list that Startup and Recalibrate both declare. Under a shared
+/// temporary namespace the two conditionals would both be minted
+/// `rumoca_value_conditional_0` and collide (EG012).
+const DEPENDENT_CONDITIONAL_FIXTURE: &str = "\
+model GalecProdDependentConditionals
+  constant Real samplePeriod = 0.1;
+  parameter Real trim = 0.25;
+  parameter Real limit = 1.5;
+  parameter Real lowerBound = if trim > 0.0 then -limit else -1.0;
+  parameter Real upperBound = if trim > 0.0 then limit else 1.0;
+  discrete output Real y(start = 0.0);
+equation
+  when sample(0.0, samplePeriod) then
+    y = lowerBound + upperBound * pre(y);
+  end when;
+end GalecProdDependentConditionals;
+";
+
 const HELPER_IDIOMS_FIXTURE: &str = "\
 function clip
   input Real value;
@@ -536,6 +557,53 @@ fn algebraic_component_output_read_by_sampled_parent_compiles() {
     );
     assert!(out_dir.join(model).join("__content.xml").is_file());
     assert!(out_dir.join(format!("{model}.efmu")).is_file());
+}
+
+#[test]
+fn two_dependent_parameters_each_holding_a_conditional_get_distinct_temporaries() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "GalecProdDependentConditionals";
+    let file = write_fixture(dir.path(), model, DEPENDENT_CONDITIONAL_FIXTURE);
+    let output = run_compile_galec_production(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "two dependent parameters that each materialize a conditional must not \
+         mint the same temporary.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let alg = fs::read_to_string(
+        out_dir
+            .join(model)
+            .join("AlgorithmCode")
+            .join(format!("{model}.alg")),
+    )
+    .expect("read generated Algorithm Code");
+    // Both conditionals are still the zeroth temporary of their own lowerer;
+    // what separates them is the namespace naming the parameter that owns it.
+    let minted = alg
+        .match_indices("_conditional_0")
+        .map(|(index, _)| {
+            let start = alg[..index]
+                .rfind(|character: char| !character.is_alphanumeric() && character != '_')
+                .map_or(0, |boundary| boundary + 1);
+            alg[start..index + "_conditional_0".len()].to_owned()
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        minted.len(),
+        2,
+        "each dependent parameter owns one conditional temporary, and the two \
+         must carry different names: {minted:?}\n{alg}"
+    );
+    assert!(
+        minted
+            .iter()
+            .all(|name| name.starts_with("rumoca_dependent")),
+        "a dependent parameter's temporary is namespaced by the parameter that \
+         owns it: {minted:?}"
+    );
 }
 
 #[test]

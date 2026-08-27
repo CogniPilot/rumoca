@@ -180,14 +180,46 @@
       "corpus": "flight-models",
       "model": "Vehicles.Cubs2.OuterLoop",
       "entry_point": "Vehicles/package.mo",
-      "why": "Fixed-wing outer loop; GALEC lowering currently emits a duplicate `rumoca_value_conditional_0` local, so the projection refuses its own output. Pinned as a refusal so that defect cannot change shape unnoticed, and so the fix arrives as a reviewed manifest diff",
+      "why": "Fixed-wing outer loop emitted as eFMI Production Code; the second flight controller on the GALEC track, and the one whose two conditional-bound dependent parameters used to collide on one temporary name",
       "check": {
         "kind": "compile",
         "target": "galec-production"
       },
       "expect": {
-        "outcome": "refused",
-        "diagnostic": "EG012"
+        "outcome": "succeeds",
+        "observations": [],
+        "artifacts": [
+          {
+            "path": "Vehicles_Cubs2_OuterLoop/__content.xml",
+            "kind": "file",
+            "min_bytes": 256
+          },
+          {
+            "path": "Vehicles_Cubs2_OuterLoop/AlgorithmCode/Vehicles_Cubs2_OuterLoop.alg",
+            "kind": "file",
+            "min_bytes": 131072
+          },
+          {
+            "path": "Vehicles_Cubs2_OuterLoop/ProductionCode/Vehicles_Cubs2_OuterLoop.c",
+            "kind": "file",
+            "min_bytes": 131072
+          },
+          {
+            "path": "Vehicles_Cubs2_OuterLoop/ProductionCode/Vehicles_Cubs2_OuterLoop.h",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "Vehicles_Cubs2_OuterLoop/ProductionCode/manifest.xml",
+            "kind": "file",
+            "min_bytes": 8192
+          },
+          {
+            "path": "Vehicles_Cubs2_OuterLoop.efmu",
+            "kind": "efmu-container",
+            "min_bytes": 65536
+          }
+        ]
       }
     },
     {
