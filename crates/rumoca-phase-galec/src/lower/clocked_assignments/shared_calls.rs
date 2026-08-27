@@ -494,6 +494,7 @@ fn lower_guarded_shared_calls<'dae>(
     shared: &mut SharedClockCalls<'dae>,
 ) {
     let activations = guarded_activations(roots);
+    let selections = conditional_branch_selections(context.view, context.causal, roots);
     let mut confined = HashMap::<u32, Option<ValueActivation<'dae>>>::new();
     for activation in &activations {
         for call in repeated_calls(context.view, context.causal, roots, *activation) {
@@ -569,6 +570,15 @@ fn lower_guarded_shared_calls<'dae>(
             .insert(activation, trial.shared_materialized_function_calls());
         *context.lowerer = trial;
         context.lowerer.register_shared_call_node(&shared.entry, id);
+        let added = context.lowerer.shared_call_entries_added(&shared.entry);
+        alias_guarded_node_into_branches(
+            context,
+            &selections,
+            &added,
+            guard,
+            id,
+            &mut shared.entry,
+        );
         context.pending.push(ClockedAssignment {
             targets: HashSet::from([id]),
             reads,
@@ -578,6 +588,238 @@ fn lower_guarded_shared_calls<'dae>(
             requires_preamble: context.has_preamble,
         });
         shared.scheduled = true;
+    }
+}
+
+/// One conditional branch a value of this domain evaluates, and the call
+/// owners its own branch conditions evaluate.
+struct ConditionalBranchSelection {
+    key: ConditionalActivationKey,
+    condition_owners: HashSet<u32>,
+}
+
+/// Offer one guarded node's result temporaries inside the conditional branch
+/// its guard selects.
+///
+/// An `if`/`elseif` chain in a clocked algorithm becomes two things in the
+/// checked DAE: one guarded definition per branch, and one n-ary conditional
+/// per value that reads what the chain assigned. The guarded node already
+/// evaluates a repeated call once for the definitions, but the conditional's
+/// branch evaluates it again, because a memo entry is admitted only where the
+/// guard facts it was emitted under hold again and a guarded node states its
+/// guard as an emitted `if` rather than as a fact.
+///
+/// Where the node's guard IS one branch's selection the fact does exist, and it
+/// is exactly that branch: [`guard_selects_branch`] proves the guard is the
+/// conjunction of the identical condition expressions the conditional selects
+/// on, so the node ran on precisely the ticks a use inside that branch is
+/// reached on. Its entries are therefore published a second time under that
+/// branch's activation key, which `MaterializedFunctionCallKey::dominates`
+/// admits inside the branch and nowhere else.
+///
+/// Three cases decline, because declining costs one repeated call and being
+/// wrong costs a call evaluated on a tick the model never evaluates it on:
+/// an entry that already carries a guard fact of its own, a branch whose own
+/// conditions evaluate the same call owner (the branch key is pushed for the
+/// condition too, and the condition runs before its branch is selected), and a
+/// key some earlier node already published.
+fn alias_guarded_node_into_branches<'dae>(
+    context: &mut SharedCallContext<'_, '_, '_, 'dae>,
+    selections: &[ConditionalBranchSelection],
+    entries: &[(MaterializedFunctionCallKey, Vec<gast::Name>)],
+    guard: dae::ConditionId<'dae>,
+    node: u32,
+    entry: &mut SharedMaterializedFunctionCalls,
+) {
+    let selected = selections.iter().filter(|selection| {
+        guard_selects_branch(
+            context.view,
+            guard,
+            context.clock,
+            &selection.key.operands,
+            selection.key.branch,
+        )
+    });
+    for selection in selected {
+        for (key, names) in entries {
+            if !key.activation_path.is_empty() || selection.condition_owners.contains(&key.owner) {
+                continue;
+            }
+            let alias = MaterializedFunctionCallKey {
+                activation_path: vec![selection.key.clone()],
+                ..key.clone()
+            };
+            if entry.contains_key(&alias) {
+                continue;
+            }
+            entry.insert(alias.clone(), names.clone());
+            context.lowerer.register_shared_call_alias(alias, node);
+        }
+    }
+}
+
+/// Every conditional branch this domain's values evaluate, once per distinct
+/// conditional-and-branch pair.
+///
+/// The branch index is the one `lower_materialized_conditional_branch` pushes:
+/// one per condition, plus one for the fallback the chain ends with.
+fn conditional_branch_selections<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    causal: &CausalReadExpansion<'a, 'dae>,
+    roots: &[DomainValueRoot<'dae>],
+) -> Vec<ConditionalBranchSelection> {
+    let mut selections = Vec::new();
+    let mut seen_keys = HashSet::new();
+    for root in roots {
+        let mut seen = HashSet::new();
+        let mut conditionals = Vec::new();
+        expression_functions::for_each_eager_call(
+            view,
+            root.value,
+            &mut seen,
+            &|coordinate| causal.inlined_definition(coordinate),
+            &mut |site| {
+                if let expression_functions::EagerSite::Conditional { operands } = site {
+                    conditionals.push(operands);
+                }
+            },
+        );
+        let unseen = conditionals
+            .into_iter()
+            .filter(|operands| seen_keys.insert(conditional_activation_operands(*operands)));
+        for operands in unseen {
+            selections.extend(one_conditional_branch_selections(view, causal, operands));
+        }
+    }
+    selections
+}
+
+/// The branch selections of one conditional, with the call owners its own
+/// conditions evaluate.
+fn one_conditional_branch_selections<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    causal: &CausalReadExpansion<'a, 'dae>,
+    operands: dae::ExpressionOperands<'dae>,
+) -> Vec<ConditionalBranchSelection> {
+    let conditions = conditional_activation_operands(operands);
+    let mut condition_owners = HashSet::new();
+    for condition in operands.iter().step_by(2).take(conditions.len()) {
+        let mut occurrences = HashMap::new();
+        let mut seen = HashSet::new();
+        collect_eager_calls(view, condition, causal, &mut seen, &mut occurrences);
+        condition_owners.extend(occurrences.into_keys());
+    }
+    (0..=conditions.len())
+        .map_while(|branch| u32::try_from(branch).ok())
+        .map(|branch| ConditionalBranchSelection {
+            key: ConditionalActivationKey {
+                kind: ConditionalActivationKind::ConditionalScalar,
+                operands: conditions.clone(),
+                branch,
+            },
+            condition_owners: condition_owners.clone(),
+        })
+        .collect()
+}
+
+/// Whether `guard` is exactly the selection of one conditional branch.
+///
+/// Branch `k` of an n-ary conditional is reached when its own condition holds
+/// and every earlier one does not; the fallback branch is reached when none
+/// holds. The DAE builds a clocked algorithm's branch guards from the identical
+/// condition expressions, so the proof here is a comparison of literal sets
+/// rather than a decision procedure: the guard has to be a conjunction of
+/// discrete predicates over those expressions, together with this domain's own
+/// clock, which holds throughout the `DoStep`, and its positive and negative
+/// literals have to be exactly the branch's.
+fn guard_selects_branch<'dae>(
+    view: dae::DaeView<'dae>,
+    guard: dae::ConditionId<'dae>,
+    clock: dae::ClockId<'dae>,
+    conditions: &[u32],
+    branch: u32,
+) -> bool {
+    let Ok(branch) = usize::try_from(branch) else {
+        return false;
+    };
+    if branch > conditions.len() {
+        return false;
+    }
+    let mut positive = HashSet::new();
+    let mut negative = HashSet::new();
+    if !collect_guard_literals(view, guard, false, clock, &mut positive, &mut negative) {
+        return false;
+    }
+    let expected_positive = conditions
+        .get(branch)
+        .copied()
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let expected_negative = conditions[..branch].iter().copied().collect::<HashSet<_>>();
+    positive == expected_positive && negative == expected_negative
+}
+
+/// Split one guard into the discrete predicates it requires true and false, or
+/// decline.
+///
+/// Only the shapes a branch selection is built from are admitted: conjunction,
+/// negation, the disjunction a negated earlier-branch list becomes, this
+/// domain's own clock, and a predicate. Anything else, another domain's clock
+/// and `initial` included, leaves the guard unclassified and declines.
+///
+/// A relation names the expression it was interned from, which is the same
+/// expression identity a conditional selects on. It is a literal here and not
+/// an edge because the activation it belongs to is triggered by this domain's
+/// clock: [`lower_action_guard`] lowers it as the level test both the node and
+/// its consumer groups already state.
+fn collect_guard_literals<'dae>(
+    view: dae::DaeView<'dae>,
+    condition: dae::ConditionId<'dae>,
+    negated: bool,
+    clock: dae::ClockId<'dae>,
+    positive: &mut HashSet<u32>,
+    negative: &mut HashSet<u32>,
+) -> bool {
+    // Every lookup here declines rather than asserts: a guard this proof cannot
+    // resolve is simply one it cannot classify, and declining costs one
+    // repeated call.
+    let Some(view_condition) = view.condition(condition) else {
+        return false;
+    };
+    match view_condition.operation() {
+        dae::ConditionOperation::Clock(found) => !negated && found == clock,
+        dae::ConditionOperation::Relation(relation) => {
+            let Some(expression) = view.relation(relation).map(dae::RelationView::expression)
+            else {
+                return false;
+            };
+            if negated {
+                negative.insert(expression.index());
+            } else {
+                positive.insert(expression.index());
+            }
+            true
+        }
+        dae::ConditionOperation::Discrete(expression) => {
+            if negated {
+                negative.insert(expression.index());
+            } else {
+                positive.insert(expression.index());
+            }
+            true
+        }
+        dae::ConditionOperation::Not(inner) => {
+            collect_guard_literals(view, inner, !negated, clock, positive, negative)
+        }
+        dae::ConditionOperation::And(lhs, rhs) if !negated => {
+            collect_guard_literals(view, lhs, false, clock, positive, negative)
+                && collect_guard_literals(view, rhs, false, clock, positive, negative)
+        }
+        dae::ConditionOperation::Or(lhs, rhs) if negated => {
+            collect_guard_literals(view, lhs, true, clock, positive, negative)
+                && collect_guard_literals(view, rhs, true, clock, positive, negative)
+        }
+        _ => false,
     }
 }
 

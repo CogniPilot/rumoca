@@ -71,26 +71,46 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         self.materialized_function_calls.clone()
     }
 
-    /// Attribute to `node` every shared-call memo entry it added over `before`.
+    /// The memo entries lowering added over `before`, with their temporaries.
     ///
     /// The entries a node writes are the difference between the memo it
     /// inherited and the memo it leaves, so this needs no bookkeeping inside
     /// the materialization itself and cannot miss an entry a nested argument
     /// lowering produced.
+    pub(super) fn shared_call_entries_added(
+        &self,
+        before: &SharedMaterializedFunctionCalls,
+    ) -> Vec<(MaterializedFunctionCallKey, Vec<gast::Name>)> {
+        self.materialized_function_calls
+            .iter()
+            .filter(|(key, _)| !before.contains_key(*key))
+            .map(|(key, names)| (key.clone(), names.clone()))
+            .collect()
+    }
+
+    /// Attribute to `node` every shared-call memo entry it added over `before`.
     pub(super) fn register_shared_call_node(
         &mut self,
         before: &SharedMaterializedFunctionCalls,
         node: u32,
     ) {
-        let added = self
-            .materialized_function_calls
-            .keys()
-            .filter(|key| !before.contains_key(*key))
-            .cloned()
-            .collect::<Vec<_>>();
-        for key in added {
+        for (key, _) in self.shared_call_entries_added(before) {
             self.scheduled_shared_calls.insert(key, node);
         }
+    }
+
+    /// Attribute one re-published entry to the node whose temporaries it names.
+    ///
+    /// A node's entry may be offered again under a guard fact the node itself
+    /// did not carry, so the alias has to be attributed explicitly: a consumer
+    /// that takes it still has to be ordered after the node that wrote the
+    /// temporaries, and `scheduled_shared_calls` is what carries that edge.
+    pub(super) fn register_shared_call_alias(
+        &mut self,
+        key: MaterializedFunctionCallKey,
+        node: u32,
+    ) {
+        self.scheduled_shared_calls.insert(key, node);
     }
 
     /// Take the scheduled shared calls the group just lowered has consumed.

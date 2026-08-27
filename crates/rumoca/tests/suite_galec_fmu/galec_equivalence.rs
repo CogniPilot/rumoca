@@ -4574,3 +4574,207 @@ fn embedded_c_emits_no_region_alias_for_a_wrapper_whose_read_back_was_dropped() 
         String::from_utf8_lossy(&compile.stderr)
     );
 }
+
+// ===========================================================================
+// Fixture 22: a guarded shared-call node also serves the conditional branch
+// its own guard selects.
+//
+// An `if`/`elseif` chain inside a clocked algorithm reaches the checked DAE
+// twice over: as one guarded definition per branch, and as one conditional
+// expression per value that reads what the chain assigned. `low`, `high` and
+// `span` are the definitions and `echoLow` is such a reader, so before the two
+// were connected the call ran once for the definitions and once more inside
+// `echoLow`'s branch.
+//
+// Only one value reads the chain here, which is what makes this fixture the
+// shape it is: a conditional whose branch repeats a call across two readers is
+// already shared by fixture 16's node, and with a single reader nothing in that
+// branch looks repeated at all. What removes the second evaluation is the proof
+// that the guarded node's guard IS this branch's selection, so the node has
+// already run wherever the branch is reached.
+//
+// `signallingSplit` raises NAN on every call, so the compared
+// `ErrorSignalStatus` word is a per-tick record of the ticks it ran on. The
+// branch is not selected on ticks 1 and 2; a node whose temporaries were taken
+// where its guard had not held would either raise NAN on those ticks or hand
+// back a stale slot, and both executing legs would part company with the pinned
+// expectations below.
+// ===========================================================================
+
+const BRANCH_ALIAS_SHARED_CALL: &str = r#"
+function signallingSplit
+  input Real level;
+  input Real zeroGain;
+  output Real low;
+  output Real high;
+  output Real span;
+algorithm
+  low := if zeroGain / zeroGain > 1.0 then -1.0 else 0.5 * level;
+  high := 2.0 * level;
+  span := high - low;
+end signallingSplit;
+
+model BranchAliasSharedCallSmoke
+  constant Real samplePeriod = 0.1;
+  parameter Real zeroGain = 0.0;
+  discrete output Real ticks(start = 0.0, fixed = true);
+  discrete output Real low(start = 0.0, fixed = true);
+  discrete output Real high(start = 0.0, fixed = true);
+  discrete output Real span(start = 0.0, fixed = true);
+  discrete output Real echoLow(start = 0.0, fixed = true);
+algorithm
+  when sample(0.0, samplePeriod) then
+    ticks := pre(ticks) + 1.0;
+    if ticks > 2.5 then
+      (low, high, span) := signallingSplit(ticks, zeroGain);
+    else
+      low := pre(low);
+      high := pre(high);
+      span := pre(span);
+    end if;
+    echoLow := low;
+  end when;
+end BranchAliasSharedCallSmoke;
+"#;
+
+const BRANCH_ALIAS_SHARED_CALL_DRIVER: &str = r#"#include <stdio.h>
+#include "BranchAliasSharedCallSmoke.h"
+static void row(const char *label, const BranchAliasSharedCallSmokeState *state) {
+    printf("%s,%.17g,%.17g,%.17g,%.17g,%.17g,%lu\n", label,
+           (double)state->ticks, (double)state->low,
+           (double)state->high, (double)state->span,
+           (double)state->echoLow,
+           (unsigned long)state->rumoca_galec_error_signal_status);
+}
+int main(void) {
+    BranchAliasSharedCallSmokeState state;
+    char label[16];
+    BranchAliasSharedCallSmoke_startup(&state);
+    row("startup", &state);
+    BranchAliasSharedCallSmoke_recalibrate(&state);
+    row("recalibrate", &state);
+    for (int step = 0; step < 5; ++step) {
+        BranchAliasSharedCallSmoke_dostep(&state);
+        snprintf(label, sizeof label, "%d", step);
+        row(label, &state);
+    }
+    return 0;
+}
+"#;
+
+/// One compared Real channel of fixture 22.
+const fn branch_alias_field(name: &'static str) -> Field {
+    Field {
+        name,
+        kind: FieldKind::Real,
+    }
+}
+
+#[test]
+fn embedded_c_serves_a_conditional_branch_from_the_node_its_guard_selects() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "BranchAliasSharedCallSmoke";
+    let fields = [
+        branch_alias_field("ticks"),
+        branch_alias_field("low"),
+        branch_alias_field("high"),
+        branch_alias_field("span"),
+        branch_alias_field("echoLow"),
+    ];
+
+    let projection = project_embedded_c(dir.path(), model, BRANCH_ALIAS_SHARED_CALL);
+    write_rendered(&out_dir, model, &projection.files);
+    let c_run = run_c_ticks(
+        &out_dir,
+        model,
+        BRANCH_ALIAS_SHARED_CALL_DRIVER,
+        fields.len(),
+    );
+    let ref_ticks = reference_ticks(model, BRANCH_ALIAS_SHARED_CALL, &fields, 0.0, 0.1, 5);
+    let oracle = oracle_ticks(&projection.package, model, &fields, 5);
+    assert_cli_emits_the_rendered_bytes(&projection, model);
+
+    assert_equivalent(&c_run, &ref_ticks, &fields);
+    // The per-tick status differs by design here, so it is pinned tick by tick
+    // below instead of through the whole-run helper.
+    assert_status("startup", &oracle.startup, &c_run.startup, LIFECYCLE_STATUS);
+    assert_status(
+        "recalibrate",
+        &oracle.recalibrate,
+        &c_run.recalibrate,
+        LIFECYCLE_STATUS,
+    );
+
+    // Ticks 1 and 2 leave the branch unselected: the call must not run, so no
+    // NAN. Ticks 3 to 5 select it: the one shared call raises NAN there.
+    let expected_status = [0, 0, NAN_SIGNAL_BIT, NAN_SIGNAL_BIT, NAN_SIGNAL_BIT];
+    for (tick, want) in expected_status.into_iter().enumerate() {
+        let label = format!("tick {}", tick + 1);
+        assert_status(&label, &oracle.steps[tick], &c_run.steps[tick], want);
+        let time = (tick + 1) as f64;
+        let level = if time > 2.5 { time } else { 0.0 };
+        let expected = [time, 0.5 * level, 2.0 * level, 1.5 * level, 0.5 * level];
+        for (leg, values) in [
+            ("generated C", &c_run.steps[tick].values),
+            ("galec oracle", &oracle.steps[tick].values),
+        ] {
+            for (field, (got, want)) in fields.iter().zip(values.iter().zip(expected)) {
+                let (atol, rtol) = F32_PROFILE;
+                assert!(
+                    (got - want).abs() <= atol + rtol * want.abs(),
+                    "{leg} tick {tick} channel `{}`: {got} vs {want}",
+                    field.name
+                );
+            }
+        }
+    }
+
+    // The sharing itself: one call site for the whole DoStep, standing inside
+    // the guard rather than ahead of it, and the branch that reads it takes a
+    // result temporary instead of calling again.
+    let emitted = fs::read_to_string(out_dir.join(format!("{model}.c"))).expect("read emitted C");
+    let do_step = emitted
+        .split_once("void BranchAliasSharedCallSmoke_dostep(")
+        .expect("emitted C declares DoStep")
+        .1;
+    assert_eq!(
+        do_step.matches("        signallingSplit(").count(),
+        1,
+        "the definitions and the branch that reads them must share one call:\n{do_step}"
+    );
+    let call = do_step
+        .find("signallingSplit(")
+        .expect("DoStep calls the shared function");
+    let guard = do_step[..call]
+        .rfind("    if (rumoca_galec_compare_gt(")
+        .expect("the shared call must stand under a guard");
+    assert!(
+        !do_step[guard..call].contains('}'),
+        "the shared call must stand inside that guard, not after it:\n{}",
+        &do_step[guard..call]
+    );
+    let echo = do_step
+        .find("self->echoLow =")
+        .expect("DoStep stores echoLow");
+    assert!(
+        do_step[call..echo].contains("rumoca_clocked0_conditional_"),
+        "the branch that feeds echoLow must select between stored results:\n{}",
+        &do_step[call..echo]
+    );
+
+    // A temporary read where its writer may not have run is a definite-
+    // assignment defect, so the strict profile is half the proof.
+    let compile = cc_support::assurance_c99_cc()
+        .arg("-c")
+        .arg(out_dir.join(format!("{model}.c")))
+        .arg("-o")
+        .arg(dir.path().join("branch_alias.o"))
+        .output()
+        .expect("run cc");
+    assert!(
+        compile.status.success(),
+        "the emitted unit must satisfy the strict profile.\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+}
