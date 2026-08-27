@@ -61,7 +61,7 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 16,750 | Retain checked conditional/tensor/loop-region identity; retire downstream recovery during Solve Algorithm Block cutover |
+| `dae-core-loc` | 11,000 | 17,000 | Retain checked conditional/tensor/loop-region identity; retire downstream recovery during Solve Algorithm Block cutover |
 | `dae-wire-loc` | 3,250 | 5,500 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
 | `dae-total-loc` | 14,250 | 22,250 | Both items above; total follows their sum |
 

@@ -700,6 +700,11 @@ impl<'dae> FunctionView<'dae> {
     view_getters! {
         const fn id -> FunctionId<'dae> = |view| view.id;
         const fn declaration -> DaeProvenance = |view| view.entry.declaration;
+        // `inline`: the MLS §18.3 `Inline`/`LateInline` request this
+        // declaration wrote. A request, not a decision: a backend that can
+        // substitute this body answers to it, and one that cannot ignores it,
+        // because an annotation changes nothing about what the function means.
+        const fn inline -> rumoca_core::InlineAnnotation = |view| view.entry.inline;
         fn name -> &'dae VarName = |view| &view.entry.name;
         fn parameter_types -> ValueTypeOperands<'dae> = |view| ValueTypeOperands {
             raw: &view.entry.parameters,

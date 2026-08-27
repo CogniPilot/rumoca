@@ -728,6 +728,14 @@ pub struct Function {
     pub purity_declared: bool,
     pub external: Option<ExternalFunction>,
     pub derivatives: Vec<DerivativeAnnotation>,
+    /// MLS §18.3 `Inline`/`LateInline`, as the declaration wrote it.
+    ///
+    /// Carried from the source rather than rediscovered later: by the time a
+    /// backend decides whether to substitute this body, the annotation
+    /// expressions are long gone, and a compiler that has to guess the author's
+    /// intent is a compiler that ignores it.
+    #[serde(default)]
+    pub inline: InlineAnnotation,
     pub span: Span,
 }
 
@@ -747,6 +755,7 @@ impl Function {
             purity_declared: false,
             external: None,
             derivatives: Vec::new(),
+            inline: InlineAnnotation::Unstated,
             span,
         }
     }

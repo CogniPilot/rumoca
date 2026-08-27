@@ -375,3 +375,73 @@ fn test_extract_derivative_annotation_with_zero_derivative() {
     assert_eq!(derivs[0].order, 1);
     assert_eq!(derivs[0].zero_derivative, vec!["k"]);
 }
+
+/// One `<name> = <Boolean literal>` annotation argument, in the shape the
+/// parser produces for `annotation(Inline = true)`.
+fn boolean_annotation(name: &str, value: &str) -> ast::Expression {
+    use rumoca_core::Token;
+    use std::sync::Arc;
+    ast::Expression::NamedArgument {
+        name: Token {
+            text: Arc::from(name),
+            ..Default::default()
+        },
+        value: Arc::new(ast::Expression::Terminal {
+            terminal_type: rumoca_ir_ast::TerminalType::Bool,
+            token: Token {
+                text: Arc::from(value),
+                ..Default::default()
+            },
+            span: test_span(),
+        }),
+        span: test_span(),
+    }
+}
+
+/// MLS §18.3: `Inline` and `LateInline` both ask a compiler that substitutes
+/// bodies at one point the same question, so both read as a request.
+#[test]
+fn inline_and_late_inline_both_request_substitution() {
+    for name in ["Inline", "LateInline"] {
+        assert_eq!(
+            extract_inline_annotation(&[boolean_annotation(name, "true")]),
+            rumoca_core::InlineAnnotation::Requested,
+            "`{name} = true` must read as a request"
+        );
+    }
+}
+
+/// `Inline = false` outranks every other clause in the annotation, whatever
+/// order they were written in: a refusal another clause can override is not a
+/// refusal.
+#[test]
+fn inline_false_outranks_a_late_inline_request() {
+    let refusal = boolean_annotation("Inline", "false");
+    let request = boolean_annotation("LateInline", "true");
+    for clauses in [
+        vec![refusal.clone(), request.clone()],
+        vec![request, refusal],
+    ] {
+        assert_eq!(
+            extract_inline_annotation(&clauses),
+            rumoca_core::InlineAnnotation::Never
+        );
+    }
+}
+
+/// An annotation this reader cannot evaluate asks for nothing. Turning it into
+/// a request would put words in the author's mouth.
+#[test]
+fn an_unevaluable_or_absent_inline_clause_asks_for_nothing() {
+    for clauses in [
+        Vec::new(),
+        vec![boolean_annotation("LateInline", "false")],
+        vec![boolean_annotation("Inline", "maybe")],
+        vec![boolean_annotation("Evaluate", "true")],
+    ] {
+        assert_eq!(
+            extract_inline_annotation(&clauses),
+            rumoca_core::InlineAnnotation::Unstated
+        );
+    }
+}

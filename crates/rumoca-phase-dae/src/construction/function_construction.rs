@@ -228,12 +228,10 @@ fn function_signature<'dae>(
             function_value_type(construction, flat, result, shape, &mut HashSet::new())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(dae::FunctionSignature::new(
-        function.name.clone(),
-        parameters,
-        results,
-        declaration,
-    ))
+    Ok(
+        dae::FunctionSignature::new(function.name.clone(), parameters, results, declaration)
+            .with_inline(function.inline),
+    )
 }
 
 pub(super) fn function_value_type<'dae>(

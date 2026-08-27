@@ -544,7 +544,17 @@ fn helper_specializations_multi_output_calls_and_row_slices_compile() {
     let out_dir = dir.path().join("out");
     let model = "GalecProdHelperIdioms";
     let file = write_fixture(dir.path(), model, HELPER_IDIOMS_FIXTURE);
-    let output = run_compile_galec_production(&file, &out_dir);
+    // The subject here is that one helper called at two shapes becomes two
+    // specializations, each emitted and each called. That is a property of the
+    // fully structured emission, so it is asked for by name: the fixture's
+    // helpers carry `annotation(Inline = true)`, which the default inline
+    // policy now honours, and an inlined helper has no call to assert about.
+    let output = super::cli_support::run_compile_target_with(
+        &file,
+        "galec-production",
+        &out_dir,
+        &["--inline-policy", "none"],
+    );
     assert!(
         output.status.success(),
         "GALEC production target should compile inline scalar helpers, \

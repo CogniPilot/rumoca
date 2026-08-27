@@ -19,6 +19,7 @@ mod expression_functions;
 mod expression_helpers;
 mod expression_projection;
 mod guard_binding;
+mod inline_policy;
 mod local_integer_bounds;
 mod pre_references;
 mod start;
@@ -36,7 +37,7 @@ use crate::admissibility::{AdmittedClock, check_view as check_admissibility_view
 use crate::diagnostic::GalecTargetError;
 use crate::input::{GalecInput, GalecOptions};
 use rumoca_ir_galec::package::AlgorithmCodePackage;
-use rumoca_ir_galec::package::EmissionPolicy;
+use rumoca_ir_galec::package::{EmissionPolicy, InlinePolicy};
 
 use assigned_primitives::{
     AssignedPrimitiveSnapshot, AssignedPrimitives, ConditionalActivationKey,
@@ -1193,6 +1194,15 @@ struct CallFrame<'dae> {
     function: dae::FunctionId<'dae>,
     arguments: Vec<dae::ExprId<'dae>>,
     indices: Vec<Option<i64>>,
+    /// Whether the emission policy chose to substitute this body, rather than
+    /// the GALEC ABI being unable to represent the call.
+    ///
+    /// The distinction is a traceability one. A call the policy deleted had a
+    /// call form that would have named its results after the callee, the result
+    /// and the call site, so the values that replace it must carry that path or
+    /// the transform has reduced traceability. A call the ABI never had a form
+    /// for had no such names to lose.
+    substituted_by_policy: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -1713,7 +1723,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         })
     }
 
-    fn lower_function_value(
+    pub(super) fn lower_function_value(
         &mut self,
         definition: dae::FunctionDefinitionView<'dae>,
         indices: &[gast::Expression],
@@ -1806,10 +1816,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         scalar_type: gast::ScalarType,
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
-        let name = gast::Name::ident(format!(
-            "rumoca_{}_value_{}",
-            self.temporary_namespace, self.temporary_counter
-        ));
+        let name = self.substituted_value_name(&key)?;
         self.temporary_counter += 1;
         self.temporary_locals.push(gast::VariableDeclaration {
             ty: gast::TypeRef::Primitive(scalar_type),

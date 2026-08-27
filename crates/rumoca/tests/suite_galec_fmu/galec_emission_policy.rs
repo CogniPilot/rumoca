@@ -283,6 +283,43 @@ fn a_tensor_returning_callee_keeps_its_call_at_every_inline_setting() {
     }
 }
 
+/// `annotation(Inline = false)` refuses at every setting.
+///
+/// A refusal a compiler flag can override is not a refusal, so this is checked
+/// at the setting that inlines the most, not only at the default.
+#[test]
+fn an_inline_false_annotation_refuses_every_policy() {
+    for inline in ["none", "annotated", "cost-model", "all"] {
+        let generated = generate(&["--inline-policy", inline]);
+        assert!(
+            defines_function(&generated, "keepAsCall"),
+            "`Inline = false` must keep `keepAsCall` a call under `{inline}`:\n{generated}"
+        );
+    }
+}
+
+/// `annotation(Inline = true)` is honored from `annotated` upward, and `none`
+/// answers to no annotation.
+///
+/// `none` is defined as "the emitted functions are the model's functions", and
+/// an annotation that could delete one would make that property depend on the
+/// model instead of on the setting.
+#[test]
+fn an_inline_true_annotation_is_honored_from_annotated_upward() {
+    let untouched = generate(&["--inline-policy", "none"]);
+    assert!(
+        defines_function(&untouched, "squareTwice"),
+        "`--inline-policy none` must keep every declared function:\n{untouched}"
+    );
+    for inline in ["annotated", "cost-model", "all"] {
+        let generated = generate(&["--inline-policy", inline]);
+        assert!(
+            !defines_function(&generated, "squareTwice"),
+            "`Inline = true` must be honored under `{inline}`:\n{generated}"
+        );
+    }
+}
+
 /// Every setting computes the same numbers, exactly.
 ///
 /// Substituting a body removes a boundary and copies; it reorders no
