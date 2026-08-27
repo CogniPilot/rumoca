@@ -1,0 +1,10 @@
+{% extends "galec-kernels.h.jinja" %}
+{#- Deliberately nothing else. The kernel library is target-agnostic and must
+    render BYTE-IDENTICAL from every C target: RUMOCA_GALEC_KERNELS_VERSION
+    hashes the base templates, so a target-specific banner here would be
+    different bytes under the same constant — the silent-`#error`,
+    multiple-definition-at-link failure the constant exists to prevent. The
+    base defines no overridable block, so an override added here would be
+    ignored rather than silently forking the bytes. Conformance claims live
+    in this target's model artifacts, which are the manifested Production
+    Code representation. -#}

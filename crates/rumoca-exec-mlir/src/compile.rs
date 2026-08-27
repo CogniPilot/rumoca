@@ -55,60 +55,6 @@ struct CpuCompileArtifacts {
     so_path: PathBuf,
 }
 
-/// C source for the Rumoca MLIR runtime.
-///
-/// Provides `rumoca_solve_linear_component` — dense Gaussian elimination with
-/// partial pivoting, called from MLIR-compiled `LinearSolveComponent` and
-/// `LinSolve` nodes.  Pointers are passed as `long long` integers to avoid
-/// the MLIR memref-descriptor ABI complexity.
-const RUMOCA_MLIR_RUNTIME_C: &str = r#"
-#include <stddef.h>
-#include <math.h>
-
-#define RUMOCA_LS_MAXN 64
-
-/* A_ptr, b_ptr are row-major double arrays passed as pointer-integers.
-   Returns x[comp] where A*x = b (Gauss elim with partial pivoting). */
-double rumoca_solve_linear_component(
-        long long A_ptr, long long b_ptr, long long n, long long comp) {
-    double *Ain = (double *)(size_t)A_ptr;
-    double *bin = (double *)(size_t)b_ptr;
-    double A[RUMOCA_LS_MAXN * RUMOCA_LS_MAXN];
-    double x[RUMOCA_LS_MAXN];
-    long long i, j, row, col;
-
-    for (i = 0; i < n * n; i++) A[i] = Ain[i];
-    for (i = 0; i < n;     i++) x[i] = bin[i];
-
-    /* Forward elimination with partial pivoting */
-    for (col = 0; col < n; col++) {
-        long long pivot = col;
-        double max_val = A[col * n + col] < 0 ? -A[col * n + col] : A[col * n + col];
-        for (row = col + 1; row < n; row++) {
-            double v = A[row * n + col] < 0 ? -A[row * n + col] : A[row * n + col];
-            if (v > max_val) { max_val = v; pivot = row; }
-        }
-        /* Swap rows col <-> pivot */
-        for (j = 0; j < n; j++) {
-            double t = A[col * n + j]; A[col * n + j] = A[pivot * n + j]; A[pivot * n + j] = t;
-        }
-        { double t = x[col]; x[col] = x[pivot]; x[pivot] = t; }
-        /* Eliminate below */
-        for (row = col + 1; row < n; row++) {
-            double f = A[row * n + col] / A[col * n + col];
-            for (j = col; j < n; j++) A[row * n + j] -= f * A[col * n + j];
-            x[row] -= f * x[col];
-        }
-    }
-    /* Back substitution */
-    for (i = n - 1; i >= 0; i--) {
-        x[i] /= A[i * n + i];
-        for (j = i - 1; j >= 0; j--) x[j] -= A[j * n + i] * x[i];
-    }
-    return x[comp];
-}
-"#;
-
 /// Compile using default options (`CpuNative`, `O2`).
 pub fn compile_derivative_rhs(
     solve: &SolveProblem,
@@ -184,6 +130,15 @@ fn mlir_template() -> Result<&'static str, MlirError> {
         })
 }
 
+fn mlir_asset(path: &'static str) -> Result<&'static [u8], MlirError> {
+    templates::builtin_target("mlir")
+        .and_then(|target| target.asset_bytes(path))
+        .ok_or(MlirError::MissingBuiltinAsset {
+            target: "mlir",
+            asset: path,
+        })
+}
+
 fn compile_cpu_shared_library(
     mlir_text: &str,
     opts: &MlirBackendOptions,
@@ -200,7 +155,7 @@ fn compile_cpu_shared_library(
     std::fs::write(&mlir_path, mlir_text)?;
 
     // Compile the MLIR runtime helper (LinearSolveComponent / LinSolve support).
-    std::fs::write(&rt_src_path, RUMOCA_MLIR_RUNTIME_C)?;
+    std::fs::write(&rt_src_path, mlir_asset("runtime/rumoca_runtime.c")?)?;
     run_tool(
         "clang-18",
         Command::new("clang-18")
@@ -212,11 +167,6 @@ fn compile_cpu_shared_library(
             .arg(&rt_obj_path),
     )?;
 
-    // Step 1: lower all dialects to LLVM dialect.
-    // Each memref<?xf64> arg expands to 5 LLVM params:
-    //   (alloc_ptr, aligned_ptr, offset: i64, size: i64, stride: i64)
-    // The Rust caller passes aligned_ptr twice and offset=0, size=len, stride=1.
-    // Linalg passes are no-ops when the model has no MatMul/LinSolve nodes.
     run_tool(
         "mlir-opt-18",
         Command::new("mlir-opt-18")
@@ -236,7 +186,6 @@ fn compile_cpu_shared_library(
             .arg(&opt_path),
     )?;
 
-    // Step 2: MLIR → LLVM IR text
     run_tool(
         "mlir-translate-18",
         Command::new("mlir-translate-18")
@@ -246,7 +195,6 @@ fn compile_cpu_shared_library(
             .arg(&ll_path),
     )?;
 
-    // Step 3: LLVM IR → object file (PIC required for shared library)
     let mut llc_cmd = Command::new("llc-18");
     llc_cmd
         .arg("-filetype=obj")
@@ -261,7 +209,6 @@ fn compile_cpu_shared_library(
     llc_cmd.arg(&ll_path).arg("-o").arg(&obj_path);
     run_tool("llc-18", &mut llc_cmd)?;
 
-    // Step 4: link model + runtime into a shared library
     run_tool(
         "clang-18",
         Command::new("clang-18")
@@ -282,8 +229,6 @@ fn load_compiled_residual(
     rows: usize,
     implicit_rows: usize,
 ) -> Result<CompiledMlirResidual, MlirError> {
-    // Step 5: dlopen and resolve symbols.
-    // Each memref<?xf64> expands to 5 params: (alloc_ptr, aligned_ptr, offset, size, stride).
     let lib = unsafe { libloading::Library::new(&artifacts.so_path) }?;
 
     let eval_fn: libloading::Symbol<EvalFnRaw> = unsafe {
@@ -324,4 +269,78 @@ fn run_tool(tool: &'static str, cmd: &mut Command) -> Result<(), MlirError> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type SolveComponentFn = unsafe extern "C" fn(i64, i64, i64, i64) -> f64;
+
+    #[test]
+    fn target_owned_linear_runtime_rejects_singular_systems() {
+        let tmpdir = TempDir::new().expect("temporary runtime build directory");
+        let source_path = tmpdir.path().join("rumoca_runtime.c");
+        let library_path = tmpdir.path().join("rumoca_runtime.so");
+        std::fs::write(
+            &source_path,
+            mlir_asset("runtime/rumoca_runtime.c").expect("manifest-declared MLIR runtime"),
+        )
+        .expect("write embedded runtime asset");
+
+        let mut command = Command::new("clang-18");
+        command
+            .arg("-shared")
+            .arg("-fPIC")
+            .arg(&source_path)
+            .arg("-lm")
+            .arg("-o")
+            .arg(&library_path);
+        if let Err(error) = run_tool("clang-18", &mut command) {
+            if cfg!(feature = "required-mlir-cpu") {
+                panic!("required MLIR CPU toolchain failed: {error}");
+            }
+            eprintln!("skipping MLIR runtime test: {error}");
+            return;
+        }
+
+        let library =
+            unsafe { libloading::Library::new(&library_path) }.expect("load compiled MLIR runtime");
+        let solve: libloading::Symbol<SolveComponentFn> = unsafe {
+            library
+                .get(b"rumoca_solve_linear_component\0")
+                .expect("linear component symbol")
+        };
+
+        let matrix = [3.0, 1.0, 1.0, 2.0];
+        let rhs = [9.0, 8.0];
+        let first = unsafe {
+            solve(
+                matrix.as_ptr() as usize as i64,
+                rhs.as_ptr() as usize as i64,
+                2,
+                0,
+            )
+        };
+        let second = unsafe {
+            solve(
+                matrix.as_ptr() as usize as i64,
+                rhs.as_ptr() as usize as i64,
+                2,
+                1,
+            )
+        };
+        assert_eq!((first, second), (2.0, 3.0));
+
+        let singular = [1.0, 2.0, 2.0, 4.0];
+        let singular_result = unsafe {
+            solve(
+                singular.as_ptr() as usize as i64,
+                rhs.as_ptr() as usize as i64,
+                2,
+                0,
+            )
+        };
+        assert!(singular_result.is_nan());
+    }
 }

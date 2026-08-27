@@ -8,68 +8,87 @@ fn test_span() -> rumoca_core::Span {
     )
 }
 
+#[derive(Clone, Copy)]
+enum TestScalar {
+    Real,
+    Integer,
+}
+
+fn function_param(
+    name: &str,
+    scalar: TestScalar,
+    dimensions: Vec<i64>,
+) -> rumoca_core::FunctionParam {
+    let (type_name, type_id) = match scalar {
+        TestScalar::Real => ("Real", rumoca_core::TypeId::new(1)),
+        TestScalar::Integer => ("Integer", rumoca_core::TypeId::new(2)),
+    };
+    let effective_type = rumoca_core::EffectiveType::new(type_id, type_id, dimensions)
+        .expect("fixture function type is valid");
+    rumoca_core::FunctionParam::new(name, type_name, effective_type, test_span())
+}
+
 fn var(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new(name),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
 fn indexed_var(name: &str, index: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new(name),
-        subscripts: vec![rumoca_core::Subscript::index(
-            index,
-            rumoca_core::Span::DUMMY,
-        )],
-        span: rumoca_core::Span::DUMMY,
+        subscripts: vec![rumoca_core::Subscript::index(index, test_span())],
+        span: test_span(),
     }
 }
 
 fn index_expr(base: rumoca_core::Expression, index: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::Index {
         base: Box::new(base),
-        subscripts: vec![rumoca_core::Subscript::index(
-            index,
-            rumoca_core::Span::DUMMY,
-        )],
-        span: rumoca_core::Span::DUMMY,
+        subscripts: vec![rumoca_core::Subscript::index(index, test_span())],
+        span: test_span(),
     }
 }
 
 fn comp_ref(name: &str) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: false,
-        span: rumoca_core::Span::DUMMY,
-        parts: vec![rumoca_core::ComponentRefPart {
+    let def_id = name.bytes().fold(1_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
+    rumoca_core::ComponentReference::construct(
+        false,
+        test_span(),
+        vec![rumoca_core::ComponentRefPart {
             ident: name.to_string(),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
             subs: Vec::new(),
+            def_id: rumoca_core::DefId::new(def_id.max(1)),
         }],
-        def_id: None,
-    }
+    )
+    .expect("fixture assignment target is exact")
 }
 
 fn field(base: rumoca_core::Expression, name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::FieldAccess {
         base: Box::new(base),
         field: name.to_string(),
-        span: rumoca_core::Span::DUMMY,
+        field_def_id: rumoca_core::DefId::new(1),
+        span: test_span(),
     }
 }
 
 fn int(value: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Integer(value),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
 fn real(value: f64) -> rumoca_core::Expression {
     rumoca_core::Expression::Literal {
         value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -82,7 +101,7 @@ fn binary(
         op,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -112,7 +131,7 @@ fn call(
     rumoca_core::Expression::BuiltinCall {
         function,
         args,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
@@ -125,22 +144,10 @@ fn function_call(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core:
     }
 }
 
-fn scalar_indexing_function(
-    name: &str,
-    input_type: &str,
-    output_type: &str,
-) -> rumoca_core::Function {
+fn scalar_indexing_function(name: &str, scalar: TestScalar) -> rumoca_core::Function {
     let mut function = rumoca_core::Function::new(name, test_span());
-    function.add_input(rumoca_core::FunctionParam::new(
-        "x",
-        input_type,
-        test_span(),
-    ));
-    function.add_output(rumoca_core::FunctionParam::new(
-        "y",
-        output_type,
-        test_span(),
-    ));
+    function.add_input(function_param("x", scalar, Vec::new()));
+    function.add_output(function_param("y", scalar, Vec::new()));
     function.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref("y"),
         value: indexed_var("x", 1),
@@ -205,14 +212,14 @@ fn eval_integer_exponentiation_for_structural_dimensions() {
 fn infer_user_function_output_dims_from_shape_expr() {
     let mut functions = FxHashMap::default();
     let mut function = rumoca_core::Function::new("Pkg.indices", test_span());
-    function.add_input(rumoca_core::FunctionParam::new("m", "Integer", test_span()));
+    function.add_input(function_param("m", TestScalar::Integer, Vec::new()));
     function.add_output(
-        rumoca_core::FunctionParam::new("ind", "Integer", test_span())
-            .with_dims(vec![0])
-            .with_shape_expr(vec![rumoca_core::Subscript::expr(
+        function_param("ind", TestScalar::Integer, vec![0]).with_shape_expr(vec![
+            rumoca_core::Subscript::expr(
                 Box::new(binary(rumoca_core::OpBinary::Add, var("m"), int(1))),
                 rumoca_core::Span::DUMMY,
-            )]),
+            ),
+        ]),
     );
     functions.insert("Pkg.indices".to_string(), function);
 
@@ -244,16 +251,8 @@ fn infer_user_function_output_dims_from_shape_expr() {
 fn infer_scalar_user_function_broadcasts_array_argument_dims() {
     let mut functions = FxHashMap::default();
     let mut function = rumoca_core::Function::new("Cv.from_deg", test_span());
-    function.add_input(rumoca_core::FunctionParam::new(
-        "degree",
-        "Real",
-        test_span(),
-    ));
-    function.add_output(rumoca_core::FunctionParam::new(
-        "radian",
-        "Real",
-        test_span(),
-    ));
+    function.add_input(function_param("degree", TestScalar::Real, Vec::new()));
+    function.add_output(function_param("radian", TestScalar::Real, Vec::new()));
     functions.insert("Cv.from_deg".to_string(), function);
 
     let known_ints = FxHashMap::default();
@@ -286,7 +285,7 @@ fn user_function_integer_eval_error_means_not_constant_evaluable() {
     let mut functions = FxHashMap::default();
     functions.insert(
         "Pkg.badInteger".to_string(),
-        scalar_indexing_function("Pkg.badInteger", "Integer", "Integer"),
+        scalar_indexing_function("Pkg.badInteger", TestScalar::Integer),
     );
     let known_ints = FxHashMap::default();
     let known_reals = FxHashMap::default();
@@ -311,7 +310,7 @@ fn user_function_real_eval_error_means_not_constant_evaluable() {
     let mut functions = FxHashMap::default();
     functions.insert(
         "Pkg.badReal".to_string(),
-        scalar_indexing_function("Pkg.badReal", "Real", "Real"),
+        scalar_indexing_function("Pkg.badReal", TestScalar::Real),
     );
     let known_ints = FxHashMap::default();
     let known_reals = FxHashMap::default();
@@ -338,52 +337,37 @@ fn user_function_real_eval_error_means_not_constant_evaluable() {
 }
 
 #[test]
-fn suffix_integer_lookup_rejects_ambiguous_matches() {
-    let mut known_ints = FxHashMap::default();
-    known_ints.insert("outer.n".to_string(), 2);
-    known_ints.insert("n".to_string(), 3);
-    let known_reals = FxHashMap::default();
-    let known_bools = FxHashMap::default();
-    let known_enums = FxHashMap::default();
-    let array_dims = FxHashMap::default();
-    let functions = FxHashMap::default();
-    let ctx = empty_param_context(
-        &known_ints,
-        &known_reals,
-        &known_bools,
-        &known_enums,
-        &array_dims,
-        &functions,
-    );
+fn an_overqualified_rendered_name_is_never_recovered_by_stripping_segments() {
+    // A reference whose rendered path does not name a known value is not a
+    // value: the evaluator has no licence to search shorter renderings of it
+    // for something that happens to look similar. The unique case is rejected
+    // for exactly the same reason as the ambiguous one — neither carries the
+    // identity of the declaration being read.
+    let mut unique = FxHashMap::default();
+    unique.insert("outer.n".to_string(), 2);
+    let mut ambiguous = unique.clone();
+    ambiguous.insert("n".to_string(), 3);
 
-    assert_eq!(
-        try_eval_integer_with_context(&var("model.outer.n"), &ctx),
-        None
-    );
-}
+    for known_ints in [&unique, &ambiguous] {
+        let known_reals = FxHashMap::default();
+        let known_bools = FxHashMap::default();
+        let known_enums = FxHashMap::default();
+        let array_dims = FxHashMap::default();
+        let functions = FxHashMap::default();
+        let ctx = empty_param_context(
+            known_ints,
+            &known_reals,
+            &known_bools,
+            &known_enums,
+            &array_dims,
+            &functions,
+        );
 
-#[test]
-fn suffix_integer_lookup_allows_unique_overqualified_match() {
-    let mut known_ints = FxHashMap::default();
-    known_ints.insert("outer.n".to_string(), 2);
-    let known_reals = FxHashMap::default();
-    let known_bools = FxHashMap::default();
-    let known_enums = FxHashMap::default();
-    let array_dims = FxHashMap::default();
-    let functions = FxHashMap::default();
-    let ctx = empty_param_context(
-        &known_ints,
-        &known_reals,
-        &known_bools,
-        &known_enums,
-        &array_dims,
-        &functions,
-    );
-
-    assert_eq!(
-        try_eval_integer_with_context(&var("model.outer.n"), &ctx),
-        Some(2)
-    );
+        assert_eq!(
+            try_eval_integer_with_context(&var("model.outer.n"), &ctx),
+            None
+        );
+    }
 }
 
 #[test]
@@ -391,7 +375,7 @@ fn eval_integer_div_builtin_remains_truncating() {
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Div,
         args: vec![int(7), int(2)],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let known_ints = FxHashMap::default();
     let known_reals = FxHashMap::default();
@@ -560,7 +544,7 @@ fn eval_boolean_enum_eq_accepts_different_qualification_paths() {
         op: rumoca_core::OpBinary::Eq,
         lhs: Box::new(var("pipe.modelStructure")),
         rhs: Box::new(var("pipe.Types.ModelStructure.a_vb")),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
 
     let value = try_eval_flat_expr_boolean(
@@ -571,6 +555,57 @@ fn eval_boolean_enum_eq_accepts_different_qualification_paths() {
     );
 
     assert_eq!(value, Some(true));
+}
+
+#[test]
+fn enum_canonicalization_matches_complete_path_segments() {
+    let mut known_enums = FxHashMap::default();
+    known_enums.insert(
+        "proper".to_string(),
+        "Modelica.Fluid.Types.ModelStructure.a_vb".to_string(),
+    );
+    known_enums.insert(
+        "unrelated".to_string(),
+        "Modelica.Fluid.NotTypes.ModelStructure.a_vb".to_string(),
+    );
+
+    assert_eq!(
+        canonicalize_enum_literal("pipe.Types.ModelStructure.a_vb", &known_enums),
+        "Modelica.Fluid.Types.ModelStructure.a_vb",
+        "a suffix must begin at a component-path segment boundary",
+    );
+}
+
+#[test]
+fn enum_eval_preserves_nested_enumeration_type_path() {
+    let mut known_enums = FxHashMap::default();
+    known_enums.insert(
+        "initType".to_string(),
+        "Modelica.Blocks.Types.Init.NoInit".to_string(),
+    );
+
+    // MLS §4.8.5: identity is the enumeration type plus the literal, so the
+    // complete nested type path must survive evaluation of both a parameter
+    // reference and a scope-qualified literal reached through a subscripted
+    // component instance.
+    assert_eq!(
+        try_eval_flat_expr_enum(
+            &var("initType"),
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &known_enums,
+        ),
+        Some("Modelica.Blocks.Types.Init.NoInit".to_string()),
+    );
+    assert_eq!(
+        try_eval_flat_expr_enum(
+            &var("controllers[bus.index].Types.Init.NoInit"),
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &known_enums,
+        ),
+        Some("Modelica.Blocks.Types.Init.NoInit".to_string()),
+    );
 }
 
 #[test]
@@ -587,7 +622,7 @@ fn eval_boolean_enum_eq_accepts_shared_type_literal_tail() {
         rhs: Box::new(var(
             "Modelica.Mechanics.MultiBody.Types.ResolveInFrameA.frame_resolve",
         )),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
 
     let value = try_eval_flat_expr_boolean(
@@ -611,7 +646,7 @@ fn eval_boolean_enum_eq_rejects_different_enum_type() {
         op: rumoca_core::OpBinary::Eq,
         lhs: Box::new(var("mode")),
         rhs: Box::new(var("Modelica.Blocks.Types.SimpleController.PI")),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
 
     let value = try_eval_flat_expr_boolean(
@@ -658,7 +693,7 @@ fn eval_integer_if_uses_canonicalized_enum_condition() {
             value: rumoca_core::Literal::Integer(0),
             span: rumoca_core::Span::DUMMY,
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
 
     let ctx = ParamEvalContext {
@@ -714,7 +749,7 @@ fn eval_integer_if_resolves_unqualified_enum_condition_with_var_context() {
             },
         )],
         else_branch: Box::new(var("order")),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
 
     let ctx = ParamEvalContext {
@@ -801,7 +836,7 @@ fn eval_integer_if_handles_integer_builtin_with_scoped_enum_conditions() {
             }],
             span: rumoca_core::Span::DUMMY,
         }),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
 
     let ctx = ParamEvalContext {
@@ -864,7 +899,11 @@ fn eval_boolean_enum_eq_does_not_guess_dotted_parameter_ref_literal() {
 }
 
 #[test]
-fn eval_integer_field_access_resolves_overqualified_suffix() {
+fn eval_integer_field_access_does_not_recover_an_overqualified_record_path() {
+    // The record path reaching the evaluator is over-qualified relative to the
+    // key that holds the value. Recovering it would mean guessing which record
+    // occurrence the reference meant from the shape of its rendering, so the
+    // field access stays unevaluated and the caller keeps the binding.
     let mut known_ints = FxHashMap::default();
     known_ints.insert("stackData.cellData[1,1].nRC".to_string(), 2);
 
@@ -879,7 +918,7 @@ fn eval_integer_field_access_resolves_overqualified_suffix() {
         var_context: Some("stack.cell[1,1].cell.cellData.nRC"),
     };
 
-    assert_eq!(try_eval_integer_with_context(&expr, &ctx), Some(2));
+    assert_eq!(try_eval_integer_with_context(&expr, &ctx), None);
 }
 
 #[test]
@@ -891,7 +930,7 @@ fn eval_integer_if_returns_common_value_when_condition_unknown() {
     let expr = rumoca_core::Expression::If {
         branches: vec![(var("cond"), var("left"))],
         else_branch: Box::new(var("right")),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
     let ctx = ParamEvalContext {
         known_ints: &known_ints,
@@ -931,15 +970,26 @@ fn component_path_parent_ignores_dot_inside_subscript_expression() {
 }
 
 #[test]
-fn resolve_by_suffix_stripping_ignores_dot_inside_subscript_expression() {
+fn scoped_lookup_keeps_a_dot_inside_a_subscript_within_one_path_segment() {
     let mut known_ints = FxHashMap::default();
+    known_ints.insert("pkg.arr[data.medium].x".to_string(), 1);
+    // A decoy that only a lookup splitting the path at the dot *inside* the
+    // subscript could ever reach.
     known_ints.insert("medium].x".to_string(), 99);
-    known_ints.insert("x".to_string(), 1);
+    let ctx = ParamEvalContext {
+        known_ints: &known_ints,
+        known_reals: &FxHashMap::default(),
+        known_bools: &FxHashMap::default(),
+        known_enums: &FxHashMap::default(),
+        array_dims: &FxHashMap::default(),
+        functions: &FxHashMap::default(),
+        var_context: Some("pkg.arr[data.medium].y"),
+    };
 
     assert_eq!(
-        resolve_by_suffix_stripping("pkg.arr[data.medium].x", &known_ints),
+        try_eval_integer_with_context(&var("x"), &ctx),
         Some(1),
-        "only top-level dotted segments should be stripped"
+        "the enclosing scope of `pkg.arr[data.medium].y` is `pkg.arr[data.medium]`"
     );
 }
 
@@ -951,7 +1001,7 @@ fn eval_enum_if_resolves_selected_branch_with_known_bool_condition() {
     let expr = rumoca_core::Expression::If {
         branches: vec![(var("Medium.singleState"), var("Dynamics.SteadyState"))],
         else_branch: Box::new(var("Dynamics.SteadyStateInitial")),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
 
     let value = try_eval_flat_expr_enum(
@@ -968,7 +1018,7 @@ fn eval_enum_if_returns_common_value_when_condition_unknown() {
     let expr = rumoca_core::Expression::If {
         branches: vec![(var("cond"), var("Dynamics.SteadyState"))],
         else_branch: Box::new(var("Dynamics.SteadyState")),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
 
     let value = try_eval_flat_expr_enum(

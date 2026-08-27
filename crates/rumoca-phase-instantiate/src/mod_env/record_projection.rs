@@ -1,5 +1,33 @@
 use super::*;
+use rumoca_core::DefId;
+use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Cache of record-projection bases, keyed by the address of the AST node they
+/// were built from.
+///
+/// Every field of a record binding projects off the *same* base expression (for
+/// example `f(...).out_c` for all fields of `r` in `Bjt3 r = f(...)`). Building
+/// that base once and sharing the `Arc` keeps the AST a DAG instead of cloning
+/// the whole record-returning call once per field, which for the Spice3 device
+/// records means one 80-argument call instead of 67 copies of it.
+///
+/// The keys are addresses of AST nodes reachable from `binding_expr`, which is
+/// borrowed for the whole projection and never mutated while the cache lives,
+/// so an address uniquely identifies a node for the cache's lifetime.
+type ProjectionBaseCache = HashMap<usize, Arc<ast::Expression>>;
+
+/// The resolved value and written source of a record modifier.
+///
+/// These expressions can differ when one record parameter forwards another:
+/// the value is resolved for instantiation, while the source remains relative
+/// to `source_scope` for exact occurrence resolution in Flat.
+pub(crate) struct RecordBindingProjection<'a> {
+    pub(crate) value: &'a ast::Expression,
+    pub(crate) source: Option<&'a ast::Expression>,
+    pub(crate) source_scope: Option<ast::QualifiedName>,
+    pub(crate) each: bool,
+}
 
 /// Propagate a record binding to scalar field bindings.
 ///
@@ -8,9 +36,7 @@ use std::sync::Arc;
 pub(crate) fn propagate_record_binding_to_fields(
     tree: &ast::ClassTree,
     ctx: &mut InstantiateContext,
-    binding_expr: &ast::Expression,
-    binding_source_scope: Option<ast::QualifiedName>,
-    binding_is_each: bool,
+    binding: RecordBindingProjection<'_>,
     nested_class: &ast::ClassDef,
     targeted_keys: &IndexMap<ast::QualifiedName, ()>,
 ) -> InstantiateResult<IndexMap<ast::QualifiedName, ()>> {
@@ -30,10 +56,18 @@ pub(crate) fn propagate_record_binding_to_fields(
     } else {
         &effective
     };
-    let preserve_declared_defaults = is_default_record_constructor_call(binding_expr, nested_class);
+    let preserve_declared_defaults =
+        is_default_record_constructor_call(binding.value, nested_class);
     let mut projected_keys = IndexMap::default();
+    let mut base_cache = ProjectionBaseCache::new();
 
     for (field_name, field_comp) in components {
+        let field_def_id = field_comp.def_id.ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                field_name,
+                field_comp.location.span(),
+            ))
+        })?;
         let field_qn = ast::QualifiedName::from_ident(field_name);
         // Preserve explicit field modifiers targeting this record component
         // (either local `state(T=...)` or shifted parent `comp.state.T=...`).
@@ -47,7 +81,7 @@ pub(crate) fn propagate_record_binding_to_fields(
             continue;
         }
         let field_binding = same_type_alias_explicit_field_binding(
-            binding_expr,
+            binding.value,
             nested_class,
             components,
             ctx.mod_env(),
@@ -55,7 +89,7 @@ pub(crate) fn propagate_record_binding_to_fields(
         );
         if field_binding.is_none()
             && should_preserve_same_type_alias_field_default(
-                binding_expr,
+                binding.value,
                 nested_class,
                 components,
                 ctx.mod_env(),
@@ -71,20 +105,34 @@ pub(crate) fn propagate_record_binding_to_fields(
         } else {
             project_record_field_binding(
                 tree,
-                binding_expr,
-                binding_source_scope.as_ref(),
+                binding.value,
+                binding.source_scope.as_ref(),
                 nested_class,
                 field_name,
+                field_def_id,
+                &mut base_cache,
             )?
+        };
+        let field_source = match binding.source {
+            Some(source_expr) if source_expr != binding.value => project_record_field_binding(
+                tree,
+                source_expr,
+                binding.source_scope.as_ref(),
+                nested_class,
+                field_name,
+                field_def_id,
+                &mut base_cache,
+            )?,
+            _ => field_access.clone(),
         };
 
         ctx.mod_env_mut().active.insert(
             field_qn.clone(),
             ast::ModificationValue::with_source_scope_and_prefixes(
-                field_access.clone(),
-                Some(field_access),
-                binding_source_scope.clone(),
-                binding_is_each,
+                field_access,
+                Some(field_source),
+                binding.source_scope.clone(),
+                binding.each,
                 false,
             ),
         );
@@ -109,9 +157,21 @@ fn should_preserve_same_type_alias_field_default(
         return false;
     };
 
-    let source_component =
-        same_type_record_alias_source(binding_expr, target_record, effective_components);
-    !record_alias_source_explicitly_binds_field(source_name, source_component, mod_env, field_name)
+    let Some(source_component) =
+        same_type_record_alias_source(binding_expr, target_record, effective_components)
+    else {
+        // A reference from an outer scope, or one whose effective record type
+        // differs from the declared target, can carry different inherited
+        // defaults. Project the field instead of freezing the target record's
+        // default (for example a transient CellData subtype with nRC = 2).
+        return false;
+    };
+    !record_alias_source_explicitly_binds_field(
+        source_name,
+        Some(source_component),
+        mod_env,
+        field_name,
+    )
 }
 
 fn same_type_record_alias_source<'a>(
@@ -128,7 +188,7 @@ fn same_type_record_alias_source<'a>(
 
     let source_name = comp_ref.parts[0].ident.text.as_ref();
     let source_component = effective_components.get(source_name)?;
-    if comp_ref.def_id.is_some() && source_component.def_id != comp_ref.def_id {
+    if comp_ref.root_def_id().is_some() && source_component.def_id != comp_ref.root_def_id() {
         return None;
     }
     if source_component.type_def_id != target_record.def_id {
@@ -155,14 +215,18 @@ fn same_type_alias_explicit_field_binding(
     field_name: &str,
 ) -> Option<ast::Expression> {
     let source_name = simple_record_alias_source_name(binding_expr)?;
-    if let Some(source_component) =
-        same_type_record_alias_source(binding_expr, target_record, effective_components)
-        && let Some((_, value)) = source_component
-            .modifications
-            .iter()
-            .find(|(name, _)| name.as_str() == field_name)
+    if let Some(field_binding) =
+        same_type_record_alias_source(binding_expr, target_record, effective_components).and_then(
+            |source_component| {
+                source_component
+                    .modifications
+                    .iter()
+                    .find(|(name, _)| name.as_str() == field_name)
+                    .and_then(|(_, value)| value.component_modifier_binding_value())
+            },
+        )
     {
-        return Some(value.clone());
+        return Some(field_binding.clone());
     }
 
     let source_field = ast::QualifiedName::from_ident(source_name).child(field_name);
@@ -183,7 +247,9 @@ fn record_alias_source_explicitly_binds_field(
         source_component
             .modifications
             .iter()
-            .any(|(name, _)| name.as_str() == field_name)
+            .any(|(name, modifier)| {
+                name.as_str() == field_name && modifier.component_modifier_binding_value().is_some()
+            })
     }) {
         return true;
     }
@@ -198,6 +264,8 @@ fn project_record_field_binding(
     binding_source_scope: Option<&ast::QualifiedName>,
     target_record: &ast::ClassDef,
     field_name: &str,
+    field_def_id: DefId,
+    base_cache: &mut ProjectionBaseCache,
 ) -> InstantiateResult<ast::Expression> {
     Ok(match binding_expr {
         ast::Expression::If {
@@ -216,6 +284,8 @@ fn project_record_field_binding(
                             binding_source_scope,
                             target_record,
                             field_name,
+                            field_def_id,
+                            base_cache,
                         )?,
                     ))
                 })
@@ -226,6 +296,8 @@ fn project_record_field_binding(
                 binding_source_scope,
                 target_record,
                 field_name,
+                field_def_id,
+                base_cache,
             )?),
             span: binding_expr.span(),
         },
@@ -236,6 +308,8 @@ fn project_record_field_binding(
                 binding_source_scope,
                 target_record,
                 field_name,
+                field_def_id,
+                base_cache,
             )?),
             span: *span,
         },
@@ -248,20 +322,48 @@ fn project_record_field_binding(
             )? {
                 return Ok(field_binding);
             }
-            let base = constructor_record_projection_base(
-                tree,
-                binding_expr,
-                binding_source_scope,
-                target_record,
-            )?
-            .unwrap_or_else(|| binding_expr.clone());
             ast::Expression::FieldAccess {
-                base: Arc::new(base),
+                base: shared_projection_base(
+                    tree,
+                    binding_expr,
+                    binding_source_scope,
+                    target_record,
+                    base_cache,
+                )?,
                 field: field_name.to_string(),
+                field_def_id: Some(field_def_id),
                 span: binding_expr.span(),
             }
         }
     })
+}
+
+/// Return the shared `Arc` for the base every field of `binding_expr` projects
+/// off, building it on first use.
+///
+/// The base does not depend on the field name, so all fields of the record can
+/// point at one `Arc` instead of each owning a deep copy of the (possibly very
+/// large) record-returning expression.
+fn shared_projection_base(
+    tree: &ast::ClassTree,
+    binding_expr: &ast::Expression,
+    binding_source_scope: Option<&ast::QualifiedName>,
+    target_record: &ast::ClassDef,
+    base_cache: &mut ProjectionBaseCache,
+) -> InstantiateResult<Arc<ast::Expression>> {
+    let key = std::ptr::from_ref(binding_expr) as usize;
+    if let Some(cached) = base_cache.get(&key) {
+        return Ok(Arc::clone(cached));
+    }
+    let base = constructor_record_projection_base(
+        tree,
+        binding_expr,
+        binding_source_scope,
+        target_record,
+    )?
+    .map_or_else(|| Arc::new(binding_expr.clone()), Arc::new);
+    base_cache.insert(key, Arc::clone(&base));
+    Ok(base)
 }
 
 fn constructor_record_projection_base(
@@ -279,13 +381,15 @@ fn constructor_record_projection_base(
     if source_record.def_id == target_record.def_id {
         return Ok(None);
     }
-    let Some(source_field) = unique_constructor_record_field(tree, source_record, target_record)?
+    let Some((source_field, source_field_def_id)) =
+        unique_constructor_record_field(tree, source_record, target_record)?
     else {
         return Ok(None);
     };
     Ok(Some(ast::Expression::FieldAccess {
         base: Arc::new(binding_expr.clone()),
         field: source_field,
+        field_def_id: Some(source_field_def_id),
         span: binding_expr.span(),
     }))
 }
@@ -345,7 +449,11 @@ fn constructor_class_for_call<'a>(
     comp: &ast::ComponentReference,
     binding_source_scope: Option<&ast::QualifiedName>,
 ) -> Option<&'a ast::ClassDef> {
-    comp.def_id
+    // A record constructor call names a class, so the class is the reference's
+    // exact *target* segment. `root_def_id` is the first segment, which for a
+    // dotted constructor such as `P.Concrete.Element(...)` identifies the
+    // enclosing package rather than the record (MLS §5.3, §12.6).
+    comp.target_def_id()
         .and_then(|def_id| tree.get_class_by_def_id(def_id))
         .or_else(|| find_class_in_tree(tree, &comp.to_string()))
         .or_else(|| resolve_scoped_constructor_class(tree, comp, binding_source_scope))
@@ -380,7 +488,7 @@ fn unique_constructor_record_field(
     tree: &ast::ClassTree,
     source_record: &ast::ClassDef,
     target_record: &ast::ClassDef,
-) -> InstantiateResult<Option<String>> {
+) -> InstantiateResult<Option<(String, DefId)>> {
     let components = get_effective_components(tree, source_record)?;
     let components = if components.is_empty() {
         &source_record.components
@@ -390,11 +498,28 @@ fn unique_constructor_record_field(
     let mut matches = components
         .iter()
         .filter(|(_name, component)| component_record_type_matches(tree, component, target_record))
-        .map(|(name, _component)| name.clone());
+        .map(|(name, component)| {
+            component
+                .def_id
+                .map(|def_id| (name.clone(), def_id))
+                .ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        name,
+                        component.location.span(),
+                    ))
+                })
+        });
     let Some(first) = matches.next() else {
         return Ok(None);
     };
-    Ok(matches.next().is_none().then_some(first))
+    let first = first?;
+    match matches.next() {
+        Some(next) => {
+            next?;
+            Ok(None)
+        }
+        None => Ok(Some(first)),
+    }
 }
 
 fn component_record_type_matches(
@@ -437,7 +562,7 @@ fn record_constructor_matches_class(
     comp: &ast::ComponentReference,
     nested_class: &ast::ClassDef,
 ) -> bool {
-    if let (Some(comp_def_id), Some(class_def_id)) = (comp.def_id, nested_class.def_id) {
+    if let (Some(comp_def_id), Some(class_def_id)) = (comp.root_def_id(), nested_class.def_id) {
         return comp_def_id == class_def_id;
     }
 

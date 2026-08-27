@@ -12,9 +12,10 @@ use std::time::Instant;
 use anyhow::{Result, anyhow, bail};
 
 use crate::config::{DeriveSpec, InputConfig, LocalDef};
-#[allow(unused_imports)]
-use crate::device::{GamepadAxis, GamepadButton, KeyCode, KeyModifiers};
+#[cfg(test)]
+use crate::device::{GamepadAxis, GamepadButton};
 pub use crate::device::{GamepadSnapshot, InputMode, KeyboardEvent};
+use crate::device::{KeyCode, KeyModifiers};
 
 pub use compile::{
     ButtonAction, CompiledDerive, CompiledGamepadAxis, CompiledGamepadButton, CompiledInput,
@@ -63,11 +64,11 @@ pub struct InputEngine {
     compiled: CompiledInput,
 
     /// Previous pressed/unpressed state of each bound button/key, keyed by binding id.
-    /// Used for rising-edge detection. Populated by device polling (phase 2c/2d).
+    /// Used for rising-edge detection and populated by device polling.
     edge_prev: HashMap<String, bool>,
 
     /// Last time a given state was toggled (for debounce), keyed by the state name.
-    /// Populated by device polling (phase 2c/2d).
+    /// Populated by device polling.
     debounce: HashMap<String, Instant>,
 
     held_keyboard_keys: HashSet<String>,
@@ -358,8 +359,6 @@ impl InputEngine {
                 .any(|decay_target| decay_target == target)
         })
     }
-
-    // ── Shared helpers (used by gamepad now, keyboard next) ───────────────
 
     fn read_path(&self, p: &Path) -> Option<f64> {
         self.locals.get(&p.name)?.as_f64_at(p.index)
@@ -874,7 +873,7 @@ when_true = 2000
         assert!(!eng.take_signal("reset")); // already consumed
     }
 
-    // ── Gamepad polling (phase 2c) ────────────────────────────────────────
+    // ── Gamepad polling ──────────────────────────────────────────────────
 
     fn snap(axes: &[(GamepadAxis, f64)], buttons: &[(GamepadButton, bool)]) -> GamepadSnapshot {
         GamepadSnapshot {
@@ -969,7 +968,7 @@ when_true = 2000
         assert!(!eng.take_signal("reset"));
     }
 
-    // ── Keyboard polling (phase 2d) ───────────────────────────────────────
+    // ── Keyboard polling ─────────────────────────────────────────────────
 
     fn key(c: char) -> KeyboardEvent {
         KeyboardEvent::new(KeyCode::Char(c), KeyModifiers::NONE)

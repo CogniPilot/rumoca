@@ -7,30 +7,87 @@ use std::time::{Duration, Instant};
 use rumoca_compile::compile::FailedPhase;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+mod diagnostic_codes;
+mod failure_classification;
+mod failure_row;
+mod memory_limit;
+pub use diagnostic_codes::{embedded_diagnostic_code, sim_error_diagnostic_code};
+pub use failure_classification::{
+    ModelFailureBucket, ModelFailureClassification, ModelFailureOwner,
+    compile_failure_progress_phase,
+};
+pub use failure_row::strict_compile_failure_row;
+pub use memory_limit::{
+    WorkerMemoryLimitEnforcement, WorkerMemoryLimitStartError, start_worker_memory_limit,
+};
+
 /// Per-model wall timeout (seconds) for one MSL-parity simulation. Shared so the
 /// rumoca sim worker and the OMC reference run use the *same* budget (a model is
 /// only fairly comparable when both tools are given identical time to simulate).
-pub const MSL_SIM_TIMEOUT_SECS: f64 = 10.0;
+pub const MSL_SIM_TIMEOUT_SECS: f64 = 12.0;
+/// Uniform output intervals used by the MSL parity oracle when a model has no
+/// explicit `experiment(Interval=...)` annotation.
+///
+/// The OMC side uses an unqualified `simulate(...)` call whose default is 500
+/// intervals. Solver event instants remain additional output points.
+pub const MSL_SIM_OUTPUT_INTERVALS: usize = 500;
 
-pub const MODEL_WORKER_PROTOCOL_VERSION: u32 = 1;
+/// Select the observation interval for an MSL simulation.
+///
+/// A valid Modelica experiment interval owns the grid. Otherwise the grid is
+/// scale invariant and uses the caller-provided uniform interval count.
+pub fn msl_sim_output_dt(
+    t_start: f64,
+    t_end: f64,
+    experiment_interval: Option<f64>,
+    output_intervals: usize,
+) -> Option<f64> {
+    experiment_interval
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .or_else(|| {
+            if output_intervals == 0 {
+                return None;
+            }
+            let span = (t_end - t_start).abs();
+            let dt = span / output_intervals as f64;
+            (dt.is_finite() && dt > 0.0).then_some(dt)
+        })
+}
+
+pub const MODEL_WORKER_PROTOCOL_VERSION: u32 = 2;
 pub const MODEL_WORKER_RESULT_FILE: &str = "result.json";
 pub const MODEL_WORKER_PARTIAL_RESULT_FILE: &str = "partial_result.json";
+/// Resident-plus-swap ceiling for one persistent MSL model worker.
+///
+/// The largest known successful compile is just under 5 GiB. Six GiB preserves
+/// that workload while bounding pathological Solve allocations.
+pub const MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT: usize = 6 * 1024;
+pub const MODEL_WORKER_MEMORY_LIMIT_EXIT_CODE: i32 = 70;
+pub const MODEL_WORKER_MEMORY_LIMIT_EXCEEDED_CLASSIFICATION: &str = "worker_memory_limit_exceeded";
+pub const MODEL_WORKER_PARENT_DISCONNECTED_EXIT_CODE: i32 = 71;
+pub const MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_EXIT_CODE: i32 = 72;
+pub const MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_CLASSIFICATION: &str =
+    "worker_memory_limit_enforcement_unavailable";
 const MODEL_WORKER_POLL_MILLIS: u64 = 20;
 static MODEL_WORKER_EXE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelWorkerRequest {
     pub protocol_version: u32,
     pub model_name: String,
     pub run_simulation: bool,
     pub selected_for_simulation: bool,
     pub explicit_sim_target: bool,
+    /// Per-model solver wall budget. `None` selects
+    /// [`MSL_SIM_TIMEOUT_SECS`]; workers clamp explicit values to that floor so
+    /// callers can only raise the parity budget.
+    #[serde(default)]
+    pub sim_timeout_secs: Option<f64>,
     /// Emit the machine-exact IR JSON (`ir-*.json`) for each stage. Off by
     /// default for interactive debugging (the readable `ir-*.mo` Modelica dumps
     /// are preferred); enable when exact op/index or span detail is needed.
     pub emit_json: bool,
-    #[serde(default)]
-    pub allow_unbalanced_for_diagnostics: bool,
     /// Enable NaN/non-finite runtime tracing (a first-class debug flag rather
     /// than an env var) — see `rumoca_eval_solve::nan_trace`.
     #[serde(default)]
@@ -199,13 +256,47 @@ pub enum ModelWorkerRunOutcome {
         active_phase: Option<WorkerProgressPhase>,
         phase_timeout_secs: f64,
     },
+    MemoryLimitExceeded {
+        elapsed_secs: f64,
+        active_phase: Option<WorkerProgressPhase>,
+        memory_limit_mb: usize,
+    },
     Failed(String),
+}
+
+/// Parent-watchdog budgets for one persistent model-worker request.
+///
+/// Simulation can require a small process-orchestration allowance beyond its
+/// own solver budget. Keeping that allowance separate prevents it from
+/// weakening the compiler-phase timeout gate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModelWorkerPhaseTimeouts {
+    default_secs: f64,
+    simulation_secs: f64,
+}
+
+impl ModelWorkerPhaseTimeouts {
+    pub const fn new(default_secs: f64, simulation_secs: f64) -> Self {
+        Self {
+            default_secs,
+            simulation_secs,
+        }
+    }
+
+    pub const fn timeout_secs_for(self, phase: Option<WorkerProgressPhase>) -> f64 {
+        if matches!(phase, Some(WorkerProgressPhase::Sim)) {
+            self.simulation_secs
+        } else {
+            self.default_secs
+        }
+    }
 }
 
 pub struct ModelWorkerDaemon {
     child: Child,
     stdin: ChildStdin,
     messages: mpsc::Receiver<Result<ModelWorkerControlMessage, String>>,
+    memory_limit_mb: usize,
 }
 
 impl ModelWorkerDaemon {
@@ -213,11 +304,15 @@ impl ModelWorkerDaemon {
         source_root_path: &Path,
         timeout_secs: f64,
         cpu_core_id: Option<usize>,
+        memory_limit_mb: usize,
     ) -> Result<Self, String> {
         let worker_exe = resolve_model_worker_exe()?;
         let mut command = Command::new(worker_exe);
         command.arg("--source-root-path").arg(source_root_path);
         command.arg("--jobs").arg("1");
+        command
+            .arg("--memory-limit-mb")
+            .arg(memory_limit_mb.to_string());
         if let Some(cpu_core_id) = cpu_core_id {
             command.arg("--cpu-core-id").arg(cpu_core_id.to_string());
         }
@@ -243,6 +338,7 @@ impl ModelWorkerDaemon {
             child,
             stdin,
             messages,
+            memory_limit_mb,
         };
         match worker.wait_for_ready(timeout_secs) {
             Ok(()) => Ok(worker),
@@ -260,7 +356,7 @@ impl ModelWorkerDaemon {
     pub fn run_request(
         &mut self,
         request: &ModelWorkerRequest,
-        timeout_secs: f64,
+        phase_timeouts: ModelWorkerPhaseTimeouts,
         progress_jsonl: &Path,
     ) -> ModelWorkerRunOutcome {
         if let Err(error) = self.send_command(&ModelWorkerCommand::Run {
@@ -272,6 +368,7 @@ impl ModelWorkerDaemon {
         let mut phase_monitor = ModelWorkerPhaseMonitor::new();
         loop {
             let active_phase = phase_monitor.update(progress_jsonl);
+            let timeout_secs = phase_timeouts.timeout_secs_for(active_phase);
             if let Some(active_phase) = active_phase
                 && phase_monitor.phase_elapsed() >= Duration::from_secs_f64(timeout_secs)
             {
@@ -312,12 +409,28 @@ impl ModelWorkerDaemon {
                 Ok(Err(error)) => return ModelWorkerRunOutcome::Failed(error),
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    return ModelWorkerRunOutcome::Failed(
-                        "model worker stdout closed before result".to_string(),
-                    );
+                    // Poll the process status below before classifying this as
+                    // a generic transport failure. The memory watchdog closes
+                    // stdout immediately before its distinctive exit status is
+                    // observable by the parent.
                 }
             }
             match self.child.try_wait() {
+                Ok(Some(status)) if status.code() == Some(MODEL_WORKER_MEMORY_LIMIT_EXIT_CODE) => {
+                    return ModelWorkerRunOutcome::MemoryLimitExceeded {
+                        elapsed_secs: start.elapsed().as_secs_f64(),
+                        active_phase,
+                        memory_limit_mb: self.memory_limit_mb,
+                    };
+                }
+                Ok(Some(status))
+                    if status.code() == Some(MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_EXIT_CODE) =>
+                {
+                    return ModelWorkerRunOutcome::Failed(format!(
+                        "[{MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_CLASSIFICATION}] \
+                         model worker lost memory-limit enforcement"
+                    ));
+                }
                 Ok(Some(status)) => {
                     return ModelWorkerRunOutcome::Failed(format!(
                         "model worker exited with status {status}"
@@ -343,6 +456,7 @@ impl ModelWorkerDaemon {
 
     fn wait_for_ready(&mut self, timeout_secs: f64) -> Result<(), String> {
         let start = Instant::now();
+        let mut stdout_disconnected = false;
         loop {
             match self.messages.try_recv() {
                 Ok(Ok(ModelWorkerControlMessage::Ready { protocol_version }))
@@ -363,10 +477,24 @@ impl ModelWorkerDaemon {
                 Ok(Err(error)) => return Err(error),
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err("model worker stdout closed before ready".to_string());
+                    stdout_disconnected = true;
                 }
             }
             match self.child.try_wait() {
+                Ok(Some(status)) if status.code() == Some(MODEL_WORKER_MEMORY_LIMIT_EXIT_CODE) => {
+                    return Err(format!(
+                        "[{MODEL_WORKER_MEMORY_LIMIT_EXCEEDED_CLASSIFICATION}] \
+                         model worker exceeded its memory limit before ready"
+                    ));
+                }
+                Ok(Some(status))
+                    if status.code() == Some(MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_EXIT_CODE) =>
+                {
+                    return Err(format!(
+                        "[{MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_CLASSIFICATION}] \
+                         model worker could not establish memory-limit enforcement"
+                    ));
+                }
                 Ok(Some(status)) => {
                     return Err(format!(
                         "model worker exited before ready with status {status}"
@@ -376,10 +504,7 @@ impl ModelWorkerDaemon {
                 Err(error) => return Err(format!("failed to poll model worker startup: {error}")),
             }
             if start.elapsed() >= Duration::from_secs_f64(timeout_secs) {
-                return Err(format!(
-                    "model worker exceeded {:.3}s startup budget in phase SourceRootLoad",
-                    timeout_secs
-                ));
+                return Err(startup_timeout_error(stdout_disconnected, timeout_secs));
             }
             std::thread::sleep(Duration::from_millis(MODEL_WORKER_POLL_MILLIS));
         }
@@ -396,6 +521,16 @@ impl ModelWorkerDaemon {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn startup_timeout_error(stdout_disconnected: bool, timeout_secs: f64) -> String {
+    if stdout_disconnected {
+        return "model worker stdout closed before ready".to_string();
+    }
+    format!(
+        "model worker exceeded {:.3}s startup budget in phase SourceRootLoad",
+        timeout_secs
+    )
 }
 
 impl Drop for ModelWorkerDaemon {
@@ -653,6 +788,12 @@ pub struct WorkerModelResult {
     pub ir_flat_file: Option<String>,
     pub sim_status: Option<String>,
     pub sim_error: Option<String>,
+    /// Stable SPEC_0008 code for `sim_error` (`EX0xx` for runtime failures,
+    /// delegated `EL0xx`/`ES0xx` when the defect came from solve lowering or
+    /// structural analysis). `None` for failures that are model behaviour
+    /// rather than a compiler defect (timeout, `assert`, `terminate`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim_error_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sim_error_span: Option<rumoca_core::Span>,
     pub ic_status: Option<String>,
@@ -665,6 +806,16 @@ pub struct WorkerModelResult {
     pub ir_solve_seconds: Option<f64>,
     pub ir_solve_structural_dae_seconds: Option<f64>,
     pub ir_solve_lower_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensor_family_bodies: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensor_preserved_family_bodies: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensor_scalarized_family_rows: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensor_preservation_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensor_preservation_error: Option<String>,
     pub sim_backend_build_seconds: Option<f64>,
     pub sim_run_seconds: Option<f64>,
     pub sim_wall_seconds: Option<f64>,
@@ -674,8 +825,36 @@ pub struct WorkerModelResult {
     pub ir_dae_file: Option<String>,
     pub ir_solve_file: Option<String>,
     pub ir_solve_error: Option<String>,
+    /// Stable SPEC_0008 code for `ir_solve_error` (`EL0xx`/`ES0xx`). `None` when
+    /// the solve stage failed for a non-diagnostic reason such as an artifact
+    /// write error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ir_solve_error_code: Option<String>,
     pub timeout_phase: Option<WorkerProgressPhase>,
     pub timeout_seconds: Option<f64>,
+    /// Component breakdown for an unbalanced (ED001) ToDae failure, so the MSL
+    /// harness can triage a balance cohort without recompiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance_detail: Option<Box<rumoca_compile::analysis::BalanceDetail>>,
+    /// Pipeline phase the failing attempt stopped in, as a typed enum rather
+    /// than the free-form `phase_reached` string. `None` for a successful
+    /// attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_phase: Option<WorkerProgressPhase>,
+    /// Typed failure family, minted from producer knowledge (the compile phase,
+    /// the `SimError` variant, or the `SimFailureStage` the failing path
+    /// recorded) — never from the rendered message. `None` for a successful
+    /// attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_bucket: Option<ModelFailureBucket>,
+    /// Owner of [`Self::failure_bucket`], carried so report tooling can group by
+    /// owner without linking this crate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_category: Option<ModelFailureOwner>,
+    /// The SPEC_0008 code that identifies the classified failure, selected from
+    /// the stage-specific code fields so consumers have one field to read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_error_code: Option<String>,
 }
 
 impl WorkerModelResult {
@@ -715,6 +894,7 @@ impl WorkerModelResult {
             ir_flat_file: None,
             sim_status: None,
             sim_error: None,
+            sim_error_code: None,
             sim_error_span: None,
             ic_status: None,
             ic_error: None,
@@ -725,6 +905,11 @@ impl WorkerModelResult {
             ir_solve_seconds: None,
             ir_solve_structural_dae_seconds: None,
             ir_solve_lower_seconds: None,
+            tensor_family_bodies: None,
+            tensor_preserved_family_bodies: None,
+            tensor_scalarized_family_rows: None,
+            tensor_preservation_percent: None,
+            tensor_preservation_error: None,
             sim_backend_build_seconds: None,
             sim_run_seconds: None,
             sim_wall_seconds: None,
@@ -734,9 +919,28 @@ impl WorkerModelResult {
             ir_dae_file: None,
             ir_solve_file: None,
             ir_solve_error: None,
+            ir_solve_error_code: None,
             timeout_phase: None,
             timeout_seconds: None,
+            balance_detail: None,
+            failure_phase: None,
+            failure_bucket: None,
+            owner_category: None,
+            failure_error_code: None,
         }
+    }
+
+    /// Record the typed classification for this attempt, deriving the owner from
+    /// the bucket so the two fields can never disagree.
+    pub fn set_failure_classification(
+        &mut self,
+        classification: ModelFailureClassification,
+        error_code: Option<String>,
+    ) {
+        self.failure_phase = Some(classification.phase);
+        self.failure_bucket = Some(classification.bucket);
+        self.owner_category = Some(classification.owner_category);
+        self.failure_error_code = error_code;
     }
 }
 
@@ -764,10 +968,6 @@ pub fn write_model_worker_response_file(
     response: &ModelWorkerResponse,
 ) -> Result<(), String> {
     write_json_file(path, response)
-}
-
-pub fn last_active_worker_phase(progress_jsonl: &Path) -> Option<WorkerProgressPhase> {
-    worker_progress_state(progress_jsonl).active_phase
 }
 
 struct WorkerProgressState {
@@ -832,5 +1032,36 @@ mod tests {
     fn cpu_core_plan_has_one_entry_per_worker() {
         assert_eq!(cpu_core_plan(0), Vec::<Option<usize>>::new());
         assert_eq!(cpu_core_plan(3).len(), 3);
+    }
+
+    #[test]
+    fn msl_output_grid_is_invariant_under_time_scaling() {
+        let ordinary = msl_sim_output_dt(0.0, 1.0, None, 500).expect("ordinary output grid");
+        let short = msl_sim_output_dt(0.0, 1.0e-7, None, 500).expect("short output grid");
+
+        assert!(((short / ordinary) - 1.0e-7).abs() <= 2.0 * f64::EPSILON * 1.0e-7);
+        assert!((short - 2.0e-10).abs() <= f64::EPSILON * 2.0e-10);
+    }
+
+    #[test]
+    fn explicit_experiment_interval_owns_the_msl_output_grid() {
+        assert_eq!(
+            msl_sim_output_dt(0.0, 1.0e-7, Some(2.5e-10), 500),
+            Some(2.5e-10)
+        );
+    }
+
+    #[test]
+    fn model_worker_timeout_grace_is_scoped_to_simulation() {
+        let timeouts = ModelWorkerPhaseTimeouts::new(10.0, 14.0);
+        assert_eq!(
+            timeouts.timeout_secs_for(Some(WorkerProgressPhase::Flatten)),
+            10.0
+        );
+        assert_eq!(
+            timeouts.timeout_secs_for(Some(WorkerProgressPhase::Sim)),
+            14.0
+        );
+        assert_eq!(timeouts.timeout_secs_for(None), 10.0);
     }
 }

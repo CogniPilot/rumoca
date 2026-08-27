@@ -4,15 +4,17 @@ use indexmap::IndexMap;
 use rumoca_compile::workspace::{WorkspaceConfig, is_workspace_config_filename};
 use wasm_bindgen::prelude::*;
 
+use crate::WasmError;
+
 fn parse_workspace_config_files(
     workspace_sources_json: &str,
-) -> Result<Vec<(PathBuf, String)>, JsValue> {
+) -> Result<Vec<(PathBuf, String)>, WasmError> {
     let trimmed = workspace_sources_json.trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());
     }
     let map: IndexMap<String, String> = serde_json::from_str(trimmed)
-        .map_err(|e| JsValue::from_str(&format!("Invalid workspace sources JSON: {e}")))?;
+        .map_err(|e| WasmError::new(format!("Invalid workspace sources JSON: {e}")))?;
     Ok(map
         .into_iter()
         .filter(|(path, _)| {
@@ -29,14 +31,14 @@ fn parse_workspace_config_files(
 pub fn workspace_effective_source_roots(
     workspace_sources_json: &str,
     focus_path: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let focus_path = Path::new(focus_path.trim());
     let config = WorkspaceConfig::load_from_files(
         Path::new(""),
         focus_path,
         parse_workspace_config_files(workspace_sources_json)?,
     )
-    .map_err(|e| JsValue::from_str(&format!("Workspace config error: {e}")))?;
+    .map_err(|e| WasmError::new(format!("Workspace config error: {e}")))?;
     let roots = config.effective_source_roots_for(focus_path);
-    serde_json::to_string(&roots).map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))
+    serde_json::to_string(&roots).map_err(|e| WasmError::new(format!("JSON error: {e}")))
 }

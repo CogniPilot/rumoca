@@ -6,7 +6,6 @@
 use crate::error::MlirError;
 use std::ffi::{CString, c_void};
 
-// ─── CUDA opaque handle types ─────────────────────────────────────────────────
 pub type CUresult = i32;
 pub type CUdevice = i32;
 pub type CUdeviceptr = u64;
@@ -32,7 +31,6 @@ impl CUstream {
 
 pub const CUDA_SUCCESS: CUresult = 0;
 
-// ─── Raw function-pointer types ───────────────────────────────────────────────
 type FnCuInit = unsafe extern "C" fn(u32) -> CUresult;
 type FnCuDeviceGet = unsafe extern "C" fn(*mut CUdevice, i32) -> CUresult;
 type FnCuCtxCreate = unsafe extern "C" fn(*mut CUcontext, u32, CUdevice) -> CUresult;
@@ -72,8 +70,6 @@ pub struct EvalDerivativeLaunch {
     pub len_out: i64,
     pub stream: CUstream,
 }
-
-// ─── CudaDriver ───────────────────────────────────────────────────────────────
 
 /// Holds the dynamically-loaded CUDA driver library and all resolved symbols.
 pub struct CudaDriver {

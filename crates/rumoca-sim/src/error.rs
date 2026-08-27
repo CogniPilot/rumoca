@@ -1,0 +1,296 @@
+use rumoca_solver::{
+    RuntimeSolveError,
+    fmi_me::{MeError, MeStage, session::MeSessionError},
+};
+
+/// The simulation sub-stage that raised a failure.
+///
+/// This is *producer knowledge*: the code path that fails attaches the stage it
+/// was running, so downstream classification never has to re-derive a sub-bucket
+/// by pattern-matching a rendered message. The MSL harness records the mapped
+/// bucket in `msl_results.json`, which is why the split has to be minted here
+/// rather than reconstructed from text later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SimFailureStage {
+    /// Lowering the DAE to Solve IR (a `rumoca-phase-solve` defect surfaced by
+    /// the simulation entry point).
+    SolveLowering,
+    /// Structural analysis of the lowered system (index reduction, matching,
+    /// tearing) rejected the model.
+    StructuralAnalysis,
+    /// Constructing the backend problem, before any integration happens.
+    BackendBuild,
+    /// Settling initial conditions: the initial event/`pre` chain, the initial
+    /// variable projection, and homotopy continuation.
+    Initialization,
+    /// Event iteration / discrete re-initialization at an event instant.
+    EventIteration,
+    /// Index-reduction manifold (algebraic constraint) projection.
+    ManifoldProjection,
+    /// Isolating or advancing the solver onto a requested output/stop time.
+    TargetIsolation,
+    /// A time-integration step taken by the numeric solver.
+    Integration,
+}
+
+impl std::fmt::Display for SimFailureStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::SolveLowering => "SolveLowering",
+            Self::StructuralAnalysis => "StructuralAnalysis",
+            Self::BackendBuild => "BackendBuild",
+            Self::Initialization => "Initialization",
+            Self::EventIteration => "EventIteration",
+            Self::ManifoldProjection => "ManifoldProjection",
+            Self::TargetIsolation => "TargetIsolation",
+            Self::Integration => "Integration",
+        };
+        f.write_str(name)
+    }
+}
+
+impl From<MeStage> for SimFailureStage {
+    fn from(value: MeStage) -> Self {
+        match value {
+            MeStage::Instantiate => Self::BackendBuild,
+            MeStage::Initialization => Self::Initialization,
+            MeStage::EventIteration => Self::EventIteration,
+            MeStage::ManifoldProjection => Self::ManifoldProjection,
+            MeStage::Integration => Self::Integration,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SimError {
+    #[error("{backend} backend does not support solver mode {requested:?}")]
+    UnsupportedSolverMode {
+        backend: &'static str,
+        requested: rumoca_solver::SimSolverMode,
+    },
+
+    #[error("empty system: no equations to simulate")]
+    EmptySystem,
+
+    #[error("solver error: {0}")]
+    SolverError(String),
+
+    #[error("solve-IR evaluation failed: {0}")]
+    SolveIr(String),
+
+    #[error("directional derivative is unavailable: {reason}")]
+    DirectionalDerivativeUnavailable { reason: String },
+
+    #[error("simulation runtime contract violation: {reason}")]
+    RuntimeContract { reason: String },
+
+    #[error("Modelica assert failed at t={time:.9}: {message}")]
+    AssertionFailed { time: f64, message: String },
+
+    #[error("Modelica terminate requested at t={time:.9}: {message}")]
+    Terminated { time: f64, message: String },
+
+    #[error("timeout after {seconds:.3}s")]
+    Timeout { seconds: f64 },
+
+    /// A typed failure from the sole common FMI Model Exchange master.
+    #[error(transparent)]
+    ModelExchangeSession(#[from] MeSessionError),
+
+    /// The request's execution policy forbids compiled native execution, but
+    /// the caller still supplied a compiled execution backend handle.
+    ///
+    /// Honoring the handle would execute natively against an explicit
+    /// interpreter request; dropping it silently would let the caller believe
+    /// the handle was honored. Either way the backend differential oracle's
+    /// interpreter side stops being trustworthy, so the contradiction is a
+    /// typed rejection rather than a quiet resolution in either direction.
+    #[error(
+        "execution policy '{policy}' forbids compiled native execution, but a compiled \
+         execution backend handle was supplied; withhold the handle or request the \
+         'auto' policy"
+    )]
+    ExecutionPolicyContradiction { policy: &'static str },
+
+    /// A failure annotated with the stage that raised it.
+    ///
+    /// The rendered form is exactly the inner failure's, so annotating a path
+    /// never changes any user-visible message or recorded `sim_error` text; the
+    /// stage is carried alongside for machine consumers.
+    #[error("{inner}")]
+    Staged {
+        stage: SimFailureStage,
+        inner: Box<SimError>,
+    },
+}
+
+impl SimError {
+    pub fn source_span(&self) -> Option<()> {
+        None
+    }
+
+    /// The failure itself, with every stage annotation peeled off.
+    ///
+    /// Consumers that switch on the failure *variant* must go through this so an
+    /// annotated path keeps behaving exactly like the unannotated one.
+    #[must_use]
+    pub fn kind(&self) -> &SimError {
+        match self {
+            Self::Staged { inner, .. } => inner.kind(),
+            other => other,
+        }
+    }
+
+    /// The stage the raising path recorded, if any.
+    #[must_use]
+    pub fn stage(&self) -> Option<SimFailureStage> {
+        match self {
+            Self::Staged { stage, .. } => Some(*stage),
+            _ => None,
+        }
+    }
+
+    /// Annotate with the stage that raised this failure.
+    ///
+    /// The innermost annotation wins: an outer boundary sees failures from every
+    /// stage nested under it, and relabeling them with its own coarser stage
+    /// would destroy the precision this type exists to carry.
+    ///
+    /// [`Self::Terminated`] is never annotated. A Modelica `terminate()` is a
+    /// *successful* early stop that the run path matches on by value to replay
+    /// its semantics, not a failure with a stage; wrapping it would silently
+    /// turn a completed simulation into a reported error.
+    #[must_use]
+    pub fn at_stage(self, stage: SimFailureStage) -> Self {
+        match self {
+            already @ (Self::Staged { .. } | Self::Terminated { .. }) => already,
+            other => Self::Staged {
+                stage,
+                inner: Box::new(other),
+            },
+        }
+    }
+}
+
+impl From<RuntimeSolveError> for SimError {
+    fn from(value: RuntimeSolveError) -> Self {
+        match value {
+            RuntimeSolveError::SolveIr { message, span } => {
+                let message = match span {
+                    Some(span) => format!("{message} @ {span:?}"),
+                    None => message,
+                };
+                Self::SolveIr(message)
+            }
+            RuntimeSolveError::UnsupportedModel { reason } => Self::SolveIr(reason),
+            unassignable @ RuntimeSolveError::RefreshTargetUnassignable { .. } => {
+                Self::SolveIr(unassignable.to_string())
+            }
+            singular @ RuntimeSolveError::RefreshTargetSingular { .. } => {
+                Self::SolveIr(singular.to_string())
+            }
+            RuntimeSolveError::NonFiniteDerivative { state_name } => Self::SolveIr(format!(
+                "non-finite derivative evaluation for state '{state_name}'"
+            )),
+            RuntimeSolveError::DirectionalDerivativeUnavailable { reason } => {
+                Self::DirectionalDerivativeUnavailable { reason }
+            }
+            non_finite @ RuntimeSolveError::NonFiniteValue { .. } => {
+                Self::SolveIr(non_finite.to_string())
+            }
+        }
+    }
+}
+
+impl From<MeError> for SimError {
+    fn from(value: MeError) -> Self {
+        let stage = value.stage().map(SimFailureStage::from);
+        let error = match value.into_kind() {
+            MeError::NoContinuousStates => Self::EmptySystem,
+            MeError::UnsupportedModel { reason } | MeError::Evaluation { message: reason } => {
+                Self::SolveIr(reason)
+            }
+            MeError::NonFiniteDerivative { state_name } => Self::SolveIr(format!(
+                "non-finite derivative evaluation for state '{state_name}'"
+            )),
+            MeError::DirectionalDerivativeUnavailable { reason } => {
+                Self::DirectionalDerivativeUnavailable { reason }
+            }
+            MeError::Contract { reason } => Self::RuntimeContract { reason },
+            MeError::Assertion { time, message } => Self::AssertionFailed { time, message },
+            MeError::Allocation { context, entries } => Self::RuntimeContract {
+                reason: format!("{context} allocation failed for {entries} entries"),
+            },
+            staged @ MeError::Staged { .. } => Self::RuntimeContract {
+                reason: format!("stage annotation survived peeling: {staged}"),
+            },
+        };
+        match stage {
+            Some(stage) => error.at_stage(stage),
+            None => error,
+        }
+    }
+}
+
+impl From<rumoca_solver::fmi_me::MeExecutionPolicyContradiction> for SimError {
+    fn from(value: rumoca_solver::fmi_me::MeExecutionPolicyContradiction) -> Self {
+        Self::ExecutionPolicyContradiction {
+            policy: value.policy,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staged_annotation_preserves_the_rendered_message() {
+        let raw = SimError::SolveIr("projection did not converge".to_string());
+        let rendered = raw.to_string();
+        let staged = raw.at_stage(SimFailureStage::ManifoldProjection);
+        assert_eq!(
+            staged.to_string(),
+            rendered,
+            "annotating must not perturb recorded sim_error text"
+        );
+    }
+
+    #[test]
+    fn kind_peels_annotations_so_variant_matching_is_unchanged() {
+        let staged = SimError::Timeout { seconds: 10.0 }
+            .at_stage(SimFailureStage::Integration)
+            .at_stage(SimFailureStage::TargetIsolation);
+        assert!(matches!(staged.kind(), SimError::Timeout { .. }));
+    }
+
+    #[test]
+    fn innermost_stage_wins_over_a_coarser_outer_boundary() {
+        let staged = SimError::SolveIr("event update".to_string())
+            .at_stage(SimFailureStage::EventIteration)
+            .at_stage(SimFailureStage::Integration);
+        assert_eq!(staged.stage(), Some(SimFailureStage::EventIteration));
+    }
+
+    /// `terminate()` is a normal end of simulation that the run path matches on
+    /// by value. Annotating it would make a completed run look like a failure.
+    #[test]
+    fn a_terminate_outcome_is_never_annotated() {
+        let terminated = SimError::Terminated {
+            time: 0.25,
+            message: "threshold reached".to_string(),
+        }
+        .at_stage(SimFailureStage::Integration);
+        assert!(matches!(terminated, SimError::Terminated { .. }));
+        assert_eq!(terminated.stage(), None);
+    }
+
+    #[test]
+    fn an_unannotated_failure_reports_no_stage() {
+        assert_eq!(SimError::EmptySystem.stage(), None);
+        assert!(matches!(
+            SimError::EmptySystem.kind(),
+            SimError::EmptySystem
+        ));
+    }
+}

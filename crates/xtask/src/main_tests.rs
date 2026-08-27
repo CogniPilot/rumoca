@@ -34,7 +34,7 @@ fn classify_marks_zero_callsite_private_as_dead_likely() {
 #[test]
 fn rust_line_count_policy_only_excludes_generated_files() {
     assert!(!is_line_count_excluded_rust_file(
-        "crates/rumoca/tests/architecture_hardening_test.rs"
+        "crates/rumoca/tests/architecture_hardening_test/main.rs"
     ));
     assert!(!is_line_count_excluded_rust_file(
         "crates/foo/src/lower/tests.rs"
@@ -134,6 +134,7 @@ fn cli_parses_verify_template_runtimes_job() {
         Commands::Verify(args) => match args.command {
             VerifyCommand::TemplateRuntimes(args) => {
                 assert_eq!(args.backend, TemplateRuntimeBackend::All);
+                assert!(!args.require_external_tools);
             }
             other => panic!("expected template runtimes command, got {other:?}"),
         },
@@ -155,6 +156,29 @@ fn cli_parses_verify_template_runtimes_backend() {
         Commands::Verify(args) => match args.command {
             VerifyCommand::TemplateRuntimes(args) => {
                 assert_eq!(args.backend, TemplateRuntimeBackend::Casadi);
+            }
+            other => panic!("expected template runtimes command, got {other:?}"),
+        },
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_verify_template_runtimes_required_tools_policy() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "verify",
+        "template-runtimes",
+        "--backend",
+        "cuda",
+        "--require-external-tools",
+    ])
+    .expect("parse required external tool policy");
+    match cli.command {
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::TemplateRuntimes(args) => {
+                assert_eq!(args.backend, TemplateRuntimeBackend::Cuda);
+                assert!(args.require_external_tools);
             }
             other => panic!("expected template runtimes command, got {other:?}"),
         },
@@ -303,6 +327,35 @@ fn cli_parses_verify_msl_parity_prebuilt_workers() {
     match cli.command {
         Commands::Verify(args) => match args.command {
             VerifyCommand::MslParity(_) => {}
+            other => panic!("expected msl-parity, got {other:?}"),
+        },
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+/// The comparator-evidence check is on by default; opting out has to be typed.
+/// If this flag ever becomes a default, an unmeasured cohort run goes quiet
+/// again — which is the exact regression the check exists to stop.
+#[test]
+fn verify_msl_parity_requires_an_explicit_opt_out_to_accept_unmeasured_parity() {
+    let default = Cli::try_parse_from(["xtask", "verify", "msl-parity"]).expect("parse bare");
+    match default.command {
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::MslParity(parity) => assert!(
+                !parity.allows_unmeasured_parity(),
+                "a bare msl-parity run must enforce the comparator check"
+            ),
+            other => panic!("expected msl-parity, got {other:?}"),
+        },
+        other => panic!("expected verify command, got {other:?}"),
+    }
+
+    let opted_out =
+        Cli::try_parse_from(["xtask", "verify", "msl-parity", "--allow-unmeasured-parity"])
+            .expect("parse --allow-unmeasured-parity");
+    match opted_out.command {
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::MslParity(parity) => assert!(parity.allows_unmeasured_parity()),
             other => panic!("expected msl-parity, got {other:?}"),
         },
         other => panic!("expected verify command, got {other:?}"),
@@ -1003,4 +1056,54 @@ fn rust_target_detection_uses_active_toolchain_sysroot() {
         temp.path(),
         "wasm32-unknown-unknown"
     ));
+}
+
+/// Coverage triage attributes every function to a package by matching the
+/// file's repo-relative path against package root prefixes, longest first.
+/// A nested crate whose directory name extends another's must win over its
+/// parent prefix, and paths outside every package must attribute to none:
+/// a misattribution silently moves a regression onto the wrong crate's gate.
+#[test]
+fn coverage_attribution_matches_the_longest_package_prefix_first() {
+    use super::{WorkspacePackageInfo, package_for_filename, relativize_path};
+
+    let root = Path::new("/repo");
+    // Longest prefix first, exactly as workspace_package_infos orders them.
+    let packages = vec![
+        WorkspacePackageInfo {
+            name: "rumoca-core".to_string(),
+            root_prefix: "crates/rumoca-core/".to_string(),
+        },
+        WorkspacePackageInfo {
+            name: "rumoca".to_string(),
+            root_prefix: "crates/rumoca/".to_string(),
+        },
+    ];
+
+    let owner = package_for_filename(root, &packages, "/repo/crates/rumoca-core/src/lib.rs")
+        .expect("the nested crate owns its own sources");
+    assert_eq!(owner.name, "rumoca-core");
+
+    let owner = package_for_filename(root, &packages, "/repo/crates/rumoca/src/main.rs")
+        .expect("the parent-named crate owns its sources");
+    assert_eq!(owner.name, "rumoca");
+
+    assert!(
+        package_for_filename(root, &packages, "/repo/docs/guide.md").is_none(),
+        "a path outside every package attributes to no crate"
+    );
+    assert!(
+        package_for_filename(root, &packages, "/elsewhere/crates/rumoca/src/main.rs").is_none(),
+        "a path outside the repo root never matches a package prefix"
+    );
+
+    assert_eq!(
+        relativize_path(root, "/repo/crates/rumoca/src/main.rs"),
+        "crates/rumoca/src/main.rs"
+    );
+    assert_eq!(
+        relativize_path(root, "crates\\rumoca\\src\\main.rs"),
+        "crates/rumoca/src/main.rs",
+        "Windows separators normalize so prefixes compare on one spelling"
+    );
 }

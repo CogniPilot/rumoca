@@ -1,0 +1,520 @@
+//! Crate/module architecture boundary gates.
+
+use super::super::*;
+use syn::Meta;
+use syn::punctuated::Punctuated;
+use syn::token::Comma;
+use syn::visit::Visit;
+
+#[derive(Default)]
+struct ModuleSourcePathAttributeVisitor {
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for ModuleSourcePathAttributeVisitor {
+    fn visit_attribute(&mut self, attribute: &'ast syn::Attribute) {
+        self.found |= meta_contains_module_source_path(&attribute.meta);
+        syn::visit::visit_attribute(self, attribute);
+    }
+}
+
+fn meta_contains_module_source_path(meta: &Meta) -> bool {
+    match meta {
+        Meta::NameValue(name_value) => name_value.path.is_ident("path"),
+        Meta::List(list) if list.path.is_ident("cfg_attr") => list
+            .parse_args_with(Punctuated::<Meta, Comma>::parse_terminated)
+            .is_ok_and(|nested| nested.iter().any(meta_contains_module_source_path)),
+        Meta::Path(_) | Meta::List(_) => false,
+    }
+}
+
+fn source_has_module_source_path_attribute(source: &str) -> Result<bool, syn::Error> {
+    let file = syn::parse_file(source)?;
+    let mut visitor = ModuleSourcePathAttributeVisitor::default();
+    visitor.visit_file(&file);
+    Ok(visitor.found)
+}
+
+#[test]
+fn test_all_rust_modules_use_content_based_paths() {
+    let root = workspace_root();
+    let mut sources = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut sources);
+    let mut offenders = Vec::new();
+    for path in sources {
+        let source = fs::read_to_string(&path).expect("read Rust source");
+        let has_override = source_has_module_source_path_attribute(&source)
+            .unwrap_or_else(|error| panic!("parse {} as Rust source: {error}", path.display()));
+        if has_override {
+            offenders.push(path.display().to_string());
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "all modules must use Rust's content-based source layout; module source-path \
+attributes are architecture violations: {offenders:#?}"
+    );
+}
+
+#[test]
+fn module_source_path_gate_catches_direct_and_conditional_attributes() {
+    for source in [
+        r#"#[path = "alternate.rs"] mod child;"#,
+        r#"#[cfg_attr(unix, path = "alternate.rs")] mod child;"#,
+        r#"#[cfg_attr(any(unix, windows), cfg_attr(test, path = "alternate.rs"))] mod child;"#,
+    ] {
+        assert!(
+            source_has_module_source_path_attribute(source).expect("parse negative control"),
+            "module source-path attribute bypass was not detected: {source}"
+        );
+    }
+}
+
+#[test]
+fn module_source_path_gate_ignores_comments_and_string_literals() {
+    let source = r##"
+        // #[path = "comment.rs"]
+        const EXAMPLE: &str = r#"#[cfg_attr(unix, path = "string.rs")] mod child;"#;
+        mod child {}
+    "##;
+    assert!(
+        !source_has_module_source_path_attribute(source).expect("parse positive control"),
+        "non-syntax text must not be treated as an architecture violation"
+    );
+}
+
+#[test]
+fn test_production_sources_do_not_use_non_generated_includes() {
+    let root = workspace_root();
+    let mut sources = Vec::new();
+    for crate_entry in fs::read_dir(root.join("crates")).expect("read crates directory") {
+        let source_root = crate_entry.expect("read crate entry").path().join("src");
+        if source_root.is_dir() {
+            collect_rs_files(&source_root, &mut sources);
+        }
+    }
+    let mut offenders = Vec::new();
+    for path in sources {
+        let source = fs::read_to_string(&path).expect("read production Rust source");
+        for (line_index, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("include!(") && !trimmed.contains("OUT_DIR") {
+                offenders.push(format!("{}:{}", path.display(), line_index + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "production modules must use real content-based decomposition; non-generated \
+`include!` bypasses are forbidden: {offenders:#?}"
+    );
+}
+
+#[test]
+fn test_content_split_module_roots_declare_submodules_before_imports() {
+    let root = workspace_root();
+    let module_roots = [
+        "crates/rumoca/src/cli.rs",
+        "crates/rumoca-eval-dae/src/numeric.rs",
+        "crates/rumoca-phase-codegen/src/codegen/render_solve.rs",
+        "crates/rumoca-phase-flatten/src/ast_lower.rs",
+        "crates/rumoca-phase-flatten/src/function_lowering.rs",
+        "crates/rumoca-phase-flatten/src/pipeline/context_import_shadowing.rs",
+        "crates/rumoca-phase-dae/src/construction/function_shapes/mod.rs",
+        "crates/rumoca-phase-dae/src/construction/analysis/loop_compaction/mod.rs",
+        "crates/rumoca-phase-dae/src/construction.rs",
+        "crates/rumoca-phase-flatten/src/postprocess.rs",
+        "crates/rumoca-phase-instantiate/src/mod_env.rs",
+        "crates/rumoca-phase-resolve/src/semantic_checks/restrictions.rs",
+        "crates/rumoca-phase-typecheck/src/typechecker/late_methods.rs",
+        "crates/rumoca-solver/src/runtime/projection.rs",
+        "crates/rumoca-solver/src/runtime/projection/tests.rs",
+        "crates/rumoca/src/packaging.rs",
+        "crates/rumoca/tests/architecture_hardening_test/main.rs",
+        "crates/xtask/src/verify_cmd.rs",
+        "crates/xtask/src/verify_cmd/msl_quality_baseline.rs",
+    ];
+    for relative in module_roots {
+        let source = fs::read_to_string(root.join(relative)).expect("read module root");
+        let first_import = source
+            .lines()
+            .position(|line| line.trim_start().starts_with("use "))
+            .expect("content-split module root has imports");
+        let lines = source.lines().collect::<Vec<_>>();
+        let misplaced = lines.iter().enumerate().find(|(line_index, line)| {
+            *line_index > first_import && external_module_declaration(line)
+        });
+        assert!(
+            misplaced.is_none(),
+            "{relative} must declare external submodules before imports: {misplaced:?}"
+        );
+    }
+}
+
+fn external_module_declaration(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(mod_index) = trimmed.find("mod ") else {
+        return false;
+    };
+    let prefix = &trimmed[..mod_index];
+    (prefix.is_empty() || prefix.starts_with("pub")) && trimmed.ends_with(';')
+}
+
+#[test]
+fn test_ir_crates_have_no_public_scalarize_functions() {
+    // SPEC_0007 keeps scalarization out of IR crates; backend/evaluator
+    // fallback helpers live in rumoca-eval-solve.
+    let root = workspace_root();
+    let mut offenders = Vec::new();
+
+    for path in collect_ir_crate_rs_files(&root) {
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        offenders.extend(content.lines().enumerate().filter_map(|(line_idx, line)| {
+            public_scalarize_function_location(&path, line_idx, line)
+        }));
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "found public scalarise/to_scalar functions in rumoca-ir-* crates (SPEC_0007 violation). \
+Move scalarization logic to rumoca-eval-solve or an execution adapter crate: {offenders:#?}"
+    );
+}
+
+#[test]
+fn test_ast_visitor_helpers_stay_split_by_behavior_shape() {
+    let root = workspace_root();
+    let visitor_root = root.join("crates/rumoca-ir-ast/src/visitor");
+    let facade = root.join("crates/rumoca-ir-ast/src/visitor.rs");
+    let facade_content = fs::read_to_string(&facade).expect("read AST visitor facade");
+
+    for required in ["read_only.rs", "rewrite.rs", "query.rs"] {
+        assert!(
+            visitor_root.join(required).exists(),
+            "rumoca-ir-ast visitor helpers must stay split by behavior shape; missing {required}"
+        );
+    }
+
+    assert!(
+        facade_content.contains("mod read_only;")
+            && facade_content.contains("mod rewrite;")
+            && facade_content.contains("mod query;"),
+        "AST visitor facade must route through read_only/rewrite/query modules"
+    );
+
+    let read_only = fs::read_to_string(visitor_root.join("read_only.rs"))
+        .expect("read AST read-only visitor module");
+    let rewrite =
+        fs::read_to_string(visitor_root.join("rewrite.rs")).expect("read AST rewrite module");
+    assert!(
+        read_only.contains("pub trait Visitor") && !read_only.contains("transform_expression"),
+        "read_only.rs must contain traversal only, without rewrite-shape transforms"
+    );
+    assert!(
+        rewrite.contains("pub trait ExpressionTransformer")
+            && !rewrite.contains("pub trait Visitor"),
+        "rewrite.rs must contain rewrite-shape transforms without owning read-only traversal"
+    );
+}
+
+#[test]
+fn test_ast_visitor_helpers_do_not_import_phase_or_eval_semantics() {
+    let root = workspace_root();
+    let visitor_root = root.join("crates/rumoca-ir-ast/src/visitor");
+    let mut offenders = Vec::new();
+
+    for path in [
+        root.join("crates/rumoca-ir-ast/src/visitor.rs"),
+        visitor_root.join("read_only.rs"),
+        visitor_root.join("rewrite.rs"),
+        visitor_root.join("query.rs"),
+    ] {
+        let content = fs::read_to_string(&path).expect("read AST visitor source");
+        for (line_idx, line) in content.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("use rumoca_phase_") || trimmed.starts_with("use rumoca_eval_") {
+                offenders.push(format!("{}:{}", path.display(), line_idx + 1));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "AST visitor helpers are allowed to traverse/query/rewrite AST shape, \
+but must not import phase or evaluator semantics: {offenders:#?}"
+    );
+}
+
+#[test]
+fn test_session_root_facade_exports_are_minimal() {
+    let session_lib = workspace_root().join("crates/rumoca-compile/src/lib.rs");
+    let content = fs::read_to_string(&session_lib).expect("read rumoca-compile lib.rs");
+    let root_pub_uses = collect_root_pub_use_statements(&content);
+
+    let expected = vec!["pub use compile::{Session, SessionConfig};".to_string()];
+
+    assert_eq!(
+        root_pub_uses, expected,
+        "unexpected rumoca-compile root exports. \
+Author reminder: SPEC_0029_CRATE_BOUNDARIES.md §9 requires `rumoca-compile` \
+root exports to stay minimal (`Session`, `SessionConfig`) and to keep other APIs namespaced."
+    );
+}
+
+/// SPEC_0029 §3a: `rumoca-core` is the sole Tier-1 foundation. No
+/// `rumoca-ir-core` crate exists. Enforce that the directory has not been
+/// re-created and that no Cargo.toml declares a `rumoca-ir-core` dependency.
+#[test]
+fn test_no_separate_ir_core_foundation_crate() {
+    let root = workspace_root();
+
+    assert!(
+        !root.join("crates/rumoca-ir-core").exists(),
+        "crates/rumoca-ir-core was dissolved into rumoca-core per SPEC_0029 §3a; \
+do not re-create it"
+    );
+
+    let mut offenders = Vec::new();
+    for entry in fs::read_dir(root.join("crates")).expect("read crates dir") {
+        let entry = entry.expect("crates entry");
+        let cargo = entry.path().join("Cargo.toml");
+        let Ok(content) = fs::read_to_string(&cargo) else {
+            continue;
+        };
+        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            if section_contains_dependency(&content, section, "rumoca-ir-core") {
+                offenders.push(format!("{} [{section}]", cargo.display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "found Cargo.toml entries declaring removed `rumoca-ir-core` dep: {offenders:#?}; \
+SPEC_0029 §3a: depend on rumoca-core instead"
+    );
+
+    let workspace_cargo =
+        fs::read_to_string(root.join("Cargo.toml")).expect("read workspace Cargo.toml");
+    assert!(
+        !workspace_cargo.contains("\"crates/rumoca-ir-core\""),
+        "workspace Cargo.toml still references crates/rumoca-ir-core in [members]"
+    );
+    assert!(
+        !workspace_cargo.contains("rumoca-ir-core ="),
+        "workspace Cargo.toml still declares rumoca-ir-core in [workspace.dependencies]"
+    );
+}
+
+/// SPEC_0029 §12 + SPEC_0007 §Structural Transformation Scope: DAE structural
+/// transformations (index reduction, state demotion, BLT, tearing) live in
+/// `rumoca-phase-structural`. `rumoca-phase-solve` only lowers a finalized
+/// DAE to Solve-IR; it does not mutate DAE mathematical structure.
+#[test]
+fn test_dae_structural_transforms_live_in_phase_structural() {
+    let root = workspace_root();
+
+    let banned_symbols = [
+        "index_reduce_missing_state_derivatives",
+        "demote_states_without_derivative_refs",
+        "demote_states_without_assignable_derivative_rows",
+        "demote_orphan_states_without_equation_refs",
+        "demote_states_without_retained_derivative_rows",
+    ];
+
+    let mut offenders = Vec::new();
+    let phase_solve_src = root.join("crates/rumoca-phase-solve/src");
+    let mut rs_files = Vec::new();
+    collect_rs_files(&phase_solve_src, &mut rs_files);
+    for path in rs_files {
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for (line_idx, line) in content.lines().enumerate() {
+            // Only flag definition sites (fn name) or pub uses; calls to these
+            // symbols (if any) are legitimate downstream usage from
+            // phase-structural via a public API.
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            if let Some(banned) = banned_symbols.iter().find(|name| {
+                trimmed.starts_with(&format!("pub fn {name}"))
+                    || trimmed.starts_with(&format!("fn {name}"))
+                    || trimmed.contains("pub use ") && line.contains(*name)
+            }) {
+                offenders.push(format!(
+                    "{}:{} defines {banned}",
+                    path.display(),
+                    line_idx + 1
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "DAE structural transformations must live in rumoca-phase-structural \
+(SPEC_0029 §12, SPEC_0007 §Structural Transformation Scope), not phase-solve: \
+{offenders:#?}"
+    );
+}
+
+#[test]
+fn test_checked_dae_is_the_only_production_dae_representation() {
+    let root = workspace_root();
+    let dae_src = root.join("crates/rumoca-ir-dae/src");
+    for removed in ["checked", "types.rs", "visitor.rs", "clock_schedule.rs"] {
+        assert!(
+            !dae_src.join(removed).exists(),
+            "removed DAE representation path must not coexist with the canonical checked DAE: \
+             {removed}"
+        );
+    }
+
+    let mut offenders = Vec::new();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+    for path in rs_files {
+        if path
+            .components()
+            .any(|component| component.as_os_str() == "tests")
+            || path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == "tests.rs" || name.ends_with("_tests.rs"))
+        {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for forbidden in [
+            "rumoca_ir_dae::checked",
+            "rumoca_ir_dae::DaeDraft",
+            "Dae::build(",
+            "deserialize_v10",
+            "schema_version = 10",
+        ] {
+            if content.contains(forbidden) {
+                offenders.push(format!("{}:{forbidden}", path.display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "production code still references a removed DAE representation or wire path: \
+         {offenders:#?}"
+    );
+}
+
+#[test]
+fn test_todae_uses_constructor_enforced_invariants_without_validation_passes() {
+    let root = workspace_root();
+    let phase_dae = root.join("crates/rumoca-phase-dae/src");
+    let construction =
+        fs::read_to_string(phase_dae.join("construction.rs")).expect("read DAE construction");
+    assert!(
+        construction.contains("Dae::construct("),
+        "ToDAE must enter the canonical Dae::construct boundary"
+    );
+
+    for removed in [
+        "appendix_b_validation.rs",
+        "reference_validation.rs",
+        "temporal_finalization.rs",
+    ] {
+        assert!(
+            !phase_dae.join(removed).exists(),
+            "constructor-enforced invariants replace obsolete validation pass {removed}"
+        );
+    }
+
+    let dae_model =
+        fs::read_to_string(root.join("crates/rumoca-ir-dae/src/model.rs")).expect("read DAE model");
+    assert!(
+        !dae_model.contains("pub fn validate(") && !dae_model.contains("pub fn insert_unchecked"),
+        "canonical DAE must not expose validation or unchecked insertion escape hatches"
+    );
+}
+
+#[test]
+fn test_dae_expression_insertion_is_confined_to_expression_at() {
+    let root = workspace_root();
+    let dae_source = root.join("crates/rumoca-ir-dae/src");
+    let expression_source = dae_source.join("expression.rs");
+    let expression =
+        fs::read_to_string(&expression_source).expect("read canonical DAE expression arena");
+    assert!(
+        !expression.contains("pub(crate) fn push(") && !expression.contains("pub fn push("),
+        "raw DAE expression arena insertion must remain private to ExpressionAt"
+    );
+
+    let mut files = Vec::new();
+    collect_rs_files(&dae_source, &mut files);
+    let offenders = files
+        .into_iter()
+        .filter(|path| path != &expression_source)
+        .filter_map(|path| {
+            let content = fs::read_to_string(&path).ok()?;
+            let compact = content
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>();
+            (content.contains("ExpressionInsertionFacts")
+                || compact.contains("storage.expressions.push("))
+            .then(|| path.display().to_string())
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        offenders.is_empty(),
+        "raw DAE expression insertion and its facts must remain inside ExpressionAt: \
+{offenders:#?}"
+    );
+}
+
+/// SPEC_0029 §12 + WASM optionality: `rumoca-bind-wasm` must not pull in
+/// `diffsol` (or any concrete solver backend) transitively in its default
+/// feature set. Confirmed via `cargo metadata --no-deps` + a feature-aware
+/// dependency walk.
+#[test]
+fn test_bind_wasm_default_graph_does_not_include_diffsol() {
+    use std::process::Command;
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "-p",
+            "rumoca-bind-wasm",
+            "--edges",
+            "normal",
+            "--prefix",
+            "depth",
+        ])
+        .current_dir(workspace_root())
+        .output()
+        .expect("run cargo tree");
+    assert!(
+        output.status.success(),
+        "cargo tree -p rumoca-bind-wasm failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let banned: Vec<_> = stdout
+        .lines()
+        .filter(|l| {
+            l.contains("diffsol")
+                || l.contains("rumoca-sim")
+                || l.contains("rumoca-solver-diffsol")
+                || l.contains("rumoca-solver-rk45")
+        })
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        banned.is_empty(),
+        "rumoca-bind-wasm default transitive graph still includes solver \
+crates (SPEC_0029 §12 + WASM optionality):\n{}\nUse default-features=false on \
+rumoca-tool-lsp to drop the simulation tail.",
+        banned.join("\n"),
+    );
+}

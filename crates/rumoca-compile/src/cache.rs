@@ -13,6 +13,8 @@ use crate::source_root_cache::resolve_cache_root_dir;
 pub const DEFAULT_CACHE_MAX_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const CACHE_ACCESS_METADATA_SUFFIX: &str = ".rumoca-access";
 const CACHE_PRUNE_LOCK_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
+const CACHE_AUTO_PRUNE_CHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const CACHE_AUTO_PRUNE_CHECK_FILE: &str = ".rumoca-prune-checked";
 
 #[derive(Debug, Clone)]
 pub struct CacheStatus {
@@ -138,9 +140,11 @@ pub(crate) fn maybe_prune_cache_after_write(root: Option<&Path>) {
             return;
         }
     };
+    if auto_prune_was_checked_recently(&prune_root) {
+        return;
+    }
     let report = match prune_cache_after_write_with_options(Some(&prune_root), &options) {
-        Ok(Some(report)) => report,
-        Ok(None) => return,
+        Ok(report) => report,
         Err(err) => {
             eprintln!(
                 "failed to auto-prune cache under {}: {err:#}",
@@ -149,14 +153,37 @@ pub(crate) fn maybe_prune_cache_after_write(root: Option<&Path>) {
             return;
         }
     };
-    eprintln!(
-        "Rumoca cache auto-prune: removed {} files totaling {} bytes ({} -> {}, limit {} bytes)",
-        report.removed_files,
-        report.removed_bytes,
-        report.before.total_bytes,
-        report.after.total_bytes,
-        report.max_bytes
-    );
+    record_auto_prune_check(&prune_root);
+    if let Some(report) = report {
+        eprintln!(
+            "Rumoca cache auto-prune: removed {} files totaling {} bytes ({} -> {}, limit {} bytes)",
+            report.removed_files,
+            report.removed_bytes,
+            report.before.total_bytes,
+            report.after.total_bytes,
+            report.max_bytes
+        );
+    }
+}
+
+fn auto_prune_was_checked_recently(root: &Path) -> bool {
+    let Ok(modified) = fs::metadata(root.join(CACHE_AUTO_PRUNE_CHECK_FILE))
+        .and_then(|metadata| metadata.modified())
+    else {
+        return false;
+    };
+    SystemTime::now()
+        .duration_since(modified)
+        .is_ok_and(|elapsed| elapsed < CACHE_AUTO_PRUNE_CHECK_INTERVAL)
+}
+
+fn record_auto_prune_check(root: &Path) {
+    if let Err(err) = fs::write(root.join(CACHE_AUTO_PRUNE_CHECK_FILE), []) {
+        eprintln!(
+            "failed to record cache prune check under {}: {err}",
+            root.display()
+        );
+    }
 }
 
 pub fn parse_byte_size(raw: &str) -> Result<u64> {
@@ -210,14 +237,6 @@ pub fn parse_family_budget(raw: &str) -> Result<CacheFamilyBudget> {
         family: family.to_string(),
         max_bytes: parse_byte_size(max_bytes.trim())?,
     })
-}
-
-pub fn parse_family_budgets(raw: &str) -> Result<Vec<CacheFamilyBudget>> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(parse_family_budget)
-        .collect()
 }
 
 pub fn prune_cache(root: Option<&Path>, max_bytes: u64, dry_run: bool) -> Result<CachePruneReport> {
@@ -671,23 +690,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_family_budgets_accepts_comma_list() {
-        assert_eq!(
-            parse_family_budgets("results=2G,source-roots=512M").unwrap(),
-            vec![
-                CacheFamilyBudget {
-                    family: "results".to_string(),
-                    max_bytes: 2 * 1024 * 1024 * 1024,
-                },
-                CacheFamilyBudget {
-                    family: "source-roots".to_string(),
-                    max_bytes: 512 * 1024 * 1024,
-                },
-            ]
-        );
-    }
-
-    #[test]
     fn cache_file_age_check_uses_modified_time() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10 * 24 * 60 * 60);
         let old = SystemTime::UNIX_EPOCH + Duration::from_secs(2 * 24 * 60 * 60);
@@ -890,6 +892,14 @@ mod tests {
                 .is_some(),
             "lock should be reusable after owner drops it"
         );
+    }
+
+    #[test]
+    fn recent_auto_prune_check_avoids_a_repeated_cache_walk() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        assert!(!auto_prune_was_checked_recently(temp.path()));
+        record_auto_prune_check(temp.path());
+        assert!(auto_prune_was_checked_recently(temp.path()));
     }
 
     fn write_file(path: &Path, bytes: usize) {

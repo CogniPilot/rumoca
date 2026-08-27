@@ -98,7 +98,7 @@ pub(super) fn build_workspace_callsite_index(
             Err(_) => continue,
         };
         let file_str = file.to_string_lossy();
-        let Some(package) = crate::package_for_filename(root, package_infos, &file_str) else {
+        let Some(package) = package_for_filename(root, package_infos, &file_str) else {
             continue;
         };
         for ident in iter_callsite_identifiers(&source) {
@@ -235,4 +235,72 @@ pub(super) fn render_coverage_trim_report(
         report.push('\n');
     }
     report
+}
+
+pub(super) fn demangle_cov_function_name(name: &str) -> String {
+    // Alternate formatting omits the hash and, for v0 symbols, the crate
+    // disambiguator embedded mid-name, so the twin instrumented copies of one
+    // function (lib and test-harness builds) demangle to the same identity.
+    let demangled = format!("{:#}", rustc_demangle::demangle(name));
+    if demangled != name {
+        return demangled;
+    }
+    // Not a mangled symbol: strip a legacy `::h<hex>` suffix if one is present.
+    if let Some(index) = name.rfind("::h") {
+        let suffix = &name[(index + 3)..];
+        if suffix.len() >= 8 && suffix.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return name[..index].to_string();
+        }
+    }
+    name.to_string()
+}
+
+/// The build-graph-independent identity of one instrumented function: its
+/// demangled name (the crate-disambiguator hash stripped) plus its source
+/// files. Twin copies of one function linked into different test binaries
+/// share this identity.
+pub(super) fn cov_function_identity(function: &serde_json::Value) -> Option<(String, String)> {
+    let name = function.get("name").and_then(serde_json::Value::as_str)?;
+    let files = function
+        .get("filenames")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>()
+        .join(";");
+    Some((demangle_cov_function_name(name), files))
+}
+
+pub(super) fn extract_symbol_name(name: &str) -> Option<String> {
+    for segment in name.rsplit("::") {
+        let trimmed = segment.trim();
+        if trimmed.is_empty() || trimmed.contains("{{closure}}") {
+            continue;
+        }
+        let symbol = trimmed
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .collect::<String>();
+        if !symbol.is_empty() {
+            return Some(symbol);
+        }
+    }
+    None
+}
+
+pub(super) fn package_for_filename<'a>(
+    root: &Path,
+    package_infos: &'a [WorkspacePackageInfo],
+    filename: &str,
+) -> Option<&'a WorkspacePackageInfo> {
+    let rel = relativize_path(root, filename);
+    package_infos
+        .iter()
+        .find(|package| rel.starts_with(&package.root_prefix))
+}
+
+pub(super) fn relativize_path(root: &Path, filename: &str) -> String {
+    let path = Path::new(filename);
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    rel.to_string_lossy().replace('\\', "/")
 }

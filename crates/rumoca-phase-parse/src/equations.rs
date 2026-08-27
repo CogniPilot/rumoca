@@ -3,7 +3,6 @@
 use crate::errors::{semantic_error_from_expression, semantic_error_from_token};
 use crate::generated::modelica_grammar_trait;
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::Ident> for rumoca_core::Token {
     type Error = anyhow::Error;
 
@@ -15,7 +14,6 @@ impl TryFrom<&modelica_grammar_trait::Ident> for rumoca_core::Token {
     }
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::UnsignedInteger> for rumoca_core::Token {
     type Error = anyhow::Error;
 
@@ -26,7 +24,6 @@ impl TryFrom<&modelica_grammar_trait::UnsignedInteger> for rumoca_core::Token {
     }
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::UnsignedReal> for rumoca_core::Token {
     type Error = anyhow::Error;
 
@@ -44,7 +41,6 @@ impl TryFrom<&modelica_grammar_trait::UnsignedReal> for rumoca_core::Token {
     }
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::EquationBlock> for rumoca_ir_ast::EquationBlock {
     type Error = anyhow::Error;
 
@@ -93,7 +89,9 @@ fn convert_simple_equation(
 
     // No RHS means function call equation (reinit, assert, terminate, etc.)
     // See MLS 8.3.6-8.3.8
-    let rumoca_ir_ast::Expression::FunctionCall { comp, args, .. } = &simple_eq.simple_expression
+    let rumoca_ir_ast::Expression::FunctionCall {
+        comp, args, span, ..
+    } = &simple_eq.simple_expression
     else {
         return Err(semantic_error_from_expression(
             format!(
@@ -107,6 +105,7 @@ fn convert_simple_equation(
     Ok(rumoca_ir_ast::Equation::FunctionCall {
         comp: comp.clone(),
         args: args.clone(),
+        span: *span,
     })
 }
 
@@ -206,7 +205,6 @@ fn required_for_index_range(
     ))
 }
 
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::Statement> for rumoca_ir_ast::Statement {
     type Error = anyhow::Error;
 

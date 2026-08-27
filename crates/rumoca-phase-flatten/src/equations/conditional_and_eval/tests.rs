@@ -14,16 +14,18 @@ fn make_comp_ref(path: &str) -> ComponentReference {
         local: false,
         parts: crate::path_utils::segments(path)
             .into_iter()
-            .map(|name| ComponentRefPart {
+            .enumerate()
+            .map(|(index, name)| ComponentRefPart {
                 ident: Token {
                     text: Arc::from(name.to_string()),
                     ..Token::default()
                 },
                 subs: None,
+                def_id: Some(rumoca_core::DefId::new(15_001 + index as u32)),
             })
             .collect(),
-        def_id: None,
         span: test_span(),
+        qualified_display_name: None,
     }
 }
 
@@ -58,6 +60,7 @@ fn make_call(name: &str, args: Vec<ast::Expression>) -> ast::Expression {
     ast::Expression::FunctionCall {
         comp: make_comp_ref(name),
         args,
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -81,6 +84,23 @@ fn make_for_index(name: &str, start: i64, end: i64) -> ForIndex {
 fn generated_zero_real_expr_uses_owner_span() {
     let span = test_span();
     assert_eq!(zero_real_expr(span).span(), span);
+}
+
+#[test]
+fn named_array_assignment_remains_one_tensor_owner() {
+    let lhs = ast::Expression::ComponentReference(make_comp_ref("x"));
+    let rhs = ast::Expression::Array {
+        elements: vec![make_int(1), make_int(2)],
+        is_matrix: false,
+        span: test_span(),
+    };
+    let expanded = expand_array_assignment(&lhs, &rhs);
+    assert_eq!(expanded.len(), 1);
+    assert!(matches!(
+        expanded[0].lhs,
+        ast::Expression::ComponentReference(_)
+    ));
+    assert!(matches!(expanded[0].rhs, ast::Expression::Array { .. }));
 }
 
 fn simple_index_for_equation(start: i64, end: i64) -> InstanceEquation {
@@ -112,6 +132,34 @@ fn test_try_eval_integer_with_ctx_div_operator_requires_exact_quotient() {
     assert_eq!(
         try_eval_integer_with_ctx(&ctx, &expr, &QualifiedName::new()),
         None
+    );
+}
+
+#[test]
+fn dynamic_nested_if_without_else_rejects_unbalanced_equation_count() {
+    let block = EquationBlock {
+        cond: ast::Expression::ComponentReference(make_comp_ref("dynamicCondition")),
+        eqs: vec![ast::Equation::Simple {
+            lhs: ast::Expression::ComponentReference(make_comp_ref("x")),
+            rhs: make_int(1),
+        }],
+    };
+
+    let result = expand_nested_if_to_simple(
+        &Context::new(),
+        &[block],
+        &None,
+        &QualifiedName::new(),
+        test_span(),
+    );
+    let Err(err) = result else {
+        panic!("an omitted else branch must contribute zero equations");
+    };
+
+    assert!(
+        err.to_string()
+            .contains("omitted else branch has 0 equations"),
+        "unexpected error: {err}"
     );
 }
 
@@ -160,6 +208,37 @@ fn test_infer_simple_equation_scalar_count_matrix_vector_result() {
 
     let scalar_count = infer_simple_equation_scalar_count(&lhs, &rhs, &QualifiedName::new(), &ctx);
     assert_eq!(scalar_count, 2);
+}
+
+#[test]
+fn whole_matrix_equation_creates_compact_structured_family() {
+    let mut ctx = Context::new();
+    ctx.array_dimensions.insert("x".to_string(), vec![2, 3]);
+    let equation = InstanceEquation {
+        equation: ast::Equation::Simple {
+            lhs: ast::Expression::ComponentReference(make_comp_ref("x")),
+            rhs: make_call("zeros", vec![make_int(2), make_int(3)]),
+        },
+        origin: QualifiedName::from_dotted("M"),
+        source_scope: None,
+        source_scope_id: None,
+        span: test_span(),
+    };
+
+    let flattened = flatten_equation_with_def_map(&ctx, &equation, &QualifiedName::new(), None)
+        .expect("whole-array equation should flatten");
+
+    assert_eq!(flattened.equations.len(), 1);
+    assert_eq!(flattened.equations[0].scalar_count, 6);
+    assert_eq!(flattened.structured_equations.len(), 1);
+    let family = &flattened.structured_equations[0];
+    assert_eq!(family.domain.extents(), Ok(vec![2, 3]));
+    assert_eq!(family.equations_per_point, 1);
+    assert_eq!(family.first_equation_index, 0);
+    assert_eq!(
+        family.template.as_ref().map(|body| body.body.len()),
+        Some(1)
+    );
 }
 
 #[test]

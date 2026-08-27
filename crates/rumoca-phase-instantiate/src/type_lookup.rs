@@ -1,6 +1,7 @@
 use crate::path_utils;
 use rumoca_core::{DefId, TypeId};
 use rumoca_ir_ast as ast;
+use rustc_hash::FxHashSet;
 
 use super::inheritance;
 use super::type_overrides::resolve_redeclare_value_def_id;
@@ -34,11 +35,14 @@ fn predefined_type_id(tree: &ast::ClassTree, name: &str) -> Option<TypeId> {
     tree.type_table.lookup(name)
 }
 
+/// MLS §3.8.3: Integer, Boolean, String, and enumeration components are
+/// discrete-valued by type, independent of any variability prefix. Only `Real`
+/// (and `Clock`, which carries its own clocked semantics) stays continuous.
 fn predefined_type_is_discrete(tree: &ast::ClassTree, type_id: TypeId) -> bool {
     matches!(
         tree.type_table.get(type_id),
         Some(ast::Type::Builtin(
-            ast::BuiltinType::Integer | ast::BuiltinType::Boolean
+            ast::BuiltinType::Integer | ast::BuiltinType::Boolean | ast::BuiltinType::String
         )) | Some(ast::Type::Enumeration(_))
     )
 }
@@ -109,7 +113,7 @@ pub(super) fn find_member_type_in_class<'a>(
     // Also follow ALL extends (not just single), since packages can have
     // multiple inheritance-like extends clauses.
     const MAX_DEPTH: usize = 15;
-    let mut visited = Vec::new();
+    let mut visited = FxHashSet::default();
     let mut to_visit: Vec<Option<&ast::ClassDef>> = class
         .extends
         .iter()
@@ -128,12 +132,14 @@ pub(super) fn find_member_type_in_class<'a>(
         let mut next_visit = Vec::new();
         for current in to_visit.drain(..) {
             let Some(bc) = current else { continue };
-            // Avoid revisiting
-            let bc_name = bc.name.text.as_ref();
-            if visited.contains(&bc_name) {
+            // Resolved declaration identity is the only admissible cycle key.
+            // Unresolved fixtures remain eligible for traversal rather than being
+            // merged by their display spelling.
+            if let Some(def_id) = bc.def_id
+                && !visited.insert(def_id)
+            {
                 continue;
             }
-            visited.push(bc_name);
 
             if let Some(member) = find_extends_redeclared_member_type(tree, bc, member_name) {
                 return Some(member);
@@ -141,7 +147,6 @@ pub(super) fn find_member_type_in_class<'a>(
             if let Some(member) = bc.classes.get(member_name) {
                 return Some(member);
             }
-            // Queue base classes for next level
             for ext in &bc.extends {
                 let next_name = ext.base_name.to_string();
                 next_visit.push(
@@ -155,6 +160,43 @@ pub(super) fn find_member_type_in_class<'a>(
     }
 
     None
+}
+
+/// Check if inner and outer types are compatible using resolved identity.
+///
+/// MLS §5.4: The inner declaration's type must be a subtype of the outer's type.
+/// DefIds are preferred because relative and qualified spellings should already
+/// have been resolved before compatibility checking reaches this path.
+pub(super) fn is_type_compatible_with_def_id(
+    tree: &ast::ClassTree,
+    outer_type: &str,
+    outer_def_id: Option<DefId>,
+    inner_type: &str,
+    inner_def_id: Option<DefId>,
+) -> bool {
+    // Fast path: If both have DefIds and they match, types are the same
+    if let (Some(outer_id), Some(inner_id)) = (outer_def_id, inner_def_id)
+        && outer_id == inner_id
+    {
+        return true;
+    }
+
+    if type_names_match(tree, outer_type, inner_type) {
+        return true;
+    }
+
+    is_type_subtype(tree, inner_type, outer_type)
+}
+
+/// Check if inner type is compatible with outer type (for tests and simple cases).
+/// Inner must be a subtype of outer for compatibility.
+#[cfg(test)]
+pub(super) fn is_type_compatible(
+    tree: &ast::ClassTree,
+    outer_type: &str,
+    inner_type: &str,
+) -> bool {
+    is_type_subtype(tree, inner_type, outer_type)
 }
 
 fn find_extends_redeclared_member_type<'a>(
@@ -243,39 +285,70 @@ pub(super) fn lookup_type_info<'a>(
     })
 }
 
-/// Check if inner and outer types are compatible using resolved identity.
-///
-/// MLS §5.4: The inner declaration's type must be a subtype of the outer's type.
-/// DefIds are preferred because relative and qualified spellings should already
-/// have been resolved before compatibility checking reaches this path.
-pub(super) fn is_type_compatible_with_def_id(
-    tree: &ast::ClassTree,
-    outer_type: &str,
-    outer_def_id: Option<DefId>,
-    inner_type: &str,
-    inner_def_id: Option<DefId>,
-) -> bool {
-    // Fast path: If both have DefIds and they match, types are the same
-    if let (Some(outer_id), Some(inner_id)) = (outer_def_id, inner_def_id)
-        && outer_id == inner_id
-    {
-        return true;
-    }
-
-    if type_names_match(tree, outer_type, inner_type) {
-        return true;
-    }
-
-    is_type_subtype(tree, inner_type, outer_type)
-}
-
-/// Check if inner type is compatible with outer type (for tests and simple cases).
-/// Inner must be a subtype of outer for compatibility.
 #[cfg(test)]
-pub(super) fn is_type_compatible(
-    tree: &ast::ClassTree,
-    outer_type: &str,
-    inner_type: &str,
-) -> bool {
-    is_type_subtype(tree, inner_type, outer_type)
+mod tests {
+    use super::*;
+    use rumoca_core::{Location, Token};
+
+    fn class(name: &str, def_id: u32) -> ast::ClassDef {
+        ast::ClassDef {
+            def_id: Some(DefId::new(def_id)),
+            name: Token {
+                text: name.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn extends(name: &str, def_id: u32) -> ast::Extend {
+        ast::Extend {
+            base_name: ast::Name::from_string(name),
+            base_def_id: Some(DefId::new(def_id)),
+            location: Location::default(),
+            modifications: Vec::new(),
+            break_names: Vec::new(),
+            is_protected: false,
+            annotation: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn member_lookup_distinguishes_same_named_base_classes_by_def_id() {
+        let first_foo = class("Foo", 2);
+        let mut second_foo = class("Foo", 4);
+        second_foo
+            .classes
+            .insert("Wanted".to_string(), class("Wanted", 5));
+
+        let mut package_a = class("A", 1);
+        package_a.classes.insert("Foo".to_string(), first_foo);
+        let mut package_b = class("B", 3);
+        package_b.classes.insert("Foo".to_string(), second_foo);
+
+        let mut root = class("Root", 6);
+        root.extends.push(extends("A.Foo", 2));
+        root.extends.push(extends("B.Foo", 4));
+
+        let mut tree = ast::ClassTree::new();
+        tree.definitions.classes.insert("A".to_string(), package_a);
+        tree.definitions.classes.insert("B".to_string(), package_b);
+        tree.definitions.classes.insert("Root".to_string(), root);
+        for (id, name) in [
+            (1, "A"),
+            (2, "A.Foo"),
+            (3, "B"),
+            (4, "B.Foo"),
+            (5, "B.Foo.Wanted"),
+            (6, "Root"),
+        ] {
+            tree.def_map.insert(DefId::new(id), name.to_string());
+        }
+
+        let root = tree.get_class_by_def_id(DefId::new(6)).expect("root class");
+        let found = find_member_type_in_class(&tree, root, "Wanted")
+            .expect("the second same-named base remains searchable");
+
+        assert_eq!(found.def_id, Some(DefId::new(5)));
+    }
 }

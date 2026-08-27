@@ -1096,7 +1096,7 @@ impl FrameCtx<'_> {
             && let Some(dbg) = self.cfg.debug_log.as_ref()
             && engine.take_signal(&dbg.trigger_signal)
         {
-            // TODO(phase 4b): ring-buffer-backed debug log dump.
+            // Debug triggers report that no buffered log is available.
             eprintln!("[debug] log trigger — ring buffer not yet implemented");
         }
         Ok(FrameControl::Continue)

@@ -154,22 +154,12 @@ fn live_publish_diagnostics_stays_parse_only_for_small_sessions() {
             )
             .await;
 
-        assert!(
-            !server.session.read().await.has_resolved_cached(),
-            "live diagnostics should stay off the standard resolved path"
-        );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "live diagnostics should not populate the standard resolved cache"
-        );
-        assert!(
-            !server
-                .session
-                .read()
-                .await
-                .has_semantic_diagnostics_cached("Active"),
-            "live diagnostics should stay off the semantic diagnostics closure path"
-        );
+        let stats = session_cache_stats();
+        assert_eq!(stats.standard_resolved_builds, 0);
+        assert_eq!(stats.strict_resolved_builds, 0);
+        assert_eq!(stats.interface_semantic_diagnostics_builds, 0);
+        assert_eq!(stats.body_semantic_diagnostics_builds, 0);
+        assert_eq!(stats.model_stage_semantic_diagnostics_builds, 0);
     });
 
     let entries: Vec<LoggedDiagnosticsTimingSummary> = read_jsonl(&timing_path);
@@ -220,22 +210,12 @@ fn save_publish_diagnostics_reuses_semantic_diagnostics_cache() {
             )
             .await;
 
-        assert!(
-            !server.session.read().await.has_resolved_cached(),
-            "save diagnostics should not populate the model-stage resolved owner"
-        );
-        assert!(
-            !server.session.read().await.has_standard_resolved_cached(),
-            "save diagnostics should stay off the standard resolved cache"
-        );
-        assert!(
-            server
-                .session
-                .read()
-                .await
-                .has_semantic_diagnostics_cached("Active"),
-            "save diagnostics should still cache semantic diagnostics artifacts"
-        );
+        let stats = session_cache_stats();
+        assert_eq!(stats.standard_resolved_builds, 0);
+        let semantic_builds = stats.interface_semantic_diagnostics_builds
+            + stats.body_semantic_diagnostics_builds
+            + stats.model_stage_semantic_diagnostics_builds;
+        assert!(semantic_builds > 0);
     });
 
     let entries: Vec<LoggedDiagnosticsTimingSummary> = read_jsonl(&timing_path);

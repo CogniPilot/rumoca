@@ -67,8 +67,11 @@ fn build_package_layout_source_map(docs: &[(String, StoredDefinition)]) -> Resul
 }
 
 fn location_has_valid_span(location: &Location) -> bool {
-    !location.file_name.is_empty() && location.end > location.start
+    location.has_source()
 }
+
+/// Placeholder used when a `SourceId` has no registered name in the source map.
+const UNKNOWN_SOURCE_DISPLAY_NAME: &str = "<unknown source>";
 
 fn location_span(
     location: &Location,
@@ -82,16 +85,16 @@ fn location_span(
         bail!("{context} is missing a non-empty source location");
     }
     let span = source_map
-        .try_location_to_span(
-            &location.file_name,
+        .try_span(
+            location.source,
             location.start as usize,
             location.end as usize,
         )
         .with_context(|| {
-            format!(
-                "source file '{}' for {context} was not found",
-                location.file_name
-            )
+            let file_name = source_map
+                .name(location.source)
+                .unwrap_or(UNKNOWN_SOURCE_DISPLAY_NAME);
+            format!("source file '{file_name}' for {context} was not found")
         })?;
     Ok(Some(span))
 }
@@ -116,23 +119,23 @@ fn name_span(name: &Name, source_map: Option<&SourceMap>, context: &str) -> Resu
         .name
         .last()
         .with_context(|| format!("{context} is missing name segments"))?;
-    if first.location.file_name != last.location.file_name {
+    if first.location.source != last.location.source {
         bail!("{context} spans multiple source files");
     }
     if !location_has_valid_span(&first.location) || !location_has_valid_span(&last.location) {
         bail!("{context} is missing a non-empty source location");
     }
     let span = source_map
-        .try_location_to_span(
-            &first.location.file_name,
+        .try_span(
+            first.location.source,
             first.location.start as usize,
             last.location.end as usize,
         )
         .with_context(|| {
-            format!(
-                "source file '{}' for {context} was not found",
-                first.location.file_name
-            )
+            let file_name = source_map
+                .name(first.location.source)
+                .unwrap_or(UNKNOWN_SOURCE_DISPLAY_NAME);
+            format!("source file '{file_name}' for {context} was not found")
         })?;
     Ok(Some(span))
 }
@@ -163,9 +166,16 @@ pub fn collect_compile_unit_source_files(path: &Path) -> Result<Vec<PathBuf>> {
     if !path.is_file() {
         bail!("compile-unit path is not a file: {}", path.display());
     }
-
+    // Resolve the entry before climbing for the enclosing package root. A
+    // cwd-relative entry ("Model.mo" run from inside its package) yields ""
+    // from Path::parent, and joining "package.mo" onto "" still resolves
+    // against the cwd, so the climb walked past the filesystem into the empty
+    // path and read_dir("") failed with a pathless io error. An absolute path
+    // makes every ancestor a real directory by construction.
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("resolve compile-unit path {}", path.display()))?;
     let parent = match path.parent() {
-        Some(p) if p.as_os_str().is_empty() => Path::new("."),
         Some(p) => p,
         None => {
             bail!(
@@ -403,7 +413,9 @@ fn validate_directory(
 }
 
 fn collect_directory_children(dir: &Path) -> Result<DirectoryChildren> {
-    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+        .with_context(|| format!("read package directory {}", dir.display()))?;
     entries.sort_by_key(|entry| entry.path());
 
     let mut child_dirs = Vec::new();
@@ -745,7 +757,9 @@ fn record_child_name(
 }
 
 fn contains_direct_modelica_entities(dir: &Path) -> Result<bool> {
-    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+        .with_context(|| format!("read package directory {}", dir.display()))?;
     entries.sort_by_key(|entry| entry.path());
     for entry in entries {
         let path = entry.path();
@@ -760,7 +774,9 @@ fn contains_direct_modelica_entities(dir: &Path) -> Result<bool> {
 }
 
 fn collect_all_modelica_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+        .with_context(|| format!("read package directory {}", dir.display()))?;
     entries.sort_by_key(|entry| entry.path());
     for entry in entries {
         let path = entry.path();
@@ -776,7 +792,9 @@ fn collect_all_modelica_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> R
 }
 
 fn collect_direct_modelica_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+        .with_context(|| format!("read package directory {}", dir.display()))?;
     entries.sort_by_key(|entry| entry.path());
     for entry in entries {
         let path = entry.path();
@@ -793,7 +811,9 @@ fn collect_package_tree_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> 
         out.push(package_path);
     }
 
-    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+        .with_context(|| format!("read package directory {}", dir.display()))?;
     entries.sort_by_key(|entry| entry.path());
     for entry in entries {
         let path = entry.path();
@@ -1049,7 +1069,11 @@ mod tests {
         fs::write(&nested, "model C end C;").expect("write nested");
 
         let files = collect_compile_unit_source_files(&focus).expect("collect compile unit");
-        assert_eq!(files, vec![focus, sibling]);
+        // The collector canonicalizes the entry, so on hosts where the temp
+        // directory sits behind a symlink (macOS /tmp) the expected paths must
+        // be canonicalized the same way.
+        let canon = |p: &std::path::Path| p.canonicalize().expect("canonicalize expected");
+        assert_eq!(files, vec![canon(&focus), canon(&sibling)]);
     }
 
     #[test]
@@ -1072,16 +1096,18 @@ mod tests {
         fs::write(&unrelated, "model Other end Other;").expect("write unrelated");
 
         let files = collect_compile_unit_source_files(&focus).expect("collect compile unit");
-        assert_eq!(
-            files,
-            vec![
-                cousin,
-                focus,
-                sibling,
-                sub.join("package.mo"),
-                pkg.join("package.mo")
-            ]
-        );
+        // Canonicalized expectations for hosts whose temp directory sits
+        // behind a symlink (macOS /tmp).
+        let canon = |p: &Path| p.canonicalize().expect("canonicalize expected");
+        let mut expected = vec![
+            canon(&cousin),
+            canon(&focus),
+            canon(&sibling),
+            canon(&sub.join("package.mo")),
+            canon(&pkg.join("package.mo")),
+        ];
+        expected.sort();
+        assert_eq!(files, expected);
     }
 
     #[test]
@@ -1093,7 +1119,6 @@ mod tests {
         // Simulate a bare filename by using just the file name component
         let bare = Path::new(file.file_name().unwrap());
 
-        // Run from the temp directory so the bare filename resolves
         let prev = std::env::current_dir().expect("cwd");
         std::env::set_current_dir(temp.path()).expect("chdir");
         let result = collect_compile_unit_source_files(bare);

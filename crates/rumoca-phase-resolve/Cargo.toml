@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 [features]
 default = []
@@ -13,7 +14,6 @@ tracing = ["dep:tracing"]
 [dependencies]
 rumoca-core = { workspace = true }
 rumoca-ir-ast = { workspace = true }
-anyhow = { workspace = true }
 indexmap = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }

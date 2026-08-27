@@ -11,8 +11,6 @@ const repoRoot = path.resolve(__dirname, "..", "..");
 const pkgRoot = path.join(__dirname, "dist");
 const pkgOutDirArg = (subdir) => `../../packages/rumoca/dist/${subdir}`;
 
-const truthy = (value) =>
-  ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
 
 const parseArgs = (argv) => {
   const args = {

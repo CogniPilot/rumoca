@@ -80,10 +80,10 @@ fn flat_model_query_cache_is_reused_by_compile_and_diagnostics() {
     let warm_compile = session
         .compile_model_phases("Target")
         .expect("warm compile should return phase result");
-    assert_flatten_failure(warm_compile, "rumoca::flatten::EF005");
+    assert_flatten_failure(warm_compile, "EF005");
 
     let warm_diagnostics = session.compile_model_diagnostics("Target");
-    assert_diagnostics_have_code(&warm_diagnostics, "rumoca::flatten::EF005");
+    assert_diagnostics_have_code(&warm_diagnostics, "EF005");
 
     let parse_error = session.update_document(
         "target.mo",
@@ -100,5 +100,5 @@ fn flat_model_query_cache_is_reused_by_compile_and_diagnostics() {
     );
 
     let rebuilt_diagnostics = session.compile_model_diagnostics("Target");
-    assert_diagnostics_lack_code(&rebuilt_diagnostics, "rumoca::flatten::EF005");
+    assert_diagnostics_lack_code(&rebuilt_diagnostics, "EF005");
 }

@@ -5,19 +5,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 [features]
 default = ["native-solvers"]
 native-solvers = ["solver-diffsol", "solver-rk45"]
-strict-ir-validation = [
-    "rumoca-phase-dae/strict-ir-validation",
-    "rumoca-phase-solve/strict-ir-validation",
-]
+fmi = []
 wasm-solvers = ["solver-diffsol", "solver-rk45"]
 solver-diffsol = ["dep:rumoca-solver-diffsol"]
 solver-rk45 = ["dep:rumoca-solver-rk45"]
-# Browser assets are built by packages/rumoca-web and loaded at runtime.
-viz = []
 # HTML simulation report renderer. Pure-Rust deps (web + compile);
 # cross-compiles cleanly. Independent of scheduled loop execution so
 # non-lockstep CLIs can still emit HTML reports from `simulate`.
@@ -39,14 +35,13 @@ input-keyboard = ["scenario-config", "dep:rumoca-input-keyboard"]
 input-gamepad = ["scenario-config", "dep:rumoca-input-gamepad"]
 transport-udp = ["scenario-config", "scheduled-sim", "dep:rumoca-transport-udp"]
 transport-zenoh = ["scenario-config", "scheduled-sim", "dep:rumoca-transport-zenoh"]
-viewer-web = ["scheduled-sim", "viz", "dep:rumoca-transport-websocket", "dep:tiny_http"]
+viewer-web = ["scheduled-sim", "dep:rumoca-transport-websocket", "dep:tiny_http"]
 process-control = ["dep:signal-hook"]
 
 [dependencies]
 rumoca-core = { workspace = true }
 indexmap = { workspace = true }
 rumoca-ir-dae = { workspace = true }
-rumoca-phase-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 rumoca-phase-solve = { workspace = true }
@@ -59,7 +54,12 @@ serde_json = { workspace = true, features = ["unbounded_depth"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+proptest = { workspace = true }
+rumoca-compile = { workspace = true }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rumoca-exec-cranelift = { workspace = true }
 rumoca-codec = { workspace = true, optional = true }
 rumoca-input = { workspace = true, optional = true }
 rumoca-input-keyboard = { workspace = true, optional = true }

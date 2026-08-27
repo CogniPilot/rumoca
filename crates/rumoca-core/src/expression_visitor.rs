@@ -1,6 +1,6 @@
 use crate::{
     BuiltinFunction, ComprehensionIndex, Expression, Literal, OpBinary, OpUnary, Reference,
-    Subscript,
+    StringConversionFormat, Subscript,
 };
 
 pub enum ExpressionScope<'a> {
@@ -28,6 +28,9 @@ pub trait ExpressionVisitor {
                 is_constructor,
                 ..
             } => self.visit_function_call(name, args, *is_constructor),
+            Expression::StringConversion { value, format, .. } => {
+                self.visit_string_conversion(value, format)
+            }
             Expression::Literal { value, .. } => self.visit_literal(value),
             Expression::If {
                 branches,
@@ -119,6 +122,13 @@ pub trait ExpressionVisitor {
         }
     }
 
+    fn visit_string_conversion(&mut self, value: &Expression, format: &StringConversionFormat) {
+        self.visit_expression(value);
+        for operand in format.operands() {
+            self.visit_expression(operand);
+        }
+    }
+
     fn visit_literal(&mut self, _lit: &Literal) {}
 
     fn visit_if(&mut self, branches: &[(Expression, Expression)], else_branch: &Expression) {
@@ -205,6 +215,9 @@ pub trait FallibleExpressionVisitor {
                 is_constructor,
                 ..
             } => self.visit_function_call(name, args, *is_constructor),
+            Expression::StringConversion { value, format, .. } => {
+                self.visit_string_conversion(value, format)
+            }
             Expression::Literal { value, .. } => self.visit_literal(value),
             Expression::If {
                 branches,
@@ -285,6 +298,18 @@ pub trait FallibleExpressionVisitor {
     ) -> Result<(), Self::Error> {
         for arg in args {
             self.visit_expression(arg)?;
+        }
+        Ok(())
+    }
+
+    fn visit_string_conversion(
+        &mut self,
+        value: &Expression,
+        format: &StringConversionFormat,
+    ) -> Result<(), Self::Error> {
+        self.visit_expression(value)?;
+        for operand in format.operands() {
+            self.visit_expression(operand)?;
         }
         Ok(())
     }

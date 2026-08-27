@@ -1,7 +1,7 @@
 use super::common::{MslPaths, unix_timestamp_seconds, write_pretty_json};
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
-use rumoca_compile::compile::core as rumoca_core;
+use rumoca_core;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;

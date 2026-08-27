@@ -1,0 +1,120 @@
+{#- The GALEC array-kernel library, definition half. Model-independent and
+    emitted in full every time; see `kernels.h.jinja` for why.
+
+    Every definition here is a counted loop over `int32_t` with a single exit
+    and no pointer arithmetic: a kernel only ever subscripts the run it was
+    handed. Read-only runs are `const`-qualified, which is possible precisely
+    because every parameter is rank 1 -- C99 has no implicit conversion from
+    pointer-to-array-of-T to pointer-to-array-of-const-T, so a kernel that took
+    a rank > 1 operand could not have been const-correct without a cast this
+    target prohibits. Taking rows instead is what keeps both properties. -#}
+{#- No `block conformance` here, deliberately. The version constant hashes
+    the two BASE kernel templates, so "same bytes ⇒ same constant" (and its
+    useful contrapositive: a constant mismatch proves different bytes) holds
+    only if no extending target can change the rendered bytes. With no block
+    to override, a child template structurally cannot: per-target banners on
+    this pair would be per-target bytes under one constant, defeating the
+    mismatch tripwire and inviting the multiple-definition-at-link failure
+    the constant exists to surface early. Conformance claims belong to the
+    model artifacts beside this file. -#}
+/* rumoca GALEC array kernels
+ * Target-agnostic translation unit: every rumoca C target emits this file
+ * with byte-identical content. RUMOCA_GALEC_KERNELS_VERSION is a 32-bit
+ * digest of the producing templates — a mismatch tripwire, not an identity
+ * certificate; see rumoca_galec_kernels.h. Conformance claims live in the
+ * model artifacts emitted beside it, not here.
+ * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
+ * MISRA compliance and DO-178C compliance are not claimed. */
+
+#include "rumoca_galec_kernels.h"
+
+/* The header this was compiled against must be the one emitted beside it. */
+#if RUMOCA_GALEC_KERNELS_VERSION != UINT32_C(0x{{ "%08x" | format(galec_kernels_version) }})
+#error "rumoca_galec_kernels.c and rumoca_galec_kernels.h come from different rumoca builds"
+#endif
+
+void rumoca_galec_copy_real(int32_t count, float target[], const float source[]) {
+    for (int32_t element = INT32_C(0); element < count; ++element) {
+        target[element] = source[element];
+    }
+}
+
+void rumoca_galec_copy_integer(int32_t count, int32_t target[], const int32_t source[]) {
+    for (int32_t element = INT32_C(0); element < count; ++element) {
+        target[element] = source[element];
+    }
+}
+
+void rumoca_galec_copy_boolean(int32_t count, bool target[], const bool source[]) {
+    for (int32_t element = INT32_C(0); element < count; ++element) {
+        target[element] = source[element];
+    }
+}
+
+void rumoca_galec_fill_real(int32_t count, float target[], float value) {
+    for (int32_t element = INT32_C(0); element < count; ++element) {
+        target[element] = value;
+    }
+}
+
+void rumoca_galec_fill_integer(int32_t count, int32_t target[], int32_t value) {
+    for (int32_t element = INT32_C(0); element < count; ++element) {
+        target[element] = value;
+    }
+}
+
+void rumoca_galec_fill_boolean(int32_t count, bool target[], bool value) {
+    for (int32_t element = INT32_C(0); element < count; ++element) {
+        target[element] = value;
+    }
+}
+
+float rumoca_galec_dot_real(int32_t count, const float lhs[], const float rhs[]) {
+    float accumulator = 0.0f;
+    for (int32_t element = INT32_C(0); element < count; ++element) {
+        accumulator = accumulator + (lhs[element] * rhs[element]);
+    }
+    return accumulator;
+}
+
+void rumoca_galec_scaled_add_real(int32_t count, float target[], float scale, const float source[]) {
+    for (int32_t element = INT32_C(0); element < count; ++element) {
+        target[element] = target[element] + (scale * source[element]);
+    }
+}
+
+/* Fixed-count specializations. Each is the counted kernel of the same name
+ * with `count` bound to the literal in its suffix and the loop written out
+ * one element per line, in the identical ascending order — the substitution
+ * is bit-preserving by construction, element for element. They exist because
+ * a hot estimator step is dominated by short fixed-length runs whose loop
+ * control costs more than their arithmetic; straight-line bodies carry no
+ * control flow at all. The counts are fixed properties of this library, not
+ * of any model: a generated model calls a specialization exactly when its
+ * emitted literal count matches one, and the generic kernels above remain
+ * the contract for every other count. */
+{% for count in [3, 15, 24] %}
+void rumoca_galec_copy_real_{{ count }}(float target[], const float source[]) {
+{% for element in range(count) %}    target[{{ element }}] = source[{{ element }}];
+{% endfor -%}
+}
+{% endfor %}
+{%- for count in [2, 3, 15] %}
+void rumoca_galec_fill_real_{{ count }}(float target[], float value) {
+{% for element in range(count) %}    target[{{ element }}] = value;
+{% endfor -%}
+}
+{% endfor %}
+{%- for count in [6, 12, 15] %}
+float rumoca_galec_dot_real_{{ count }}(const float lhs[], const float rhs[]) {
+    float accumulator = 0.0f;
+{% for element in range(count) %}    accumulator = accumulator + (lhs[{{ element }}] * rhs[{{ element }}]);
+{% endfor %}    return accumulator;
+}
+{% endfor %}
+{%- for count in [2, 3, 6, 12, 15] %}
+void rumoca_galec_scaled_add_real_{{ count }}(float target[], float scale, const float source[]) {
+{% for element in range(count) %}    target[{{ element }}] = target[{{ element }}] + (scale * source[{{ element }}]);
+{% endfor -%}
+}
+{% endfor -%}

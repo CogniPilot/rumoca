@@ -45,7 +45,7 @@ fn startup_builtins_only(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
 /// Method bodies contribute reachability roots but are not graph nodes
 /// (they are not callable: `Startup`/`Recalibrate`/`DoStep` are not in the
 /// function namespace).
-fn user_call_graph(ctx: &BlockContext<'_>) -> HashMap<String, Vec<String>> {
+pub(super) fn user_call_graph(ctx: &BlockContext<'_>) -> HashMap<String, Vec<String>> {
     let mut graph = HashMap::new();
     for function in user_functions(ctx) {
         graph.insert(
@@ -154,10 +154,6 @@ fn function_location(ctx: &BlockContext<'_>, name: &str) -> Location {
         PathSegment::Function(name.to_string()),
     ])
 }
-
-// ---------------------------------------------------------------------------
-// Call collection
-// ---------------------------------------------------------------------------
 
 /// Visit every function call in a statement list, including calls nested in
 /// expressions, with a statement-precise location.

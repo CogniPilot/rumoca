@@ -417,14 +417,14 @@ fn parse_required_state_select(
             // Enclosing-scope constants (MLS §5.3.2) appear unqualified in
             // declaration-side attributes; qualify them through the package
             // constant aliases and retry before failing.
-            let qualified = crate::dims::qualify_shape_expr_imports(value, imports);
+            let qualified = crate::dims::qualify_shape_expr_imports(eval_ctx.tree, value, imports);
             eval_state_select_expr_with_source_scope(eval_ctx, &qualified, source_scope)
         })
         .ok_or_else(|| {
             Box::new(InstantiateError::InvalidTypeAttribute {
                 attribute: "stateSelect".to_string(),
                 value: value.to_string(),
-                span: rumoca_core::span_to_source_span(value.span()),
+                span: value.span(),
             })
         })
 }

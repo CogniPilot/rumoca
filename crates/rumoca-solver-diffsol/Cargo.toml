@@ -5,18 +5,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
+# The backend implements only rumoca-solver's FMI ME numerical-plugin
+# interface; simulation orchestration and model construction live upstream.
 rumoca-solver = { workspace = true }
-rumoca-eval-solve = { workspace = true }
-rumoca-ir-solve = { workspace = true }
-indexmap = { workspace = true }
 diffsol = { version = "0.13" }
-thiserror = { workspace = true }
-tracing = { workspace = true }
-
-[dev-dependencies]
-rumoca-core = { workspace = true }
+self_cell = { workspace = true }
 
 [lints]
 workspace = true

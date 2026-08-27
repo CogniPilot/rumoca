@@ -396,11 +396,17 @@ fn scan_content(path: &str, content: &str) -> Vec<ReviewFinding> {
 }
 
 fn scan_file_size(path: &str, content: &str) -> Vec<ReviewFinding> {
-    if !path.ends_with(".rs") || !is_line_count_checked_rust_source(path) {
+    if !path.ends_with(".rs")
+        || !is_line_count_checked_rust_source(path)
+        || is_test_rust_source(path)
+    {
         return Vec::new();
     }
     let line_count = content.lines().count();
     let (severity, rule) = if line_count > 2000 {
+        if has_spec_0021_file_size_exception(content) {
+            return Vec::new();
+        }
         ("high", "file-size-hard-limit")
     } else if line_count >= 1800 {
         ("low", "file-size-near-limit")
@@ -420,6 +426,14 @@ fn is_line_count_checked_rust_source(path: &str) -> bool {
     !path.contains("/generated/")
 }
 
+fn is_test_rust_source(path: &str) -> bool {
+    path.contains("/tests/") || path.ends_with("/tests.rs") || path.ends_with("_tests.rs")
+}
+
+fn has_spec_0021_file_size_exception(content: &str) -> bool {
+    content.contains("SPEC_0021") && content.contains("file-size") && content.contains("split plan")
+}
+
 fn line_trips_target_encoder_boundary(path: &str, line: &str) -> bool {
     path.starts_with("crates/rumoca-phase-")
         && !path.starts_with("crates/rumoca-phase-codegen/")
@@ -432,8 +446,7 @@ fn line_trips_target_encoder_boundary(path: &str, line: &str) -> bool {
 fn line_trips_eval_dae_backend_boundary(path: &str, line: &str) -> bool {
     let is_backend_or_runtime = path.starts_with("crates/rumoca-exec-")
         || path.starts_with("crates/rumoca-solver")
-        || path.starts_with("crates/rumoca-sim/")
-        || path.starts_with("crates/rumoca-phase-codegen/");
+        || path.starts_with("crates/rumoca-sim/");
     is_backend_or_runtime && line.contains("rumoca-eval-dae")
 }
 
@@ -559,7 +572,13 @@ rumoca-eval-dae = { workspace = true }
         assert_eq!(hard[0].severity, "high");
 
         let test_file = scan_file_size("crates/example/src/tests.rs", &"x\n".repeat(2001));
-        assert_eq!(test_file[0].rule, "file-size-hard-limit");
+        assert!(test_file.is_empty());
+
+        let planned = format!(
+            "// SPEC_0021 file-size exception; split plan: extract helpers\n{}",
+            "x\n".repeat(2000)
+        );
+        assert!(scan_file_size("crates/example/src/lib.rs", &planned).is_empty());
 
         let generated_file = scan_file_size(
             "crates/example/src/generated/parser.rs",

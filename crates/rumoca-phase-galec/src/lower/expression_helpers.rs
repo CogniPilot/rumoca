@@ -1,0 +1,852 @@
+use super::*;
+
+/// Walk a GALEC expression tree, asking `predicate` about each node, and answer
+/// whether any node said yes.
+///
+/// The predicate answers one of three things about the node it is handed:
+///
+/// * `Some(true)`: yes, and the walk stops here, since nothing else can change
+///   the answer;
+/// * `Some(false)`: this subtree's verdict is settled, so the walk does *not*
+///   descend into it. A predicate uses this when it has already inspected the
+///   node's children itself, which is what the reference-bearing nodes
+///   (`Ref`, `Neg`, `Size`) need, since a `Reference` is not an `Expression`
+///   and the walk cannot hand one to an expression predicate;
+/// * `None`: undecided here, so the walk descends into the node's children and
+///   ORs their answers.
+///
+/// A predicate that answers `None` everywhere and records what it sees turns
+/// this into a plain visit-every-node traversal; the `false` it then returns is
+/// simply ignored.
+///
+/// This is the one place the shape of `gast::Expression` is enumerated for a
+/// read-only search. Every question of the form "does this expression contain
+/// X" is the same ten-arm match around a different leaf test, and ten arms
+/// copied per question is ten chances for one copy to miss a new variant.
+pub(super) fn any_expression(
+    expression: &gast::Expression,
+    predicate: &mut impl FnMut(&gast::Expression) -> Option<bool>,
+) -> bool {
+    if let Some(verdict) = predicate(expression) {
+        return verdict;
+    }
+    match expression {
+        gast::Expression::Bool(_) | gast::Expression::Integer(_) | gast::Expression::Real(_) => {
+            false
+        }
+        gast::Expression::Ref(reference) | gast::Expression::Neg(reference) => {
+            any_reference(reference, predicate)
+        }
+        gast::Expression::Size { array, dimension } => {
+            any_reference(array, predicate) || any_expression(dimension, predicate)
+        }
+        gast::Expression::Call(call) => call
+            .arguments
+            .iter()
+            .any(|argument| any_expression(argument, predicate)),
+        gast::Expression::Paren(value) | gast::Expression::Not(value) => {
+            any_expression(value, predicate)
+        }
+        gast::Expression::If(value) => {
+            value.branches.iter().any(|(condition, branch)| {
+                any_expression(condition, predicate) || any_expression(branch, predicate)
+            }) || any_expression(&value.else_value, predicate)
+        }
+        gast::Expression::Array(values) => {
+            values.iter().any(|value| any_expression(value, predicate))
+        }
+        gast::Expression::Binary { lhs, rhs, .. } => {
+            any_expression(lhs, predicate) || any_expression(rhs, predicate)
+        }
+    }
+}
+
+/// The reference counterpart of [`any_expression`]: ask the same predicate
+/// about every expression a reference contains, which is its subscripts.
+///
+/// A reference's *names* are not expressions and are therefore not asked about
+/// here. A predicate that cares about them matches the reference-bearing
+/// expression nodes itself and settles those subtrees with `Some(_)`.
+pub(super) fn any_reference(
+    reference: &gast::Reference,
+    predicate: &mut impl FnMut(&gast::Expression) -> Option<bool>,
+) -> bool {
+    reference_parts(reference)
+        .iter()
+        .flat_map(|part| &part.subscripts)
+        .any(|subscript| any_expression(subscript, predicate))
+}
+
+/// The DAE expressions a checked subscript list evaluates.
+///
+/// A `Whole` subscript names a whole dimension and evaluates nothing, so it
+/// contributes no expression; `Index` and `Slice` each contribute the one they
+/// carry. Every walk over the children of an `Index` or `ArrayUpdate` node
+/// needs exactly this filter, and a walk that forgot it would treat a whole-
+/// dimension subscript as a missing child rather than as no child at all.
+pub(super) fn subscript_expressions<'dae>(
+    subscripts: dae::SubscriptsView<'dae>,
+) -> impl Iterator<Item = dae::ExprId<'dae>> {
+    subscripts.iter().filter_map(|subscript| match subscript {
+        dae::SubscriptView::Index { expression, .. }
+        | dae::SubscriptView::Slice { expression, .. } => Some(expression),
+        dae::SubscriptView::Whole { .. } => None,
+    })
+}
+
+/// The component parts of a reference, whichever spelling it has.
+pub(super) fn reference_parts(reference: &gast::Reference) -> &[gast::RefPart] {
+    match reference {
+        gast::Reference::Local(part) => std::slice::from_ref(part),
+        gast::Reference::State(parts) => parts,
+    }
+}
+
+pub(super) fn exact_integer(value: f64, span: Span) -> Result<i64, GalecTargetError> {
+    if value.is_finite()
+        && value.fract() == 0.0
+        && value >= i64::MIN as f64
+        && value <= i64::MAX as f64
+    {
+        Ok(value as i64)
+    } else {
+        Err(GalecTargetError::AttributeTypeMismatch {
+            variable: "<checked Integer>".to_owned(),
+            attribute: "value",
+            expected: "Integer",
+            found: "non-integral or out-of-range Real",
+            span: Some(span),
+        })
+    }
+}
+
+pub(super) fn optional_real<'dae>(
+    evaluator: &mut NumericEvaluator<'dae>,
+    expression: Option<dae::ExprId<'dae>>,
+) -> Result<Option<f64>, GalecTargetError> {
+    expression
+        .map(|expression| scalar_numeric(evaluator, expression))
+        .transpose()
+}
+
+pub(super) fn optional_integer<'dae>(
+    view: dae::DaeView<'dae>,
+    evaluator: &mut NumericEvaluator<'dae>,
+    expression: Option<dae::ExprId<'dae>>,
+) -> Result<Option<i64>, GalecTargetError> {
+    expression
+        .map(|expression| {
+            let span = expression_span(view, expression);
+            exact_integer(scalar_numeric(evaluator, expression)?, span)
+        })
+        .transpose()
+}
+
+fn scalar_numeric<'dae>(
+    evaluator: &mut NumericEvaluator<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Result<f64, GalecTargetError> {
+    let values = evaluator.expression(expression).map_err(|error| {
+        GalecTargetError::AttributeNotEvaluable {
+            variable: "<checked variable>".to_owned(),
+            attribute: "bound",
+            reason: error.to_string(),
+            span: Some(error.span()),
+        }
+    })?;
+    match values.as_slice() {
+        [value] => Ok(*value),
+        _ => Err(GalecTargetError::AttributeNotEvaluable {
+            variable: "<checked variable>".to_owned(),
+            attribute: "bound",
+            reason: "attribute is not scalar".to_owned(),
+            span: None,
+        }),
+    }
+}
+
+pub(super) fn literal_scalar_index(
+    dimensions: &[u32],
+    indices: &[gast::Expression],
+) -> Option<u32> {
+    if dimensions.len() != indices.len() {
+        return None;
+    }
+    dimensions
+        .iter()
+        .zip(indices)
+        .try_fold(0_u32, |scalar, (extent, index)| {
+            let coordinate = u32::try_from(constant_integer(index)?)
+                .ok()?
+                .checked_sub(1)?;
+            if coordinate >= *extent {
+                return None;
+            }
+            scalar.checked_mul(*extent)?.checked_add(coordinate)
+        })
+}
+
+pub(super) fn comprehension_binder_value(
+    binder: &rumoca_core::StructuredIndexBinder,
+    ordinal: gast::Expression,
+) -> gast::Expression {
+    if let gast::Expression::Integer(ordinal) = ordinal {
+        return gast::Expression::Integer(binder.lower + (ordinal - 1).saturating_mul(binder.step));
+    }
+    let zero_based =
+        gast::Expression::binary(gast::BinaryOp::Sub, ordinal, gast::Expression::Integer(1));
+    let offset = gast::Expression::binary(
+        gast::BinaryOp::Mul,
+        zero_based,
+        gast::Expression::Integer(binder.step),
+    );
+    gast::Expression::binary(
+        gast::BinaryOp::Add,
+        gast::Expression::Integer(binder.lower),
+        offset,
+    )
+}
+
+pub(super) fn vector_operand_projection(
+    dimensions: &[u32],
+    result_indices: &[gast::Expression],
+) -> Vec<gast::Expression> {
+    let [index] = result_indices else {
+        unreachable!("checked vector result has rank one")
+    };
+    dimensions
+        .iter()
+        .map(|extent| {
+            if *extent > 1 {
+                index.clone()
+            } else {
+                gast::Expression::Integer(1)
+            }
+        })
+        .collect()
+}
+
+pub(super) fn lower_identity_element(indices: &[gast::Expression]) -> TypedExpression {
+    let [row, column] = indices else {
+        unreachable!("checked identity result has rank two")
+    };
+    let expression = match (row, column) {
+        (gast::Expression::Integer(row), gast::Expression::Integer(column)) => {
+            gast::Expression::Integer(i64::from(row == column))
+        }
+        _ => gast::Expression::If(gast::IfExpression::new(
+            vec![(
+                gast::Expression::binary(gast::BinaryOp::Eq, row.clone(), column.clone()),
+                gast::Expression::Integer(1),
+            )],
+            gast::Expression::Integer(0),
+        )),
+    };
+    TypedExpression {
+        expression,
+        scalar_type: gast::ScalarType::Integer,
+    }
+}
+
+pub(super) const fn causality_name(causality: dae::VariableCausality) -> &'static str {
+    match causality {
+        dae::VariableCausality::Input => "input",
+        dae::VariableCausality::Output => "output",
+        dae::VariableCausality::Parameter => "parameter",
+        dae::VariableCausality::CalculatedParameter => "calculatedParameter",
+        dae::VariableCausality::Independent => "independent",
+        dae::VariableCausality::Local => "local",
+    }
+}
+
+pub(super) const fn role_name(role: dae::VariableRole) -> &'static str {
+    match role {
+        dae::VariableRole::Parameter => "parameter",
+        dae::VariableRole::Constant => "constant",
+        dae::VariableRole::Input => "input",
+        dae::VariableRole::State => "state",
+        dae::VariableRole::Algebraic => "algebraic",
+        dae::VariableRole::Output => "output",
+        dae::VariableRole::DiscreteReal => "discrete Real",
+        dae::VariableRole::DiscreteValue => "discrete value",
+    }
+}
+
+pub(super) const fn origin_name(origin: dae::VariableOrigin) -> &'static str {
+    match origin {
+        dae::VariableOrigin::Source => "source",
+        dae::VariableOrigin::Generated => "generated",
+    }
+}
+
+pub(super) const fn event_name(operation: dae::EventActionOperation<'_>) -> &'static str {
+    match operation {
+        dae::EventActionOperation::Assert { .. } => "assert",
+        dae::EventActionOperation::Terminate { .. } => "terminate",
+        dae::EventActionOperation::Reinitialize { .. } => "reinitialize",
+    }
+}
+
+pub(super) fn state_reference(name: gast::Name, span: Span) -> gast::Reference {
+    state_reference_with_subscripts(name, Vec::new(), span)
+}
+
+pub(super) fn state_reference_indexed(
+    name: gast::Name,
+    indices: &[u32],
+    span: Span,
+) -> gast::Reference {
+    state_reference_with_subscripts(
+        name,
+        indices
+            .iter()
+            .map(|index| gast::Expression::Integer(i64::from(*index)))
+            .collect(),
+        span,
+    )
+}
+
+pub(super) fn state_reference_with_subscripts(
+    name: gast::Name,
+    subscripts: Vec<gast::Expression>,
+    span: Span,
+) -> gast::Reference {
+    gast::Reference::State(vec![gast::RefPart {
+        name,
+        subscripts,
+        span,
+    }])
+}
+
+pub(super) fn next_projected_index<'expression>(
+    projected: &mut impl Iterator<Item = &'expression gast::Expression>,
+    subscript: &str,
+    span: Span,
+) -> Result<gast::Expression, GalecTargetError> {
+    projected.next().cloned().ok_or_else(|| {
+        unsupported(
+            "array-projection",
+            format!("{subscript} subscript is missing its projected index"),
+            span,
+        )
+    })
+}
+
+pub(super) fn row_major_indices(dimensions: &[u32]) -> Vec<Vec<u32>> {
+    let mut indices = vec![Vec::new()];
+    for extent in dimensions {
+        let mut expanded = Vec::with_capacity(indices.len().saturating_mul(*extent as usize));
+        for prefix in indices {
+            for index in 1..=*extent {
+                let mut element = prefix.clone();
+                element.push(index);
+                expanded.push(element);
+            }
+        }
+        indices = expanded;
+    }
+    indices
+}
+
+pub(super) fn constant_integer(expression: &gast::Expression) -> Option<i64> {
+    match expression {
+        gast::Expression::Integer(value) => Some(*value),
+        gast::Expression::Paren(value) => constant_integer(value),
+        gast::Expression::Binary { op, lhs, rhs } => {
+            let lhs = constant_integer(lhs)?;
+            let rhs = constant_integer(rhs)?;
+            match op {
+                gast::BinaryOp::Add => lhs.checked_add(rhs),
+                gast::BinaryOp::Sub => lhs.checked_sub(rhs),
+                gast::BinaryOp::Mul => lhs.checked_mul(rhs),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn reduction_identity(
+    builtin: dae::PureBuiltin,
+    scalar_type: gast::ScalarType,
+) -> gast::Expression {
+    let value = i64::from(builtin == dae::PureBuiltin::Product);
+    match scalar_type {
+        gast::ScalarType::Real => gast::Expression::Real(value as f64),
+        gast::ScalarType::Integer => gast::Expression::Integer(value),
+        gast::ScalarType::Boolean => {
+            unreachable!("checked sum/product reductions are numeric")
+        }
+    }
+}
+
+pub(super) fn expression_span<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Span {
+    view.expression(expression)
+        .expect("checked expression resolves")
+        .provenance()
+        .span()
+}
+
+pub(super) fn literal_integer<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<i64> {
+    match view.expression(expression)?.operation() {
+        dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+pub(super) fn with_span(name: gast::Name, span: Span) -> gast::Name {
+    match name {
+        gast::Name::Ident(identifier, _) => gast::Name::Ident(identifier, span),
+        gast::Name::Quoted(content, _) => gast::Name::Quoted(content, span),
+    }
+}
+
+pub(super) fn unsupported(feature: &str, detail: String, span: Span) -> GalecTargetError {
+    GalecTargetError::UnsupportedFeature {
+        feature: feature.to_owned(),
+        detail,
+        span: (!span.is_dummy()).then_some(span),
+    }
+}
+
+/// Reject a lowered expression whose operand types do not meet.
+///
+/// Both type names are `&'static str` because both always are: every caller
+/// names either a `ScalarType::keyword` or a literal such as `"numeric"`, and
+/// the diagnostic field is `&'static str` too. The names used to be laundered
+/// through a four-entry lookup that mapped anything else to `"unknown"`, which
+/// could only ever have turned a real type name into a useless one in a
+/// user-facing message; taking the static name directly means a caller with a
+/// name this crate does not own fails to compile instead.
+pub(super) fn type_mismatch(
+    expected: &'static str,
+    found: &'static str,
+    span: Span,
+) -> GalecTargetError {
+    GalecTargetError::LoweringTypeMismatch {
+        context: "checked DAE expression".to_owned(),
+        expected,
+        found,
+        span: (!span.is_dummy()).then_some(span),
+    }
+}
+
+pub(super) fn single(error: GalecTargetError) -> Vec<GalecTargetError> {
+    vec![error]
+}
+
+pub(super) fn operand_projection(
+    dimensions: &[u32],
+    result: &[gast::Expression],
+    span: Span,
+) -> Result<Vec<gast::Expression>, GalecTargetError> {
+    if dimensions.is_empty() {
+        Ok(Vec::new())
+    } else if dimensions.len() == result.len() {
+        Ok(result.to_vec())
+    } else {
+        Err(unsupported(
+            "array-projection",
+            format!(
+                "operand rank {} does not match projected result rank {}",
+                dimensions.len(),
+                result.len()
+            ),
+            span,
+        ))
+    }
+}
+
+pub(super) fn coordinate_variable<'dae>(
+    coordinate: dae::CoordinateView<'dae>,
+    span: Span,
+) -> Result<(dae::VariableId<'dae>, bool), GalecTargetError> {
+    match coordinate {
+        dae::CoordinateView::Parameter(id) => Ok((dae::VariableId::from(id), false)),
+        dae::CoordinateView::Input(id) => Ok((dae::VariableId::from(id), false)),
+        dae::CoordinateView::State(id) => Ok((dae::VariableId::from(id), false)),
+        dae::CoordinateView::Algebraic(id) => Ok((dae::VariableId::from(id), false)),
+        dae::CoordinateView::DiscreteReal(id) => Ok((dae::VariableId::from(id), false)),
+        dae::CoordinateView::DiscreteValue(id) => Ok((dae::VariableId::from(id), false)),
+        dae::CoordinateView::PreDiscreteReal(id) => Ok((dae::VariableId::from(id), true)),
+        dae::CoordinateView::PreDiscreteValue(id) => Ok((dae::VariableId::from(id), true)),
+        _ => Err(unsupported(
+            "runtime-coordinate",
+            "runtime coordinate has no GALEC expression mapping".to_owned(),
+            span,
+        )),
+    }
+}
+
+pub(super) fn lower_range_at(
+    start: i64,
+    step: i64,
+    _stop: i64,
+    indices: &[gast::Expression],
+    scalar_type: gast::ScalarType,
+    span: Span,
+) -> Result<TypedExpression, GalecTargetError> {
+    let [gast::Expression::Integer(ordinal)] = indices else {
+        return Err(unsupported(
+            "range-projection",
+            "range projection requires one literal ordinal".to_owned(),
+            span,
+        ));
+    };
+    let value = start
+        .checked_add((ordinal - 1).saturating_mul(step))
+        .ok_or_else(|| {
+            unsupported(
+                "range-overflow",
+                "range projection arithmetic overflowed".to_owned(),
+                span,
+            )
+        })?;
+    Ok(TypedExpression {
+        expression: gast::Expression::Integer(value),
+        scalar_type,
+    })
+}
+
+pub(super) fn require_boolean(value: &TypedExpression, span: Span) -> Result<(), GalecTargetError> {
+    if value.scalar_type == gast::ScalarType::Boolean {
+        Ok(())
+    } else {
+        Err(type_mismatch("Boolean", value.scalar_type.keyword(), span))
+    }
+}
+
+pub(super) fn lower_literal(
+    literal: &dae::DaeLiteral,
+    span: Span,
+) -> Result<gast::Expression, GalecTargetError> {
+    match literal {
+        dae::DaeLiteral::Real(value) => Ok(gast::Expression::Real(*value)),
+        dae::DaeLiteral::Integer(value) => Ok(gast::Expression::Integer(*value)),
+        dae::DaeLiteral::Enumeration(value) => Ok(gast::Expression::Integer(*value)),
+        dae::DaeLiteral::Boolean(value) => Ok(gast::Expression::Bool(*value)),
+        dae::DaeLiteral::String(_) => Err(unsupported(
+            "string-expression",
+            "String expression has no GALEC representation".to_owned(),
+            span,
+        )),
+    }
+}
+
+pub(super) fn lower_binary(
+    operator: dae::BinaryOperator,
+    lhs: TypedExpression,
+    rhs: TypedExpression,
+    result: gast::ScalarType,
+    span: Span,
+) -> Result<gast::Expression, GalecTargetError> {
+    use dae::BinaryOperator as D;
+    use gast::BinaryOp as G;
+    let operator = match operator {
+        D::Add | D::ElementwiseAdd => G::Add,
+        D::Subtract | D::ElementwiseSubtract => G::Sub,
+        D::Multiply | D::ElementwiseMultiply => G::Mul,
+        D::Divide | D::ElementwiseDivide => G::Div,
+        D::Power | D::ElementwisePower => G::Pow,
+        D::Equal => G::Eq,
+        D::NotEqual => G::Ne,
+        D::Less => G::Lt,
+        D::LessEqual => G::Le,
+        D::Greater => G::Gt,
+        D::GreaterEqual => G::Ge,
+        D::And => G::And,
+        D::Or => G::Or,
+    };
+    let numeric = matches!(
+        operator,
+        G::Add | G::Sub | G::Mul | G::Div | G::Pow | G::Lt | G::Le | G::Gt | G::Ge
+    ) || matches!(operator, G::Eq | G::Ne)
+        && lhs.scalar_type != gast::ScalarType::Boolean;
+    let (lhs, rhs) = if numeric
+        && (result == gast::ScalarType::Real
+            || lhs.scalar_type == gast::ScalarType::Real
+            || rhs.scalar_type == gast::ScalarType::Real
+            || matches!(operator, G::Div | G::Pow))
+    {
+        (
+            coerce(lhs, gast::ScalarType::Real, span)?,
+            coerce(rhs, gast::ScalarType::Real, span)?,
+        )
+    } else if lhs.scalar_type == rhs.scalar_type {
+        (lhs.expression, rhs.expression)
+    } else {
+        return Err(type_mismatch(
+            lhs.scalar_type.keyword(),
+            rhs.scalar_type.keyword(),
+            span,
+        ));
+    };
+    Ok(gast::Expression::binary(operator, lhs, rhs))
+}
+
+pub(super) fn lower_builtin<'dae>(
+    lowerer: &mut ExpressionLowerer<'_, 'dae>,
+    builtin: dae::PureBuiltin,
+    arguments: dae::ExpressionOperands<'dae>,
+    span: Span,
+) -> Result<gast::Expression, GalecTargetError> {
+    if builtin == dae::PureBuiltin::Size {
+        let array = arguments.get(0).expect("checked size array argument");
+        let dimension = arguments.get(1).ok_or_else(|| {
+            unsupported(
+                "builtin:size",
+                "array-valued size(A) requires an element projection".to_owned(),
+                span,
+            )
+        })?;
+        let dimension = literal_integer(lowerer.view, dimension).ok_or_else(|| {
+            unsupported(
+                "dynamic-size-dimension",
+                "size(A, d) requires a constructor-proven dimension".to_owned(),
+                span,
+            )
+        })?;
+        let dimension = usize::try_from(dimension - 1).map_err(|_| {
+            unsupported(
+                "size-dimension",
+                "size dimension is outside the checked array rank".to_owned(),
+                span,
+            )
+        })?;
+        let extent = lowerer
+            .view
+            .expression(array)
+            .expect("checked size array resolves")
+            .value_type()
+            .dimensions()
+            .get(dimension)
+            .copied()
+            .ok_or_else(|| {
+                unsupported(
+                    "size-dimension",
+                    "size dimension is outside the checked array rank".to_owned(),
+                    span,
+                )
+            })?;
+        return Ok(gast::Expression::Integer(i64::from(extent)));
+    }
+    if builtin == dae::PureBuiltin::Smooth {
+        return lowerer
+            .lower(arguments.get(1).expect("checked smooth value argument"))
+            .map(|value| value.expression);
+    }
+    if builtin == dae::PureBuiltin::NoEvent {
+        return lowerer
+            .lower(arguments.get(0).expect("checked noEvent value argument"))
+            .map(|value| value.expression);
+    }
+    if builtin == dae::PureBuiltin::Homotopy {
+        return lowerer
+            .lower(arguments.get(0).expect("checked homotopy actual argument"))
+            .map(|value| value.expression);
+    }
+    let lowered = arguments
+        .iter()
+        .map(|argument| lowerer.lower(argument))
+        .collect::<Result<Vec<_>, _>>()?;
+    lower_builtin_arguments(builtin, lowered, span)
+}
+
+/// True when every argument is already an Integer, selecting the `imin`/`imax`
+/// spelling over the Real-only `min`/`max` (SPEC_0042 T8).
+fn all_integer(arguments: &[TypedExpression]) -> bool {
+    !arguments.is_empty()
+        && arguments
+            .iter()
+            .all(|argument| matches!(argument.scalar_type, gast::ScalarType::Integer))
+}
+
+pub(super) fn lower_builtin_arguments(
+    builtin: dae::PureBuiltin,
+    arguments: Vec<TypedExpression>,
+    span: Span,
+) -> Result<gast::Expression, GalecTargetError> {
+    if builtin == dae::PureBuiltin::Integer {
+        let [argument]: [TypedExpression; 1] =
+            arguments.try_into().map_err(|arguments: Vec<_>| {
+                unsupported(
+                    "builtin:integer",
+                    format!(
+                        "checked integer conversion has {} arguments instead of one",
+                        arguments.len()
+                    ),
+                    span,
+                )
+            })?;
+        // MLS integer rounds down, while GALEC Beta-1 integer truncates toward
+        // zero. Rounding in Real first makes the target conversion exact.
+        let rounded = gast::Expression::Call(gast::FunctionCall {
+            function: with_span(gast::Name::ident("roundDown"), span),
+            arguments: vec![argument.expression],
+        });
+        return Ok(gast::Expression::Call(gast::FunctionCall {
+            function: with_span(gast::Name::ident("integer"), span),
+            arguments: vec![rounded],
+        }));
+    }
+    let name = match builtin {
+        dae::PureBuiltin::Abs => "absolute",
+        dae::PureBuiltin::Sign => "sign",
+        dae::PureBuiltin::Sqrt => "sqrt",
+        dae::PureBuiltin::Div | dae::PureBuiltin::Mod | dae::PureBuiltin::Rem => {
+            return Err(unsupported(
+                "builtin:mod",
+                format!("builtin `{builtin:?}` has no scalar GALEC mapping"),
+                span,
+            ));
+        }
+        dae::PureBuiltin::Floor => "roundDown",
+        dae::PureBuiltin::Ceil => "roundUp",
+        dae::PureBuiltin::Integer => unreachable!("integer returns after semantic adaptation"),
+        dae::PureBuiltin::Sin => "sin",
+        dae::PureBuiltin::Cos => "cos",
+        dae::PureBuiltin::Tan => "tan",
+        dae::PureBuiltin::Asin => "asin",
+        dae::PureBuiltin::Acos => "acos",
+        dae::PureBuiltin::Atan => "atan",
+        dae::PureBuiltin::Atan2 => "atan2",
+        dae::PureBuiltin::Sinh => "sinh",
+        dae::PureBuiltin::Cosh => "cosh",
+        dae::PureBuiltin::Tanh => "tanh",
+        dae::PureBuiltin::Exp => "exp",
+        dae::PureBuiltin::Log => "ln",
+        dae::PureBuiltin::Log10 => "lg",
+        dae::PureBuiltin::Smooth => unreachable!("smooth is lowered as its value"),
+        dae::PureBuiltin::NoEvent => unreachable!("noEvent is lowered as its value"),
+        dae::PureBuiltin::Homotopy => unreachable!("homotopy is lowered as its actual value"),
+        // SPEC_0042 T8: GALEC scalar `min`/`max` are Real-only; Integer operands
+        // use the distinct `imin`/`imax` builtins. Coercing them to Real instead
+        // would return a Real where the checked view requires an Integer.
+        dae::PureBuiltin::Min if all_integer(&arguments) => "imin",
+        dae::PureBuiltin::Max if all_integer(&arguments) => "imax",
+        dae::PureBuiltin::Min => "min",
+        dae::PureBuiltin::Max => "max",
+        dae::PureBuiltin::Sum
+        | dae::PureBuiltin::Product
+        | dae::PureBuiltin::Size
+        | dae::PureBuiltin::Zeros
+        | dae::PureBuiltin::Ones
+        | dae::PureBuiltin::Fill
+        | dae::PureBuiltin::Linspace
+        | dae::PureBuiltin::Cross
+        | dae::PureBuiltin::PromotedCat1
+        | dae::PureBuiltin::PromotedCat2
+        | dae::PureBuiltin::Identity
+        | dae::PureBuiltin::Vector
+        | dae::PureBuiltin::Transpose
+        | dae::PureBuiltin::Diagonal
+        | dae::PureBuiltin::OuterProduct
+        | dae::PureBuiltin::Skew => {
+            return Err(unsupported(
+                "builtin",
+                format!("builtin `{builtin:?}` has no scalar GALEC mapping"),
+                span,
+            ));
+        }
+    };
+    let lowered = arguments
+        .into_iter()
+        .map(|argument| match builtin {
+            dae::PureBuiltin::Min | dae::PureBuiltin::Max
+                if !matches!(argument.scalar_type, gast::ScalarType::Integer) =>
+            {
+                coerce(argument, gast::ScalarType::Real, span)
+            }
+            _ => Ok(argument.expression),
+        })
+        .collect::<Result<Vec<_>, GalecTargetError>>()?;
+    Ok(gast::Expression::Call(gast::FunctionCall {
+        function: with_span(gast::Name::ident(name), span),
+        arguments: lowered,
+    }))
+}
+
+pub(super) fn coerce(
+    value: TypedExpression,
+    expected: gast::ScalarType,
+    span: Span,
+) -> Result<gast::Expression, GalecTargetError> {
+    if value.scalar_type == expected {
+        return Ok(value.expression);
+    }
+    if expected == gast::ScalarType::Real && value.scalar_type == gast::ScalarType::Integer {
+        return Ok(gast::Expression::Call(gast::FunctionCall {
+            function: with_span(gast::Name::ident("real"), span),
+            arguments: vec![value.expression],
+        }));
+    }
+    Err(type_mismatch(
+        expected.keyword(),
+        value.scalar_type.keyword(),
+        span,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn typed(scalar_type: gast::ScalarType) -> TypedExpression {
+        TypedExpression {
+            expression: gast::Expression::Integer(1),
+            scalar_type,
+        }
+    }
+
+    fn called_name(expression: &gast::Expression) -> String {
+        match expression {
+            gast::Expression::Call(call) => call.function.lexeme().to_string(),
+            other => panic!("builtin lowering produced {other:?} instead of a call"),
+        }
+    }
+
+    /// SPEC_0042 T8: GALEC `min`/`max` are Real-only, so Integer operands must
+    /// select `imin`/`imax` rather than being coerced to Real.
+    #[test]
+    fn integer_min_max_select_the_integer_builtins() {
+        let span = Span::DUMMY;
+        for (builtin, expected) in [
+            (dae::PureBuiltin::Min, "imin"),
+            (dae::PureBuiltin::Max, "imax"),
+        ] {
+            let lowered = lower_builtin_arguments(
+                builtin,
+                vec![
+                    typed(gast::ScalarType::Integer),
+                    typed(gast::ScalarType::Integer),
+                ],
+                span,
+            )
+            .expect("integer min/max lowers to the integer builtin");
+            assert_eq!(called_name(&lowered), expected);
+        }
+    }
+
+    #[test]
+    fn real_min_max_keep_the_real_builtins() {
+        let span = Span::DUMMY;
+        for (builtin, expected) in [
+            (dae::PureBuiltin::Min, "min"),
+            (dae::PureBuiltin::Max, "max"),
+        ] {
+            let lowered = lower_builtin_arguments(
+                builtin,
+                vec![typed(gast::ScalarType::Real), typed(gast::ScalarType::Real)],
+                span,
+            )
+            .expect("real min/max lowers to the real builtin");
+            assert_eq!(called_name(&lowered), expected);
+        }
+    }
+}

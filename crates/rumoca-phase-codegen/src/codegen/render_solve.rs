@@ -4,43 +4,35 @@
 //! and runtime helper objects. split plan: move C, MLIR, and tensor object
 //! renderers into separate modules behind this facade.
 
+mod dense_solve_render;
+mod mlir_family;
+#[cfg(test)]
+mod render_solve_tests;
+mod template_partition;
+
 use std::sync::Arc;
 
 use crate::errors::render_err;
+use minijinja::Value;
 use minijinja::value::{Enumerator, Object, ObjectRepr};
-use minijinja::{Environment, Value};
 use rumoca_ir_solve as solve;
 
 use super::render_expr::get_field;
 use super::render_solve_ops::{
-    render_solve_binary_c, render_solve_binary_py, render_solve_binary_rust,
-    render_solve_binary_wgsl, render_solve_compare, render_solve_compare_py,
-    render_solve_compare_wgsl, render_solve_unary_c, render_solve_unary_py,
-    render_solve_unary_rust, render_solve_unary_wgsl,
+    render_solve_binary_wgsl, render_solve_compare_wgsl, render_solve_unary_wgsl,
 };
 use super::{RenderResult, render_vec_with_capacity, reserve_render_capacity, value_to_string};
 
-mod dense_solve_render;
 #[cfg(test)]
-#[path = "render_solve_tests.rs"]
-mod render_solve_tests;
-mod template_partition;
+pub(super) use dense_solve_render::{LinSolveRenderShape, MatMulRenderShape};
 pub(super) use dense_solve_render::{
-    LinSolveRenderShape, SolveOutputTargets, checked_linsolve_product,
-    checked_linsolve_render_count, checked_linsolve_sum, render_linsolve_mlir_function,
-    render_matmul_c_function, render_matmul_mlir_function,
-    render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
-    render_solve_block_py_function, render_solve_block_rust_function,
-    render_solve_pre_param_binding_c_function, render_solve_row_c_function,
-    render_solve_row_output_wgsl_function, render_solve_row_rust_function,
-    render_solve_row_wgsl_function, render_solve_slot_assign_c_function,
-    render_solve_target_assignment_c_function, required_bool_field, required_string_field,
-    required_usize_field, solve_block_output_count_function, validate_linsolve_render_shape,
+    mlir_native_dense_node_supported, render_linsolve_mlir_function, render_matmul_mlir_function,
+    render_solve_row_output_wgsl_function, render_solve_row_wgsl_function, required_bool_field,
+    required_string_field, required_usize_field,
 };
-#[cfg(test)]
-pub(super) use dense_solve_render::{MatMulRenderShape, solve_output_targets};
+pub(super) use mlir_family::render_solve_native_family_mlir_function;
 pub(super) use template_partition::{
-    RenderNativeAffineFamily, SolveNativeFamiliesValue, SolveRowsValue,
+    RenderNativeAffineFamily, SolveNativeDenseNodesValue, SolveNativeFamiliesValue, SolveRowsValue,
     SolveScalarFallbackRowsValue, native_family_template_partition,
     render_solve_native_family_output_index_wgsl_function,
     render_solve_native_family_output_map_start_function, render_solve_native_family_wgsl_function,
@@ -50,27 +42,8 @@ pub(super) use template_partition::{
 #[cfg(test)]
 pub(super) use template_partition::{
     kernel_workgroup_count, scalar_kernel_chunk_count, scalar_program_block_source_span,
-    scalar_program_row_span, wgsl_kernel_schedule_entry_count, wgsl_kernel_workgroup_total,
+    wgsl_kernel_schedule_entry_count, wgsl_kernel_workgroup_total,
 };
-
-pub(super) fn register_target_assignment_functions(env: &mut Environment<'static>) {
-    env.add_function(
-        "render_solve_target_assignment_c",
-        render_solve_target_assignment_c_function,
-    );
-    env.add_function(
-        "render_solve_target_assignment_block_c",
-        render_solve_target_assignment_block_c_function,
-    );
-}
-
-// ─── Typed scalar-program rows ───────────────────────────────────────────────
-//
-// Templates receive scalar-program rows as these objects instead of
-// serde-bridged values: per-row value bridging dominated render time on
-// large models (each access re-serialized op subtrees). The row renderers
-// downcast and walk the typed ops directly; plain-value rows (tests,
-// custom contexts) keep the original walk.
 
 #[derive(Debug)]
 
@@ -102,175 +75,6 @@ impl Object for SolveRowValue {
     fn enumerate(self: &Arc<Self>) -> Enumerator {
         Enumerator::Seq(self.ops().len())
     }
-}
-
-fn render_solve_row_c(row: &Value, cfg: &SolveRowCConfig) -> RenderResult {
-    render_solve_row_for(row, cfg, SolveRowDialect::C)
-}
-
-fn render_solve_target_assignment_c(
-    row: &Value,
-    target_y_index: usize,
-    cfg: &SolveRowCConfig,
-) -> RenderResult {
-    let Some(typed) = row.downcast_object_ref::<SolveRowValue>() else {
-        return Err(render_err(
-            "target-assignment rendering requires a typed scalar Solve-IR row",
-        ));
-    };
-    render_solve_target_assignment_typed_c(typed.ops(), target_y_index, cfg)
-}
-
-fn render_solve_target_assignment_typed_c(
-    ops: &[solve::LinearOp],
-    target_y_index: usize,
-    cfg: &SolveRowCConfig,
-) -> RenderResult {
-    let mut regs = Vec::<String>::new();
-    let mut output = None;
-    for op in ops {
-        output = render_solve_op_typed(op, cfg, SolveRowDialect::C, &mut regs, output)?;
-    }
-    render_solve_target_assignment_value(ops, target_y_index, &regs, output)
-}
-
-fn render_solve_target_assignment_value(
-    ops: &[solve::LinearOp],
-    target_y_index: usize,
-    regs: &[String],
-    output: Option<String>,
-) -> RenderResult {
-    let output = output.ok_or_else(|| render_err("solve row did not contain StoreOutput"))?;
-    let shape = rumoca_eval_solve::target_assignment_shape(ops)
-        .map_err(|error| render_err(format!("invalid target-assignment row: {error}")))?;
-    match shape {
-        Some(rumoca_eval_solve::TargetAssignmentShape::Direct {
-            target_y_index: shape_target,
-            expr_reg,
-            ..
-        }) if shape_target == target_y_index => solve_reg(
-            regs,
-            solve_reg_index(expr_reg, "target-assignment expression register")?,
-        ),
-        Some(rumoca_eval_solve::TargetAssignmentShape::Affine {
-            target_y_index: shape_target,
-            offset_reg,
-            coefficient_reg,
-            offset_scale,
-            coefficient_scale,
-            ..
-        }) if shape_target == target_y_index => {
-            let offset = solve_reg(
-                regs,
-                solve_reg_index(offset_reg, "target-assignment offset register")?,
-            )?;
-            let coefficient = coefficient_reg
-                .map(|reg| {
-                    solve_reg(
-                        regs,
-                        solve_reg_index(reg, "target-assignment coefficient register")?,
-                    )
-                })
-                .transpose()?
-                .unwrap_or_else(|| "1.0".to_string());
-            Ok(format!(
-                "(-({offset_scale:?} * ({offset})) / ({coefficient_scale:?} * ({coefficient})))"
-            ))
-        }
-        Some(shape) => Err(render_err(format!(
-            "Solve-IR assignment targets y[{}], not projection y[{target_y_index}]",
-            shape.target_y_index()
-        ))),
-        None if !ops.iter().any(
-            |op| matches!(op, solve::LinearOp::LoadY { index, .. } if *index == target_y_index),
-        ) =>
-        {
-            Ok(output)
-        }
-        None => Err(render_err(format!(
-            "Solve-IR row cannot directly assign projection y[{target_y_index}]"
-        ))),
-    }
-}
-
-/// Render one scalar projection as bounded C statements rather than a deeply
-/// nested expression. Materializing every non-leaf register keeps C expression
-/// depth constant, which substantially reduces native compiler time for large
-/// Lie-group rows without changing the Solve IR evaluation order.
-fn render_solve_target_assignment_block_typed_c(
-    ops: &[solve::LinearOp],
-    target_y_index: usize,
-    cfg: &SolveRowCConfig,
-) -> RenderResult {
-    let mut regs = Vec::<String>::new();
-    let mut output = None;
-    let mut body = String::new();
-    for op in ops {
-        output = render_solve_op_typed(op, cfg, SolveRowDialect::C, &mut regs, output)?;
-        let Some(dst) = solve_typed_nonleaf_destination(op)? else {
-            continue;
-        };
-        let expr = solve_reg(&regs, dst)?;
-        let name = format!("__r{dst}");
-        body.push_str(&format!("        const double {name} = {expr};\n"));
-        store_solve_reg(&mut regs, dst, name)?;
-    }
-    let value = render_solve_target_assignment_value(ops, target_y_index, &regs, output)?;
-    body.push_str(&format!("        const double value = {value};\n"));
-    Ok(body)
-}
-
-fn solve_typed_nonleaf_destination(
-    op: &solve::LinearOp,
-) -> Result<Option<usize>, minijinja::Error> {
-    use solve::LinearOp;
-    let dst = match op {
-        LinearOp::LoadIndexedP { dst, .. }
-        | LinearOp::LoadIndexedSeed { dst, .. }
-        | LinearOp::LinearSolveComponent { dst, .. }
-        | LinearOp::Unary { dst, .. }
-        | LinearOp::Binary { dst, .. }
-        | LinearOp::Compare { dst, .. }
-        | LinearOp::Select { dst, .. } => *dst,
-        LinearOp::Const { .. }
-        | LinearOp::LoadTime { .. }
-        | LinearOp::LoadY { .. }
-        | LinearOp::LoadP { .. }
-        | LinearOp::LoadSeed { .. }
-        | LinearOp::Move { .. }
-        | LinearOp::StoreOutput { .. } => return optional_solve_render_miss(),
-        other => {
-            return Err(render_err(format!(
-                "unsupported solve LinearOp in target assignment: {}",
-                other.kind_name()
-            )));
-        }
-    };
-    Ok(Some(solve_reg_index(
-        dst,
-        "target-assignment temporary destination register",
-    )?))
-}
-
-fn optional_solve_render_miss<T>() -> Result<Option<T>, minijinja::Error> {
-    Ok(Option::None)
-}
-
-pub(in crate::codegen) fn render_solve_target_assignment_block_c_function(
-    row: Value,
-    target_y_index: Value,
-    config: Value,
-) -> RenderResult {
-    let target_y_index = target_y_index
-        .as_usize()
-        .ok_or_else(|| render_err("target-assignment Y index must be a non-negative integer"))?;
-    let Some(typed) = row.downcast_object_ref::<SolveRowValue>() else {
-        return Err(render_err(
-            "target-assignment block rendering requires a typed scalar Solve-IR row",
-        ));
-    };
-    let cfg = SolveRowCConfig::from_value(&config);
-    render_solve_target_assignment_block_typed_c(typed.ops(), target_y_index, &cfg)
 }
 
 fn render_solve_row_for(
@@ -307,6 +111,21 @@ fn render_solve_row_output_for(
         .try_iter()
         .map_err(|_| render_err("solve row must be an array of LinearOp values"))?;
     for op in iter {
+        if let Ok(range) = get_field(&op, "StoreOutputRange") {
+            let count = solve_field_usize(&range, "count")?;
+            let range_end = seen_outputs
+                .checked_add(count)
+                .ok_or_else(|| render_err("solve output range ordinal overflows host range"))?;
+            if (seen_outputs..range_end).contains(&output_ordinal) {
+                let local = output_ordinal - seen_outputs;
+                let start = solve_field_usize(&range, "start")?;
+                let stride = solve_field_usize(&range, "stride")?;
+                let source = solve_output_range_source(start, stride, local)?;
+                return solve_reg(&regs, source);
+            }
+            seen_outputs = range_end;
+            continue;
+        }
         let output = render_solve_op_for(&op, cfg, dialect, &mut regs, None)?;
         if get_field(&op, "StoreOutput").is_ok() {
             if seen_outputs == output_ordinal {
@@ -324,15 +143,18 @@ fn render_native_family_expr_wgsl(
     family: &RenderNativeAffineFamily,
     config: &Value,
 ) -> RenderResult {
+    validate_native_family_metadata(family)?;
     let cfg = SolveRowCConfig::from_value(config);
     let mut overrides = std::collections::HashMap::new();
-    for stride in &family.load_strides {
-        if stride.terms.is_empty() {
+    for (op_position, op) in family.base_ops.iter().enumerate() {
+        let terms = family_load_terms(family, op_position)?;
+        if terms.is_empty() {
             continue;
         }
-        let (pattern_is_y, base_index) = match &family.base_ops[stride.op_position] {
-            solve::LinearOp::LoadY { index, .. } => (true, *index),
-            solve::LinearOp::LoadP { index, .. } => (false, *index),
+        let (source, base_index) = match op {
+            solve::LinearOp::LoadY { index, .. } => (NativeFamilyLoadSource::Y, *index),
+            solve::LinearOp::LoadP { index, .. } => (NativeFamilyLoadSource::P, *index),
+            solve::LinearOp::LoadSeed { index, .. } => (NativeFamilyLoadSource::Seed, *index),
             other => {
                 return Err(render_err(format!(
                     "native family stride targets a non-load op: {}",
@@ -340,19 +162,22 @@ fn render_native_family_expr_wgsl(
                 )));
             }
         };
-        let index_expr = affine_load_index_expr(base_index, &stride.terms, &family.domain)?;
-        let access = if pattern_is_y {
-            cfg.y_access_expr(&index_expr)
-        } else {
-            cfg.p_access_expr(&index_expr)
+        let index_expr = affine_load_index_expr(base_index, &terms, &family.domain)?;
+        let access = match source {
+            NativeFamilyLoadSource::Y => cfg.y_access_expr(&index_expr),
+            NativeFamilyLoadSource::P => cfg.p_access_expr(&index_expr),
+            NativeFamilyLoadSource::Seed => cfg.seed_access_expr(&index_expr).ok_or_else(|| {
+                render_err("native family LoadSeed requires a `seed` access pattern")
+            })?,
         };
-        overrides.insert(stride.op_position, access);
+        overrides.insert(op_position, access);
     }
-    for stride in &family.const_strides {
-        if stride.terms.is_empty() {
+    for (op_position, op) in family.base_ops.iter().enumerate() {
+        let terms = family_const_terms(family, op_position)?;
+        if terms.is_empty() {
             continue;
         }
-        let base_value = match &family.base_ops[stride.op_position] {
+        let base_value = match op {
             solve::LinearOp::Const { value, .. } => *value,
             other => {
                 return Err(render_err(format!(
@@ -361,10 +186,105 @@ fn render_native_family_expr_wgsl(
                 )));
             }
         };
-        let value_expr = affine_const_expr(base_value, &stride.terms, &family.domain)?;
-        overrides.insert(stride.op_position, value_expr);
+        let value_expr = affine_const_expr(base_value, &terms, &family.domain)?;
+        overrides.insert(op_position, value_expr);
     }
     render_solve_row_typed_with_overrides(&family.base_ops, &overrides, &cfg, SolveRowDialect::Wgsl)
+}
+
+enum NativeFamilyLoadSource {
+    Y,
+    P,
+    Seed,
+}
+
+fn validate_native_family_metadata(
+    family: &RenderNativeAffineFamily,
+) -> Result<(), minijinja::Error> {
+    let rank = family.domain.binders.len();
+    let scalar_count = family
+        .domain
+        .scalar_count()
+        .map_err(|error| render_err(format!("invalid native-family domain: {error}")))?;
+    if family.count != scalar_count {
+        return Err(render_err(format!(
+            "native-family row count {} does not match domain cardinality {scalar_count}",
+            family.count
+        )));
+    }
+    family
+        .output_map
+        .output_count(&family.domain)
+        .map_err(|error| render_err(format!("invalid native-family output map: {error:?}")))?;
+    for stride in &family.load_strides {
+        match family.base_ops.get(stride.op_position) {
+            Some(
+                solve::LinearOp::LoadY { .. }
+                | solve::LinearOp::LoadP { .. }
+                | solve::LinearOp::LoadSeed { .. },
+            ) => {}
+            Some(op) => {
+                return Err(render_err(format!(
+                    "native family stride targets a non-load op: {}",
+                    op.kind_name()
+                )));
+            }
+            None => {
+                return Err(render_err(format!(
+                    "native family load stride targets missing op {} of {}",
+                    stride.op_position,
+                    family.base_ops.len()
+                )));
+            }
+        }
+        validate_native_family_dimensions(
+            stride.terms.iter().map(|term| term.dimension),
+            rank,
+            "load",
+        )?;
+    }
+    for stride in &family.const_strides {
+        match family.base_ops.get(stride.op_position) {
+            Some(solve::LinearOp::Const { .. }) => {}
+            Some(op) => {
+                return Err(render_err(format!(
+                    "native family const stride targets a non-const op: {}",
+                    op.kind_name()
+                )));
+            }
+            None => {
+                return Err(render_err(format!(
+                    "native family constant stride targets missing op {} of {}",
+                    stride.op_position,
+                    family.base_ops.len()
+                )));
+            }
+        }
+        validate_native_family_dimensions(
+            stride.terms.iter().map(|term| term.dimension),
+            rank,
+            "constant",
+        )?;
+        if stride.terms.iter().any(|term| !term.stride.is_finite()) {
+            return Err(render_err("native family constant stride must be finite"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_native_family_dimensions(
+    dimensions: impl Iterator<Item = usize>,
+    rank: usize,
+    kind: &str,
+) -> Result<(), minijinja::Error> {
+    for dimension in dimensions {
+        if dimension >= rank {
+            return Err(render_err(format!(
+                "native family {kind} stride dimension {dimension} exceeds domain rank {rank}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn affine_load_index_expr(
@@ -372,8 +292,10 @@ fn affine_load_index_expr(
     terms: &[solve::AffineStencilIndexStrideTerm],
     domain: &rumoca_core::StructuredIndexDomain,
 ) -> Result<String, minijinja::Error> {
+    let terms = combined_affine_index_terms(terms, domain)?;
+    validate_wgsl_affine_index_range(base_index, &terms, domain, "load")?;
     let mut expr = format!("i32({base_index}u)");
-    for term in terms {
+    for term in &terms {
         let contribution = domain_coordinate_contribution(term.dimension, term.stride, domain)?;
         expr = format!("{expr} + {contribution}");
     }
@@ -384,8 +306,10 @@ fn affine_output_index_expr(
     output_map: &solve::TensorOutputMap,
     domain: &rumoca_core::StructuredIndexDomain,
 ) -> Result<String, minijinja::Error> {
+    let terms = combined_affine_index_terms(&output_map.strides, domain)?;
+    validate_wgsl_affine_index_range(output_map.start, &terms, domain, "output")?;
     let mut expr = format!("i32({}u)", output_map.start);
-    for term in &output_map.strides {
+    for term in &terms {
         let contribution = domain_coordinate_contribution(term.dimension, term.stride, domain)?;
         expr = format!("{expr} + {contribution}");
     }
@@ -397,12 +321,177 @@ fn affine_const_expr(
     terms: &[solve::AffineStencilConstStrideTerm],
     domain: &rumoca_core::StructuredIndexDomain,
 ) -> Result<String, minijinja::Error> {
+    let terms = combined_affine_const_terms(terms, domain)?;
     let mut expr = format!("{base_value:?}");
-    for term in terms {
+    for term in &terms {
         let contribution = domain_coordinate_contribution_f32(term.dimension, term.stride, domain)?;
         expr = format!("{expr} + {contribution}");
     }
     Ok(expr)
+}
+
+fn family_load_terms(
+    family: &RenderNativeAffineFamily,
+    op_position: usize,
+) -> Result<Vec<solve::AffineStencilIndexStrideTerm>, minijinja::Error> {
+    let count = family
+        .load_strides
+        .iter()
+        .filter(|stride| stride.op_position == op_position)
+        .try_fold(0usize, |count, stride| {
+            count.checked_add(stride.terms.len())
+        })
+        .ok_or_else(|| render_err("native family load stride count overflows"))?;
+    let mut terms = render_vec_with_capacity(count, "native family load stride count")?;
+    for stride in family
+        .load_strides
+        .iter()
+        .filter(|stride| stride.op_position == op_position)
+    {
+        terms.extend(stride.terms.iter().cloned());
+    }
+    Ok(terms)
+}
+
+fn family_const_terms(
+    family: &RenderNativeAffineFamily,
+    op_position: usize,
+) -> Result<Vec<solve::AffineStencilConstStrideTerm>, minijinja::Error> {
+    let count = family
+        .const_strides
+        .iter()
+        .filter(|stride| stride.op_position == op_position)
+        .try_fold(0usize, |count, stride| {
+            count.checked_add(stride.terms.len())
+        })
+        .ok_or_else(|| render_err("native family constant stride count overflows"))?;
+    let mut terms = render_vec_with_capacity(count, "native family constant stride count")?;
+    for stride in family
+        .const_strides
+        .iter()
+        .filter(|stride| stride.op_position == op_position)
+    {
+        terms.extend(stride.terms.iter().cloned());
+    }
+    Ok(terms)
+}
+
+fn combined_affine_index_terms(
+    terms: &[solve::AffineStencilIndexStrideTerm],
+    domain: &rumoca_core::StructuredIndexDomain,
+) -> Result<Vec<solve::AffineStencilIndexStrideTerm>, minijinja::Error> {
+    let extents = domain
+        .extents()
+        .map_err(|error| render_err(format!("invalid native-family domain: {error}")))?;
+    let mut strides = render_vec_with_capacity(
+        domain.binders.len(),
+        "native family affine dimension stride count",
+    )?;
+    strides.resize(domain.binders.len(), 0i128);
+    for term in terms {
+        let Some(stride) = strides.get_mut(term.dimension) else {
+            return Err(render_err(format!(
+                "affine stride dimension {} out of bounds",
+                term.dimension
+            )));
+        };
+        *stride = stride
+            .checked_add(term.stride as i128)
+            .ok_or_else(|| render_err("affine stride accumulation overflows"))?;
+    }
+    let mut combined =
+        render_vec_with_capacity(strides.len(), "native family combined affine strides")?;
+    for (dimension, (stride, extent)) in strides.into_iter().zip(extents).enumerate() {
+        if stride == 0 || extent <= 1 {
+            continue;
+        }
+        let stride = isize::try_from(stride)
+            .map_err(|_| render_err("combined affine stride exceeds Solve-IR index range"))?;
+        combined.push(solve::AffineStencilIndexStrideTerm { dimension, stride });
+    }
+    Ok(combined)
+}
+
+fn combined_affine_const_terms(
+    terms: &[solve::AffineStencilConstStrideTerm],
+    domain: &rumoca_core::StructuredIndexDomain,
+) -> Result<Vec<solve::AffineStencilConstStrideTerm>, minijinja::Error> {
+    let extents = domain
+        .extents()
+        .map_err(|error| render_err(format!("invalid native-family domain: {error}")))?;
+    let mut strides = render_vec_with_capacity(
+        domain.binders.len(),
+        "native family constant dimension stride count",
+    )?;
+    strides.resize(domain.binders.len(), 0.0f64);
+    for term in terms {
+        if !term.stride.is_finite() {
+            return Err(render_err("native family constant stride must be finite"));
+        }
+        let Some(stride) = strides.get_mut(term.dimension) else {
+            return Err(render_err(format!(
+                "affine constant stride dimension {} out of bounds",
+                term.dimension
+            )));
+        };
+        *stride += term.stride;
+        if !stride.is_finite() {
+            return Err(render_err(
+                "native family constant stride accumulation is non-finite",
+            ));
+        }
+    }
+    let mut combined =
+        render_vec_with_capacity(strides.len(), "native family combined constant strides")?;
+    for (dimension, (stride, extent)) in strides.into_iter().zip(extents).enumerate() {
+        if stride == 0.0 || extent <= 1 {
+            continue;
+        }
+        combined.push(solve::AffineStencilConstStrideTerm { dimension, stride });
+    }
+    Ok(combined)
+}
+
+fn validate_wgsl_affine_index_range(
+    base: usize,
+    terms: &[solve::AffineStencilIndexStrideTerm],
+    domain: &rumoca_core::StructuredIndexDomain,
+    context: &str,
+) -> Result<(), minijinja::Error> {
+    let extents = domain
+        .extents()
+        .map_err(|error| render_err(format!("invalid native-family domain: {error}")))?;
+    let mut minimum = i128::try_from(base)
+        .map_err(|_| render_err(format!("WGSL native-family {context} base overflows")))?;
+    let mut maximum = minimum;
+    for term in terms {
+        let extent = extents.get(term.dimension).copied().ok_or_else(|| {
+            render_err(format!(
+                "WGSL native-family {context} dimension {} is out of bounds",
+                term.dimension
+            ))
+        })?;
+        let last = i128::try_from(extent - 1)
+            .map_err(|_| render_err(format!("WGSL native-family {context} extent overflows")))?;
+        let offset = last
+            .checked_mul(term.stride as i128)
+            .ok_or_else(|| render_err(format!("WGSL native-family {context} stride overflows")))?;
+        if offset < 0 {
+            minimum = minimum.checked_add(offset).ok_or_else(|| {
+                render_err(format!("WGSL native-family {context} minimum overflows"))
+            })?;
+        } else {
+            maximum = maximum.checked_add(offset).ok_or_else(|| {
+                render_err(format!("WGSL native-family {context} maximum overflows"))
+            })?;
+        }
+    }
+    if minimum < 0 || maximum > i128::from(i32::MAX) {
+        return Err(render_err(format!(
+            "WGSL native-family {context} index range {minimum}..={maximum} exceeds i32"
+        )));
+    }
+    Ok(())
 }
 
 fn domain_coordinate_contribution(
@@ -529,6 +618,23 @@ fn render_solve_row_typed_output(
     let mut regs = Vec::<String>::new();
     let mut seen_outputs = 0usize;
     for op in ops {
+        if let solve::LinearOp::StoreOutputRange {
+            start,
+            count,
+            stride,
+        } = *op
+        {
+            let range_end = seen_outputs
+                .checked_add(count)
+                .ok_or_else(|| render_err("solve output range ordinal overflows host range"))?;
+            if (seen_outputs..range_end).contains(&output_ordinal) {
+                let local = output_ordinal - seen_outputs;
+                let source = typed_solve_output_range_source(start, stride, local)?;
+                return solve_reg(&regs, source);
+            }
+            seen_outputs = range_end;
+            continue;
+        }
         let output = render_solve_op_typed(op, cfg, dialect, &mut regs, None)?;
         if matches!(op, solve::LinearOp::StoreOutput { .. }) {
             if seen_outputs == output_ordinal {
@@ -544,6 +650,31 @@ fn next_store_output_ordinal(value: usize) -> Result<usize, minijinja::Error> {
     value
         .checked_add(1)
         .ok_or_else(|| render_err("solve StoreOutput ordinal overflows host range"))
+}
+
+fn solve_output_range_source(
+    start: usize,
+    stride: usize,
+    local: usize,
+) -> Result<usize, minijinja::Error> {
+    local
+        .checked_mul(stride)
+        .and_then(|offset| start.checked_add(offset))
+        .ok_or_else(|| render_err("solve output range register overflows host range"))
+}
+
+fn typed_solve_output_range_source(
+    start: solve::Reg,
+    stride: usize,
+    local: usize,
+) -> Result<usize, minijinja::Error> {
+    let offset = local
+        .checked_mul(stride)
+        .ok_or_else(|| render_err("solve output range register offset overflows"))?;
+    usize::try_from(start)
+        .ok()
+        .and_then(|start| start.checked_add(offset))
+        .ok_or_else(|| render_err("solve output range register overflows host range"))
 }
 
 fn missing_store_output_ordinal(output_ordinal: usize) -> RenderResult {
@@ -592,9 +723,10 @@ fn render_solve_row_typed_with_overrides(
 /// byte-identical to the value-walk path (`{:?}` on f64 prints the same
 /// shortest round-trip form serde_json uses; non-finite constants render
 /// as the dialect infinity, matching serde_json's null for non-finite).
-// SPEC_0021: Exception - typed solve op rendering mirrors the serialized
-// value-walk renderer variant-for-variant for byte-identical template output.
-#[allow(clippy::too_many_lines)]
+// SPEC_0021: Exception - this exhaustive LinearOp dispatch mirrors the
+// serialized value-walk renderer variant-for-variant for byte-identical output.
+// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
+#[allow(clippy::too_many_lines, clippy::excessive_nesting)]
 fn render_solve_op_typed(
     op: &solve::LinearOp,
     cfg: &SolveRowCConfig,
@@ -680,6 +812,549 @@ fn render_solve_op_typed(
                 solve_reg_index(*dst, "linear-solve destination register")?,
                 expr,
             )?;
+        }
+        LinearOp::DotProduct {
+            dst,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+        } => {
+            let mut terms = Vec::with_capacity(*count);
+            for term in 0..*count {
+                let lhs = solve_reg(
+                    regs,
+                    solve_reg_index(
+                        *lhs_start + (term * *lhs_stride) as solve::Reg,
+                        "dot-product lhs register",
+                    )?,
+                )?;
+                let rhs = solve_reg(
+                    regs,
+                    solve_reg_index(
+                        *rhs_start + (term * *rhs_stride) as solve::Reg,
+                        "dot-product rhs register",
+                    )?,
+                )?;
+                terms.push(dialect.render_binary("Mul", lhs, rhs)?);
+            }
+            let mut terms = terms.into_iter();
+            let mut value = terms
+                .next()
+                .unwrap_or_else(|| dialect.format_const("0.0".to_string()));
+            for term in terms {
+                value = dialect.render_binary("Add", value, term)?;
+            }
+            store_solve_reg(
+                regs,
+                solve_reg_index(*dst, "dot-product destination register")?,
+                value,
+            )?;
+        }
+        LinearOp::MatrixMultiply {
+            dst_start,
+            lhs_start,
+            rhs_start,
+            rows,
+            inner,
+            columns,
+            lanes,
+        } => {
+            for row in 0..*rows {
+                for column in 0..*columns {
+                    let output = (row * *columns + column) * *lanes;
+                    let mut primal = dialect.format_const("0.0".to_string());
+                    let mut tangent = dialect.format_const("0.0".to_string());
+                    for term in 0..*inner {
+                        let lhs = (row * *inner + term) * *lanes;
+                        let rhs = (term * *columns + column) * *lanes;
+                        let lhs_re = solve_reg(
+                            regs,
+                            solve_reg_index(
+                                *lhs_start + lhs as solve::Reg,
+                                "matrix-multiply lhs register",
+                            )?,
+                        )?;
+                        let rhs_re = solve_reg(
+                            regs,
+                            solve_reg_index(
+                                *rhs_start + rhs as solve::Reg,
+                                "matrix-multiply rhs register",
+                            )?,
+                        )?;
+                        primal = dialect.render_binary(
+                            "Add",
+                            primal,
+                            dialect.render_binary("Mul", lhs_re.clone(), rhs_re.clone())?,
+                        )?;
+                        if *lanes == 2 {
+                            let lhs_du = solve_reg(
+                                regs,
+                                solve_reg_index(
+                                    *lhs_start + lhs as solve::Reg + 1,
+                                    "matrix-multiply lhs tangent register",
+                                )?,
+                            )?;
+                            let rhs_du = solve_reg(
+                                regs,
+                                solve_reg_index(
+                                    *rhs_start + rhs as solve::Reg + 1,
+                                    "matrix-multiply rhs tangent register",
+                                )?,
+                            )?;
+                            let lhs_term = dialect.render_binary("Mul", lhs_du, rhs_re.clone())?;
+                            let rhs_term = dialect.render_binary("Mul", lhs_re, rhs_du)?;
+                            let term = dialect.render_binary("Add", lhs_term, rhs_term)?;
+                            tangent = dialect.render_binary("Add", tangent, term)?;
+                        }
+                    }
+                    store_solve_reg(
+                        regs,
+                        solve_reg_index(
+                            *dst_start + output as solve::Reg,
+                            "matrix-multiply destination register",
+                        )?,
+                        primal,
+                    )?;
+                    if *lanes == 2 {
+                        store_solve_reg(
+                            regs,
+                            solve_reg_index(
+                                *dst_start + output as solve::Reg + 1,
+                                "matrix-multiply tangent destination register",
+                            )?,
+                            tangent,
+                        )?;
+                    }
+                }
+            }
+        }
+        LinearOp::TensorBinary {
+            dst_start,
+            op,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+            lanes,
+        } => {
+            for element in 0..*count {
+                let lhs = *lhs_start + (element * *lhs_stride * *lanes) as solve::Reg;
+                let rhs = *rhs_start + (element * *rhs_stride * *lanes) as solve::Reg;
+                let dst = *dst_start + (element * *lanes) as solve::Reg;
+                let lhs_re = solve_reg(regs, solve_reg_index(lhs, "tensor-binary lhs register")?)?;
+                let rhs_re = solve_reg(regs, solve_reg_index(rhs, "tensor-binary rhs register")?)?;
+                let raw_primal =
+                    dialect.render_binary(op.kind_name(), lhs_re.clone(), rhs_re.clone())?;
+                let primal = if *lanes == 2 && *op == solve::BinaryOp::Div {
+                    let zero = "0.0".to_owned();
+                    let denominator_zero =
+                        dialect.render_compare("Eq", rhs_re.clone(), zero.clone())?;
+                    let numerator_zero =
+                        dialect.render_compare("Eq", lhs_re.clone(), zero.clone())?;
+                    let zero_over_zero =
+                        dialect.render_select(numerator_zero, zero.clone(), raw_primal.clone());
+                    dialect.render_select(denominator_zero, zero_over_zero, raw_primal)
+                } else {
+                    raw_primal
+                };
+                store_solve_reg(
+                    regs,
+                    solve_reg_index(dst, "tensor-binary destination register")?,
+                    primal,
+                )?;
+                if *lanes == 2 {
+                    let lhs_du = solve_reg(
+                        regs,
+                        solve_reg_index(lhs + 1, "tensor-binary lhs tangent register")?,
+                    )?;
+                    let rhs_du = solve_reg(
+                        regs,
+                        solve_reg_index(rhs + 1, "tensor-binary rhs tangent register")?,
+                    )?;
+                    let tangent = match op {
+                        solve::BinaryOp::Add | solve::BinaryOp::Sub => {
+                            dialect.render_binary(op.kind_name(), lhs_du, rhs_du)?
+                        }
+                        solve::BinaryOp::Mul => {
+                            let lhs_term = dialect.render_binary("Mul", lhs_du, rhs_re)?;
+                            let rhs_term = dialect.render_binary("Mul", lhs_re, rhs_du)?;
+                            dialect.render_binary("Add", lhs_term, rhs_term)?
+                        }
+                        solve::BinaryOp::Div => {
+                            let lhs_term = dialect.render_binary("Mul", lhs_du, rhs_re.clone())?;
+                            let rhs_term = dialect.render_binary("Mul", lhs_re, rhs_du)?;
+                            let numerator = dialect.render_binary("Sub", lhs_term, rhs_term)?;
+                            let denominator =
+                                dialect.render_binary("Mul", rhs_re.clone(), rhs_re.clone())?;
+                            let quotient = dialect.render_binary("Div", numerator, denominator)?;
+                            let zero = "0.0".to_owned();
+                            let denominator_zero =
+                                dialect.render_compare("Eq", rhs_re, zero.clone())?;
+                            dialect.render_select(denominator_zero, zero, quotient)
+                        }
+                        _ => {
+                            return Err(render_err("invalid compact tensor binary operator"));
+                        }
+                    };
+                    store_solve_reg(
+                        regs,
+                        solve_reg_index(dst + 1, "tensor-binary tangent destination register")?,
+                        tangent,
+                    )?;
+                }
+            }
+        }
+        LinearOp::TensorCross {
+            dst_start,
+            lhs_start,
+            rhs_start,
+            lanes,
+        } => {
+            let count = 3usize
+                .checked_mul(*lanes)
+                .ok_or_else(|| render_err("tensor-cross width overflow"))?;
+            let mut lhs = Vec::with_capacity(count);
+            let mut rhs = Vec::with_capacity(count);
+            for offset in 0..count {
+                lhs.push(solve_reg(
+                    regs,
+                    solve_reg_index(*lhs_start, "tensor-cross lhs start")? + offset,
+                )?);
+                rhs.push(solve_reg(
+                    regs,
+                    solve_reg_index(*rhs_start, "tensor-cross rhs start")? + offset,
+                )?);
+            }
+            for (component, (first, second)) in
+                [(1usize, 2usize), (2, 0), (0, 1)].into_iter().enumerate()
+            {
+                let first = first * *lanes;
+                let second = second * *lanes;
+                let positive =
+                    dialect.render_binary("Mul", lhs[first].clone(), rhs[second].clone())?;
+                let negative =
+                    dialect.render_binary("Mul", lhs[second].clone(), rhs[first].clone())?;
+                let primal = dialect.render_binary("Sub", positive, negative)?;
+                let dst = solve_reg_index(*dst_start, "tensor-cross destination start")?
+                    + component * *lanes;
+                store_solve_reg(regs, dst, primal)?;
+                if *lanes == 2 {
+                    let first_lhs = dialect.render_binary(
+                        "Mul",
+                        lhs[first + 1].clone(),
+                        rhs[second].clone(),
+                    )?;
+                    let first_rhs = dialect.render_binary(
+                        "Mul",
+                        lhs[first].clone(),
+                        rhs[second + 1].clone(),
+                    )?;
+                    let second_lhs = dialect.render_binary(
+                        "Mul",
+                        lhs[second + 1].clone(),
+                        rhs[first].clone(),
+                    )?;
+                    let second_rhs = dialect.render_binary(
+                        "Mul",
+                        lhs[second].clone(),
+                        rhs[first + 1].clone(),
+                    )?;
+                    let positive = dialect.render_binary("Add", first_lhs, first_rhs)?;
+                    let negative = dialect.render_binary("Add", second_lhs, second_rhs)?;
+                    let tangent = dialect.render_binary("Sub", positive, negative)?;
+                    store_solve_reg(regs, dst + 1, tangent)?;
+                }
+            }
+        }
+        LinearOp::TensorTranspose {
+            dst_start,
+            src_start,
+            rows,
+            columns,
+            element_width,
+            lanes,
+        } => {
+            let value_width = element_width
+                .checked_mul(*lanes)
+                .ok_or_else(|| render_err("tensor-transpose value width overflows"))?;
+            for row in 0..*rows {
+                for column in 0..*columns {
+                    for value_offset in 0..value_width {
+                        let dst = *dst_start
+                            + ((row * *columns + column) * value_width + value_offset)
+                                as solve::Reg;
+                        let src = *src_start
+                            + ((column * *rows + row) * value_width + value_offset) as solve::Reg;
+                        let value = solve_reg(
+                            regs,
+                            solve_reg_index(src, "tensor-transpose source register")?,
+                        )?;
+                        store_solve_reg(
+                            regs,
+                            solve_reg_index(dst, "tensor-transpose destination register")?,
+                            value,
+                        )?;
+                    }
+                }
+            }
+        }
+        LinearOp::TensorConcatenate {
+            dst_start,
+            sources,
+            dimensions,
+            axis,
+            lanes,
+        } => {
+            let inner = dimensions[*axis + 1..]
+                .iter()
+                .fold(1usize, |count, extent| count * *extent as usize);
+            let result_axis = dimensions[*axis] as usize;
+            let mut axis_offset = 0usize;
+            for source in sources.iter() {
+                let source_axis = source.dimensions[*axis] as usize;
+                let source_count = source
+                    .dimensions
+                    .iter()
+                    .fold(1usize, |count, extent| count * *extent as usize);
+                let source_block = source_axis * inner;
+                for element in 0..source_count {
+                    let outer = element / source_block;
+                    let within = element % source_block;
+                    let destination = outer * result_axis * inner + axis_offset * inner + within;
+                    for lane in 0..*lanes {
+                        let value = solve_reg(
+                            regs,
+                            solve_reg_index(
+                                source.start + (element * *lanes + lane) as solve::Reg,
+                                "tensor-concatenate source register",
+                            )?,
+                        )?;
+                        store_solve_reg(
+                            regs,
+                            solve_reg_index(
+                                *dst_start + (destination * *lanes + lane) as solve::Reg,
+                                "tensor-concatenate destination register",
+                            )?,
+                            value,
+                        )?;
+                    }
+                }
+                axis_offset += source_axis;
+            }
+        }
+        LinearOp::TensorUpdate {
+            dst_start,
+            base_start,
+            value_start,
+            dimensions,
+            subscripts,
+            lanes,
+        } => {
+            let count = dimensions
+                .iter()
+                .fold(1usize, |count, extent| count * *extent as usize);
+            for element in 0..count {
+                let mut states = vec![(0usize, None::<String>)];
+                let mut axis_stride = count;
+                for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
+                    axis_stride /= extent as usize;
+                    let coordinate = (element / axis_stride) % extent as usize;
+                    match subscript {
+                        solve::TensorUpdateSubscript::Whole => {
+                            for (value_element, _) in &mut states {
+                                *value_element = *value_element * extent as usize + coordinate;
+                            }
+                        }
+                        solve::TensorUpdateSubscript::Index(solve::TensorIndex::Constant(
+                            selected,
+                        )) => {
+                            if *selected as usize != coordinate {
+                                states.clear();
+                                break;
+                            }
+                        }
+                        solve::TensorUpdateSubscript::Index(solve::TensorIndex::Runtime(
+                            register,
+                        )) => {
+                            let lhs = solve_reg(
+                                regs,
+                                solve_reg_index(*register, "tensor-update index register")?,
+                            )?;
+                            let rhs = dialect.format_const((coordinate + 1).to_string());
+                            let next = dialect.render_compare("Eq", lhs, rhs)?;
+                            for (_, condition) in &mut states {
+                                *condition = Some(match condition.take() {
+                                    Some(previous) => {
+                                        dialect.render_binary("And", previous, next.clone())?
+                                    }
+                                    None => next.clone(),
+                                });
+                            }
+                        }
+                        solve::TensorUpdateSubscript::Slice { start, dimensions } => {
+                            let slice_count = dimensions
+                                .iter()
+                                .fold(1usize, |count, extent| count * *extent as usize);
+                            let previous = std::mem::take(&mut states);
+                            for (value_element, condition) in previous {
+                                for slice_offset in 0..slice_count {
+                                    let lhs = solve_reg(
+                                        regs,
+                                        solve_reg_index(
+                                            *start + slice_offset as solve::Reg,
+                                            "tensor-update slice register",
+                                        )?,
+                                    )?;
+                                    let rhs = dialect.format_const((coordinate + 1).to_string());
+                                    let next = dialect.render_compare("Eq", lhs, rhs)?;
+                                    let condition = Some(match condition.clone() {
+                                        Some(previous) => {
+                                            dialect.render_binary("And", previous, next)?
+                                        }
+                                        None => next,
+                                    });
+                                    states.push((
+                                        value_element * slice_count + slice_offset,
+                                        condition,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                for lane in 0..*lanes {
+                    let base = solve_reg(
+                        regs,
+                        solve_reg_index(
+                            *base_start + (element * *lanes + lane) as solve::Reg,
+                            "tensor-update base register",
+                        )?,
+                    )?;
+                    let mut selected = base;
+                    for (value_element, condition) in states.iter().rev() {
+                        let value = solve_reg(
+                            regs,
+                            solve_reg_index(
+                                *value_start + (*value_element * *lanes + lane) as solve::Reg,
+                                "tensor-update value register",
+                            )?,
+                        )?;
+                        selected = match condition {
+                            Some(condition) => {
+                                dialect.render_select(condition.clone(), value, selected)
+                            }
+                            None => value,
+                        };
+                    }
+                    store_solve_reg(
+                        regs,
+                        solve_reg_index(
+                            *dst_start + (element * *lanes + lane) as solve::Reg,
+                            "tensor-update destination register",
+                        )?,
+                        selected,
+                    )?;
+                }
+            }
+        }
+        LinearOp::TensorFill {
+            dst_start,
+            value_start,
+            count,
+            lanes,
+        } => {
+            for element in 0..*count {
+                for lane in 0..*lanes {
+                    let value = solve_reg(
+                        regs,
+                        solve_reg_index(
+                            *value_start + lane as solve::Reg,
+                            "tensor-fill value register",
+                        )?,
+                    )?;
+                    store_solve_reg(
+                        regs,
+                        solve_reg_index(
+                            *dst_start + (element * *lanes + lane) as solve::Reg,
+                            "tensor-fill destination register",
+                        )?,
+                        value,
+                    )?;
+                }
+            }
+        }
+        LinearOp::TensorIdentity {
+            dst_start,
+            size,
+            lanes,
+        } => {
+            for row in 0..*size {
+                for column in 0..*size {
+                    for lane in 0..*lanes {
+                        let value =
+                            dialect.format_const(u8::from(lane == 0 && row == column).to_string());
+                        store_solve_reg(
+                            regs,
+                            solve_reg_index(
+                                *dst_start + ((row * *size + column) * *lanes + lane) as solve::Reg,
+                                "tensor-identity destination register",
+                            )?,
+                            value,
+                        )?;
+                    }
+                }
+            }
+        }
+        LinearOp::TensorLoad {
+            dst_start,
+            input,
+            input_start,
+            count,
+            seed_start,
+            lanes,
+        } => {
+            for element in 0..*count {
+                let input_index = input_start.checked_add(element).ok_or_else(|| {
+                    render_err("tensor-load input index overflow in solve-row output")
+                })?;
+                let primal = match input {
+                    solve::TensorInputKind::Y => cfg.y_access(input_index),
+                    solve::TensorInputKind::P => cfg.p_access(input_index),
+                };
+                store_solve_reg(
+                    regs,
+                    solve_reg_index(
+                        *dst_start + (element * *lanes) as solve::Reg,
+                        "tensor-load primal destination register",
+                    )?,
+                    primal,
+                )?;
+                if *lanes == 2 {
+                    let tangent = if let Some(seed_start) = seed_start {
+                        let seed_index = seed_start.checked_add(element).ok_or_else(|| {
+                            render_err("tensor-load seed index overflow in solve-row output")
+                        })?;
+                        cfg.seed_access(seed_index).ok_or_else(|| {
+                            render_err(
+                                "seeded TensorLoad requires a `seed` access pattern in solve-row output",
+                            )
+                        })?
+                    } else {
+                        dialect.format_const("0".to_string())
+                    };
+                    store_solve_reg(
+                        regs,
+                        solve_reg_index(
+                            *dst_start + (element * *lanes + 1) as solve::Reg,
+                            "tensor-load tangent destination register",
+                        )?,
+                        tangent,
+                    )?;
+                }
+            }
         }
         LinearOp::Unary { dst, op, arg } => {
             let arg = solve_reg(regs, solve_reg_index(*arg, "unary argument register")?)?;
@@ -825,15 +1500,6 @@ fn solve_indexed_effect(
     Ok(SolveOpEffect::Compute { dst, expr })
 }
 
-fn render_solve_op_c(
-    op: &Value,
-    cfg: &SolveRowCConfig,
-    regs: &mut Vec<String>,
-    output: Option<String>,
-) -> Result<Option<String>, minijinja::Error> {
-    render_solve_op_for(op, cfg, SolveRowDialect::C, regs, output)
-}
-
 /// The effect of a single `LinearOp` when rendering a solve program: either it
 /// computes a value into register `dst`, or it stores a register to an output.
 enum SolveOpEffect {
@@ -966,348 +1632,41 @@ fn render_solve_op_for(
     }
 }
 
-/// Render a (possibly multi-output) scalar program block as a statement block
-/// using register temporaries.
-///
-/// Non-leaf computed registers (those with register operands) are materialized
-/// into a temporary (`double __rN = ...;` / `let __rN = ...;`) whenever read at
-/// least once, and any register read two or more times is materialized
-/// regardless. Leaf ops (Const / Load*) read once are inlined since their
-/// expression is O(1). This computes each value ONCE (shared across outputs) AND
-/// keeps every emitted expression O(1): inlining non-leaf single-use registers
-/// as nested strings would re-expand deep single-use chains (common in Lie-group
-/// control math) into O(n^2) text — gigabytes for a 150k-op program. A temp read
-/// once is still used once, so no unused-variable warnings are introduced.
-///
-/// `out_set` is the assignment pattern with two `{}` placeholders (index, value),
-/// e.g. `"out[{}] = {}"` or `"m->xdot[{}] = {}"`. Outputs are numbered by a
-/// running counter across all programs (the `StoreOutput` running-counter
-/// invariant).
-fn render_solve_block_for(
-    programs: &Value,
-    cfg: &SolveRowCConfig,
-    dialect: SolveRowDialect,
-    out_set: &str,
-    output_targets: SolveOutputTargets,
-) -> RenderResult {
-    let mut body = String::new();
-    let mut temp_counter = 0usize;
-    let mut output_ordinal = 0usize;
-    for program in programs
-        .try_iter()
-        .map_err(|_| render_err("solve programs must be an array"))?
-    {
-        let ops = solve_program_ops(&program)?;
-        let read_counts = collect_solve_read_counts(&ops)?;
-        let mut rendered = SolveProgramRender {
-            body: &mut body,
-            regs: Vec::new(),
-            temp_counter: &mut temp_counter,
-            output_ordinal: &mut output_ordinal,
-            output_targets: &output_targets,
-        };
-        for op in &ops {
-            rendered.render_op(op, cfg, dialect, out_set, &read_counts)?;
-        }
-    }
-    Ok(body)
-}
-
-fn solve_program_ops(program: &Value) -> Result<Vec<Value>, minijinja::Error> {
-    let mut ops = Vec::new();
-    for op in program
-        .try_iter()
-        .map_err(|_| render_err("solve program must be an array of LinearOp values"))?
-    {
-        reserve_render_capacity(&mut ops, 1, "solve program op count")?;
-        ops.push(op);
-    }
-    Ok(ops)
-}
-
-/// Mutable state threaded while rendering one solve program's ops: the output
-/// buffer plus the register file and the running temp / output counters (the
-/// counters are shared across programs, so they are borrowed from the caller).
-struct SolveProgramRender<'a> {
-    body: &'a mut String,
-    regs: Vec<String>,
-    temp_counter: &'a mut usize,
-    output_ordinal: &'a mut usize,
-    output_targets: &'a SolveOutputTargets,
-}
-
-impl SolveProgramRender<'_> {
-    /// Render a single solve op into `body`. Pulling this out of the per-program
-    /// loop keeps the loop body shallow: the materialization decision is one
-    /// level deep here instead of four levels deep inside two nested `for`s and a
-    /// `match`.
-    fn render_op(
-        &mut self,
-        op: &Value,
-        cfg: &SolveRowCConfig,
-        dialect: SolveRowDialect,
-        out_set: &str,
-        read_counts: &[usize],
-    ) -> Result<(), minijinja::Error> {
-        // A leaf op (Const / Load*) has no register operands; its expression is
-        // O(1) and safe to inline. Non-leaf ops carry register operands, so
-        // inlining them as nested strings would re-expand deep single-use chains
-        // into O(n^2) text — materialize those into a temp instead.
-        let is_leaf = solve_op_read_regs(op)?.is_empty();
-        match solve_op_expr(op, cfg, dialect, &self.regs)? {
-            SolveOpEffect::Compute { dst, expr } => {
-                let reads = read_counts
-                    .get(dst)
-                    .copied()
-                    .ok_or_else(|| render_err(format!("read-count metadata missing r{dst}")))?;
-                if reads >= 2 || (reads >= 1 && !is_leaf) {
-                    let next_temp_counter = (*self.temp_counter)
-                        .checked_add(1)
-                        .ok_or_else(|| render_err("solve temporary register count overflow"))?;
-                    let name = format!("__r{}", *self.temp_counter);
-                    self.body.push_str(&dialect.temp_decl(&name, &expr));
-                    *self.temp_counter = next_temp_counter;
-                    store_solve_reg(&mut self.regs, dst, name)?;
-                } else {
-                    store_solve_reg(&mut self.regs, dst, expr)?;
-                }
-            }
-            SolveOpEffect::Store { src } => {
-                let value = solve_reg(&self.regs, src)?;
-                let output_index = self.output_targets.target_for(*self.output_ordinal)?;
-                let next_output_ordinal = (*self.output_ordinal)
-                    .checked_add(1)
-                    .ok_or_else(|| render_err("solve StoreOutput ordinal overflows host range"))?;
-                self.body.push_str(&format!(
-                    "\t{};\n",
-                    format_solve_set(out_set, output_index, &value)
-                ));
-                *self.output_ordinal = next_output_ordinal;
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Count how many times each register is read across a program's ops.
-fn collect_solve_read_counts(ops: &[Value]) -> Result<Vec<usize>, minijinja::Error> {
-    let mut counts = Vec::<usize>::new();
-    for op in ops {
-        if let Some(dst) = solve_op_write_reg(op)? {
-            ensure_solve_read_count_len(&mut counts, dst)?;
-        }
-        for reg in solve_op_read_regs(op)? {
-            bump_solve_read_count(&mut counts, reg)?;
-        }
-    }
-    Ok(counts)
-}
-
-fn ensure_solve_read_count_len(
-    counts: &mut Vec<usize>,
-    reg: usize,
-) -> Result<(), minijinja::Error> {
-    let target_len = reg
-        .checked_add(1)
-        .ok_or_else(|| render_err("solve read-count register index overflows host range"))?;
-    if counts.len() < target_len {
-        reserve_render_capacity(
-            counts,
-            target_len - counts.len(),
-            "solve read-count register count",
-        )?;
-        counts.resize(target_len, 0);
-    }
-    Ok(())
-}
-
-fn bump_solve_read_count(counts: &mut Vec<usize>, reg: usize) -> Result<(), minijinja::Error> {
-    ensure_solve_read_count_len(counts, reg)?;
-    counts[reg] = counts[reg]
-        .checked_add(1)
-        .ok_or_else(|| render_err("solve register read count overflow"))?;
-    Ok(())
-}
-
-fn solve_op_write_reg(op: &Value) -> Result<Option<usize>, minijinja::Error> {
-    for field in [
-        "Const",
-        "LoadTime",
-        "LoadY",
-        "LoadP",
-        "LoadIndexedP",
-        "LoadSeed",
-        "LoadIndexedSeed",
-        "Move",
-        "LinearSolveComponent",
-        "Unary",
-        "Binary",
-        "Compare",
-        "Select",
-    ] {
-        if let Ok(value) = get_field(op, field) {
-            return Ok(Some(solve_field_usize(&value, "dst")?));
-        }
-    }
-    solve_op_has_no_write_reg()
-}
-
-fn solve_op_has_no_write_reg() -> Result<Option<usize>, minijinja::Error> {
-    Ok(Option::None)
-}
-
-/// The operand registers read by a single solve op.
-fn solve_op_read_regs(op: &Value) -> Result<Vec<usize>, minijinja::Error> {
-    if let Ok(value) = get_field(op, "Move") {
-        return solve_read_regs_from_slice(&[solve_field_usize(&value, "src")?]);
-    }
-    if let Ok(value) = get_field(op, "LoadIndexedP") {
-        return solve_read_regs_from_slice(&[solve_field_usize(&value, "index")?]);
-    }
-    if let Ok(value) = get_field(op, "LoadIndexedSeed") {
-        return solve_read_regs_from_slice(&[solve_field_usize(&value, "index")?]);
-    }
-    if let Ok(value) = get_field(op, "Unary") {
-        return solve_read_regs_from_slice(&[solve_field_usize(&value, "arg")?]);
-    }
-    if let Ok(value) = get_field(op, "Binary") {
-        return solve_read_regs_from_slice(&[
-            solve_field_usize(&value, "lhs")?,
-            solve_field_usize(&value, "rhs")?,
-        ]);
-    }
-    if let Ok(value) = get_field(op, "Compare") {
-        return solve_read_regs_from_slice(&[
-            solve_field_usize(&value, "lhs")?,
-            solve_field_usize(&value, "rhs")?,
-        ]);
-    }
-    if let Ok(value) = get_field(op, "Select") {
-        return solve_read_regs_from_slice(&[
-            solve_field_usize(&value, "cond")?,
-            solve_field_usize(&value, "if_true")?,
-            solve_field_usize(&value, "if_false")?,
-        ]);
-    }
-    if let Ok(value) = get_field(op, "LinearSolveComponent") {
-        let matrix_start = solve_field_usize(&value, "matrix_start")?;
-        let rhs_start = solve_field_usize(&value, "rhs_start")?;
-        let n = solve_field_usize(&value, "n")?;
-        return solve_linsolve_read_regs(matrix_start, rhs_start, n);
-    }
-    if let Ok(value) = get_field(op, "StoreOutput") {
-        return solve_read_regs_from_slice(&[solve_field_usize(&value, "src")?]);
-    }
-    Ok(Vec::new())
-}
-
-fn solve_read_regs_from_slice(regs: &[usize]) -> Result<Vec<usize>, minijinja::Error> {
-    let mut out = render_vec_with_capacity(regs.len(), "solve op read register count")?;
-    out.extend(regs.iter().copied());
-    Ok(out)
-}
-
-fn solve_linsolve_read_regs(
-    matrix_start: usize,
-    rhs_start: usize,
-    n: usize,
-) -> Result<Vec<usize>, minijinja::Error> {
-    let matrix_count = checked_linsolve_render_count(
-        checked_linsolve_product(n, n, "LinearSolveComponent read matrix count")?,
-        "LinearSolveComponent read matrix count",
-    )?;
-    let rhs_count = checked_linsolve_render_count(n, "LinearSolveComponent read RHS count")?;
-    let total_count = checked_linsolve_sum(
-        matrix_count,
-        rhs_count,
-        "LinearSolveComponent read register count",
-    )?;
-    let matrix_end = checked_linsolve_sum(
-        matrix_start,
-        matrix_count,
-        "LinearSolveComponent read matrix register end",
-    )?;
-    let rhs_end = checked_linsolve_sum(
-        rhs_start,
-        rhs_count,
-        "LinearSolveComponent read RHS register end",
-    )?;
-    let mut regs = render_vec_with_capacity(total_count, "LinearSolveComponent read registers")?;
-    regs.extend(matrix_start..matrix_end);
-    regs.extend(rhs_start..rhs_end);
-    Ok(regs)
-}
-
 #[derive(Clone, Copy)]
 enum SolveRowDialect {
-    C,
-    Rust,
     /// WGSL compute-shader dialect (WebGPU). f32 baseline precision; boolean
     /// values keep the numeric 0.0/1.0 encoding via `select`.
     Wgsl,
-    /// Python dialect for symbolic array backends (CasADi, JAX). Emits bare
-    /// function names (`sin`, `fabs`, `atan2`, `if_else`, `fmin`, …) that the
-    /// consuming template binds to the appropriate namespace (`ca.*` / `jnp.*`),
-    /// so one dialect serves both. Comparisons/select stay value-style (no
-    /// ternary) since the operands are symbolic, matching the reference
-    /// `rumoca_backend` interpreter.
-    Python,
 }
 
 impl SolveRowDialect {
     fn infinity(self) -> &'static str {
-        match self {
-            Self::C => "INFINITY",
-            Self::Rust => "f64::INFINITY",
-            // WGSL has no portable infinity literal; f32::MAX approximates it.
-            Self::Wgsl => "3.4028235e38",
-            // Bound to ca.inf / jnp.inf by the consuming template.
-            Self::Python => "inf",
-        }
+        // WGSL has no portable infinity literal; f32::MAX approximates it.
+        "3.4028235e38"
     }
 
-    /// WGSL rejects abstract-int/float mixing in some positions; force float
-    /// form for integer-looking constants. C and Rust are unchanged.
+    /// WGSL rejects abstract-int/float mixing in some positions.
     fn format_const(self, value: String) -> String {
-        match self {
-            Self::C | Self::Rust | Self::Python => value,
-            Self::Wgsl => {
-                let looks_integer = !value.is_empty()
-                    && !value.contains(['.', 'e', 'E'])
-                    && value
-                        .strip_prefix('-')
-                        .unwrap_or(&value)
-                        .chars()
-                        .all(|c| c.is_ascii_digit());
-                if looks_integer {
-                    format!("{value}.0")
-                } else {
-                    value
-                }
-            }
+        let looks_integer = !value.is_empty()
+            && !value.contains(['.', 'e', 'E'])
+            && value
+                .strip_prefix('-')
+                .unwrap_or(&value)
+                .chars()
+                .all(|c| c.is_ascii_digit());
+        if looks_integer {
+            format!("{value}.0")
+        } else {
+            value
         }
     }
 
     fn render_compare(self, op: &str, lhs: String, rhs: String) -> RenderResult {
-        match self {
-            Self::C | Self::Rust => render_solve_compare(op, lhs, rhs),
-            Self::Wgsl => render_solve_compare_wgsl(op, lhs, rhs),
-            Self::Python => render_solve_compare_py(op, lhs, rhs),
-        }
+        render_solve_compare_wgsl(op, lhs, rhs)
     }
 
     fn render_select(self, cond: String, if_true: String, if_false: String) -> String {
-        match self {
-            Self::C | Self::Rust => {
-                format!("(({cond}) != 0.0 ? ({if_true}) : ({if_false}))")
-            }
-            Self::Wgsl => {
-                format!("select(({if_false}), ({if_true}), ({cond}) != 0.0)")
-            }
-            // if_else bound to ca.if_else / jnp.where; both take a boolean/0-1
-            // condition and return the symbolic branch value.
-            Self::Python => format!("if_else({cond}, {if_true}, {if_false})"),
-        }
+        format!("select(({if_false}), ({if_true}), ({cond}) != 0.0)")
     }
 
     /// Render the integer array index for a runtime-indexed load:
@@ -1316,117 +1675,30 @@ impl SolveRowDialect {
     /// expression suitable to substitute into a `p[...]` / `seed[...]` access.
     fn render_indexed_index(self, index_expr: &str, base: usize, count: usize) -> String {
         let last = if count == 0 { 0 } else { count - 1 };
-        match self {
-            // round + clamp in f64, then cast to a size_t array offset.
-            Self::C => {
-                format!("({base} + (size_t)fmin(fmax(round({index_expr}), 0.0), (double){last}.0))")
-            }
-            Self::Rust => {
-                format!("({base} + (({index_expr}).round().clamp(0.0, {last} as f64) as usize))")
-            }
-            // WGSL indices are u32 and arithmetic is f32.
-            Self::Wgsl => format!("({base}u + u32(clamp(round({index_expr}), 0.0, f32({last}))))"),
-            // Python integer index; valid for a constant-folded index_expr.
-            Self::Python => {
-                format!("({base} + int(min(max(round({index_expr}), 0.0), {last}.0)))")
-            }
-        }
+        format!("({base}u + u32(clamp(round({index_expr}), 0.0, f32({last}))))")
     }
 
     fn render_linear_solve_component(
         self,
-        regs: &[String],
-        matrix_start: usize,
-        rhs_start: usize,
-        n: usize,
-        component: usize,
+        _regs: &[String],
+        _matrix_start: usize,
+        _rhs_start: usize,
+        _n: usize,
+        _component: usize,
     ) -> RenderResult {
-        if component >= n {
-            return Err(render_err(
-                "LinearSolveComponent component is out of bounds",
-            ));
-        }
-        let shape = LinSolveRenderShape {
-            matrix_start,
-            rhs_start,
-            n,
-            output_offset: 0,
-        };
-        let (matrix_count, rhs_count, _) = validate_linsolve_render_shape(shape)?;
-        let matrix =
-            render_linsolve_register_array(regs, shape, matrix_count, LinSolveOperand::Matrix)?
-                .join(", ");
-        let rhs = render_linsolve_register_array(regs, shape, rhs_count, LinSolveOperand::Rhs)?
-            .join(", ");
-        match self {
-            Self::C => Ok(format!(
-                "__rumoca_solve_linear_component((double[]){{{matrix}}}, (double[]){{{rhs}}}, {n}, {component})"
-            )),
-            Self::Rust => Ok(format!(
-                "rumoca_solve_linear_component(&[{matrix}], &[{rhs}], {n}, {component})"
-            )),
-            Self::Wgsl => Err(render_err(
-                "LinearSolveComponent is not supported by the WGSL dialect yet; \
-                 models with implicit linear blocks cannot target wgsl-solve",
-            )),
-            // `_linsolve_component` is bound by the consuming template (a small
-            // Gaussian-elimination helper over the chosen array namespace).
-            Self::Python => Ok(format!(
-                "_linsolve_component([{matrix}], [{rhs}], {n}, {component})"
-            )),
-        }
+        Err(render_err(
+            "LinearSolveComponent is not supported by the WGSL dialect yet; \
+             models with implicit linear blocks cannot target wgsl-ode",
+        ))
     }
 
     fn render_unary(self, op: &str, arg: String) -> RenderResult {
-        match self {
-            Self::C => render_solve_unary_c(op, arg),
-            Self::Rust => render_solve_unary_rust(op, arg),
-            Self::Wgsl => render_solve_unary_wgsl(op, arg),
-            Self::Python => render_solve_unary_py(op, arg),
-        }
+        render_solve_unary_wgsl(op, arg)
     }
 
     fn render_binary(self, op: &str, lhs: String, rhs: String) -> RenderResult {
-        match self {
-            Self::C => render_solve_binary_c(op, lhs, rhs),
-            Self::Rust => render_solve_binary_rust(op, lhs, rhs),
-            Self::Wgsl => render_solve_binary_wgsl(op, lhs, rhs),
-            Self::Python => render_solve_binary_py(op, lhs, rhs),
-        }
+        render_solve_binary_wgsl(op, lhs, rhs)
     }
-
-    /// A temporary-register declaration line, e.g. `double __r0 = expr;`.
-    fn temp_decl(self, name: &str, expr: &str) -> String {
-        match self {
-            Self::C => format!("\tdouble {name} = {expr};\n"),
-            Self::Rust => format!("\tlet {name} = {expr};\n"),
-            Self::Wgsl => format!("\tlet {name} = {expr};\n"),
-            Self::Python => format!("\t{name} = {expr}\n"),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum LinSolveOperand {
-    Matrix,
-    Rhs,
-}
-
-fn render_linsolve_register_array(
-    regs: &[String],
-    shape: LinSolveRenderShape,
-    count: usize,
-    operand: LinSolveOperand,
-) -> Result<Vec<String>, minijinja::Error> {
-    let mut values = render_vec_with_capacity(count, "LinSolve operand value count")?;
-    for offset in 0..count {
-        let reg = match operand {
-            LinSolveOperand::Matrix => shape.matrix_reg(offset)?,
-            LinSolveOperand::Rhs => shape.rhs_reg(offset)?,
-        };
-        values.push(solve_reg(regs, reg)?);
-    }
-    Ok(values)
 }
 
 fn solve_reg_index(reg: solve::Reg, context: &'static str) -> Result<usize, minijinja::Error> {
@@ -1548,36 +1820,11 @@ impl SolveRowCConfig {
     }
 }
 
-struct SolveSlotAssignCConfig {
-    y_set_pattern: String,
-    p_set_pattern: String,
-}
-
-impl SolveSlotAssignCConfig {
-    fn from_value(value: &Value) -> Self {
-        Self {
-            y_set_pattern: config_string(value, "y_set")
-                .unwrap_or_else(|| "__rumoca_solve_set_y(m, {}, {})".to_string()),
-            p_set_pattern: config_string(value, "p_set")
-                .unwrap_or_else(|| "__rumoca_solve_set_p(m, {}, {})".to_string()),
-        }
-    }
-}
-
 fn format_solve_access(pattern: &str, index: usize) -> String {
     if pattern.contains("{}") {
         return pattern.replacen("{}", &index.to_string(), 1);
     }
     format!("{pattern}[{index}]")
-}
-
-fn format_solve_set(pattern: &str, index: usize, value: &str) -> String {
-    if pattern.contains("{}") {
-        return pattern
-            .replacen("{}", &index.to_string(), 1)
-            .replacen("{}", value, 1);
-    }
-    format!("{pattern}[{index}] = {value}")
 }
 
 fn config_string(value: &Value, field: &str) -> Option<String> {

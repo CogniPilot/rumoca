@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn direct_scenario_parse_requires_typed_rumoca_marker() {
+    let error = parse_scenario_config_file(
+        r#"
+[model]
+name = "Examples.Ball"
+"#,
+    )
+    .expect_err("a scenario without the authoritative marker must reject");
+    assert!(error.to_string().contains("missing required `[rumoca]`"));
+
+    let parsed = parse_scenario_config_file(
+        r#"
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+name = "Examples.Ball"
+"#,
+    )
+    .expect("the parsed marker admits the scenario");
+    assert_eq!(parsed.rumoca.version, "1");
+    assert_eq!(parsed.rumoca.task, ScenarioTask::Simulate);
+}
+
+#[test]
 fn discovers_colocated_config_and_resolves_effective_settings() {
     let temp = tempfile::tempdir().expect("tempdir");
     let config_path = temp.path().join("rumoca-scenario.toml");

@@ -12,10 +12,6 @@ use std::hash::{Hash, Hasher};
 
 use crate::VarName;
 
-// =============================================================================
-// Connection Set (MLS §9.2)
-// =============================================================================
-
 /// MLS §9.2: Connection Set.
 ///
 /// "A connection set is a set of variables connected by means of connect-equations."
@@ -138,11 +134,6 @@ impl ConnectionSets {
         Self::default()
     }
 
-    /// Add or merge a connection set.
-    pub fn add_set(&mut self, representative: VarName, set: ConnectionSet) {
-        self.sets.insert(representative, set);
-    }
-
     /// Get the number of connection sets.
     pub fn len(&self) -> usize {
         self.sets.len()
@@ -153,10 +144,6 @@ impl ConnectionSets {
         self.sets.is_empty()
     }
 }
-
-// =============================================================================
-// Connection Graph (MLS §9.4)
-// =============================================================================
 
 /// MLS §9.4: Virtual Connection Graph.
 ///
@@ -180,31 +167,6 @@ impl ConnectionGraph {
     /// Create a new empty connection graph.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Add a node to the graph.
-    pub fn add_node(&mut self, name: VarName, node: GraphNode) {
-        self.nodes.insert(name, node);
-    }
-
-    /// Add an optional edge (from connect()).
-    pub fn add_optional_edge(&mut self, edge: GraphEdge) {
-        self.optional_edges.push(edge);
-    }
-
-    /// Add a required edge (from Connections.branch()).
-    pub fn add_required_edge(&mut self, edge: GraphEdge) {
-        self.required_edges.push(edge);
-    }
-
-    /// Get the number of nodes.
-    pub fn num_nodes(&self) -> usize {
-        self.nodes.len()
-    }
-
-    /// Get the number of edges (optional + required).
-    pub fn num_edges(&self) -> usize {
-        self.optional_edges.len() + self.required_edges.len()
     }
 }
 
@@ -272,10 +234,6 @@ impl GraphEdge {
     }
 }
 
-// =============================================================================
-// Spanning Tree (MLS §9.4)
-// =============================================================================
-
 /// MLS §9.4: Spanning Tree.
 ///
 /// "A spanning-tree is constructed from the virtual connection graph by removing
@@ -297,21 +255,6 @@ impl SpanningTree {
     /// Create a new empty spanning tree.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Add a root node.
-    pub fn add_root(&mut self, root: VarName) {
-        self.roots.push(root);
-    }
-
-    /// Add an edge to the spanning tree.
-    pub fn add_edge(&mut self, edge: SpanningTreeEdge) {
-        self.edges.push(edge);
-    }
-
-    /// Record a removed edge.
-    pub fn remove_edge(&mut self, edge: GraphEdge) {
-        self.removed_edges.push(edge);
     }
 }
 
@@ -344,10 +287,6 @@ impl SpanningTreeEdge {
         }
     }
 }
-
-// =============================================================================
-// Overconstrained Connector Support (MLS §9.4.1)
-// =============================================================================
 
 /// MLS §9.4.1: Equality Constraint Definition.
 ///

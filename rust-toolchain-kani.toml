@@ -1,0 +1,7 @@
+# Exact compiler used to build Kani 0.67.0's release bundle.
+# Kept separate from rust-toolchain.toml so bounded verification cannot change
+# the compiler used by ordinary Rumoca development and WASM builds.
+[toolchain]
+channel = "nightly-2025-11-21"
+profile = "minimal"
+components = ["cargo", "rust-src", "rustc"]

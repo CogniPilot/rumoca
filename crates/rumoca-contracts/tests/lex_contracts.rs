@@ -11,16 +11,25 @@ use rumoca_contracts::{ContractCategory, TestRunner, create_registry};
 ///
 /// For lexical contracts, rejection may happen during parse or a later semantic phase.
 fn expect_rejected(source: &str, model: &str) {
+    assert!(
+        is_rejected(source, model),
+        "Expected source to be rejected by parse or compile for model {model}"
+    );
+}
+
+/// Whether `source` is rejected by the parser or by a later semantic phase.
+///
+/// The runner needs a verdict rather than a panic, so this carries the check
+/// and [`expect_rejected`] asserts on it.
+fn is_rejected(source: &str, model: &str) -> bool {
     if parse_to_ast(source, "test.mo").is_err() {
-        return;
+        return true;
     }
     let mut session = Session::new(SessionConfig::default());
     if session.add_document("test.mo", source).is_err() {
-        return;
+        return true;
     }
-    if session.compile_model(model).is_ok() {
-        panic!("Expected source to be rejected by parse or compile for model {model}");
-    }
+    session.compile_model(model).is_err()
 }
 
 fn parses_ok(source: &str) -> bool {
@@ -315,26 +324,25 @@ fn lex_013_string_escapes() {
 // Integration test: Run all LEX contracts through the test runner
 // =============================================================================
 
-#[test]
-fn test_lex_contracts_runner() {
-    let registry = create_registry();
-    let mut runner = TestRunner::new(registry);
-
-    // Register all LEX contract tests.
+/// Register every SPEC_0022 lexical contract with the runner.
+///
+/// Kept apart from the test body so the coverage assertions stay readable and
+/// adding a contract does not grow one oversized function.
+fn register_lex_contracts(runner: &mut TestRunner) {
     register_parse_ok_case(
-        &mut runner,
+        runner,
         "LEX-001",
         "model Test end Test;",
         "ASCII identifiers should parse",
     );
     register_parse_err_case(
-        &mut runner,
+        runner,
         "LEX-002",
         "model Test Real x = 1 . 5; end Test;",
         "Whitespace in tokens should fail",
     );
     register_parse_ok_case(
-        &mut runner,
+        runner,
         "LEX-003",
         "model Test /* comment */ end Test;",
         "Simple comments should work",
@@ -352,59 +360,109 @@ fn test_lex_contracts_runner() {
     });
 
     register_parse_err_case(
-        &mut runner,
+        runner,
         "LEX-005",
         "model Test Real model; end Test;",
         "Reserved keywords should not be usable as identifiers",
     );
     register_parse_ok_case(
-        &mut runner,
+        runner,
         "LEX-010",
         "model Test parameter Real x = 1e308; end Test;",
         "Large floats should parse",
     );
     register_parse_ok_case(
-        &mut runner,
+        runner,
         "LEX-011",
         "model Test parameter Integer x = 2147483647; end Test;",
         "Large integers should parse",
     );
     register_parse_ok_case(
-        &mut runner,
+        runner,
         "LEX-012",
         "model Test parameter Boolean a = true; parameter Boolean b = false; end Test;",
         "Boolean literals should parse",
     );
     register_parse_ok_case(
-        &mut runner,
+        runner,
         "LEX-013",
         r#"model Test String s = "hello\nworld"; end Test;"#,
         "String escapes should work",
     );
 
+    // LEX-006/007/008/009 assert more than "parses or not", so they register
+    // the same checks their standalone tests make rather than a parse-outcome
+    // case. Every SPEC_0022 lexical contract must reach the runner: the
+    // coverage assertion below compares registered results against the
+    // registry, so an unregistered contract is an unreported gap.
+    runner.register_test("LEX-006", || {
+        if is_rejected("model Test Real Real; end Test;", "Test") {
+            Ok(())
+        } else {
+            Err("Reserved type names should not be declarable as elements".into())
+        }
+    });
+
+    runner.register_test("LEX-007", || {
+        let source = "model Test Real x; Real 'x'; end Test;";
+        let Ok(ast) = parse_to_ast(source, "test.mo") else {
+            return Err("Quoted and plain identifiers should both parse".into());
+        };
+        if ast.classes.get("Test").map(|model| model.components.len()) == Some(2) {
+            return Ok(());
+        }
+        Err("`'x'` and `x` should be distinct identifiers".into())
+    });
+
+    runner.register_test("LEX-008", || {
+        if parses_ok(r#"model Test String s = "hello" + " " + "world"; end Test;"#)
+            && parses_err(r#"model Test "desc1" "desc2" end Test;"#)
+        {
+            Ok(())
+        } else {
+            Err("String concatenation requires `+`; adjacent literals must not concatenate".into())
+        }
+    });
+
+    runner.register_test("LEX-009", || {
+        if is_rejected("model Test Real x; equation x := 1; end Test;", "Test") {
+            Ok(())
+        } else {
+            Err("Assignment in an equation section should be rejected".into())
+        }
+    });
+}
+
+#[test]
+fn test_lex_contracts_runner() {
+    let registry = create_registry();
+    let mut runner = TestRunner::new(registry);
+    register_lex_contracts(&mut runner);
+
     // Run tests for the Lexical category
     runner.run_category(ContractCategory::Lexical);
 
     // Report results
-    println!(
-        "LEX contracts: {} passed, {} failed",
-        runner.passed_count(),
-        runner.failed_count()
-    );
+    let passed = runner
+        .results()
+        .values()
+        .filter(|result| result.passed)
+        .count();
+    let failed = runner.results().len() - passed;
+    println!("LEX contracts: {passed} passed, {failed} failed");
 
     assert_eq!(
         runner.results().len(),
-        runner.test_count(),
+        runner
+            .registry()
+            .by_category(ContractCategory::Lexical)
+            .count(),
         "All registered LEX runner tests should execute"
     );
+    assert_eq!(failed, 0, "LEX runner test failures detected");
     assert_eq!(
-        runner.failed_count(),
-        0,
-        "LEX runner test failures detected"
-    );
-    assert_eq!(
-        runner.passed_count(),
-        runner.test_count(),
+        passed,
+        runner.results().len(),
         "All registered LEX runner tests must pass"
     );
 }

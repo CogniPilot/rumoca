@@ -5,13 +5,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 publish = false
 
 [features]
 default = []
-backend-stress-tests = []
 msl-external-tests = []
 msl-full-test = []
+# Standalone maintenance binaries are opt-in so selecting an integration test
+# does not make Cargo link every helper solely to populate CARGO_BIN_EXE_*.
+msl-profile-bin = []
+tensor-scaling-bin = []
 
 [[bin]]
 name = "rumoca-sim-worker"
@@ -27,17 +31,25 @@ path = "src/bin/rumoca-msl-tools.rs"
 [[bin]]
 name = "rumoca-msl-profile"
 path = "src/bin/rumoca-msl-profile.rs"
+required-features = ["msl-profile-bin"]
+
+[[bin]]
+name = "rumoca-tensor-scaling"
+path = "src/bin/rumoca-tensor-scaling.rs"
+required-features = ["tensor-scaling-bin"]
 
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
 indexmap = { workspace = true }
 mimalloc = { workspace = true }
+rumoca-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
-rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
+rumoca-compile = { workspace = true }
 rumoca-ir-solve = { workspace = true }
-rumoca-sim = { workspace = true, features = ["solver-diffsol", "strict-ir-validation", "report"] }
+rumoca-sim = { workspace = true, features = ["solver-diffsol", "report"] }
+rumoca-solver = { workspace = true }
 rumoca-worker = { workspace = true }
 # Used by the MSL tooling moved from xtask (zmq: OMC worker pool; nix: process
 # signals; blake3/regex/walkdir/tempfile: caching, parsing, fs scans).
@@ -45,14 +57,13 @@ blake3 = { workspace = true }
 nix = { version = "0.29", features = ["signal"] }
 regex = "1"
 tempfile = { workspace = true }
-walkdir = "2.5"
+walkdir = { workspace = true }
 zmq = "0.10"
 
 [dev-dependencies]
-ureq = "2.9"
-dirs = "5.0"
+rumoca-eval-dae = { workspace = true }
+ureq = { workspace = true }
 rayon = { workspace = true }
-ntest = "0.9"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 flate2 = { workspace = true }
 tar = { workspace = true }
@@ -62,13 +73,9 @@ rumoca-ir-ast = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-phase-flatten = { workspace = true }
-rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-parse = { workspace = true }
-rumoca-phase-resolve = { workspace = true }
-rumoca-phase-dae = { workspace = true, features = ["strict-ir-validation"] }
-rumoca-phase-structural = { workspace = true }
-rumoca-phase-typecheck = { workspace = true }
-rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
+rumoca-phase-dae = { workspace = true }
+rumoca-compile = { workspace = true }
 
 [lints]
 workspace = true

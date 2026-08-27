@@ -31,11 +31,11 @@ pub fn eval_integer_binary(op: IntegerBinaryOperator, lhs: i64, rhs: i64) -> Opt
 
 fn integer_binary_operator_from_op(op: &OpBinary) -> Option<IntegerBinaryOperator> {
     match op {
-        OpBinary::Add => Some(IntegerBinaryOperator::Add),
-        OpBinary::Sub => Some(IntegerBinaryOperator::Sub),
-        OpBinary::Mul => Some(IntegerBinaryOperator::Mul),
-        OpBinary::Div => Some(IntegerBinaryOperator::Div),
-        OpBinary::Exp => Some(IntegerBinaryOperator::Exp),
+        OpBinary::Add | OpBinary::AddElem => Some(IntegerBinaryOperator::Add),
+        OpBinary::Sub | OpBinary::SubElem => Some(IntegerBinaryOperator::Sub),
+        OpBinary::Mul | OpBinary::MulElem => Some(IntegerBinaryOperator::Mul),
+        OpBinary::Div | OpBinary::DivElem => Some(IntegerBinaryOperator::Div),
+        OpBinary::Exp | OpBinary::ExpElem => Some(IntegerBinaryOperator::Exp),
         _ => None,
     }
 }
@@ -107,5 +107,12 @@ mod tests {
     #[test]
     fn ast_integer_binary_handles_exponentiation() {
         assert_eq!(eval_ast_integer_binary(&OpBinary::Exp, 2, 5), Some(32));
+    }
+
+    #[test]
+    fn elementwise_spellings_share_scalar_integer_semantics() {
+        assert_eq!(eval_ast_integer_binary(&OpBinary::AddElem, 3, 4), Some(7));
+        assert_eq!(eval_ast_integer_binary(&OpBinary::DivElem, 7, 2), None);
+        assert_eq!(eval_ast_integer_binary(&OpBinary::ExpElem, 2, 3), Some(8));
     }
 }

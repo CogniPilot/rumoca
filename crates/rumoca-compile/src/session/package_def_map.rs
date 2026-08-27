@@ -189,6 +189,7 @@ struct AggregateClassSummary<'a> {
     expandable: bool,
     operator_record: bool,
     pure: bool,
+    purity_declared: bool,
     causality: &'a rumoca_core::Causality,
     is_protected: bool,
     is_final: bool,
@@ -208,6 +209,7 @@ fn class_interface_fingerprint(class: &ClassSummary) -> Fingerprint {
         expandable: class.expandable,
         operator_record: class.operator_record,
         pure: class.pure,
+        purity_declared: class.purity_declared,
         causality: &class.causality,
         is_protected: class.is_protected,
         is_final: class.is_final,
@@ -290,4 +292,45 @@ pub(super) fn qualified_name_in_subtree(qualified_name: &str, prefix: &str) -> b
         || qualified_name
             .strip_prefix(prefix)
             .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_ir_ast as ast;
+
+    fn external_function_class(pure: bool, purity_declared: bool) -> ast::ClassDef {
+        ast::ClassDef {
+            class_type: rumoca_core::ClassType::Function,
+            pure,
+            purity_declared,
+            external: Some(ast::ExternalFunction::default()),
+            ..Default::default()
+        }
+    }
+
+    /// MLS §12.3 purity is part of a function's interface, and the written
+    /// prefix is what states it. Adding `pure` to a bare `external` function
+    /// turns an impure body into a pure one, so the two declarations must not
+    /// share an interface fingerprint — a shared one would let a dependent
+    /// query reuse results computed for the other meaning.
+    #[test]
+    fn declaring_external_purity_changes_the_class_interface_fingerprint() {
+        let bare = class_interface_fingerprint(&ClassSummary::from_class(
+            &external_function_class(true, false),
+        ));
+        let declared_pure = class_interface_fingerprint(&ClassSummary::from_class(
+            &external_function_class(true, true),
+        ));
+        let declared_impure = class_interface_fingerprint(&ClassSummary::from_class(
+            &external_function_class(false, true),
+        ));
+
+        assert_ne!(
+            bare, declared_pure,
+            "`function f … external` and `pure function f … external` are different interfaces"
+        );
+        assert_ne!(bare, declared_impure);
+        assert_ne!(declared_pure, declared_impure);
+    }
 }

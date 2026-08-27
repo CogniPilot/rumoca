@@ -11,18 +11,6 @@
         return values.map(trimMaybeString).filter(Boolean);
     }
 
-    function sanitizeIdentifier(input) {
-        const text = String(input || '');
-        let out = '';
-        for (const ch of text) {
-            if (/[A-Za-z0-9_]/.test(ch)) {
-                out += ch.toLowerCase();
-            } else if (/\s|-|\./.test(ch)) {
-                out += '_';
-            }
-        }
-        return out || 'model';
-    }
 
     function sanitizeResultIdentifier(input) {
         let out = '';
@@ -531,9 +519,6 @@ ctx.onFrame = (api) => {
             : `Rumoca Results: ${model}`;
     }
 
-    function cloneJson(value) {
-        return JSON.parse(JSON.stringify(value));
-    }
 
     function cloneView(view) {
         return {
@@ -1259,14 +1244,6 @@ ctx.onFrame = (api) => {
             || (fileName.startsWith('rumoca-scenario.') && fileName.endsWith('.toml'));
     }
 
-    // --- Scenario config form model (scenario TOML dual-view GUI) ------------
-    // Pure transforms between a scenario-as-JSON config tree (from
-    // scenario_get_scenario_config_full) and a flat list of editable leaf fields,
-    // shared by the config form in both editors. Scalars (string/number/boolean)
-    // are editable leaves; nested tables recurse so the form can group by
-    // top-level section; arrays and other non-scalars are edited as raw JSON
-    // leaves in v1 and refined into richer widgets later.
-
     function scenarioConfigLeafKind(value) {
         if (typeof value === 'boolean') return 'boolean';
         if (typeof value === 'number') return 'number';
@@ -1351,8 +1328,6 @@ ctx.onFrame = (api) => {
     const SCENARIO_SOLVER_OPTIONS = [
         ['auto', 'Auto'],
         ['bdf', 'BDF (stiff systems)'],
-        ['esdirk34', 'ESDIRK34 (implicit)'],
-        ['trbdf2', 'TR-BDF2 (implicit)'],
         ['rk-like', 'RK-like (explicit)'],
     ];
     const SCENARIO_SIM_MODE_OPTIONS = [
@@ -1375,13 +1350,13 @@ ctx.onFrame = (api) => {
         ['3d', '3d'],
     ];
     const SCENARIO_CODEGEN_TARGET_OPTIONS = [
-        ['sympy', 'sympy'],
-        ['jax', 'jax'],
-        ['casadi-sx', 'casadi-sx'],
-        ['casadi-mx', 'casadi-mx'],
-        ['onnx', 'onnx'],
-        ['fmi2', 'fmi2'],
-        ['fmi3', 'fmi3'],
+        ['c-ode', 'c-ode'],
+        ['casadi-ode', 'casadi-ode'],
+        ['jax-ode', 'jax-ode'],
+        ['rust-ode', 'rust-ode'],
+        ['rust-fixed-ode', 'rust-fixed-ode'],
+        ['wgsl-ode', 'wgsl-ode'],
+        ['embedded-c', 'embedded-c'],
         ['galec', 'galec (eFMI Algorithm Code)'],
         ['galec-production', 'galec-production (eFMI Production Code)'],
         ['embedded-c-galec', 'embedded-c-galec (embedded C)'],
@@ -1616,7 +1591,7 @@ ctx.onFrame = (api) => {
                 label: 'Target',
                 path: ['codegen', 'target'],
                 kind: 'select',
-                value: scenarioFieldValue(config, ['codegen', 'target'], 'sympy'),
+                value: scenarioFieldValue(config, ['codegen', 'target'], 'c-ode'),
                 options: SCENARIO_CODEGEN_TARGET_OPTIONS,
                 hint: 'Built-in renderer used when task is codegen.',
             },
@@ -2145,7 +2120,7 @@ ctx.onFrame = (api) => {
             return scenarioOptionLabel(SCENARIO_VIEWER_MODE_OPTIONS, scenarioFieldByPath(fields, ['viewer', 'mode'])?.value || 'results_panel');
         }
         if (section === 'codegen') {
-            return scenarioFieldByPath(fields, ['codegen', 'target'])?.value || 'sympy';
+            return scenarioFieldByPath(fields, ['codegen', 'target'])?.value || 'c-ode';
         }
         if (section === 'source_roots') {
             const roots = normalizeStringArray(scenarioFieldByPath(fields, ['source_roots'])?.value);

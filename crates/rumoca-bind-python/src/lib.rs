@@ -126,6 +126,16 @@ fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Get the build identity shared with the `rumoca build-info` CLI subcommand.
+///
+/// Returns `None` when the build could not determine it. A caller comparing
+/// this wheel against a CLI binary must treat `None` as "cannot verify": two
+/// `None`s are not evidence that the two artifacts agree.
+#[pyfunction]
+fn build_identity() -> Option<String> {
+    rumoca_core::build_identity().map(str::to_owned)
+}
+
 /// Format Modelica source code.
 #[pyfunction(name = "format")]
 #[pyo3(signature = (source, *, filename=None))]
@@ -508,34 +518,25 @@ fn compile_requested_model(
     session: &mut Session,
     model_name: &str,
 ) -> Result<HighLevelCompilationResult, PyRuntimeStringError> {
-    let mut report = session.compile_model_strict_reachable_with_recovery(model_name);
-    let failure_summary = report.failure_summary(usize::MAX);
-    let result = match report.requested_result.take() {
-        Some(PhaseResult::Success(result)) => {
-            if !report.failures.is_empty() {
-                return Err(PyRuntimeStringError(failure_summary));
+    let compilation = session.compile_model_strict(model_name).map_err(|report| {
+        let failure_summary = report.failure_summary(usize::MAX);
+        let message = match report.requested_result.as_ref() {
+            Some(PhaseResult::Failed { phase, .. }) => {
+                let phase_name = match phase {
+                    FailedPhase::Instantiate => "instantiate",
+                    FailedPhase::Typecheck => "typecheck",
+                    FailedPhase::Flatten => "flatten",
+                    FailedPhase::ToDae => "todae",
+                };
+                format!("{phase_name} failed: {failure_summary}")
             }
-            *result
-        }
-        Some(PhaseResult::NeedsInner { .. }) => {
-            return Err(PyRuntimeStringError(failure_summary));
-        }
-        Some(PhaseResult::Failed { phase, .. }) => {
-            let phase_name = match phase {
-                FailedPhase::Instantiate => "instantiate",
-                FailedPhase::Typecheck => "typecheck",
-                FailedPhase::Flatten => "flatten",
-                FailedPhase::ToDae => "todae",
-            };
-            return Err(PyRuntimeStringError(format!(
-                "{phase_name} failed: {failure_summary}"
-            )));
-        }
-        None => return Err(PyRuntimeStringError(failure_summary)),
-    };
-    let resolved = session.resolved_cached().ok_or_else(|| {
-        PyRuntimeStringError("strict compile produced no cached resolved tree".to_string())
+            Some(PhaseResult::Success(_)) | Some(PhaseResult::NeedsInner { .. }) | None => {
+                failure_summary
+            }
+        };
+        PyRuntimeStringError(message)
     })?;
+    let (result, resolved) = compilation.into_parts();
     Ok(HighLevelCompilationResult::new(
         result.dae,
         result.balance_detail,
@@ -581,6 +582,7 @@ pub(crate) fn render_target_files(
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // module-level functions
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(build_identity, m)?)?;
     m.add_function(wrap_pyfunction!(format_source, m)?)?;
     m.add_function(wrap_pyfunction!(targets_fn, m)?)?;
     m.add_function(wrap_pyfunction!(solvers_fn, m)?)?;

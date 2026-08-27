@@ -83,6 +83,7 @@ impl Session {
             fresh_session_snapshot_caches();
         Session {
             instantiation_options: self.instantiation_options.clone(),
+            structural_override_sources: self.structural_override_sources.clone(),
             documents,
             detached_document_uris,
             detached_source_root_documents,
@@ -108,8 +109,6 @@ impl Session {
             snapshot_cache,
             lightweight_snapshot_cache,
             workspace_symbol_snapshot_cache,
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
         }
     }
 
@@ -281,6 +280,7 @@ impl Session {
             fresh_session_snapshot_caches();
         let snapshot = Session {
             instantiation_options: self.instantiation_options.clone(),
+            structural_override_sources: self.structural_override_sources.clone(),
             documents: self.documents.clone(),
             detached_document_uris: self.detached_document_uris.clone(),
             detached_source_root_documents: self.detached_source_root_documents.clone(),
@@ -304,8 +304,6 @@ impl Session {
             snapshot_cache,
             lightweight_snapshot_cache,
             workspace_symbol_snapshot_cache,
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
         };
         SessionSnapshot::from_detached_session(snapshot)
     }
@@ -371,6 +369,7 @@ impl Session {
             fresh_session_snapshot_caches();
         let snapshot = Session {
             instantiation_options: self.instantiation_options.clone(),
+            structural_override_sources: self.structural_override_sources.clone(),
             documents: detached_documents,
             detached_document_uris: self.detached_document_uris.clone(),
             detached_source_root_documents: IndexMap::new(),
@@ -394,8 +393,6 @@ impl Session {
             snapshot_cache,
             lightweight_snapshot_cache,
             workspace_symbol_snapshot_cache,
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
         };
         timing.session_assemble_ms = session_assemble_started.elapsed().as_millis() as u64;
         (SessionSnapshot::from_detached_session(snapshot), timing)
@@ -440,6 +437,7 @@ impl Session {
             fresh_session_snapshot_caches();
         let snapshot = Session {
             instantiation_options: self.instantiation_options.clone(),
+            structural_override_sources: self.structural_override_sources.clone(),
             documents,
             detached_document_uris: self.detached_document_uris.clone(),
             detached_source_root_documents: IndexMap::new(),
@@ -463,8 +461,6 @@ impl Session {
             snapshot_cache,
             lightweight_snapshot_cache,
             workspace_symbol_snapshot_cache,
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
         };
         timing.session_assemble_ms = session_assemble_started.elapsed().as_millis() as u64;
         (SessionSnapshot::from_detached_session(snapshot), timing)
@@ -566,10 +562,6 @@ impl SessionSnapshot {
 
     pub fn namespace_class_names_cached(&self) -> Vec<String> {
         self.with_session_ref(Session::namespace_class_names_cached)
-    }
-
-    pub fn all_class_names_cached(&self) -> Vec<String> {
-        self.with_session_ref(Session::all_class_names_cached)
     }
 
     pub fn namespace_children_cached(&self, prefix: &str) -> Vec<(String, String, bool)> {
@@ -711,14 +703,6 @@ impl SessionSnapshot {
                 let _ = session.class_component_members_query(&class_name);
             }
         });
-    }
-
-    pub fn prewarm_document_read_queries(&self, uri: &str) {
-        if self.document_needs_source_root_read_prewarm(uri) {
-            self.prewarm_source_root_read_queries();
-            return;
-        }
-        self.prewarm_document_ide_queries(uri);
     }
 
     pub fn prewarm_source_root_read_queries(&self) {

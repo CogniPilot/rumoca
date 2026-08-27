@@ -1,0 +1,83 @@
+name: Install apt packages
+description: Install Ubuntu packages without allowing apt mirrors to hang a job indefinitely
+
+inputs:
+  packages:
+    description: Whitespace-separated package names
+    required: true
+  timeout-seconds:
+    description: Wall-clock limit for each apt invocation
+    required: false
+    default: '120'
+
+runs:
+  using: composite
+  steps:
+    - name: Install requested packages
+      shell: bash
+      env:
+        APT_PACKAGES: ${{ inputs.packages }}
+        APT_TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+      run: |
+        set -euo pipefail
+
+        if [[ ! "$APT_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::timeout-seconds must be a positive integer"
+          exit 2
+        fi
+
+        read -r -a packages <<< "$APT_PACKAGES"
+        if (( ${#packages[@]} == 0 )); then
+          echo "::error::packages must contain at least one package name"
+          exit 2
+        fi
+
+        missing=()
+        for package in "${packages[@]}"; do
+          if [[ ! "$package" =~ ^[A-Za-z0-9][A-Za-z0-9+.:_~-]*$ ]]; then
+            echo "::error::invalid apt package name: $package"
+            exit 2
+          fi
+          if ! dpkg-query -W -f='${db:Status-Status}\n' "$package" 2>/dev/null |
+            grep -Fxq installed; then
+            missing+=("$package")
+          fi
+        done
+
+        if (( ${#missing[@]} == 0 )); then
+          echo "All requested apt packages are already installed"
+          exit 0
+        fi
+
+        echo "Missing apt packages: ${missing[*]}"
+
+        bounded_apt() {
+          sudo env DEBIAN_FRONTEND=noninteractive \
+            timeout --signal=TERM --kill-after=15s "${APT_TIMEOUT_SECONDS}s" \
+            apt-get \
+            -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=20 \
+            -o Acquire::https::Timeout=20 \
+            -o DPkg::Lock::Timeout=60 \
+            "$@"
+        }
+
+        # Hosted runners normally retain usable indexes. Avoid contacting every
+        # configured mirror when those indexes can satisfy the install directly.
+        if bounded_apt install -y --no-install-recommends "${missing[@]}"; then
+          exit 0
+        fi
+
+        for attempt in 1 2; do
+          echo "apt refresh/install attempt $attempt of 2"
+          if bounded_apt update &&
+            bounded_apt install -y --no-install-recommends "${missing[@]}"; then
+            exit 0
+          fi
+          if (( attempt < 2 )); then
+            sleep 10
+          fi
+        done
+
+        echo "::error::apt package installation failed after bounded retries"
+        exit 1

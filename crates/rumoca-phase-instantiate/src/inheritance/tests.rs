@@ -12,7 +12,7 @@ fn test_location() -> rumoca_core::Location {
         end_column: 2,
         start: 0,
         end: 1,
-        file_name: TEST_FILE.to_string(),
+        source: rumoca_core::SourceId::from_source_name(TEST_FILE),
     }
 }
 
@@ -42,9 +42,10 @@ fn make_component_ref(name: &str) -> ast::ComponentReference {
                 token_type: 0,
             },
             subs: None,
+            def_id: None,
         }],
-        def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     }
 }
 
@@ -79,12 +80,115 @@ fn make_resolved_name(text: &str, def_id: DefId) -> rumoca_ir_ast::Name {
     }
 }
 
+fn register_predefined_external_object(tree: &mut ast::ClassTree) {
+    tree.scope_tree.add_predefined_member(
+        rumoca_core::ComponentPath::from_flat_path("ExternalObject"),
+        DefId::new(u32::MAX),
+    );
+}
+
+fn insert_resolved_test_class(
+    tree: &mut ast::ClassTree,
+    name: &str,
+    def_id: DefId,
+    mut class: ast::ClassDef,
+) {
+    class.def_id = Some(def_id);
+    tree.name_map.insert(name.to_string(), def_id);
+    tree.def_map.insert(def_id, name.to_string());
+    tree.definitions.classes.insert(name.to_string(), class);
+}
+
 fn make_int_expr(value: &str) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: ast::TerminalType::UnsignedInteger,
         token: make_token(value),
         span: rumoca_core::Span::DUMMY,
     }
+}
+
+fn make_resolved_ref_expr(name: &str, def_id: DefId) -> ast::Expression {
+    let mut reference = make_component_ref(name);
+    reference.set_root_def_id(Some(def_id));
+    reference.set_target_def_id(Some(def_id));
+    ast::Expression::ComponentReference(reference)
+}
+
+#[test]
+fn duplicate_inherited_components_require_equivalent_declarations() {
+    let type_def_id = DefId::new(100);
+    let mut existing = make_component("x", false, false);
+    existing.type_def_id = Some(type_def_id);
+    existing.type_name = make_name("Real");
+    existing.has_explicit_binding = true;
+    existing.binding = Some(make_int_expr("1"));
+
+    let mut incoming = existing.clone();
+    incoming.def_id = Some(DefId::new(102));
+    incoming.binding = Some(make_int_expr("2"));
+
+    assert!(
+        !components_are_compatible(&existing, &incoming),
+        "a shared resolved type must not hide conflicting bindings"
+    );
+
+    incoming.binding = existing.binding.clone();
+    incoming.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    assert!(
+        !components_are_compatible(&existing, &incoming),
+        "a shared resolved type must not hide conflicting variability"
+    );
+}
+
+#[test]
+fn duplicate_inherited_components_distinguish_resolved_binding_identity() {
+    let mut existing = make_component("x", false, false);
+    existing.type_name = make_name("Real");
+    existing.has_explicit_binding = true;
+    existing.binding = Some(make_resolved_ref_expr("p", DefId::new(201)));
+
+    let mut incoming = existing.clone();
+    incoming.def_id = Some(DefId::new(202));
+    incoming.binding = Some(make_resolved_ref_expr("p", DefId::new(203)));
+
+    assert!(
+        !components_are_compatible(&existing, &incoming),
+        "equal source spelling must not hide different resolved declarations"
+    );
+}
+
+#[test]
+fn duplicate_inherited_components_from_same_source_keep_diamond_fast_path() {
+    let shared_def_id = DefId::new(101);
+    let mut existing = make_component("x", false, false);
+    existing.def_id = Some(shared_def_id);
+    existing.binding = Some(make_int_expr("1"));
+    let mut incoming = existing.clone();
+    incoming.binding = Some(make_int_expr("2"));
+
+    assert!(
+        components_are_compatible(&existing, &incoming),
+        "the same source declaration inherited through a diamond contributes once"
+    );
+}
+
+#[test]
+fn duplicate_inherited_components_ignore_documentation_and_annotations() {
+    let mut existing = make_component("system", false, false);
+    existing.type_def_id = Some(DefId::new(100));
+    existing.type_name = make_name("System");
+    existing.description = vec![make_token("System wide properties")];
+    existing.annotation = vec![make_int_expr("1")];
+
+    let mut incoming = existing.clone();
+    incoming.def_id = Some(DefId::new(102));
+    incoming.description = vec![make_token("System properties")];
+    incoming.annotation = vec![make_int_expr("2")];
+
+    assert!(
+        components_are_compatible(&existing, &incoming),
+        "documentation and annotations do not change component declaration semantics"
+    );
 }
 
 #[test]
@@ -202,10 +306,6 @@ fn test_classes_are_compatible_for_equivalent_declarations() {
     assert!(classes_are_compatible(&helper_a, &helper_b));
 }
 
-// -------------------------------------------------------------------------
-// Constrainedby validation tests (MLS §7.3.2)
-// -------------------------------------------------------------------------
-
 /// Create a component with constrainedby for testing.
 fn make_constrained_component(
     name: &str,
@@ -257,29 +357,27 @@ fn test_constrainedby_subtype_allowed() {
     // Redeclaring to a subtype of the constraint should succeed
 
     let mut tree = ast::ClassTree::default();
+    let base_def_id = DefId::new(100);
+    let derived_def_id = DefId::new(101);
+    register_predefined_external_object(&mut tree);
 
-    // Create base class
     let base = ast::ClassDef {
         name: make_token("BaseConnector"),
         ..Default::default()
     };
 
-    // Create derived class that extends base
     let derived = ast::ClassDef {
         name: make_token("DerivedConnector"),
         extends: vec![ast::Extend {
-            base_name: make_name("BaseConnector"),
+            base_name: make_resolved_name("BaseConnector", base_def_id),
+            base_def_id: Some(base_def_id),
             ..Default::default()
         }],
         ..Default::default()
     };
 
-    tree.definitions
-        .classes
-        .insert("BaseConnector".to_string(), base);
-    tree.definitions
-        .classes
-        .insert("DerivedConnector".to_string(), derived);
+    insert_resolved_test_class(&mut tree, "BaseConnector", base_def_id, base);
+    insert_resolved_test_class(&mut tree, "DerivedConnector", derived_def_id, derived);
 
     // ast::Component constrained to BaseConnector
     let comp = make_constrained_component("c", "BaseConnector", Some("BaseConnector"));
@@ -312,6 +410,7 @@ fn relative_class_redeclare_constraint_tree() -> (ast::ClassTree, DefId) {
     let modelica = relative_constraint_modelica_class(&ids);
 
     let mut tree = ast::ClassTree::default();
+    register_predefined_external_object(&mut tree);
     tree.definitions
         .classes
         .insert("Modelica".to_string(), modelica);
@@ -478,7 +577,6 @@ fn test_constrainedby_non_subtype_rejected() {
     // Redeclaring to a non-subtype should fail
     let mut tree = ast::ClassTree::default();
 
-    // Create two unrelated classes
     let class_a = ast::ClassDef {
         name: make_token("ClassA"),
         ..Default::default()
@@ -772,10 +870,6 @@ fn test_nested_class_redeclaration_shadows_inherited_replaceable_merged_later() 
     assert_eq!(effective_state.def_id, Some(simple_state_id));
 }
 
-// -------------------------------------------------------------------------
-// is_type_subtype tests
-// -------------------------------------------------------------------------
-
 #[test]
 fn test_is_type_subtype_exact_match() {
     let tree = ast::ClassTree::default();
@@ -793,6 +887,10 @@ fn test_is_type_subtype_builtin_mismatch() {
 #[test]
 fn test_is_type_subtype_via_extends() {
     let mut tree = ast::ClassTree::default();
+    let a_def_id = DefId::new(200);
+    let b_def_id = DefId::new(201);
+    let c_def_id = DefId::new(202);
+    register_predefined_external_object(&mut tree);
 
     // A extends nothing
     let class_a = ast::ClassDef {
@@ -804,7 +902,8 @@ fn test_is_type_subtype_via_extends() {
     let class_b = ast::ClassDef {
         name: make_token("B"),
         extends: vec![ast::Extend {
-            base_name: make_name("A"),
+            base_name: make_resolved_name("A", a_def_id),
+            base_def_id: Some(a_def_id),
             ..Default::default()
         }],
         ..Default::default()
@@ -814,15 +913,16 @@ fn test_is_type_subtype_via_extends() {
     let class_c = ast::ClassDef {
         name: make_token("C"),
         extends: vec![ast::Extend {
-            base_name: make_name("B"),
+            base_name: make_resolved_name("B", b_def_id),
+            base_def_id: Some(b_def_id),
             ..Default::default()
         }],
         ..Default::default()
     };
 
-    tree.definitions.classes.insert("A".to_string(), class_a);
-    tree.definitions.classes.insert("B".to_string(), class_b);
-    tree.definitions.classes.insert("C".to_string(), class_c);
+    insert_resolved_test_class(&mut tree, "A", a_def_id, class_a);
+    insert_resolved_test_class(&mut tree, "B", b_def_id, class_b);
+    insert_resolved_test_class(&mut tree, "C", c_def_id, class_c);
 
     // B is subtype of A
     assert!(is_type_subtype(&tree, "B", "A"));
@@ -928,6 +1028,45 @@ fn test_class_extends_cached_matches_base_def_id_for_relative_extends_name() {
 }
 
 #[test]
+fn subtype_cache_distinguishes_same_named_classes_by_def_id() {
+    let mut tree = ast::ClassTree::default();
+    let base_id = DefId::new(1);
+    tree.name_map.insert("Base".to_string(), base_id);
+    tree.def_map.insert(base_id, "Base".to_string());
+
+    let extending_foo = ast::ClassDef {
+        def_id: Some(DefId::new(2)),
+        name: make_token("Foo"),
+        extends: vec![ast::Extend {
+            base_name: make_resolved_name("Base", base_id),
+            base_def_id: Some(base_id),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let unrelated_foo = ast::ClassDef {
+        def_id: Some(DefId::new(3)),
+        name: make_token("Foo"),
+        ..Default::default()
+    };
+
+    let mut cache = SubtypeCache::default();
+    assert!(class_extends_cached(
+        &tree,
+        &extending_foo,
+        "Base",
+        &mut cache
+    ));
+    assert!(!class_extends_cached(
+        &tree,
+        &unrelated_foo,
+        "Base",
+        &mut cache
+    ));
+    assert_eq!(cache.len(), 2, "each resolved subtype owns one memo row");
+}
+
+#[test]
 fn test_type_names_match_requires_resolved_identity() {
     use rumoca_core::DefId;
 
@@ -1012,7 +1151,6 @@ fn test_is_effectively_primitive_transitive_enumeration_chain() {
     // connector DigitalSignal = Logic
     // connector DigitalInput = input DigitalSignal
 
-    // Create a tree with these classes
     let mut tree = ast::ClassTree::new();
 
     // Logic enumeration

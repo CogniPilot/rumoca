@@ -20,6 +20,11 @@ pub enum MlirError {
         target: &'static str,
         template: &'static str,
     },
+    #[error("built-in target {target} is missing required asset {asset}")]
+    MissingBuiltinAsset {
+        target: &'static str,
+        asset: &'static str,
+    },
     #[error("Solve-IR scalarization failed: {message}")]
     Scalarization {
         message: String,

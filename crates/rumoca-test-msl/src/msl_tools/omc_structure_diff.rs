@@ -67,9 +67,37 @@ pub fn run(args: Args) -> Result<()> {
     let compiled = session
         .compile_model_dae_strict_reachable_uncached_with_recovery(&args.model)
         .map_err(|error| anyhow::anyhow!("rumoca compile failed for '{}': {error}", args.model))?;
-    let report =
-        rumoca_sim::structural_report_for_dae(&compiled.dae, &rumoca_sim::SimOptions::default())
-            .map_err(|error| anyhow::anyhow!("rumoca structural analysis failed: {error}"))?;
+    let report = match rumoca_sim::structural_report_for_dae(
+        &compiled.dae,
+        &rumoca_sim::SimOptions::default(),
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            let details = rumoca_sim::diagnose_structural_singularity(
+                &compiled.dae,
+                &rumoca_sim::SimOptions::default(),
+            )?
+            .map(|diagnostics| {
+                format!(
+                    "; unmatched equations: [{}]; unmatched unknowns: [{}]",
+                    diagnostics
+                        .equations
+                        .iter()
+                        .map(|equation| equation.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    diagnostics
+                        .unknowns
+                        .iter()
+                        .map(|unknown| unknown.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )
+            })
+            .unwrap_or_default();
+            bail!("rumoca structural analysis failed: {error}{details}");
+        }
+    };
 
     // OMC side: parse the transformational-debugger info emitted by the OMC
     // simulation reference run.

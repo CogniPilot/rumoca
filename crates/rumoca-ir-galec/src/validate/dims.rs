@@ -210,10 +210,6 @@ impl<'a> DimChecker<'a, '_> {
         self.scope.pop_iterator();
     }
 
-    // -----------------------------------------------------------------
-    // Dynamic-expression walk: find every static position
-    // -----------------------------------------------------------------
-
     fn expression(&mut self, expression: &'a Expression) {
         match expression {
             Expression::Bool(_) | Expression::Integer(_) | Expression::Real(_) => {}
@@ -225,6 +221,12 @@ impl<'a> DimChecker<'a, '_> {
             Expression::Call(call) => self.call_arguments(&call.arguments),
             Expression::Paren(inner) | Expression::Not(inner) => self.expression(inner),
             Expression::If(if_expression) => {
+                if !if_expression.correlation_is_exact() {
+                    self.diags
+                        .push(GalecError::InvalidBoundedSelectionCorrelation {
+                            location: self.cursor.here(),
+                        });
+                }
                 for (condition, value) in &if_expression.branches {
                     self.expression(condition);
                     self.expression(value);
@@ -305,10 +307,6 @@ impl<'a> DimChecker<'a, '_> {
             }
         }
     }
-
-    // -----------------------------------------------------------------
-    // Static (constant-scalar-integer) expression rules, S-3.1
-    // -----------------------------------------------------------------
 
     /// References must be loop iterators (or live inside `size()`); calls
     /// must be builtins. Typing of the position is the type analysis' job.

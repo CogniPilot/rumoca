@@ -38,10 +38,7 @@ fn test_wasm_lsp_completion_keeps_local_members_on_ast_fast_path() {
         first_delta.semantic_navigation_builds, 0,
         "local member completion should stay off semantic navigation"
     );
-    assert!(
-        !singleton_session_has_standard_resolved_cached(),
-        "completion should avoid populating the standard resolved session"
-    );
+    assert_eq!(session_cache_stats().standard_resolved_builds, 0);
 
     let second_json =
         lsp_completion(source, 12, "      p1.".len() as u32).expect("warm completion");
@@ -56,10 +53,7 @@ fn test_wasm_lsp_completion_keeps_local_members_on_ast_fast_path() {
         second_delta.semantic_navigation_builds, 0,
         "warm completion should keep using the AST fast path"
     );
-    assert!(
-        !singleton_session_has_standard_resolved_cached(),
-        "warm completion should still avoid the standard resolved session"
-    );
+    assert_eq!(session_cache_stats().standard_resolved_builds, 0);
 
     clear_source_root_cache().expect("clear source-root cache");
 }

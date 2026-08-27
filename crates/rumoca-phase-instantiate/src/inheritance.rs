@@ -3,40 +3,36 @@
 //! This module handles the `extends` clause processing, merging inherited
 //! components and equations into the derived class.
 //!
-//! ## MLS Compliance Status
-//!
-//! ### Extends/Inheritance (MLS §7)
-//! - [x] MLS §7.1 - Basic extends clause processing
-//! - [x] MLS §7.1 - Multiple inheritance order preservation
-//! - [x] MLS §7.1 - O(1) base class lookup via DefId
-//! - [x] MLS §7.1 - Inheritance caching for diamond inheritance
-//! - [x] MLS §7.1.2 - Protected extends visibility
-//! - [x] MLS §7.2 - Modification environment (outer overrides inner)
-//! - [x] MLS §7.2.5 - `each` modifier prefix (tracked via `ModificationValue.each`)
-//! - [x] MLS §7.2.6 - `final` modifier prefix (validation implemented)
-//! - [x] MLS §7.3 - Redeclarations (replaceable/final validation)
-//! - [x] MLS §7.3.2 - Constrainedby validation (subtype checking)
-//! - [x] MLS §7.4 - Selective model extension (`break` names with validation)
-//!
-//! ### Inner/Outer (MLS §5.4) - implemented in lib.rs
-//! - [x] MLS §5.4 - Inner declaration tracking (scope-based)
-//! - [x] MLS §5.4 - Outer reference resolution (nearest inner)
-//! - [x] MLS §5.4 - Type compatibility checking (inheritance-aware)
+//! MLS support status is owned by the `rumoca-contracts` registry rather than
+//! duplicated in implementation comments.
 
 use crate::path_utils;
+use indexmap::IndexSet;
 use rumoca_core::{DefId, Span};
 use rumoca_core::{SourceMap, is_builtin_type};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
 
+#[cfg(test)]
+use rumoca_ir_ast::{
+    classes_are_semantically_compatible as classes_are_compatible,
+    components_are_semantically_compatible as components_are_compatible,
+};
+
+mod duplicate_identity;
+mod redeclaration;
+
 use crate::errors::{InstantiateError, InstantiateResult};
 use crate::traversal_adapter::{
-    redeclare_target_value, walk_extend_modifications, walk_nested_classes,
+    expression_contains_redeclare, redeclare_target_value, walk_extend_modifications,
+    walk_nested_classes,
 };
 use crate::type_overrides::find_nested_class_in_hierarchy;
-
-const CONSTRAINEDBY_MOD_PREFIX: &str = "__constrainedby__.";
+use duplicate_identity::{
+    inherited_components_are_identical, merged_declared_names, merged_element_names,
+};
+use redeclaration::*;
 
 /// Cache for inheritance results to avoid recomputation.
 ///
@@ -49,9 +45,10 @@ pub type InheritanceCache = IndexMap<DefId, Arc<InheritedContent>>;
 
 /// Cache for subtype check results to avoid recomputation.
 ///
-/// Maps (subtype_name, supertype_name) to the result of the subtype check.
-/// This is useful for deeply nested inheritance hierarchies.
-pub type SubtypeCache = IndexMap<(String, String), bool>;
+/// Maps exact resolved (subtype, supertype) declaration identities to the
+/// result of the subtype check. Unresolved compatibility paths are deliberately
+/// not cached: rendered class names are not semantic identity (SPEC_0001).
+pub type SubtypeCache = IndexMap<(DefId, DefId), bool>;
 
 /// Check if two type names refer to the same resolved type.
 ///
@@ -103,190 +100,7 @@ fn apply_protected_class_visibility(class: &mut ast::ClassDef, is_protected: boo
     }
 }
 
-/// Extract the target name from a modification expression.
-///
-/// Returns the first part of the component reference for modifications like:
-/// - `ast::Expression::Modification { target, .. }` -> target name
-/// - `ast::Expression::ClassModification { target, .. }` -> target name
-fn extract_modification_target(expr: &ast::Expression) -> Option<String> {
-    match expr {
-        ast::Expression::Modification { target, .. }
-        | ast::Expression::ClassModification { target, .. } => {
-            target.parts.first().map(|p| p.ident.text.to_string())
-        }
-        // For named arguments like `x = value`, extract the name
-        ast::Expression::NamedArgument { name, .. } => Some(name.text.to_string()),
-        _ => None,
-    }
-}
-
-fn extract_extend_modification_target(
-    extend: &ast::Extend,
-    expr: &ast::Expression,
-) -> Option<String> {
-    let target = match expr {
-        ast::Expression::Modification { target, .. }
-        | ast::Expression::ClassModification { target, .. } => target,
-        ast::Expression::NamedArgument { name, .. } => return Some(name.text.to_string()),
-        _ => return None,
-    };
-    extend_relative_component_target(extend, target)
-}
-
-fn extend_relative_component_target(
-    extend: &ast::Extend,
-    target: &ast::ComponentReference,
-) -> Option<String> {
-    let target_parts = target
-        .parts
-        .iter()
-        .map(|part| part.ident.text.as_ref())
-        .collect::<Vec<_>>();
-    let first = target_parts.first()?.to_string();
-    let base_parts = extend
-        .base_name
-        .name
-        .iter()
-        .map(|token| token.text.to_string())
-        .collect::<Vec<_>>();
-    let base_part_refs = base_parts.iter().map(String::as_str).collect::<Vec<_>>();
-
-    if let Some(next_idx) = target_parts
-        .windows(base_part_refs.len())
-        .position(|window| window == base_part_refs.as_slice())
-        .map(|idx| idx + base_part_refs.len())
-        && next_idx < target_parts.len()
-    {
-        return Some(target_parts[next_idx].to_string());
-    }
-
-    if let Some(base_leaf) = base_part_refs.last()
-        && let Some(next_idx) = target_parts
-            .iter()
-            .position(|part| part == base_leaf)
-            .map(|idx| idx + 1)
-        && next_idx < target_parts.len()
-    {
-        return Some(target_parts[next_idx].to_string());
-    }
-
-    Some(first)
-}
-
-/// Extract the value from a modification expression.
-///
-/// MLS §7.2: Modifications can override component bindings.
-/// Handles forms like:
-/// - `extends Foo(n=2)` -> returns Literal(2)
-/// - `extends Foo(final n=2)` -> returns Literal(2)
-/// - `SomeType x(start=0)` -> returns Literal(0)
-///
-/// Returns None if no value can be extracted.
-fn extract_modification_value(expr: &ast::Expression) -> Option<ast::Expression> {
-    let value = match expr {
-        ast::Expression::Modification { value, .. } => Some(value),
-        ast::Expression::NamedArgument { value, .. } => Some(value),
-        _ => None,
-    }?;
-
-    // Don't return Empty values
-    if matches!(value.as_ref(), ast::Expression::Empty { .. }) {
-        None
-    } else {
-        Some(value.as_ref().clone())
-    }
-}
-
-/// Try to extract a value modification for a component from an extends modification.
-///
-/// MLS §7.2: Value modifications in extends clauses override inherited bindings.
-/// Returns Some((name, value)) if this modification applies to a component in the class.
-fn try_extract_value_modification(
-    modification: &ast::ExtendModification,
-    extend: &ast::Extend,
-    class: &ast::ClassDef,
-) -> Option<(String, ast::Expression, bool)> {
-    // Only non-redeclare modifications can be value modifications
-    if modification.redeclare {
-        return None;
-    }
-    let target_name = extract_extend_modification_target(extend, &modification.expr)?;
-    // Only apply if the base class has this component
-    if !class.components.contains_key(&target_name) {
-        return None;
-    }
-    let value = extract_modification_value(&modification.expr)?;
-    Some((target_name, value, modification.final_))
-}
-
-/// Extract a value modification target/value from an extends modification without
-/// constraining the target to immediate base-class local components.
-///
-/// This is used after inherited components are merged so modifications can apply
-/// to transitively inherited members (MLS §7.2), e.g. `extends Mid(a(x=2))`
-/// when `a` is declared in a grandparent class.
-fn try_extract_value_modification_any(
-    modification: &ast::ExtendModification,
-    extend: &ast::Extend,
-) -> Option<(String, ast::Expression, bool)> {
-    if modification.redeclare {
-        return None;
-    }
-    let target_name = extract_extend_modification_target(extend, &modification.expr)?;
-    let value = extract_modification_value(&modification.expr)?;
-    // Nested class modifications are merged separately.
-    if matches!(value, ast::Expression::ClassModification { .. }) {
-        return None;
-    }
-    Some((target_name, value, modification.final_))
-}
-
-/// Extract the new type from a redeclaration modification.
-///
-/// Redeclarations can have forms like:
-/// - `redeclare model M = NewM` -> returns "NewM"
-/// - `redeclare Real x` -> returns "Real"
-/// - `redeclare type T = Integer` -> returns "Integer"
-/// - `redeclare TransientData.CellData cellData` -> returns "TransientData.CellData"
-///
-/// Returns None if the new type cannot be determined from the expression.
-fn extract_redeclare_type(expr: &ast::Expression) -> Option<String> {
-    match expr {
-        // Type assignment: `redeclare model M = NewM` or `redeclare type T = Integer`
-        // Also handles: `redeclare TransientData.CellData cellData` where value is ClassModification
-        ast::Expression::Modification { value, .. } => {
-            // The value might be a component reference to the new type
-            if let ast::Expression::ComponentReference(comp_ref) = value.as_ref() {
-                return Some(comp_ref.to_string());
-            }
-            // Or it might be a class modification with the type as target
-            // This handles: `Modification { target: cellData, value: ClassModification { target: TypeName, ... } }`
-            if let ast::Expression::ClassModification { target, .. } = value.as_ref() {
-                return Some(target.to_string());
-            }
-            None
-        }
-        // Class modification with type: might have type info in the modification
-        ast::Expression::ClassModification { target, .. } => {
-            // For class modifications like `redeclare Real x(...)`, the target itself is the type
-            // This is a simplified extraction; full parsing would need access to component decl
-            Some(target.to_string())
-        }
-        // Named argument: `redeclare type T = Integer` where value is the new type
-        ast::Expression::NamedArgument { value, .. } => {
-            if let ast::Expression::ComponentReference(comp_ref) = value.as_ref() {
-                return Some(comp_ref.to_string());
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-/// Extract the new type from a redeclaration modification with tree lookup for full qualification.
-///
-/// This version uses the ast::ClassTree to resolve short type names to fully qualified names
-/// via the def_id (if available) or tree lookup.
+/// Extract a redeclared type and resolve it to a fully qualified class name.
 fn extract_redeclare_type_qualified(
     expr: &ast::Expression,
     tree: &ast::ClassTree,
@@ -295,14 +109,14 @@ fn extract_redeclare_type_qualified(
     let def_id_opt = match expr {
         ast::Expression::Modification { value, .. } => {
             if let ast::Expression::ComponentReference(comp_ref) = value.as_ref() {
-                comp_ref.def_id
+                redeclare_reference_target(comp_ref)
             } else if let ast::Expression::ClassModification { target, .. } = value.as_ref() {
-                target.def_id
+                redeclare_reference_target(target)
             } else {
                 None
             }
         }
-        ast::Expression::ClassModification { target, .. } => target.def_id,
+        ast::Expression::ClassModification { target, .. } => redeclare_reference_target(target),
         _ => None,
     };
 
@@ -597,7 +411,8 @@ pub fn is_type_subtype(tree: &ast::ClassTree, subtype: &str, supertype: &str) ->
 /// Check if `subtype` is a subtype of `supertype` with caching.
 ///
 /// This cached version avoids recomputation for deeply nested inheritance
-/// hierarchies. The cache maps (subtype, supertype) pairs to their results.
+/// hierarchies. The cache maps resolved (subtype, supertype) declaration pairs
+/// to their results.
 ///
 /// For replaceable component redeclarations, this function also considers
 /// "sibling types" as compatible. Two types A and B are siblings if they
@@ -619,16 +434,25 @@ pub fn is_type_subtype_cached(
         return true;
     }
 
-    // Check cache first
-    let cache_key = (subtype.to_string(), supertype.to_string());
-    if let Some(&result) = cache.get(&cache_key) {
+    let subtype_def_id = tree
+        .get_def_id_by_name(subtype)
+        .or_else(|| find_class_in_tree(tree, subtype).and_then(|class| class.def_id));
+    let supertype_def_id = tree
+        .get_def_id_by_name(supertype)
+        .or_else(|| find_class_in_tree(tree, supertype).and_then(|class| class.def_id));
+    let cache_key = subtype_def_id.zip(supertype_def_id);
+    if let Some(key) = cache_key
+        && let Some(&result) = cache.get(&key)
+    {
         return result;
     }
 
     // A built-in subtype can't extend anything else - no subtyping between primitives
     // But a class type CAN extend a built-in type (e.g., SI.Voltage extends Real)
     if is_builtin_type(subtype) {
-        cache.insert(cache_key, false);
+        if let Some(key) = cache_key {
+            cache.insert(key, false);
+        }
         return false;
     }
 
@@ -655,6 +479,7 @@ pub fn is_type_subtype_cached(
         };
         accepted
             && crate::plug_compat::class_flags_compatible(
+                tree,
                 subtype_class,
                 find_class_in_tree(tree, supertype),
             )
@@ -662,7 +487,9 @@ pub fn is_type_subtype_cached(
         false
     };
 
-    cache.insert(cache_key, result);
+    if let Some(key) = cache_key {
+        cache.insert(key, result);
+    }
     result
 }
 
@@ -677,7 +504,6 @@ fn types_share_common_base(
     type_b: &ast::ClassDef,
     cache: &mut SubtypeCache,
 ) -> bool {
-    // Get direct base classes of type_a
     for extend_a in &type_a.extends {
         let base_a_name = extend_a.base_name.to_string();
 
@@ -685,7 +511,6 @@ fn types_share_common_base(
         for extend_b in &type_b.extends {
             let base_b_name = extend_b.base_name.to_string();
 
-            // Check for exact match or name equivalence
             if base_a_name == base_b_name || type_names_match(tree, &base_a_name, &base_b_name) {
                 return true;
             }
@@ -761,14 +586,22 @@ pub fn find_class_in_tree<'a>(tree: &'a ast::ClassTree, name: &str) -> Option<&'
     None
 }
 
+fn redeclare_reference_target(reference: &ast::ComponentReference) -> Option<DefId> {
+    if reference.parts.len() > 1 {
+        reference.target_def_id()
+    } else {
+        reference.root_def_id()
+    }
+}
+
 /// Check if a class is effectively primitive (a short class definition extending a primitive type).
 ///
 /// Short class definitions like `connector BooleanInput = input Boolean;` are syntactic sugar
 /// for `connector BooleanInput extends Boolean; end BooleanInput;` with causality.
 /// Such classes should be treated as primitive for variable creation purposes.
 ///
-/// Per Flatten Phase Roadmap: Components using such types should become flat variables with the
-/// type's causality applied.
+/// Components using such types become flat variables with the type's causality
+/// applied.
 ///
 /// Check if a type is effectively primitive, resolving type alias chains transitively.
 ///
@@ -799,7 +632,6 @@ pub(crate) fn is_effectively_primitive_transitive(
         return false;
     }
 
-    // Check for enumeration types - they are primitive values
     if !class.enum_literals.is_empty() {
         return true;
     }
@@ -865,24 +697,24 @@ pub(crate) fn is_effectively_primitive_transitive(
     false
 }
 
-/// Check if a type is Integer or Boolean (discrete by default per MLS §4.5).
+/// Check if a type is discrete-valued by its base type (MLS §3.8.3).
 ///
-/// This function resolves type alias chains to determine if the base type
-/// is Integer or Boolean, which are discrete by default even without an
-/// explicit `discrete` variability prefix.
+/// This function resolves type alias chains to determine if the base type is
+/// Integer, Boolean, String, or an enumeration, all of which are discrete-time
+/// even without an explicit `discrete` variability prefix.
 ///
-/// MLS §4.5: "A discrete-time variable is a variable that is discrete-valued
-/// (that is, not of Real type) or assigned in when-clauses."
-/// Integer and Boolean variables are discrete by definition.
+/// MLS §3.8.3: a variable is discrete-time when it is discrete-valued, that is
+/// when its base type is not `Real`. Only `Real` (and `Clock`, which carries
+/// its own clocked semantics) is excluded here.
 pub(crate) fn is_discrete_by_type(
     tree: &ast::ClassTree,
     type_name: &str,
     class_def: Option<&ast::ClassDef>,
 ) -> bool {
-    // Helper to check if a name is Integer or Boolean
+    // Helper to check if a name is a discrete-valued predefined type
     fn is_discrete_builtin(name: &str) -> bool {
         let simple_name = path_utils::class_name_leaf(name);
-        simple_name == "Integer" || simple_name == "Boolean"
+        matches!(simple_name, "Integer" | "Boolean" | "String")
     }
 
     // Direct check on the type name
@@ -965,20 +797,36 @@ pub fn class_extends(tree: &ast::ClassTree, class: &ast::ClassDef, base_name: &s
 /// Check if a class extends a base class (by resolved name) directly or transitively, with caching.
 ///
 /// This cached version avoids recomputation for deeply nested inheritance hierarchies.
+/// Record `result` under `cache_key` when the caller had both identities, and
+/// return it.
+///
+/// The key is absent only when a class or its queried base has no `DefId`; the
+/// answer is still correct, it just cannot be memoized.
+fn remember_subtype(
+    cache: &mut SubtypeCache,
+    cache_key: Option<(DefId, DefId)>,
+    result: bool,
+) -> bool {
+    if let Some(key) = cache_key {
+        cache.insert(key, result);
+    }
+    result
+}
+
 pub fn class_extends_cached(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
     base_name: &str,
     cache: &mut SubtypeCache,
 ) -> bool {
-    let class_name = class.name.text.to_string();
     let target_base_def_id = tree
         .get_def_id_by_name(base_name)
         .or_else(|| find_class_in_tree(tree, base_name).and_then(|c| c.def_id));
+    let cache_key = class.def_id.zip(target_base_def_id);
 
-    // Check cache first
-    let cache_key = (class_name.clone(), base_name.to_string());
-    if let Some(&result) = cache.get(&cache_key) {
+    if let Some(key) = cache_key
+        && let Some(&result) = cache.get(&key)
+    {
         return result;
     }
 
@@ -990,13 +838,11 @@ pub fn class_extends_cached(
         if let Some(target_id) = target_base_def_id
             && extend.base_def_id == Some(target_id)
         {
-            cache.insert(cache_key, true);
-            return true;
+            return remember_subtype(cache, cache_key, true);
         }
         // Direct extension - use type_names_match for short vs qualified name handling
         if type_names_match(tree, &extend_name, base_name) {
-            cache.insert(cache_key, true);
-            return true;
+            return remember_subtype(cache, cache_key, true);
         }
         // Transitive extension - use def_id for O(1) lookup when available
         let base_class = if let Some(def_id) = extend.base_def_id {
@@ -1008,18 +854,15 @@ pub fn class_extends_cached(
             if let Some(target_id) = target_base_def_id
                 && base_class.def_id == Some(target_id)
             {
-                cache.insert(cache_key.clone(), true);
-                return true;
+                return remember_subtype(cache, cache_key, true);
             }
             if class_extends_cached(tree, base_class, base_name, cache) {
-                cache.insert(cache_key.clone(), true);
-                return true;
+                return remember_subtype(cache, cache_key, true);
             }
         }
     }
 
-    cache.insert(cache_key, false);
-    false
+    remember_subtype(cache, cache_key, false)
 }
 
 /// Process extends clauses and collect inherited content.
@@ -1210,20 +1053,25 @@ pub fn location_to_span(
     source_map: &SourceMap,
     context: &str,
 ) -> InstantiateResult<Span> {
-    if loc.file_name.is_empty() || loc.start >= loc.end {
+    if !loc.has_source() {
         return Err(Box::new(InstantiateError::missing_source_context(format!(
             "{context} is missing a non-empty source location"
         ))));
     }
     source_map
-        .try_location_to_span(&loc.file_name, loc.start as usize, loc.end as usize)
+        .try_span(loc.source, loc.start as usize, loc.end as usize)
         .ok_or_else(|| {
+            let file_name = source_map
+                .name(loc.source)
+                .unwrap_or(UNKNOWN_SOURCE_DISPLAY_NAME);
             Box::new(InstantiateError::missing_source_context(format!(
-                "source file `{}` for {context} was not found",
-                loc.file_name
+                "source file `{file_name}` for {context} was not found"
             )))
         })
 }
+
+/// Placeholder used when a `SourceId` has no registered name in the source map.
+pub(crate) const UNKNOWN_SOURCE_DISPLAY_NAME: &str = "<unknown source>";
 
 /// Create a Span from an Option<rumoca_core::Location> using the source map.
 pub(crate) fn required_location_to_span(
@@ -1237,96 +1085,6 @@ pub(crate) fn required_location_to_span(
         )))
     })?;
     location_to_span(loc, source_map, context)
-}
-
-/// Compare variability by semantic kind (ignoring rumoca_core::Token locations).
-fn variability_eq(a: &rumoca_core::Variability, b: &rumoca_core::Variability) -> bool {
-    matches!(
-        (a, b),
-        (
-            rumoca_core::Variability::Empty,
-            rumoca_core::Variability::Empty
-        ) | (
-            rumoca_core::Variability::Constant(_),
-            rumoca_core::Variability::Constant(_)
-        ) | (
-            rumoca_core::Variability::Discrete(_),
-            rumoca_core::Variability::Discrete(_)
-        ) | (
-            rumoca_core::Variability::Parameter(_),
-            rumoca_core::Variability::Parameter(_)
-        ) | (
-            rumoca_core::Variability::Continuous(_),
-            rumoca_core::Variability::Continuous(_)
-        )
-    )
-}
-
-/// Compare causality by semantic kind (ignoring rumoca_core::Token locations).
-fn causality_eq(a: &rumoca_core::Causality, b: &rumoca_core::Causality) -> bool {
-    matches!(
-        (a, b),
-        (rumoca_core::Causality::Empty, rumoca_core::Causality::Empty)
-            | (
-                rumoca_core::Causality::Input(_),
-                rumoca_core::Causality::Input(_)
-            )
-            | (
-                rumoca_core::Causality::Output(_),
-                rumoca_core::Causality::Output(_)
-            )
-    )
-}
-
-/// Check if two components are compatible for diamond inheritance or equivalent declarations.
-///
-/// MLS §5.6: If the same element is inherited multiple times (diamond inheritance),
-/// it should only contribute one element. Components are also compatible if they
-/// have "equivalent" declarations (same type, variability, and causality).
-///
-/// Compatible conditions (in priority order):
-/// 1. Same def_id (same original declaration) - always OK (diamond inheritance)
-/// 2. Same type_def_id (same resolved type class) - OK for type aliases
-/// 3. Same type_name string + same variability + same causality - equivalent declarations
-///
-/// Returns true if the components are from the same origin or have compatible types.
-fn components_are_compatible(existing: &ast::Component, incoming: &ast::Component) -> bool {
-    // Fast path: same def_id means same original declaration (diamond inheritance)
-    if let (Some(existing_def_id), Some(incoming_def_id)) = (existing.def_id, incoming.def_id)
-        && existing_def_id == incoming_def_id
-    {
-        return true;
-    }
-
-    // Check type compatibility via type_def_id (handles import aliases)
-    if let (Some(existing_type), Some(incoming_type)) = (existing.type_def_id, incoming.type_def_id)
-        && existing_type == incoming_type
-    {
-        return true;
-    }
-
-    // MLS §5.6: Components with equivalent declarations are compatible.
-    // Compare by string representation (avoids rumoca_core::Location/token_number differences in rumoca_core::Token).
-    // Also verify variability and causality match for true equivalence.
-    // Use semantic comparison for variability/causality (ignoring rumoca_core::Token internals).
-    existing.type_name.to_string() == incoming.type_name.to_string()
-        && variability_eq(&existing.variability, &incoming.variability)
-        && causality_eq(&existing.causality, &incoming.causality)
-}
-
-/// Check if two inherited child classes are semantically identical.
-///
-/// MLS §5.6.1.4: duplicate inherited children are valid only when they denote the
-/// same declaration. Compare canonical AST rendering rather than token/source
-/// locations so equivalent declarations from different bases remain compatible.
-fn classes_are_compatible(existing: &ast::ClassDef, incoming: &ast::ClassDef) -> bool {
-    if let (Some(existing_def_id), Some(incoming_def_id)) = (existing.def_id, incoming.def_id)
-        && existing_def_id == incoming_def_id
-    {
-        return true;
-    }
-
-    existing.to_modelica("") == incoming.to_modelica("")
 }
 
 fn nested_class_redeclaration_replaces_existing(
@@ -1356,6 +1114,10 @@ fn merge_inherited(
     extend: &ast::Extend,
     source_map: &SourceMap,
 ) -> InstantiateResult<()> {
+    // MLS §5.6.1.4 collapses same-named elements from several bases into one,
+    // so identity is decided on the merged class, not on each base in isolation.
+    let merged = merged_element_names(target, &base);
+
     // Merge components, checking for conflicts
     for (name, comp) in base.components {
         // Check if this component is deselected via `break`
@@ -1365,7 +1127,7 @@ fn merge_inherited(
 
         if let Some(existing) = target.components.get(&name) {
             // MLS §5.6: Check if components are from same origin or have compatible types
-            if !components_are_compatible(existing, &comp) {
+            if !inherited_components_are_identical(existing, &comp, &merged) {
                 return Err(Box::new(InstantiateError::conflicting_inheritance(
                     name.clone(),
                     "previous base",
@@ -1436,7 +1198,7 @@ fn merge_inherited_nested_class(
         return Ok(NestedClassMerge::Inserted);
     };
 
-    if classes_are_compatible(existing, &class)
+    if ast::classes_are_semantically_compatible(existing, &class)
         || nested_class_existing_redeclaration_shadows_inherited(existing, &class)
     {
         return Ok(NestedClassMerge::Skipped);
@@ -1457,20 +1219,145 @@ fn merge_inherited_nested_class(
     )))
 }
 
-/// Merge content from a class definition into inherited content.
+/// Name of the component an extends modification modifies, when a redeclaration
+/// appears anywhere inside that modification (MLS §7.3).
 ///
-/// MLS §7.3: Validates redeclarations against replaceable/final constraints.
-/// Collect and validate redeclarations from extends modifications (MLS §7.3).
+/// `extends Wrap(h(redeclare C a[2]))` carries the redeclaration one level down:
+/// the extends modification itself is an ordinary modification of `h`, and the
+/// redeclare flag lives on the nested class-modification argument.
+/// [`collect_redeclarations`] only reads redeclarations written directly on an
+/// extends modification, so for this nested form neither the redeclared type nor
+/// its dimensions are consumed. The enclosing component `h` is what must be
+/// recorded — everything instantiated beneath it inherits the dropped
+/// dimensions.
+fn enclosing_component_of_nested_redeclare(modification: &ast::ExtendModification) -> Option<&str> {
+    let ast::Expression::ClassModification { target, .. } = &modification.expr else {
+        return None;
+    };
+    if !expression_contains_redeclare(&modification.expr) {
+        return None;
+    }
+    target.parts.first().map(|part| part.ident.text.as_ref())
+}
+
+/// What an `extends` modification's redeclarations state about the inherited
+/// components they replace (MLS §7.3).
+struct CollectedRedeclarations {
+    /// Redeclared component name -> new type name, for the redeclarations whose
+    /// type this phase could extract.
+    types: IndexMap<String, String>,
+    /// Redeclared component name -> the array dimensions the redeclaration
+    /// states, for the redeclarations that state any.
+    ///
+    /// A missing entry means the redeclaration wrote no subscripts at all,
+    /// which is not the same as declaring it scalar: MLS §7.3 leaves the
+    /// replaced declaration's dimensions standing in that case, so only the
+    /// entries present here reshape anything (see
+    /// [`apply_redeclared_dimensions`]).
+    dims: IndexMap<String, Vec<ast::Subscript>>,
+    /// Every inherited component an extends modification redeclared, including
+    /// the ones that contributed no type change.
+    components: IndexSet<String>,
+}
+
+/// Apply the array dimensions a redeclaration states to the component it
+/// replaces (MLS §7.3).
+///
+/// An element-redeclaration is a whole component declaration (MLS §A.2.5:
+/// `component-clause1` -> `declaration` -> `IDENT [ array-subscripts ]`), so the
+/// subscripts it writes are its own statement of the component's shape and
+/// *replace* the replaced declaration's dimensions — rank and extent alike.
+/// `extends Base(redeclare C a[4])` over `replaceable C a[2]` yields `a[4]`, and
+/// over a scalar `replaceable C a` it yields an array; neither is an error.
+/// OpenModelica agrees on every one of those (probe matrix in the task record:
+/// scalar -> `[3]`, `[3]` -> `[4]`, `[2]` -> `[4]` through `extends`,
+/// scalar -> `[2,2]`, `[2,2]` -> `[4]`), and a redeclaration that writes no
+/// subscripts leaves the replaced dimensions standing — which is why this is
+/// only ever called for a redeclaration that wrote some.
+///
+/// The dimension *expressions* are evaluated later against the class that owns
+/// the `extends` clause, which is the scope the redeclaration was written in, as
+/// MLS §7.3 requires (OMC probe: `Holder h(n = 5, redeclare B a[k])` with a
+/// local `k = 2` yields `h.a[1..2]` while `h.n` stays 5).
+///
+/// ## Latent risk: the subscripts arrive carrying base-scope `def_id`s
+///
+/// These subscripts reach us through the extends modification, whose target
+/// reference Resolve walks in the *base* class's scope
+/// (`resolve_extend_modification`). So a `def_id` already attached to a
+/// dimension expression here may point at a declaration of the base class, not
+/// at the enclosing class the expression must actually be read in. Nothing
+/// consumes those `def_id`s today — `resolve_component_dimensions` re-evaluates
+/// `shape_expr` by name against the enclosing class's effective components,
+/// which is why the two-scope probe above gets the right extent. A future
+/// consumer that trusted them would silently take the base class's binding.
+/// Clearing or re-resolving them belongs with that consumer, which can say what
+/// the right scope is; guessing here would only move the trap.
+///
+/// ## `:` in a redeclaration is not judged here
+///
+/// `extends Base(redeclare C a[:])` leaves a `Subscript::Range`, which states no
+/// extent and no binding follows it, so the component ends up rank-zero and the
+/// model is accepted (probe C15). OpenModelica rejects it — "Failed to deduce
+/// dimension 1 of a due to missing binding equation". This is *not* specific to
+/// redeclarations: the identical declaration `C a[:]` with no binding takes the
+/// same silent rank-zero path in this compiler (probe C14/C15 control), so
+/// rejecting it only for redeclarations would split one gap into two behaviours.
+/// The whole `:`-without-binding rule belongs to whoever closes the declaration
+/// path; this function deliberately matches it rather than diverging.
+fn apply_redeclared_dimensions(comp: &mut ast::Component, dims: &[ast::Subscript]) {
+    comp.shape.clear();
+    comp.shape_expr.clear();
+    // Mirror the parser's declaration convention (`process_component_clause`):
+    // every subscript is kept symbolically, and `shape` additionally records the
+    // ones [`ast::Subscript::literal_dimension`] can decide on sight. That
+    // helper is shared with the parser on purpose — a private copy here once
+    // dropped its `Boolean` arm, so `redeclare C a[Boolean]` produced a scalar
+    // while the identical declaration produced two elements.
+    for subscript in dims {
+        comp.shape_expr.push(subscript.clone());
+        if let Some(dim) = subscript.literal_dimension() {
+            comp.shape.push(dim);
+        }
+    }
+}
+
+/// The array dimensions a redeclare modification states, if any.
+///
+/// The parser keeps them on the redeclared name's own `ComponentRefPart`
+/// (`redeclare C a[2]` -> target `a[2]`), so an empty subscript list and an
+/// absent one are both reported as "stated nothing".
+fn redeclared_dimensions(modification: &ast::ExtendModification) -> Option<Vec<ast::Subscript>> {
+    let ast::Expression::Modification { target, .. } = &modification.expr else {
+        return None;
+    };
+    let subs = target.parts.first()?.subs.as_ref()?;
+    (!subs.is_empty()).then(|| subs.clone())
+}
+
 fn collect_redeclarations(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
     extend: &ast::Extend,
     extend_span: Span,
-) -> InstantiateResult<IndexMap<String, String>> {
+) -> InstantiateResult<CollectedRedeclarations> {
     let mut redeclare_types = IndexMap::default();
+    let mut redeclare_dims: IndexMap<String, Vec<ast::Subscript>> = IndexMap::default();
+    let mut redeclared_components: IndexSet<String> = IndexSet::new();
     let mut validation_error: Option<Box<InstantiateError>> = None;
 
     walk_extend_modifications(extend, |modification| {
+        // MLS §7.3: a redeclaration may sit *inside* an ordinary component
+        // modification of the extends clause — `extends Wrap(h(redeclare C
+        // a[2]))` modifies `h` and redeclares `h.a`. Only the outer `h(...)`
+        // reaches this walk, so the redeclaration is recorded against `h`, the
+        // enclosing component whose subtree inherits the dropped dimensions.
+        if !modification.redeclare
+            && let Some(enclosing) = enclosing_component_of_nested_redeclare(modification)
+            && class.components.contains_key(enclosing)
+        {
+            redeclared_components.insert(enclosing.to_string());
+        }
         let Some((target_name, _value_expr)) = redeclare_target_value(modification) else {
             return;
         };
@@ -1516,6 +1403,14 @@ fn collect_redeclarations(
             return;
         }
 
+        redeclared_components.insert(target_name_owned.clone());
+        // MLS §7.3: the redeclaration's own array dimensions, when it states
+        // any, describe the component it replaces. Record them even when the
+        // new type could not be extracted — the shape is stated independently
+        // of whether this phase can name the type.
+        if let Some(dims) = redeclared_dimensions(modification) {
+            redeclare_dims.insert(target_name_owned.clone(), dims);
+        }
         if let Some(new_type_name) = new_type {
             redeclare_types.insert(target_name_owned, new_type_name);
         }
@@ -1525,7 +1420,11 @@ fn collect_redeclarations(
         return Err(err);
     }
 
-    Ok(redeclare_types)
+    Ok(CollectedRedeclarations {
+        types: redeclare_types,
+        dims: redeclare_dims,
+        components: redeclared_components,
+    })
 }
 
 /// MLS §7.3.2: Validates constrainedby type constraints.
@@ -1556,8 +1455,12 @@ fn merge_class_content(
     // These override default bindings in inherited components, e.g., extends Foo(n=2)
     let value_modifications = collect_value_modifications(extend, class);
 
-    // MLS §7.3: Validate redeclarations and collect type changes
-    let redeclare_types = collect_redeclarations(tree, class, extend, extend_span)?;
+    // MLS §7.3: Validate redeclarations and collect what they state
+    let redeclarations = collect_redeclarations(tree, class, extend, extend_span)?;
+
+    // MLS §5.6.1.4: same-named elements from several bases become one element,
+    // so identity is decided on the merged class rather than on each base.
+    let merged = merged_declared_names(target, class);
 
     // Merge components
     for (name, comp) in &class.components {
@@ -1568,7 +1471,7 @@ fn merge_class_content(
 
         if let Some(existing) = target.components.get(name) {
             // MLS §5.6: Check if components are from same origin or have compatible types
-            if !components_are_compatible(existing, comp) {
+            if !inherited_components_are_identical(existing, comp, &merged) {
                 return Err(Box::new(InstantiateError::conflicting_inheritance(
                     name.clone(),
                     "previous base",
@@ -1588,13 +1491,38 @@ fn merge_class_content(
         }
     }
 
+    // MLS §7.3: record every redeclared inherited component *before* applying
+    // the type changes. The redeclared type and its array dimensions are
+    // consumed below; anything else the redeclaration stated is still lost
+    // here, and the mark keeps later phases from reading the surviving
+    // declaration as evidence about the source.
+    //
+    // The mark is deliberately *not* narrowed by the dimension propagation
+    // below: a redeclaration reaching a component through a modifier on an
+    // enclosing declaration (`Holder h(redeclare C a[2])`) still loses its
+    // dimensions — and its type — on a path this function does not own, so
+    // `InstanceData::had_redeclare` must keep covering it.
+    for comp_name in &redeclarations.components {
+        if let Some(comp) = target.components.get_mut(comp_name) {
+            comp.redeclared_by_modification = true;
+        }
+    }
+
+    // MLS §7.3: a redeclaration is a whole declaration, so the dimensions it
+    // states replace the replaced declaration's. This is keyed independently of
+    // the type changes below, because a redeclaration states its shape whether
+    // or not this phase could extract its type.
+    for (comp_name, dims) in &redeclarations.dims {
+        if let Some(comp) = target.components.get_mut(comp_name) {
+            apply_redeclared_dimensions(comp, dims);
+        }
+    }
+
     // MLS §7.3: Apply redeclared types to inherited components
     // This updates the component's type so that instantiation uses the new type's fields
-    for (comp_name, new_type_name) in &redeclare_types {
+    for (comp_name, new_type_name) in &redeclarations.types {
         if let Some(comp) = target.components.get_mut(comp_name) {
-            // Update the type_name to the new type
             comp.type_name = rumoca_ir_ast::Name::from_string(new_type_name);
-            // Update type_def_id by looking up the new type in the tree
             comp.type_def_id = tree.name_map.get(new_type_name).copied().or_else(|| {
                 // Try with shorter name (last segment) for unqualified lookups
                 let short_name = path_utils::class_name_leaf(new_type_name);
@@ -1609,9 +1537,6 @@ fn merge_class_content(
 
     apply_value_modifications(target, value_modifications, extend_span)?;
 
-    // MLS §7.2: Merge nested class modifications into inherited components
-    // Handles extends clauses like: extends Foo(friction(useHeatPort=true))
-    // where the modification targets a sub-parameter of an inherited component
     merge_nested_extends_modifications(target, extend);
 
     // Merge equations
@@ -1629,7 +1554,7 @@ fn merge_class_content(
     // Merge nested classes
     walk_nested_classes(class, |name, nested| {
         if let Some(existing) = target.classes.get(name) {
-            if classes_are_compatible(existing, nested) {
+            if ast::classes_are_semantically_compatible(existing, nested) {
                 return;
             }
             if nested_class_redeclaration_replaces_existing(existing, nested) {
@@ -1730,7 +1655,7 @@ fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Component) {
     let mut prefixed_keys: Vec<String> = Vec::new();
 
     for (key, value) in &comp.modifications {
-        let Some(target_name) = key.strip_prefix(CONSTRAINEDBY_MOD_PREFIX) else {
+        let Some(target_name) = key.strip_prefix(rumoca_core::CONSTRAINEDBY_MOD_PREFIX) else {
             continue;
         };
         prefixed_keys.push(key.clone());
@@ -1742,7 +1667,7 @@ fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Component) {
 
     for (target_name, value) in inserts {
         comp.modifications.insert(target_name.clone(), value);
-        let prefixed_key = format!("{CONSTRAINEDBY_MOD_PREFIX}{target_name}");
+        let prefixed_key = format!("{}{target_name}", rumoca_core::CONSTRAINEDBY_MOD_PREFIX);
         if comp.each_modifications.contains(&prefixed_key) {
             comp.each_modifications.insert(target_name.clone());
         }

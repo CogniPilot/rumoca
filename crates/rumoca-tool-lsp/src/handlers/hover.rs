@@ -1,8 +1,8 @@
 //! Enhanced hover handler for Modelica files.
 
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
-use rumoca_compile::compile::core as rumoca_core;
-use rumoca_compile::parsing::{self, ast};
+use rumoca_compile::parsing::ast;
+use rumoca_core;
 
 use crate::helpers::{
     find_class_at_position, find_component_at_position, find_enclosing_class,
@@ -90,8 +90,8 @@ fn format_component_info(comp: &ast::Component) -> String {
     let mut parts = Vec::new();
 
     match &comp.variability {
-        parsing::Variability::Parameter(_) => parts.push("parameter".to_string()),
-        parsing::Variability::Constant(_) => parts.push("constant".to_string()),
+        rumoca_core::Variability::Parameter(_) => parts.push("parameter".to_string()),
+        rumoca_core::Variability::Constant(_) => parts.push("constant".to_string()),
         _ => {}
     }
 
@@ -222,7 +222,7 @@ fn imported_class_def_id(
     ast: &ast::StoredDefinition,
     tree: &ast::ClassTree,
     name: &str,
-) -> Option<parsing::DefId> {
+) -> Option<rumoca_core::DefId> {
     for class in ast.classes.values() {
         if let Some(def_id) = imported_class_def_id_in_class(class, tree, name) {
             return Some(def_id);
@@ -235,7 +235,7 @@ fn imported_class_def_id_in_class(
     class: &ast::ClassDef,
     tree: &ast::ClassTree,
     name: &str,
-) -> Option<parsing::DefId> {
+) -> Option<rumoca_core::DefId> {
     for import in &class.imports {
         if let Some(def_id) = imported_def_id(import, tree, name) {
             return Some(def_id);
@@ -251,15 +251,15 @@ fn imported_class_def_id_in_class(
 
 fn format_class_info(name: &str, class: &ast::ClassDef) -> String {
     let class_type = match class.class_type {
-        rumoca_compile::parsing::ir_core::ClassType::Model => "model",
-        rumoca_compile::parsing::ir_core::ClassType::Block => "block",
-        rumoca_compile::parsing::ir_core::ClassType::Connector => "connector",
-        rumoca_compile::parsing::ir_core::ClassType::Record => "record",
-        rumoca_compile::parsing::ir_core::ClassType::Type => "type",
-        rumoca_compile::parsing::ir_core::ClassType::Package => "package",
-        rumoca_compile::parsing::ir_core::ClassType::Function => "function",
-        rumoca_compile::parsing::ir_core::ClassType::Class => "class",
-        rumoca_compile::parsing::ir_core::ClassType::Operator => "operator",
+        rumoca_core::ClassType::Model => "model",
+        rumoca_core::ClassType::Block => "block",
+        rumoca_core::ClassType::Connector => "connector",
+        rumoca_core::ClassType::Record => "record",
+        rumoca_core::ClassType::Type => "type",
+        rumoca_core::ClassType::Package => "package",
+        rumoca_core::ClassType::Function => "function",
+        rumoca_core::ClassType::Class => "class",
+        rumoca_core::ClassType::Operator => "operator",
     };
 
     let mut result = format!("```modelica\n{} {}\n```", class_type, name);
@@ -384,7 +384,7 @@ end Modelica;
             .expect("semantic navigation tree");
         let import_line = source.lines().nth(1).expect("import line");
         let char_pos = import_line.find("PID").expect("PID token") as u32 + 1;
-        let hover = handle_hover(source, Some(&ast), Some(&resolved.0), 1, char_pos)
+        let hover = handle_hover(source, Some(&ast), Some(&resolved), 1, char_pos)
             .expect("hover should resolve imported class");
 
         let HoverContents::Markup(contents) = hover.contents else {

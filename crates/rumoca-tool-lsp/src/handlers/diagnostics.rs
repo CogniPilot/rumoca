@@ -1,17 +1,17 @@
 //! Diagnostics handler for Modelica files.
 
+use crate::text_position::span_to_range;
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 use rumoca_compile::Session;
 use rumoca_compile::compile::SemanticDiagnosticsMode;
 #[cfg(test)]
 use rumoca_compile::compile::SourceRootKind;
-use rumoca_compile::compile::core as rumoca_core;
-use rumoca_compile::compile::core::{
-    Diagnostic as CommonDiagnostic, DiagnosticSeverity as CommonSeverity, SourceMap,
-};
 use rumoca_compile::parsing::ast;
 use rumoca_compile::parsing::{ParseError, parse_source_to_ast_with_errors};
-use rumoca_lsp_position::span_to_range;
+use rumoca_core;
+use rumoca_core::{
+    Diagnostic as CommonDiagnostic, DiagnosticSeverity as CommonSeverity, SourceMap,
+};
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, lint};
 use serde_json::json;
 use std::collections::HashSet;
@@ -28,18 +28,26 @@ pub fn compute_diagnostics(
     file_name: &str,
     session: Option<&mut Session>,
 ) -> Vec<Diagnostic> {
-    compute_diagnostics_with_mode(
+    compute_diagnostics_with_options(
         source,
         file_name,
         session,
+        &LintOptions::default(),
         SemanticDiagnosticsMode::Standard,
     )
 }
 
-pub(crate) fn compute_diagnostics_with_mode(
+/// Compute diagnostics using an explicit linter configuration.
+///
+/// The server resolves `lint_options` from the `.rumoca_lint.toml` that applies
+/// to the document (SPEC_0018), so editor diagnostics and `rumoca lint` agree.
+/// Callers with no configuration (WASM, tests) go through
+/// [`compute_diagnostics`], which passes the defaults.
+pub(crate) fn compute_diagnostics_with_options(
     source: &str,
     file_name: &str,
     session: Option<&mut Session>,
+    lint_options: &LintOptions,
     mode: SemanticDiagnosticsMode,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -56,9 +64,7 @@ pub(crate) fn compute_diagnostics_with_mode(
         }
     };
 
-    // Run linter on successfully parsed source
-    let lint_options = LintOptions::default();
-    let lint_messages = lint(source, file_name, &lint_options);
+    let lint_messages = lint(source, file_name, lint_options);
     for msg in lint_messages {
         diagnostics.push(lint_to_diagnostic(&msg));
     }
@@ -158,64 +164,34 @@ fn parse_error_to_diagnostic(error: &ParseError, source: &str) -> Diagnostic {
         ParseError::SyntaxError {
             message,
             expected,
+            unexpected,
             span,
-            ..
         } => {
-            let normalized = normalize_parse_message(message);
+            let normalized = normalize_parse_message(message, unexpected.as_deref(), expected);
             let expected_msg = format_expected_tokens(expected);
             let msg = if expected_msg.is_empty() {
                 normalized
             } else {
                 format!("{normalized} ({expected_msg})")
             };
-            let message_range = range_from_message_location(message, source)
-                .or_else(|| range_from_textual_line_hint(message, source));
-            let top_left_range = || Range {
-                start: Position::new(0, 0),
-                end: Position::new(0, 1),
-            };
-            let (range, precise_range) = match span {
-                None => match message_range {
-                    Some(range) => (range, true),
-                    None => (top_left_range(), false),
-                },
-                Some(span) if is_placeholder_parse_span(span.start.0, span.end.0) => {
-                    match message_range {
-                        Some(range) => (range, true),
-                        None => (top_left_range(), false),
-                    }
-                }
-                Some(span) => {
-                    let span_range = span_to_range(source, span.start.0, span.end.0);
-                    if range_is_top_left(&span_range) {
-                        match message_range {
-                            Some(range) => (range, true),
-                            None => (span_range, true),
-                        }
-                    } else {
-                        (span_range, true)
-                    }
-                }
-            };
-            (range, "EP001".to_string(), msg, precise_range)
+            let range = span_to_range(source, span.start.0, span.end.0);
+            (range, "EP001".to_string(), msg, true)
         }
-        ParseError::NoAstProduced => (
-            Range {
-                start: Position::new(0, 0),
-                end: Position::new(0, 1),
-            },
+        ParseError::NoAstProduced { span } => (
+            span_to_range(source, span.start.0, span.end.0),
             "EP002".to_string(),
             "parsing succeeded but no AST was produced".to_string(),
-            false,
+            true,
         ),
-        ParseError::IoError { path, message } => (
-            Range {
-                start: Position::new(0, 0),
-                end: Position::new(0, 1),
-            },
+        ParseError::IoError {
+            path,
+            message,
+            span,
+        } => (
+            span_to_range(source, span.start.0, span.end.0),
             "EP003".to_string(),
             format!("failed to read `{path}`: {message}"),
-            false,
+            true,
         ),
     };
 
@@ -318,10 +294,10 @@ fn should_compile_for_diagnostics(class: &ast::ClassDef, qualified_name: &str) -
     // targets while still checking their nested runnable classes/functions.
     matches!(
         class.class_type,
-        rumoca_compile::parsing::ir_core::ClassType::Model
-            | rumoca_compile::parsing::ir_core::ClassType::Block
-            | rumoca_compile::parsing::ir_core::ClassType::Class
-            | rumoca_compile::parsing::ir_core::ClassType::Function
+        rumoca_core::ClassType::Model
+            | rumoca_core::ClassType::Block
+            | rumoca_core::ClassType::Class
+            | rumoca_core::ClassType::Function
     )
 }
 
@@ -467,14 +443,6 @@ fn top_left_range(source: &str) -> Range {
     }
 }
 
-fn is_placeholder_parse_span(start_byte: usize, end_byte: usize) -> bool {
-    start_byte == 0 && end_byte <= 1
-}
-
-fn range_is_top_left(range: &Range) -> bool {
-    range.start.line == 0 && range.start.character == 0
-}
-
 fn summarize_message(message: &str) -> String {
     const MAX_MESSAGE_LEN: usize = 180;
     let compact = collapse_whitespace(message);
@@ -521,243 +489,26 @@ fn truncate_message(message: &str, max_len: usize) -> String {
     out
 }
 
-fn normalize_parse_message(message: &str) -> String {
+fn normalize_parse_message(message: &str, unexpected: Option<&str>, expected: &[String]) -> String {
     let compact = collapse_whitespace(message);
-    let lowered = compact.to_ascii_lowercase();
-    if compact.contains("is a reserved keyword in Modelica")
-        && (contains_quoted_keyword(&lowered, "equation")
-            || contains_quoted_keyword(&lowered, "algorithm")
-            || contains_quoted_keyword(&lowered, "initial")
-            || contains_quoted_keyword(&lowered, "public")
-            || contains_quoted_keyword(&lowered, "protected")
-            || contains_quoted_keyword(&lowered, "annotation")
-            || contains_quoted_keyword(&lowered, "external")
-            || contains_quoted_keyword(&lowered, "end")
-            || contains_quoted_keyword(&lowered, "der"))
-    {
-        if contains_quoted_keyword(&lowered, "equation") {
+    if expected.iter().any(|token| token == ";") {
+        if unexpected.is_some_and(|token| token.eq_ignore_ascii_case("equation")) {
             return "unexpected `equation` (possible missing `;` before equation section)"
                 .to_string();
         }
-        if contains_quoted_keyword(&lowered, "algorithm") {
+        if unexpected.is_some_and(|token| token.eq_ignore_ascii_case("algorithm")) {
             return "unexpected `algorithm` (possible missing `;` before algorithm section)"
                 .to_string();
         }
-        if contains_quoted_keyword(&lowered, "end") {
+        if unexpected.is_some_and(|token| token.eq_ignore_ascii_case("end")) {
             return "unexpected `end` (possible missing `;` before end statement)".to_string();
         }
-        if contains_quoted_keyword(&lowered, "der") {
+        if unexpected.is_some_and(|token| token.eq_ignore_ascii_case("der")) {
             return "unexpected `der` (possible missing `;` between equations)".to_string();
         }
-        return "unexpected section keyword (possible missing `;` before this section)".to_string();
-    }
-
-    if compact.starts_with("syntax error: LA(") {
-        if let Some(token) = extract_la1_token(&compact) {
-            if token.eq_ignore_ascii_case("equation") {
-                return "unexpected `equation` (possible missing `;` before equation section)"
-                    .to_string();
-            }
-            return format!("unexpected `{}`", token);
-        }
-        return "syntax error".to_string();
     }
 
     compact
-}
-
-fn contains_quoted_keyword(message: &str, keyword: &str) -> bool {
-    let backtick = format!("`{keyword}`");
-    let apostrophe = format!("'{keyword}'");
-    message.contains(&backtick) || message.contains(&apostrophe)
-}
-
-fn extract_la1_token(message: &str) -> Option<String> {
-    let marker = "LA(1):";
-    let start = message.find(marker)?;
-    let rest = message[start + marker.len()..].trim_start();
-    let end = rest
-        .find(" (")
-        .or_else(|| rest.find(" at "))
-        .unwrap_or(rest.len());
-    let token = rest[..end].trim();
-    if token.is_empty() || token == "$" {
-        None
-    } else {
-        Some(token.to_string())
-    }
-}
-
-fn range_from_message_location(message: &str, _source: &str) -> Option<Range> {
-    let bytes = message.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] != b':' {
-            i += 1;
-            continue;
-        }
-        let Some((line, after_line)) = parse_u32_from(bytes, i + 1) else {
-            i += 1;
-            continue;
-        };
-        if after_line >= bytes.len() || bytes[after_line] != b':' {
-            i += 1;
-            continue;
-        }
-        let Some((column, _after_col)) = parse_u32_from(bytes, after_line + 1) else {
-            i += 1;
-            continue;
-        };
-        if line == 0 || column == 0 {
-            i += 1;
-            continue;
-        }
-        let start = Position::new(line.saturating_sub(1), column.saturating_sub(1));
-        let end = Position::new(start.line, start.character.saturating_add(1));
-        return Some(Range { start, end });
-    }
-    None
-}
-
-fn range_from_textual_line_hint(message: &str, source: &str) -> Option<Range> {
-    let line_number = extract_first_line_number(message)?;
-    if let Some(identifier) = extract_quoted_identifier(message)
-        && let Some((start, end)) = find_identifier_on_line(source, line_number, &identifier)
-    {
-        return Some(span_to_range(source, start, end));
-    }
-    range_for_line_start(source, line_number)
-}
-
-fn extract_quoted_identifier(message: &str) -> Option<String> {
-    extract_between_delimiter(message, '\'').or_else(|| extract_between_delimiter(message, '`'))
-}
-
-fn extract_between_delimiter(text: &str, delimiter: char) -> Option<String> {
-    let start = text.find(delimiter)?;
-    let rest = &text[start + delimiter.len_utf8()..];
-    let end_rel = rest.find(delimiter)?;
-    let candidate = rest[..end_rel].trim();
-    if candidate.is_empty() {
-        None
-    } else {
-        Some(candidate.to_string())
-    }
-}
-
-fn extract_first_line_number(message: &str) -> Option<u32> {
-    let lowered = message.to_ascii_lowercase();
-    let mut words = lowered.split_whitespace();
-    while let Some(word) = words.next() {
-        let normalized = word.trim_matches(|c: char| !c.is_ascii_alphabetic());
-        if normalized != "line" {
-            continue;
-        }
-        let next = words.next()?;
-        let digits: String = next
-            .chars()
-            .skip_while(|ch| !ch.is_ascii_digit())
-            .take_while(|ch| ch.is_ascii_digit())
-            .collect();
-        if let Ok(line) = digits.parse::<u32>()
-            && line > 0
-        {
-            return Some(line);
-        }
-    }
-    None
-}
-
-fn find_identifier_on_line(source: &str, line_number: u32, ident: &str) -> Option<(usize, usize)> {
-    if ident.is_empty() {
-        return None;
-    }
-    let (line_start, line_end) = line_bounds(source, line_number)?;
-    let line_text = &source[line_start..line_end];
-    let mut found = None;
-    for (rel_start, _) in line_text.match_indices(ident) {
-        let start = line_start + rel_start;
-        let end = start + ident.len();
-        if is_identifier_boundary(source, start, end) {
-            found = Some((start, end));
-        }
-    }
-    found
-}
-
-fn is_identifier_boundary(source: &str, start: usize, end: usize) -> bool {
-    let left_ok = source[..start]
-        .chars()
-        .next_back()
-        .is_none_or(|c| !is_identifier_char(c));
-    let right_ok = source[end..]
-        .chars()
-        .next()
-        .is_none_or(|c| !is_identifier_char(c));
-    left_ok && right_ok
-}
-
-fn is_identifier_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-fn range_for_line_start(source: &str, line_number: u32) -> Option<Range> {
-    let (line_start, line_end) = line_bounds(source, line_number)?;
-    let mut start = line_start;
-    for (rel, ch) in source[line_start..line_end].char_indices() {
-        if !ch.is_whitespace() {
-            start = line_start + rel;
-            break;
-        }
-    }
-    let end = source[start..]
-        .chars()
-        .next()
-        .map(|ch| start + ch.len_utf8())
-        .unwrap_or(start);
-    Some(span_to_range(source, start, end))
-}
-
-fn line_bounds(source: &str, line_number: u32) -> Option<(usize, usize)> {
-    if line_number == 0 {
-        return None;
-    }
-    let mut current_line = 1u32;
-    let mut line_start = 0usize;
-
-    for (idx, ch) in source.char_indices() {
-        if current_line == line_number {
-            break;
-        }
-        if ch == '\n' {
-            current_line = current_line.saturating_add(1);
-            line_start = idx + ch.len_utf8();
-        }
-    }
-
-    if current_line != line_number {
-        return None;
-    }
-
-    let line_end = source[line_start..]
-        .find('\n')
-        .map(|rel| line_start + rel)
-        .unwrap_or(source.len());
-    Some((line_start, line_end))
-}
-
-fn parse_u32_from(bytes: &[u8], mut index: usize) -> Option<(u32, usize)> {
-    if index >= bytes.len() || !bytes[index].is_ascii_digit() {
-        return None;
-    }
-    let mut value: u32 = 0;
-    while index < bytes.len() && bytes[index].is_ascii_digit() {
-        value = value
-            .saturating_mul(10)
-            .saturating_add((bytes[index] - b'0') as u32);
-        index += 1;
-    }
-    Some((value, index))
 }
 
 /// Convert a lint message to LSP diagnostic.
@@ -791,8 +542,8 @@ fn lint_to_diagnostic(msg: &LintMessage) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_compile::compile::core::PrimaryLabel;
-    use rumoca_compile::parsing::Span;
+    use rumoca_core::PrimaryLabel;
+    use rumoca_core::Span;
 
     #[test]
     fn parse_diagnostics_include_precise_range_and_compact_message() {

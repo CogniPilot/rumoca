@@ -1873,7 +1873,7 @@ pub struct ComponentStatementGroupColonEquExpression {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComponentStatementGroupFunctionCallArgs {
-    pub function_call_args: crate::ExpressionList,
+    pub function_call_args: crate::FunctionCallArguments,
 }
 
 ///
@@ -2993,7 +2993,7 @@ pub struct ComponentPrimary {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComponentPrimaryOpt {
-    pub function_call_args: crate::ExpressionList,
+    pub function_call_args: crate::FunctionCallArguments,
     pub component_primary_opt0: Option<ComponentPrimaryOpt0>,
 }
 
@@ -4140,7 +4140,9 @@ pub struct FunctionArgumentsNonFirstOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionCallArgs {
+    pub l_paren: crate::ParserToken, /* ( */
     pub function_call_args_opt: Option<FunctionCallArgsOpt>,
+    pub r_paren: crate::ParserToken, /* ) */
 }
 
 ///
@@ -4160,7 +4162,7 @@ pub struct FunctionCallArgsOpt {
 pub struct FunctionCallOutputStatement {
     pub output_expression_list: crate::ExpressionList,
     pub component_reference: rumoca_ir_ast::ComponentReference,
-    pub function_call_args: crate::ExpressionList,
+    pub function_call_args: crate::FunctionCallArguments,
 }
 
 ///
@@ -4201,7 +4203,7 @@ pub struct FunctionPartialClassSpecifier {
 #[derive(Debug, Clone)]
 pub struct GlobalFunctionCall {
     pub global_function_call_group: GlobalFunctionCallGroup,
-    pub function_call_args: crate::ExpressionList,
+    pub function_call_args: crate::FunctionCallArguments,
     pub global_function_call_opt: Option<GlobalFunctionCallOpt>,
 }
 
@@ -4742,6 +4744,7 @@ pub struct OutputExpressionList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OutputExpressionListList {
+    pub comma: crate::ParserToken, /* , */
     pub output_expression_list_opt0: Option<OutputExpressionListOpt0>,
 }
 
@@ -5167,7 +5170,7 @@ pub struct Stream {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct String {
-    pub string: crate::ParserToken, /* "([^"\\]|\\[\s\S])*" */
+    pub string: crate::ParserToken, /* "([^"\\]|\\['"?\\abfnrtv])*" */
 }
 
 ///
@@ -7009,7 +7012,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 61:
     ///
-    /// `string: /"([^"\\]|\\[\s\S])*"/;`
+    /// `string: /"([^"\\]|\\['"?\\abfnrtv])*"/;`
     ///
     #[parol_runtime::function_name::named]
     fn string(&mut self, string: &ParseTreeType<'t>) -> Result<()> {
@@ -15883,21 +15886,31 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 460:
     ///
-    /// `function_call_args: '('^ /* Clipped */ function_call_argsOpt /* Option */ ')'^ /* Clipped */;`
+    /// `function_call_args: '(' function_call_argsOpt /* Option */ ')';`
     ///
     #[parol_runtime::function_name::named]
     fn function_call_args(
         &mut self,
-        _l_paren: &ParseTreeType<'t>,
+        l_paren: &ParseTreeType<'t>,
         _function_call_args_opt: &ParseTreeType<'t>,
-        _r_paren: &ParseTreeType<'t>,
+        r_paren: &ParseTreeType<'t>,
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let l_paren = l_paren
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
+        let r_paren = r_paren
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let function_call_args_opt =
             pop_item!(self, function_call_args_opt, FunctionCallArgsOpt, context);
         let function_call_args_built = FunctionCallArgs {
+            l_paren,
             function_call_args_opt,
+            r_paren,
         };
         // Calling user action here
         self.user_grammar
@@ -16783,17 +16796,21 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 496:
     ///
-    /// `output_expression_listList /* Vec<T>::Push */: ','^ /* Clipped */ output_expression_listOpt0 /* Option */ output_expression_listList;`
+    /// `output_expression_listList /* Vec<T>::Push */: ',' output_expression_listOpt0 /* Option */ output_expression_listList;`
     ///
     #[parol_runtime::function_name::named]
     fn output_expression_list_list_0(
         &mut self,
-        _comma: &ParseTreeType<'t>,
+        comma: &ParseTreeType<'t>,
         _output_expression_list_opt0: &ParseTreeType<'t>,
         _output_expression_list_list: &ParseTreeType<'t>,
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let comma = comma
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let mut output_expression_list_list = pop_item!(
             self,
             output_expression_list_list,
@@ -16808,6 +16825,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let output_expression_list_list_0_built = OutputExpressionListList {
             output_expression_list_opt0,
+            comma,
         };
         // Add an element to the vector
         output_expression_list_list.push(output_expression_list_list_0_built);

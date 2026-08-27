@@ -36,6 +36,17 @@ pub struct Args {
     /// Optional output HTML path
     #[arg(long)]
     output: Option<PathBuf>,
+    /// Compare the existing trace files instead of re-simulating both sides.
+    #[arg(long)]
+    reuse_traces: bool,
+    /// Restrict the comparison to `time <= T` on both traces.
+    ///
+    /// A trajectory whose long-horizon divergence is dynamical rather than a
+    /// compiler defect still has to agree before the trajectories separate, so
+    /// adjudicating that claim means scoring a shorter horizon with the same
+    /// comparator instead of a different one.
+    #[arg(long, value_name = "T")]
+    compare_until: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,16 +82,27 @@ pub fn run(args: Args) -> Result<()> {
     let paths = MslPaths::current();
     let rumoca_trace_path = resolve_trace_path(&paths, &args, TraceSource::Rumoca);
     let omc_trace_path = resolve_trace_path(&paths, &args, TraceSource::Omc);
-    regenerate_traces_for_model(&paths, &args.model, &rumoca_trace_path, &omc_trace_path)?;
+    if args.reuse_traces {
+        require_existing_traces(&rumoca_trace_path, &omc_trace_path)?;
+    } else {
+        regenerate_traces_for_model(&paths, &args.model, &rumoca_trace_path, &omc_trace_path)?;
+    }
 
-    let rumoca_trace = load_trace_json(&rumoca_trace_path).with_context(|| {
+    let mut rumoca_trace = load_trace_json(&rumoca_trace_path).with_context(|| {
         format!(
             "failed to load rumoca trace '{}'",
             rumoca_trace_path.display()
         )
     })?;
-    let omc_trace = load_trace_json(&omc_trace_path)
+    let mut omc_trace = load_trace_json(&omc_trace_path)
         .with_context(|| format!("failed to load OMC trace '{}'", omc_trace_path.display()))?;
+    if let Some(until) = args.compare_until {
+        truncate_trace(&mut rumoca_trace, until)?;
+        truncate_trace(&mut omc_trace, until)?;
+        println!("Comparison horizon restricted to time <= {until}");
+    }
+    let rumoca_trace = rumoca_trace;
+    let omc_trace = omc_trace;
     let aligned = align_traces(&args.model, &rumoca_trace, &omc_trace)?;
     let metric = match compare_model_traces(&args.model, &rumoca_trace, &omc_trace) {
         Ok(metric) => Some(metric),
@@ -120,6 +142,36 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
     println!("Wrote plot: {}", output_path.display());
+    Ok(())
+}
+
+fn require_existing_traces(rumoca_trace_path: &Path, omc_trace_path: &Path) -> Result<()> {
+    for path in [rumoca_trace_path, omc_trace_path] {
+        if !path.is_file() {
+            bail!(
+                "--reuse-traces requires an existing trace at '{}'",
+                path.display()
+            );
+        }
+    }
+    println!("Reusing existing traces (no re-simulation).");
+    Ok(())
+}
+
+/// Drop every sample after `until` from a loaded trace.
+///
+/// This only restricts the window the comparator scores; the comparison itself
+/// stays the repo comparator so a short-horizon verdict is directly comparable
+/// with the full-horizon one.
+fn truncate_trace(trace: &mut SimTrace, until: f64) -> Result<()> {
+    let kept = trace.times.iter().take_while(|&&t| t <= until).count();
+    if kept < 2 {
+        bail!("--compare-until {until} keeps fewer than two samples of the trace");
+    }
+    trace.times.truncate(kept);
+    for series in &mut trace.data {
+        series.truncate(kept);
+    }
     Ok(())
 }
 
@@ -262,6 +314,7 @@ fn trace_from_sim_result(model_name: &str, sim: &SimResult) -> SimTrace {
         names: sim.names.clone(),
         data,
         variable_meta,
+        certification_profile: None,
     }
 }
 
@@ -404,6 +457,7 @@ fn load_omc_csv_as_trace(model_name: &str, csv_path: &Path) -> Result<SimTrace> 
         names,
         data,
         variable_meta: None,
+        certification_profile: None,
     })
 }
 
@@ -859,6 +913,7 @@ mod tests {
                 .map(|column| column.into_iter().map(Some).collect())
                 .collect(),
             variable_meta: None,
+            certification_profile: None,
         }
     }
 
@@ -908,5 +963,86 @@ end SimulationResult;
             result_file,
             "/tmp/Modelica.Blocks.Examples.PID_Controller_res.csv"
         );
+    }
+
+    /// `SimVariableMeta::nominal` is the exact source text of the declared
+    /// `nominal` modification, recovered from the checked DAE's provenance span.
+    /// It is source syntax, not an evaluated scale: a literal modification round
+    /// trips as a parseable number, but any expression-valued `nominal` — the
+    /// common MSL form — comes back as the expression's own source text and
+    /// cannot be `parse::<f64>()`d.
+    ///
+    /// That is why the trace schema carries no nominal field: populating it
+    /// would require *evaluating* the modification, not stringifying it, and a
+    /// string-parsed nominal would silently work on literal fixtures while
+    /// yielding `None` for every parameter-scaled MSL variable. This test
+    /// compiles both shapes and pins each one, so re-introducing a
+    /// string-parsed nominal fails here instead of shipping as a
+    /// half-dead feature.
+    #[test]
+    fn compiled_model_nominal_metadata_is_declaration_source_text() {
+        const SOURCE: &str = "\
+model NominalScaled
+  parameter Real scale = 500.0;
+  Real T(start = 300.0, nominal = 1000.0);
+  Real p(start = 1.0, nominal = 2.0 * scale);
+equation
+  der(T) = -T;
+  der(p) = -p;
+end NominalScaled;
+";
+        // `add_document` retains the source text, which the checked DAE requires
+        // to validate and resolve provenance spans. `add_parsed_batch` stores an
+        // empty document body and only recovers the text by reading the URI from
+        // disk, so an in-memory fixture name registers a zero-length source and
+        // ToDae rejects every span in it.
+        let mut session = Session::new(SessionConfig::default());
+        session
+            .add_document("NominalScaled.mo", SOURCE)
+            .expect("fixture model parses");
+        let compiled = session
+            .compile_model_dae_strict_reachable_uncached_with_recovery("NominalScaled")
+            .expect("fixture model compiles to DAE");
+
+        let meta =
+            rumoca_sim::build_variable_meta(&compiled.dae, &["T".to_string(), "p".to_string()])
+                .expect("checked DAE identity backs every requested output");
+        let entry = meta.first().expect("T metadata");
+        let literal_nominal = entry
+            .nominal
+            .as_deref()
+            .expect("T declares nominal = 1000.0");
+        assert_eq!(
+            literal_nominal, "1000.0",
+            "nominal metadata is the declaration's own source text"
+        );
+
+        let scaled = meta.get(1).expect("p metadata");
+        let expression_nominal = scaled
+            .nominal
+            .as_deref()
+            .expect("p declares nominal = 2.0 * scale");
+        assert_eq!(
+            expression_nominal, "2.0 * scale",
+            "an expression-valued nominal round trips as its source text"
+        );
+        assert!(
+            expression_nominal.parse::<f64>().is_err(),
+            "an expression-valued nominal is not a number: {expression_nominal:?}"
+        );
+
+        // The trace schema therefore exposes no nominal scale; the comparison
+        // normalizes degenerate channels against their own magnitude instead.
+        // This exhaustive struct literal is the compile-time half of the guard:
+        // re-adding a `nominal` field to the trace schema stops compiling here
+        // until a producer can actually populate it.
+        let trace_meta = SimTraceVariableMeta {
+            name: entry.name.clone(),
+            role: Some(entry.role.clone()),
+            value_type: entry.value_type.clone(),
+            variability: entry.variability.clone(),
+            time_domain: entry.time_domain.clone(),
+        };
+        assert_eq!(trace_meta.name, "T");
     }
 }

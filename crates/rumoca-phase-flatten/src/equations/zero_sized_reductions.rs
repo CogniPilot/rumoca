@@ -8,7 +8,12 @@ pub(super) fn simplify_zero_sized_reductions(
     prefix: &ast::QualifiedName,
 ) -> ast::Expression {
     match expr {
-        ast::Expression::FunctionCall { comp, args, span } => {
+        ast::Expression::FunctionCall {
+            comp,
+            args,
+            is_partial_application,
+            span,
+        } => {
             if args.len() == 1
                 && expression_is_statically_zero_sized(ctx, &args[0], prefix)
                 && let Some(neutral) = zero_sized_reduction_neutral(comp, *span)
@@ -22,6 +27,7 @@ pub(super) fn simplify_zero_sized_reductions(
                     .iter()
                     .map(|arg| simplify_zero_sized_reductions(ctx, arg, prefix))
                     .collect(),
+                is_partial_application: *is_partial_application,
                 span: *span,
             }
         }
@@ -111,9 +117,15 @@ pub(super) fn simplify_zero_sized_reductions(
             subscripts: subscripts.clone(),
             span: *span,
         },
-        ast::Expression::FieldAccess { base, field, span } => ast::Expression::FieldAccess {
+        ast::Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            span,
+        } => ast::Expression::FieldAccess {
             base: Arc::new(simplify_zero_sized_reductions(ctx, base, prefix)),
             field: field.clone(),
+            field_def_id: *field_def_id,
             span: *span,
         },
         ast::Expression::NamedArgument { name, value, span } => ast::Expression::NamedArgument {
@@ -303,22 +315,27 @@ fn fold_reduction_terms(
 mod tests {
     use super::*;
 
-    fn part(name: &str) -> ast::ComponentRefPart {
+    fn part(name: &str, index: usize) -> ast::ComponentRefPart {
         ast::ComponentRefPart {
             ident: rumoca_core::Token {
                 text: std::sync::Arc::from(name),
                 ..Default::default()
             },
             subs: None,
+            def_id: Some(rumoca_core::DefId::new(17_001 + index as u32)),
         }
     }
 
     fn component_ref(path: &[&str]) -> ast::ComponentReference {
         ast::ComponentReference {
             local: false,
-            parts: path.iter().map(|name| part(name)).collect(),
+            parts: path
+                .iter()
+                .enumerate()
+                .map(|(index, name)| part(name, index))
+                .collect(),
             span: rumoca_core::Span::DUMMY,
-            def_id: None,
+            qualified_display_name: None,
         }
     }
 
@@ -330,6 +347,7 @@ mod tests {
         ast::Expression::FunctionCall {
             comp: component_ref(&[name]),
             args,
+            is_partial_application: false,
             span: rumoca_core::Span::DUMMY,
         }
     }
@@ -338,6 +356,7 @@ mod tests {
         ast::Expression::FunctionCall {
             comp: component_ref(path),
             args,
+            is_partial_application: false,
             span: rumoca_core::Span::DUMMY,
         }
     }
@@ -393,7 +412,10 @@ mod tests {
             .insert("tank.topPorts".to_string(), vec![2]);
 
         let expr = call("sum", vec![var_ref(&["topPorts", "m_flow"])]);
-        let ast::Expression::FunctionCall { comp, args, span } = expr else {
+        let ast::Expression::FunctionCall {
+            comp, args, span, ..
+        } = expr
+        else {
             panic!("expected function call");
         };
         let expanded = expand_reduction_over_array_ref(
@@ -420,7 +442,10 @@ mod tests {
             .insert("tank.topPorts".to_string(), vec![2]);
 
         let expr = call("product", vec![var_ref(&["topPorts", "m_flow"])]);
-        let ast::Expression::FunctionCall { comp, args, span } = expr else {
+        let ast::Expression::FunctionCall {
+            comp, args, span, ..
+        } = expr
+        else {
             panic!("expected function call");
         };
         let expanded = expand_reduction_over_array_ref(

@@ -10,12 +10,14 @@ use rumoca_ir_ast as ast;
 use rumoca_ir_ast::{
     Visitor, walk_equation_default, walk_expression_default, walk_statement_default,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod annotations;
 mod builtin_calls;
 mod clocks;
+mod enclosing_references;
 mod expr;
+mod external_objects;
 mod functions;
 mod lookup;
 mod operators;
@@ -26,7 +28,9 @@ mod type_roots;
 use annotations::*;
 use builtin_calls::*;
 use clocks::*;
+use enclosing_references::*;
 use expr::*;
+use external_objects::*;
 use functions::*;
 use lookup::*;
 use operators::*;
@@ -113,7 +117,7 @@ struct CheckContext {
 #[derive(Clone)]
 struct OperatorRecordContext {
     name: String,
-    def_id: Option<DefId>,
+    def_id: DefId,
 }
 
 impl CheckContext {
@@ -134,16 +138,12 @@ impl CheckContext {
 }
 
 fn span_from_location(location: &Location) -> Option<Span> {
-    if location.file_name.is_empty() {
+    if location.source == SourceId::DUMMY {
         return None;
     }
     let start = location.start as usize;
     let end = (location.end as usize).max(start.saturating_add(1));
-    Some(Span::from_offsets(
-        source_id_for(&location.file_name),
-        start,
-        end,
-    ))
+    Some(Span::from_offsets(location.source, start, end))
 }
 
 fn label_from_location(
@@ -159,7 +159,7 @@ fn label_from_token(token: &Token, context: &str, message: impl Into<String>) ->
     let _ = context;
     let start = token.location.start as usize;
     let end = (token.location.end as usize).max(start.saturating_add(1));
-    let span = Span::from_offsets(source_id_for(&token.location.file_name), start, end);
+    let span = Span::from_offsets(token.location.source, start, end);
     PrimaryLabel::new(span).with_message(message)
 }
 
@@ -209,15 +209,9 @@ fn semantic_error(
     Diagnostic::error(code, message, primary_label)
 }
 
-/// Run all semantic checks on a StoredDefinition and collect diagnostics.
-pub fn check_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
-    let _context = activate_semantic_context(def, source_map);
-    run_semantic_checks(def)
-}
-
 /// Run all semantic check batches with a single active source-map setup.
-pub fn check_all_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
-    let _context = activate_semantic_context(def, source_map);
+pub fn check_all_semantics(def: &StoredDefinition, _source_map: &SourceMap) -> Vec<Diagnostic> {
+    let _context = activate_semantic_context(def);
     let mut diags = run_semantic_checks(def);
     diags.extend(run_chained_relational_checks(def));
     diags.extend(run_clock_expression_semantic_checks(def));
@@ -227,6 +221,13 @@ pub fn check_all_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Ve
     diags.extend(run_state_machine_semantic_checks(def));
     diags.extend(run_restriction_semantic_checks(def));
     diags
+}
+
+/// Run checks that require the resolved scope tree and declaration identities.
+pub fn check_resolved_semantics(tree: &ast::ClassTree) -> Vec<Diagnostic> {
+    let mut diagnostics = run_external_object_checks(tree);
+    diagnostics.extend(run_enclosing_reference_checks(tree));
+    diagnostics
 }
 
 fn run_semantic_checks(def: &StoredDefinition) -> Vec<Diagnostic> {
@@ -267,7 +268,9 @@ impl ast::Visitor for SemanticClassCheckVisitor<'_> {
         if class.operator_record {
             self.ctx.current_operator_record = Some(OperatorRecordContext {
                 name: class.name.text.to_string(),
-                def_id: class.def_id,
+                def_id: class
+                    .def_id
+                    .expect("resolved operator-record class has a DefId"),
             });
         }
         if class.class_type == ClassType::Operator {
@@ -319,7 +322,6 @@ impl ast::Visitor for SemanticClassCheckVisitor<'_> {
                 check_statement(stmt, self.ctx, self.diags);
             }
         }
-        check_when_reinit_contracts(class, self.diags);
         for nested in class.classes.values() {
             self.visit_class_def(nested)?;
         }
@@ -333,10 +335,6 @@ impl ast::Visitor for SemanticClassCheckVisitor<'_> {
     }
 }
 
-// ============================================================================
-// Batch 1: Structural ClassDef checks
-// ============================================================================
-
 fn check_class_structural(
     class: &ClassDef,
     def: &StoredDefinition,
@@ -349,6 +347,7 @@ fn check_class_structural(
     check_duplicate_names(class, diags);
     check_operator_restrictions(
         class,
+        def,
         parent_is_operator_record,
         parent_is_operator_class,
         operator_record,
@@ -789,10 +788,6 @@ fn check_selective_import_dupes(
     }
 }
 
-// ============================================================================
-// Cross-class checks (need access to full StoredDefinition)
-// ============================================================================
-
 struct ResolvedComponentTarget<'a> {
     component: &'a ast::Component,
     type_class: Option<&'a ClassDef>,
@@ -1185,7 +1180,7 @@ fn check_parameter_variability(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
         let Some(binding) = &comp.binding else {
             continue;
         };
-        let mut refs = HashSet::new();
+        let mut refs = BTreeSet::new();
         collect_component_refs(binding, &continuous_vars, &mut refs, false);
         let Some(dep) = refs.into_iter().next() else {
             continue;
@@ -1215,10 +1210,8 @@ fn check_parameter_variability(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
 
 /// INST-008: Detect cyclic parameter bindings.
 fn check_cyclic_parameter_bindings(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    use std::collections::HashMap;
-
     // Build dependency graph: parameter name -> set of parameter names referenced in binding
-    let param_names: HashSet<String> = class
+    let param_names: Vec<String> = class
         .components
         .iter()
         .filter(|(_, c)| {
@@ -1229,20 +1222,21 @@ fn check_cyclic_parameter_bindings(class: &ClassDef, diags: &mut Vec<Diagnostic>
         })
         .map(|(n, _)| n.clone())
         .collect();
+    let param_name_set: HashSet<String> = param_names.iter().cloned().collect();
 
     if param_names.is_empty() {
         return;
     }
 
-    let mut deps: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut deps: HashMap<String, BTreeSet<String>> = HashMap::new();
     for (name, comp) in &class.components {
-        if !param_names.contains(name) {
+        if !param_name_set.contains(name) {
             continue;
         }
-        let mut refs = HashSet::new();
+        let mut refs = BTreeSet::new();
         if let Some(binding) = &comp.binding {
             // Skip if-branches to avoid false cycles from conditional mutual deps
-            collect_component_refs(binding, &param_names, &mut refs, true);
+            collect_component_refs(binding, &param_name_set, &mut refs, true);
         }
         deps.insert(name.clone(), refs);
     }
@@ -1285,7 +1279,7 @@ fn check_cyclic_parameter_bindings(class: &ClassDef, diags: &mut Vec<Diagnostic>
 
 fn has_cycle(
     node: &str,
-    deps: &std::collections::HashMap<String, HashSet<String>>,
+    deps: &std::collections::HashMap<String, BTreeSet<String>>,
     visited: &mut HashSet<String>,
     on_stack: &mut HashSet<String>,
 ) -> bool {
@@ -1302,9 +1296,7 @@ fn has_cycle(
         })
     });
 
-    if !found_cycle {
-        on_stack.remove(node);
-    }
+    on_stack.remove(node);
     found_cycle
 }
 
@@ -1316,12 +1308,12 @@ fn has_cycle(
 fn collect_component_refs(
     expr: &Expression,
     known_params: &HashSet<String>,
-    refs: &mut HashSet<String>,
+    refs: &mut BTreeSet<String>,
     skip_if_branches: bool,
 ) {
     struct ComponentRefCollector<'a> {
         known_params: &'a HashSet<String>,
-        refs: &'a mut HashSet<String>,
+        refs: &'a mut BTreeSet<String>,
         skip_if_branches: bool,
     }
 
@@ -1367,10 +1359,6 @@ fn collect_component_refs(
     };
     let _ = collector.visit_expression(expr);
 }
-
-// ============================================================================
-// Batch 2: Context-sensitive checks
-// ============================================================================
 
 /// Check equations for context-sensitive issues.
 fn check_equation(eq: &Equation, ctx: &mut CheckContext, diags: &mut Vec<Diagnostic>) {
@@ -1782,25 +1770,6 @@ fn check_for_variable_assignment_eq(
             ),
         ));
     }
-}
-
-// ============================================================================
-// Batch 3: Expression checks
-// ============================================================================
-
-/// EXPR-014: Check for chained relational operators (e.g., 1 < 2 < 3).
-pub fn check_chained_relationals(
-    def: &StoredDefinition,
-    source_map: &SourceMap,
-) -> Vec<Diagnostic> {
-    let _context = activate_semantic_context(def, source_map);
-    run_chained_relational_checks(def)
-}
-
-/// EXPR-004: Check for der() in function algorithm sections.
-pub fn check_der_in_functions(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
-    let _context = activate_semantic_context(def, source_map);
-    run_der_in_function_checks(def)
 }
 
 #[cfg(test)]

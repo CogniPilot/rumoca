@@ -1,5 +1,5 @@
 use rumoca_core::{SourceId, Span};
-/// Phase 5.4 — Drone Monte Carlo simulation on NVIDIA RTX 3090.
+/// Drone Monte Carlo simulation on NVIDIA RTX 3090.
 ///
 /// Planar quadrotor — small-angle linearisation (valid near hover, θ << 1 rad):
 ///   States  y = [x, y, theta, vx, vy, omega]
@@ -45,8 +45,11 @@ use rumoca_ir_solve::{
 fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
     ScalarProgramBlock::with_source_span(
         rows,
-        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len())
+            .require_provenance("MLIR Monte Carlo fixture")
+            .expect("fixture span is source-backed"),
     )
+    .expect("fixture program is computable")
 }
 
 fn compile_to_gpu_blob(
@@ -126,10 +129,17 @@ fn drone_solve() -> SolveProblem {
     // Row 5: der(omega) = 0
     let row5 = vec![Const { dst: 0, value: 0.0 }, StoreOutput { src: 0 }];
 
-    SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(spb(
-        vec![row0, row1, row2, row3, row4, row5],
-        "drone_monte_carlo_derivative.mo",
-    )))
+    SolveProblem::with_derivative_rhs(
+        ComputeBlock::from_scalar_program_block(spb(
+            vec![row0, row1, row2, row3, row4, row5],
+            "drone_monte_carlo_derivative.mo",
+        )),
+        // Six states (x, y, theta, vx, vy, omega) and four parameters
+        // (m, J, F, g): the derivative seed space is state columns followed by
+        // parameter columns, so both extents belong to the fixture.
+        rumoca_ir_solve::VarLayout::from_parts(Default::default(), 6, 4),
+    )
+    .expect("fixture derivative problem is valid by construction")
 }
 
 fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::SolveModel {
@@ -147,7 +157,7 @@ fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::Solv
         .map(|s| s.to_string())
         .collect();
 
-    rumoca_ir_solve::SolveModel {
+    let mut model = rumoca_ir_solve::SolveModel {
         problem: SolveProblem {
             schema_version: rumoca_ir_solve::SOLVE_SCHEMA_VERSION,
             layout: rumoca_ir_solve::VarLayout::from_parts(Default::default(), 6, 6),
@@ -159,19 +169,26 @@ fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::Solv
                 residual: zero_block.clone(),
                 derivative_rhs: solve.continuous.derivative_rhs.clone(),
                 algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                manifold_residual: ComputeBlock::default(),
+                manifold_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                // Not an authored field: the refresh owners are derived from
+                // the finished problem below, so the literal only reserves the
+                // slot Solve lowering fills.
+                refresh_owners: rumoca_ir_solve::ContinuousRefreshOwners::default(),
             },
             initialization: InitializationSolveSystem {
                 residual: ComputeBlock::from_scalar_program_block(zero_rb.clone()),
                 row_targets: Vec::new(),
-                projection_indices: Vec::new(),
-                projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                row_roles: Vec::new(),
+                projection_unknowns: Vec::new(),
+                projection_plan: rumoca_ir_solve::InitializationProjectionPlan::default(),
                 update_rhs: ScalarProgramBlock::default(),
                 update_targets: Vec::new(),
             },
-            discrete: DiscreteSolveSystem {
-                rhs: zero_rb.clone(),
-                ..Default::default()
-            },
+            // The drone fixture owns no discrete variable, so the discrete
+            // system is empty. A one-row RHS with no update target would claim
+            // a discrete program that assigns nothing.
+            discrete: DiscreteSolveSystem::default(),
             events: SolveEventPartition::default(),
             clocks: SolveClockPartition::default(),
             solve_layout: SolveLayout {
@@ -190,6 +207,8 @@ fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::Solv
                         .map(|(i, n)| (n, vec![i]))
                         .collect(),
                 },
+                variable_declarations: Vec::new(),
+                variable_storage_runs: Vec::new(),
                 state_scalar_count: 6,
                 algebraic_scalar_count: 0,
                 output_scalar_count: 0,
@@ -200,25 +219,46 @@ fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::Solv
                 discrete_valued_scalar_names: Vec::new(),
                 relation_memory_parameter_indices: Vec::new(),
                 initial_event_parameter_index: None,
+                initial_homotopy_parameter_index: None,
+                terminal_event_parameter_index: None,
                 pre_param_bindings: Vec::new(),
             },
         },
+        pure_calls: rumoca_ir_solve::SolvePureCallTable::default(),
         artifacts: rumoca_ir_solve::SolveArtifacts {
             continuous: rumoca_ir_solve::ContinuousSolveArtifacts {
-                mass_matrix: vec![vec![1.0; 6]],
+                structural: rumoca_ir_solve::ContinuousStructuralArtifacts::default(),
+                mass_matrix: rumoca_ir_solve::MassMatrix::Identity,
                 implicit_jacobian_v: zero_block,
                 implicit_jacobian_v_scalar: zero_rb.clone(),
+                manifold_jacobian_v: ComputeBlock::default(),
                 full_jacobian_v: zero_rb.clone(),
             },
             ..Default::default()
         },
         initial_y: vec![0.0; 6], // start at origin, hover
+        solver_nominals: vec![1.0; 6],
         parameters: vec![m, j, f, g],
         external_tables: rumoca_ir_solve::ExternalTables::default(),
         visible_names: names,
         visible_value_rows: ScalarProgramBlock::default(),
         variable_meta: Vec::new(),
-    }
+    };
+    issue_refresh_owners(&mut model);
+    model
+}
+
+/// Issue the checked continuous refresh owners of a finished fixture problem.
+///
+/// Solve lowering issues them from the whole problem once it is complete
+/// (`rumoca-phase-solve/src/lower.rs`), and every runtime fixture in the
+/// workspace re-derives them the same way rather than hand-writing plans, so a
+/// fixture can never carry a refresh inventory the real pipeline would not
+/// produce for the same problem.
+fn issue_refresh_owners(model: &mut rumoca_ir_solve::SolveModel) {
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
+            .expect("fixture problem issues checked continuous refresh owners");
 }
 
 // ─── CPU reference integrator ─────────────────────────────────────────────────
@@ -363,7 +403,7 @@ fn drone_monte_carlo_gpu() {
     );
 }
 
-/// Phase 6.2 — device-side Euler: verify `batch_euler_cuda_device` produces
+/// Device-side Euler: verify `batch_euler_cuda_device` produces
 /// identical results to `batch_euler_cuda` (host-side update reference).
 ///
 /// The device-side variant eliminates all per-step h2d/d2h round-trips by

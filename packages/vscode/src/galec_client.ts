@@ -13,7 +13,7 @@ import {
     TransportKind,
 } from 'vscode-languageclient/node';
 
-const SERVER_BINARY = 'rumoca-galec-lsp';
+const SERVER_BINARY = 'rumoca-lsp-galec';
 
 function serverExeName(): string {
     return process.platform === 'win32' ? `${SERVER_BINARY}.exe` : SERVER_BINARY;
@@ -80,7 +80,7 @@ function serverExecutes(serverPath: string): boolean {
 
 /**
  * Build the GALEC `.alg` language client, or return `undefined` (having logged
- * why) when no usable `rumoca-galec-lsp` is available — GALEC features are then
+ * why) when no usable `rumoca-lsp-galec` is available — GALEC features are then
  * simply absent, without disturbing the Modelica server.
  */
 export function createGalecLanguageClient(
@@ -91,14 +91,14 @@ export function createGalecLanguageClient(
     const serverPath = resolveServerPath(context, config);
     if (!serverPath || !fs.existsSync(serverPath)) {
         log(
-            'rumoca-galec-lsp not found; GALEC (.alg) language features are disabled. ' +
+            'rumoca-lsp-galec not found; GALEC (.alg) language features are disabled. ' +
                 'Install it with `cargo install rumoca` or set "rumoca.galecServerPath".'
         );
         return undefined;
     }
     if (!serverExecutes(serverPath)) {
         log(
-            `rumoca-galec-lsp at ${serverPath} could not execute (--version probe failed); ` +
+            `rumoca-lsp-galec at ${serverPath} could not execute (--version probe failed); ` +
                 'GALEC (.alg) language features are disabled.'
         );
         return undefined;

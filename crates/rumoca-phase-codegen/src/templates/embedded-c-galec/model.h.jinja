@@ -1,45 +1,74 @@
-/* {{ block_name }} — GALEC-derived embedded C export (SPEC_0034 GAL-024).
-{%- for line in conformance_header.lines %}
- * {{ line }}
-{%- endfor %} */
-#ifndef {{ include_guard }}
-#define {{ include_guard }}
+{#- Every emitted C identifier comes from the single symbol policy in
+    `embedded-c-galec/symbols.jinja`, registered here as
+    `galec-c-symbols.jinja` and shared by the header, the source, and the
+    Production Code manifest. This template declares no reserved list and no
+    allocation of its own: a second declaration site is what renames the same
+    variable differently across artifacts. -#}
+{%- import "galec-c-symbols.jinja" as c_symbol_policy -%}
+{%- import "galec-c-scratch.jinja" as scratch_policy -%}
+{%- set c_symbols = c_symbol_policy.symbols -%}
+{%- set c_state_symbols = c_symbol_policy.state_symbols -%}
+{%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
+{%- macro c_type(kind) -%}
+{%- if kind == "real" -%}float{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
+{%- endmacro -%}
+{#- The block's working memory is a decision taken in the checked view, not
+    here: `scratch_layout` says which regions exist, which share storage, and
+    the checked slot-byte budget. The shared scratch partial is the one
+    declaration site for the concrete instance-owned C types. -#}
+{%- set scratch_layout = algorithm_code.package.block.scratch_layout -%}
+{% block conformance %}/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
+ * GALEC-derived embedded C export (SPEC_0034 GAL-024).
+ * NOT an eFMI Production Code container.
+ * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
+ * MISRA compliance and DO-178C compliance are not claimed.
+ * Target syntax and layout are owned by this template. */{% endblock %}
+#ifndef RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED
+#define RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED
 
 #include <stdbool.h>
 #include <stdint.h>
-
-/* Block state: every manifest-listed variable of the projected GALEC
- * block, including the 'previous(x)' discrete-state slots committed at
- * the end of dostep (eFMI trap T2). */
-typedef struct {
-{%- for variable in variables %}
-    {{ variable.c_type }} {{ variable.c_name }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* {{ variable.name }} ({{ variable.causality }}) */
+/* Compile-time deployment accounting (SPEC_0034 GAL-039).
+ * `CHECKED_SCRATCH_SLOT_BYTES` excludes target ABI padding; use
+ * `sizeof({{ c_model }}State)` for the exact compiler/target instance cost.
+ * Auxiliary mutable storage is zero: working memory is instance-owned. */
+#define RUMOCA_{{ c_model | upper }}_DISTINCT_INSTANCE_REENTRANT UINT32_C(1)
+{%- if scratch_layout.bytes is none %}
+{{ fail("unsupported-feature:embedded-c-scratch-size") }}
+{%- else %}
+#define RUMOCA_{{ c_model | upper }}_CHECKED_SCRATCH_SLOT_BYTES UINT32_C({{ scratch_layout.bytes }})
+{%- endif %}
+#define RUMOCA_{{ c_model | upper }}_AUXILIARY_SCRATCH_BYTES UINT32_C(0)
+{% if scratch_layout.groups|length > 0 %}
+/* Instance-owned working memory. Regions are overlaid only where the checked
+ * call-graph proof says their owners cannot be active together: neither owner
+ * reaches the other through the block's calls. Slots inside one region are
+ * overlaid into a `rumoca_galec_arm<n>` union only where the checked placement
+ * proof says each is used in exactly one arm of one conditional and those arms
+ * exclude one another. A region's `rumoca_galec_arena` is one flat float array
+ * carrying the Real array slots whose live ranges the checked projection
+ * proved disjoint wherever their fixed offsets overlap; the generated source
+ * reaches each one through a typed pointer at its offset, so every access is a
+ * float access into the arena and every 4-byte offset is naturally aligned.
+ * These slots
+ * are execution storage, not GALEC LogicalData; no manifest consumer binds to
+ * them. Distinct State objects therefore have disjoint mutable storage and may
+ * execute concurrently. Calls on the same State still require ordinary
+ * exclusive mutable ownership. */
+{{ scratch_policy.declarations(c_model, scratch_layout, c_symbols) }}
+{% endif %}
+typedef struct {{ c_model }}StateTag {
+{%- for variable in algorithm_code.variables %}
+    {{ c_type(variable.kind) }} {{ symbol(c_state_symbols, variable.name) }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* declaration {{ variable.ordinal }}: {{ variable.name | replace("*/", "* /") | replace("/*", "/ *") }} ({{ variable.causality }}) */
 {%- endfor %}
-} {{ struct_name }};
+    uint32_t rumoca_galec_error_signal_status; /* eFMI ErrorSignalStatus */
+{%- if scratch_layout.groups|length > 0 %}
+    {{ c_model }}Scratch rumoca_galec_scratch; /* instance-owned working memory */
+{%- endif %}
+} {{ c_model }}State;
 
-/* The three GALEC block-interface methods (eFMI §3.1.3): parameter-free,
- * all I/O through the block state.
- * - startup: initializes every writable variable (call once first);
- * - recalibrate: recomputes dependent parameters after tunable-parameter
- *   changes (parameters stay tunable at runtime);
- * - dostep: one fixed-sample control-cycle tick. */
-void {{ function_prefix }}_startup({{ struct_name }} *self);
-void {{ function_prefix }}_recalibrate({{ struct_name }} *self);
-void {{ function_prefix }}_dostep({{ struct_name }} *self);
+void {{ c_model }}_startup({{ c_model }}State *self);
+void {{ c_model }}_recalibrate({{ c_model }}State *self);
+void {{ c_model }}_dostep({{ c_model }}State *self);
 
-/* Project-neutral convenience wrappers for applications that want a stable
- * eFMI-shaped call surface independent of the generated model prefix. */
-#ifndef EFMI_STATE_TYPE
-#  define EFMI_STATE_TYPE(model) model##State
 #endif
-#ifndef EFMI_INIT
-#  define EFMI_INIT(model, state) model##_startup(state)
-#endif
-#ifndef EFMI_RECALIBRATE
-#  define EFMI_RECALIBRATE(model, state) model##_recalibrate(state)
-#endif
-#ifndef EFMI_STEP
-#  define EFMI_STEP(model, state) model##_dostep(state)
-#endif
-
-#endif /* {{ include_guard }} */
