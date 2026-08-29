@@ -2,6 +2,28 @@
 
 Contributions are welcome.
 
+## License and sign-off
+
+Rumoca is licensed under the [Apache License 2.0](LICENSE). By contributing you
+agree that your contribution is licensed under those terms, per section 5 of
+that license: a contribution submitted for inclusion in the work is under the
+Apache License 2.0 unless you state otherwise explicitly.
+
+Every commit must carry a `Signed-off-by` line certifying the
+[Developer Certificate of Origin 1.1](https://developercertificate.org/). Use
+`git commit -s`, which adds the line for you from your configured name and
+email. Both must be real; the sign-off is the certification that you have the
+right to submit the work under the project's license.
+
+Do not add third-party code, generated output, or specification text to this
+repository without recording its license. Vendored trees keep their upstream
+license file in place and are listed in [NOTICE](NOTICE); a new runtime
+dependency shows up in
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) on the next run of
+`infra/licenses/generate.sh`, and its license must be in the accepted list in
+`infra/licenses/about.toml`. Adding a license to that list is a compliance
+decision, not a build fix.
+
 ## Setup
 
 Install the `xtask` developer CLI launcher once:
