@@ -192,12 +192,14 @@ fn lower_function<'a, 'dae>(
         .expect("checked function identity resolves");
     let variables = HashMap::new();
     let previous = HashMap::new();
+    let structural_locals = structural_locals::StructuralFunctionLocals::derive(view, function);
     let mut lowerer =
         ExpressionLowerer::with_do_step_effects(view, definitions, &variables, &previous)
+            .with_structural_function_locals(structural_locals.clone())
             .with_emission(emission);
     lowerer.function_scope = Some(id);
     let parameters = function_parameters(view, function)?;
-    let locals = function_locals(view, function)?;
+    let locals = function_locals(view, function, &structural_locals)?;
     let mut statements = Vec::new();
     for statement in function.statements() {
         lower_function_statement(view, statement, &mut lowerer, &mut statements)?;
@@ -310,6 +312,7 @@ fn append_output_declarations<'dae>(
 fn function_locals<'dae>(
     view: dae::DaeView<'dae>,
     function: dae::FunctionView<'dae>,
+    structural: &structural_locals::StructuralFunctionLocals<'dae>,
 ) -> Result<Vec<gast::VariableDeclaration>, GalecTargetError> {
     let output_names = flattened_output_names(view, function)?;
     let mut locals = Vec::new();
@@ -317,6 +320,9 @@ fn function_locals<'dae>(
         .values()
         .filter(|value| value.role() == dae::FunctionValueRole::Local)
     {
+        if structural.elides_value(value.id()) {
+            continue;
+        }
         let ty = view
             .value_type(value.value_type())
             .expect("checked function value type resolves");
@@ -744,6 +750,12 @@ fn lower_function_assignment<'a, 'dae>(
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
     statements: &mut Vec<gast::Spanned<gast::Statement>>,
 ) -> Result<(), GalecTargetError> {
+    if lowerer
+        .structural_function_locals
+        .elides_definition(definition)
+    {
+        return Ok(());
+    }
     let target = view
         .function(definition.id().function())
         .expect("checked function identity resolves")

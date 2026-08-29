@@ -688,6 +688,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             if self.function_scope != Some(definition.id().function()) {
                 return Ok(None);
             }
+            if self
+                .structural_function_locals
+                .elides_definition(definition)
+            {
+                return Ok(None);
+            }
             let value = self
                 .view
                 .function(definition.id().function())

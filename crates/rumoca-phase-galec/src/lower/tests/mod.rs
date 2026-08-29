@@ -6,6 +6,7 @@ mod conditional_records;
 mod correlated_guards;
 mod dynamic_index_bounds;
 mod indexed_updates;
+mod structural_locals;
 
 #[test]
 fn identity_element_is_integer_and_diagonal_by_index_equality() {
@@ -96,6 +97,20 @@ fn binding_dependencies_issue_dependent_parameters_in_topological_order() {
             })
             .collect();
         assert_eq!(ordered_names, ["derived", "downstream"]);
+        let derived = classified
+            .iter()
+            .find(|variable| variable.variable.name().as_str() == "derived")
+            .expect("derived is classified");
+        let downstream = classified
+            .iter()
+            .find(|variable| variable.variable.name().as_str() == "downstream")
+            .expect("downstream is classified");
+        assert_ne!(derived.id, downstream.id);
+        assert_ne!(
+            TemporaryNamespace::Dependent(derived.id).to_string(),
+            TemporaryNamespace::Dependent(downstream.id).to_string(),
+            "independent dependent-parameter lowerers cannot mint colliding temporaries"
+        );
     });
 }
 

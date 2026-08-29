@@ -24,10 +24,12 @@ use inline_policy::EmissionFacts;
 mod local_integer_bounds;
 mod pre_references;
 mod start;
+mod structural_locals;
 mod user_functions;
 mod whole_array_move;
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 use rumoca_core::Span;
 use rumoca_eval_dae::NumericEvaluator;
@@ -68,6 +70,32 @@ struct ClassifiedVariable<'dae> {
     class: VariableClass,
     scalar_type: gast::ScalarType,
     name: gast::Name,
+}
+
+/// Semantic owner of every temporary minted by one expression lowerer.
+///
+/// Separate lowerers may publish locals into the same GALEC method scope. A
+/// free-form string cannot prove those namespaces disjoint, so the lowerer
+/// accepts only this closed owner vocabulary. Owners that can occur more than
+/// once retain their branded DAE identity instead of accepting a caller-made
+/// ordinal or spelling.
+#[derive(Clone, Copy)]
+enum TemporaryNamespace<'dae> {
+    Value,
+    Causal,
+    Clocked(dae::ClockId<'dae>),
+    Dependent(dae::VariableId<'dae>),
+}
+
+impl fmt::Display for TemporaryNamespace<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Value => formatter.write_str("value"),
+            Self::Causal => formatter.write_str("causal"),
+            Self::Clocked(clock) => write!(formatter, "clocked{}", clock.index()),
+            Self::Dependent(variable) => write!(formatter, "dependent{}", variable.index()),
+        }
+    }
 }
 
 /// One checked classification product. Dependent-parameter ordering is derived
@@ -1172,11 +1200,13 @@ struct ExpressionLowerer<'a, 'dae> {
     /// Primitive expression values already committed to a function local
     /// ([`AssignedPrimitives`]).
     assigned_primitive_expressions: AssignedPrimitives,
+    /// Pure aggregate definitions whose checked local storage is unnecessary.
+    structural_function_locals: structural_locals::StructuralFunctionLocals<'dae>,
     called_user_functions: HashSet<u32>,
     function_scope: Option<dae::FunctionId<'dae>>,
     temporary_locals: Vec<gast::VariableDeclaration>,
     temporary_counter: usize,
-    temporary_namespace: String,
+    temporary_namespace: TemporaryNamespace<'dae>,
     capture_assertions: bool,
     seen_assertion_calls: HashSet<FunctionAssertionCallKey>,
     pending_prefix_statements: Vec<gast::Spanned<gast::Statement>>,
@@ -1364,11 +1394,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             array_update_index_locals: HashMap::new(),
             local_integer_bounds: LocalIntegerBounds::new(),
             assigned_primitive_expressions: AssignedPrimitives::default(),
+            structural_function_locals: structural_locals::StructuralFunctionLocals::default(),
             called_user_functions: HashSet::new(),
             function_scope: None,
             temporary_locals: Vec::new(),
             temporary_counter: 0,
-            temporary_namespace: "value".to_owned(),
+            temporary_namespace: TemporaryNamespace::Value,
             capture_assertions: false,
             seen_assertion_calls: HashSet::new(),
             state_shapes_by_name: None,
@@ -1508,8 +1539,16 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         std::mem::take(&mut self.called_user_functions)
     }
 
-    fn with_temporary_namespace(mut self, namespace: impl Into<String>) -> Self {
-        self.temporary_namespace = namespace.into();
+    fn with_temporary_namespace(mut self, namespace: TemporaryNamespace<'dae>) -> Self {
+        self.temporary_namespace = namespace;
+        self
+    }
+
+    fn with_structural_function_locals(
+        mut self,
+        locals: structural_locals::StructuralFunctionLocals<'dae>,
+    ) -> Self {
+        self.structural_function_locals = locals;
         self
     }
 
@@ -1742,6 +1781,16 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         scalar_type: gast::ScalarType,
     ) -> Result<TypedExpression, GalecTargetError> {
         if self.function_scope == Some(definition.id().function()) {
+            if self
+                .structural_function_locals
+                .elides_definition(definition)
+            {
+                let value = self.lower_at(definition.rhs(), indices)?;
+                return Ok(TypedExpression {
+                    expression: coerce(value, scalar_type, definition.provenance().span())?,
+                    scalar_type,
+                });
+            }
             let value = self
                 .view
                 .function(definition.id().function())
