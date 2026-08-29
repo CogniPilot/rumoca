@@ -1,3 +1,14 @@
+//! Damped Newton solve for a discrete-frozen event system.
+//!
+//! Newton's method with a finite-difference Jacobian and a backtracking line
+//! search: J. E. Dennis Jr. and R. B. Schnabel, "Numerical Methods for
+//! Unconstrained Optimization and Nonlinear Equations", SIAM Classics in
+//! Applied Mathematics 16, 1996. Chapter 5 covers the method and its local
+//! convergence; section 5.4 gives the forward-difference step, whose optimal
+//! relative size is the square root of the unit roundoff, which is what
+//! `FINITE_DIFFERENCE_RELATIVE_STEP` is; section 6.3 covers the backtracking
+//! line search that `NEWTON_LINE_SEARCH_STEPS` bounds.
+
 use nalgebra::{DMatrix, DVector};
 
 use super::solve_ops::RuntimeSolveError;

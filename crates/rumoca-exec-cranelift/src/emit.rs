@@ -6443,6 +6443,14 @@ fn emit_compare_op(
     }
 }
 
+/// Emit an unrolled dense linear solve: Gaussian elimination with partial
+/// pivoting followed by back substitution.
+///
+/// G. H. Golub and C. F. Van Loan, "Matrix Computations", 4th ed., Johns
+/// Hopkins University Press 2013, sections 3.2 and 3.4. The pivot search and
+/// row interchange are emitted rather than branched on, so the compiled code
+/// takes the same path as the interpreter in
+/// `rumoca_eval_solve::linear_solve` and the two agree bit for bit.
 fn emit_dense_linear_solve(
     fb: &mut FunctionBuilder<'_>,
     matrix: &mut [cranelift_codegen::ir::Value],

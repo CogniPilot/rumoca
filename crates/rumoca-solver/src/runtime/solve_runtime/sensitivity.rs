@@ -2,6 +2,18 @@
 //! `SolveRuntime`, split out of `runtime.rs` to keep it under the SPEC_0021
 //! file-size limit. Child module of `runtime`, so the `impl SolveRuntime`
 //! here retains access to the runtime's private fields and helper methods.
+//!
+//! # References
+//!
+//! Forward-mode JVP and reverse-mode VJP are the two sweep directions of
+//! algorithmic differentiation: A. Griewank and A. Walther, "Evaluating
+//! Derivatives", 2nd ed., SIAM 2008, doi:10.1137/1.9780898717761, chapters 3
+//! and 4. The steady-state adjoint, in which the adjoint system is solved once
+//! at the converged state rather than integrated backwards, is Y. Cao, S. Li,
+//! L. Petzold and R. Serban, "Adjoint sensitivity analysis for
+//! differential-algebraic equations: the adjoint DAE system and its numerical
+//! solution", SIAM Journal on Scientific Computing 24(3):1076-1089, 2003,
+//! doi:10.1137/S1064827501380630.
 
 use super::*;
 

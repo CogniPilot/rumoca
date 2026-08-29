@@ -1,3 +1,12 @@
+//! Row scaling and the scaled Newton system for the algebraic projection.
+//!
+//! Scaling rows by their own magnitude before measuring convergence, so that a
+//! residual test is a statement about the unknowns rather than about the units
+//! the equations happen to be written in, is J. E. Dennis Jr. and R. B.
+//! Schnabel, "Numerical Methods for Unconstrained Optimization and Nonlinear
+//! Equations", SIAM 1996, section 7.2 and the scaled stopping criteria of
+//! section 7.2.1.
+
 use faer::{
     Col,
     prelude::Solve,

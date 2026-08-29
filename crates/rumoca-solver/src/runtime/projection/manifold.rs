@@ -1,3 +1,15 @@
+//! Newton projection back onto the constraint manifold retained by index
+//! reduction.
+//!
+//! Reprojecting the numerical solution onto the lower-order constraints that
+//! index reduction differentiated away is the standard cure for drift off the
+//! constraint manifold: E. Hairer and G. Wanner, "Solving Ordinary Differential
+//! Equations II: Stiff and Differential-Algebraic Problems", 2nd rev. ed.,
+//! Springer 1996, section VII.2. The damped Newton iteration and its
+//! backtracking line search are J. E. Dennis Jr. and R. B. Schnabel, "Numerical
+//! Methods for Unconstrained Optimization and Nonlinear Equations", SIAM 1996,
+//! chapters 5 and 6.
+
 use nalgebra::DMatrix;
 use rumoca_ir_solve as solve;
 

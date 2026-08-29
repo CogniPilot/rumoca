@@ -1,5 +1,14 @@
 //! BLT (Block Lower Triangular) block construction from SCCs.
 //!
+//! Permuting a matched sparse system to block triangular form by taking the
+//! strongly connected components of the matched digraph is the Dulmage-
+//! Mendelsohn decomposition: A. L. Dulmage and N. S. Mendelsohn, "Coverings of
+//! bipartite graphs", Canadian Journal of Mathematics 10:517-534, 1958,
+//! doi:10.4153/CJM-1958-052-0. The algorithmic treatment, including why the
+//! SCC order is the correct solve order, is I. S. Duff, A. M. Erisman and J. K.
+//! Reid, "Direct Methods for Sparse Matrices", 2nd ed., Oxford University Press
+//! 2017, chapter 6.
+//!
 //! Regular equation families whose rows are provably self-contained are emitted
 //! as one compact [`BltBlock::StructuredScalar`] and removed from the Tarjan
 //! node set, so a whole-array ODE produces one block instead of one block (and

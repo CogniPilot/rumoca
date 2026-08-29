@@ -996,6 +996,20 @@ impl StructuralPattern {
         columns
     }
 
+    /// Partition the columns into groups no two of which share a row.
+    ///
+    /// This is structurally orthogonal column partitioning for Jacobian
+    /// compression: one directional derivative per group recovers every entry
+    /// of the columns in it, so the sweep count drops from `columns` to
+    /// `groups`. A. R. Curtis, M. J. D. Powell and J. K. Reid, "On the
+    /// estimation of sparse Jacobian matrices", Journal of the Institute of
+    /// Mathematics and its Applications 13(1):117-119, 1974, introduced the
+    /// technique; T. F. Coleman and J. J. More, "Estimation of sparse Jacobian
+    /// matrices and graph coloring problems", SIAM Journal on Numerical
+    /// Analysis 20(1):187-209, 1983, doi:10.1137/0720013, recast it as graph
+    /// coloring. The survey is A. H. Gebremedhin, F. Manne and A. Pothen,
+    /// "What color is your Jacobian? Graph coloring for computing derivatives",
+    /// SIAM Review 47(4):629-705, 2005, doi:10.1137/S0036144504444711.
     pub fn column_coloring(&self) -> ColumnColoring {
         match &self.representation {
             PatternRepresentation::Empty | PatternRepresentation::Diagonal => {
@@ -1074,6 +1088,13 @@ fn coloring_for_full_columns(columns: u32) -> ColumnColoring {
     }
 }
 
+/// Closed-form coloring for a banded pattern.
+///
+/// A band of total width `lower + upper + 1` needs exactly that many groups and
+/// they are the residue classes of the column index modulo the width. This is
+/// the band case of Curtis, Powell and Reid (1974), where the optimal partition
+/// is known without running a coloring heuristic; see the citation on
+/// [`StructuralPattern::column_coloring`].
 fn coloring_for_banded_columns(columns: u32, lower: u32, upper: u32) -> ColumnColoring {
     let color_count = u64::from(lower)
         .saturating_add(u64::from(upper))

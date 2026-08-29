@@ -1,5 +1,9 @@
 //! Recognize the singular-system constraints this phase is allowed to reduce.
 //!
+//! The reduction these preflights gate is Pantelides differentiation with
+//! dummy-derivative state selection; see the References section of the parent
+//! module, [`super`], for the citations.
+//!
 //! Nothing here rewrites a DAE. Each function reports what the source system
 //! already proves: which states a residual defines directly, which residuals
 //! are holonomic, and whether an expression survives the exact symbolic

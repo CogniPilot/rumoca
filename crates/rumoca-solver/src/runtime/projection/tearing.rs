@@ -3,10 +3,16 @@
 //! When the constructor tore a coupled block into a small iteration (tear) set
 //! plus an ordered back-substitution, the projection iterates Newton only over
 //! the tear variables and recovers every other unknown by evaluating its causal
-//! row's exact explicit assignment. This is the causalized solve OpenModelica
-//! performs: it keeps the nonlinear system at the tear dimension and never
-//! forms the dense, often ill-conditioned Jacobian over the whole loop, so the
-//! block converges from starts where the dense block Newton diverges.
+//! row's exact explicit assignment. The method is the tearing of H. Elmqvist
+//! and M. Otter, "Methods for tearing systems of equations in object-oriented
+//! modelling", Proceedings of ESM'94, European Simulation Multiconference,
+//! Barcelona, 1994, pp. 326-332, as presented in F. E. Cellier and E. Kofman,
+//! "Continuous System Simulation", Springer 2006, chapter 7. It keeps the
+//! nonlinear system at the tear dimension and never forms the dense, often
+//! ill-conditioned Jacobian over the whole loop, so the block converges from
+//! starts where the dense block Newton diverges. OpenModelica causalizes the
+//! same loops the same way, which is a useful behavioural cross-reference when
+//! a block's tear set is compared against it, not the authority for the method.
 //!
 //! Back-substitution is exact-only by construction. Every causal step is an
 //! exact explicit assignment for its unknown: prepare-time tearing

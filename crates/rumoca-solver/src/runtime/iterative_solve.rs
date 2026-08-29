@@ -1,5 +1,13 @@
 //! Matrix-free iterative linear solve for the steady-state adjoint.
 //!
+//! The method is restarted GMRES(m): Y. Saad and M. H. Schultz, "GMRES: a
+//! generalized minimal residual algorithm for solving nonsymmetric linear
+//! systems", SIAM Journal on Scientific and Statistical Computing 7(3):856-869,
+//! 1986, doi:10.1137/0907058. Textbook treatment, including the restart
+//! trade-off between memory and the loss of the finite-termination guarantee:
+//! Y. Saad, "Iterative Methods for Sparse Linear Systems", 2nd ed., SIAM 2003,
+//! chapter 6.
+//!
 //! Restarted GMRES for a general (nonsymmetric) operator `A`, accessed only
 //! through matrix-vector products `v ↦ A·v`. The steady adjoint uses it with the
 //! reverse VJP as the `A = (∂f/∂y)ᵀ` operator, so the dense operator is never

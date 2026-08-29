@@ -42,9 +42,12 @@ pub struct AlgebraicProjectionBlock {
     pub y_indices: Vec<usize>,
     /// Structural tearing of this coupled block. When present, the runtime
     /// projection iterates Newton only over the tear variables and recovers
-    /// the remaining unknowns by ordered back-substitution, matching the
-    /// causalized solve OpenModelica performs. Absence selects the dense
-    /// block Newton over every unknown.
+    /// the remaining unknowns by ordered back-substitution, in the sense of
+    /// Elmqvist and Otter, ESM'94, and Cellier and Kofman, "Continuous System
+    /// Simulation", chapter 7. OpenModelica causalizes the same loops the same
+    /// way, which makes it a behavioural cross-reference rather than the
+    /// authority for the method. Absence selects the dense block Newton over
+    /// every unknown.
     #[serde(default)]
     pub tearing: Option<BlockTearing>,
 }

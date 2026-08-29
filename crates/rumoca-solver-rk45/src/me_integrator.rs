@@ -4,6 +4,17 @@
 //! controller, and the most recently accepted continuous extension. FMI
 //! lifecycle, event/root handling, output cadence, tracing, and component
 //! policy remain in the common host.
+//!
+//! # References
+//!
+//! The stage tableau and the embedded fourth-order error estimate are the pair
+//! of J. R. Dormand and P. J. Prince, "A family of embedded Runge-Kutta
+//! formulae", Journal of Computational and Applied Mathematics 6(1):19-26,
+//! 1980, doi:10.1016/0771-050X(80)90013-3. The step-size controller is the
+//! standard elementary one: E. Hairer, S. P. Norsett and G. Wanner, "Solving
+//! Ordinary Differential Equations I: Nonstiff Problems", 2nd rev. ed.,
+//! Springer 1993, section II.4. The continuous extension lives in
+//! [`crate::dense_output`] and carries its own citation.
 
 use rumoca_solver::fmi_me::{
     MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeIntegrationError,
@@ -417,6 +428,13 @@ fn error_norm(
         .fold(0.0_f64, f64::max))
 }
 
+/// Elementary step-size controller for an embedded pair of order `p = 5`.
+///
+/// `factor = safety * err^(-1/(p-1))`, clipped to a growth window. The safety
+/// factor 0.9 and the clip window are the conventional values of Hairer,
+/// Norsett and Wanner, "Solving Ordinary Differential Equations I", 2nd rev.
+/// ed., section II.4 (equations II.4.12 and II.4.13); the exponent -0.2 is
+/// -1/(p-1) for this pair.
 fn adapt_step(step: f64, error_norm: f64) -> f64 {
     if error_norm <= 0.0 {
         return (step * 5.0).max(MIN_STEP);

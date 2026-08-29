@@ -1,3 +1,16 @@
+//! Continuous extension (dense output) for the Dormand-Prince 5(4) pair.
+//!
+//! `DOPRI5_DENSE_COEFFICIENTS` is a published table, not a fit: the rational
+//! entries are exact and every one of them must stay exact. The interpolant is
+//! the free continuous extension for the DOPRI5 stages, given by L. F.
+//! Shampine, "Some Practical Runge-Kutta Formulas", Mathematics of Computation
+//! 46(173):135-150, 1986, doi:10.1090/S0025-5718-1986-0815836-3, and tabulated
+//! in E. Hairer, S. P. Norsett and G. Wanner, "Solving Ordinary Differential
+//! Equations I: Nonstiff Problems", 2nd rev. ed., Springer 1993, section II.6.
+//! The underlying pair is J. R. Dormand and P. J. Prince, "A family of embedded
+//! Runge-Kutta formulae", Journal of Computational and Applied Mathematics
+//! 6(1):19-26, 1980, doi:10.1016/0771-050X(80)90013-3.
+
 use rumoca_solver::fmi_me::{MeIntegrationError, MeNumericalFailure};
 
 const METHOD: &str = "rk45";

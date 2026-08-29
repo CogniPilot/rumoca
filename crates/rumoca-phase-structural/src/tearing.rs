@@ -2,6 +2,18 @@
 //!
 //! Converts an N-equation algebraic loop into K iteration (tear) variables
 //! plus (N-K) causally ordered steps, reducing the nonlinear solve dimension.
+//!
+//! # References
+//!
+//! Tearing an algebraic loop down to a small residual set solved by Newton,
+//! with the remaining unknowns recovered by causal back-substitution, is H.
+//! Elmqvist and M. Otter, "Methods for tearing systems of equations in
+//! object-oriented modelling", Proceedings of ESM'94, European Simulation
+//! Multiconference, Barcelona, 1994, pp. 326-332. The heuristic this module
+//! implements, and the reason a minimum tear set is not required for
+//! correctness, are F. E. Cellier and E. Kofman, "Continuous System
+//! Simulation", Springer 2006, chapter 7. Choosing a minimum tear set is
+//! NP-hard, which is why every implementation including this one is greedy.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 

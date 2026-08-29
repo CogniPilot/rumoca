@@ -1,4 +1,11 @@
 //! Per-iteration bound on a Newton step taken by the algebraic projection.
+//!
+//! A trust region on the Newton step, expressed here as a per-unknown relative
+//! bound rather than a norm ball, is the globalization strategy of J. E. Dennis
+//! Jr. and R. B. Schnabel, "Numerical Methods for Unconstrained Optimization
+//! and Nonlinear Equations", SIAM 1996, chapter 6; section 6.3 is the
+//! line-search counterpart the projection also uses, and section 7.2 is why the
+//! bound is relative to each unknown's own magnitude.
 
 /// Per-iteration bound on how far one unknown may move, as a fraction of its own
 /// magnitude, in the branch-preserving algebraic projection.

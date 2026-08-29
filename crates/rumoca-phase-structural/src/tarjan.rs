@@ -1,5 +1,8 @@
 //! Tarjan's algorithm for strongly connected components.
 //!
+//! R. E. Tarjan, "Depth-first search and linear graph algorithms", SIAM Journal
+//! on Computing 1(2):146-160, 1972, doi:10.1137/0201010.
+//!
 //! The depth-first search runs on an explicit stack. Array-shaped models
 //! produce dependency chains hundreds of thousands of equations long, and the
 //! recursive form overflows the main thread's stack on those. Children are

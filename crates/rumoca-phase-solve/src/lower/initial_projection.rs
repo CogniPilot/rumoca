@@ -628,10 +628,19 @@ impl<'dae> InitialIncidence<'dae> {
 /// Assign each unknown of a component a distinct row that reads it.
 ///
 /// Returns the matched `(row, unknown)` pairs, or `None` when a `fixed = false`
-/// parameter of the component is left without one. This is the Hungarian
-/// augmenting-path search over the row/unknown bipartite graph: each round either
-/// matches the next unknown to a free row or reroutes an already-matched row to
-/// make one free, and an unknown that neither reaches is one no row can determine.
+/// parameter of the component is left without one. This is an augmenting-path
+/// search for a maximum matching over the row/unknown bipartite graph: each round
+/// either matches the next unknown to a free row or reroutes an already-matched
+/// row to make one free, and an unknown that neither reaches is one no row can
+/// determine. The augmenting-path characterization is C. Berge, PNAS
+/// 43(9):842-844, 1957; the alternating-tree search per vertex is the
+/// unweighted case of H. W. Kuhn's Hungarian method, "The Hungarian method for
+/// the assignment problem", Naval Research Logistics Quarterly 2(1-2):83-97,
+/// 1955, doi:10.1002/nav.3800020109, refined in matrix form by J. Munkres,
+/// "Algorithms for the assignment and transportation problems", Journal of the
+/// SIAM 5(1):32-38, 1957. This code solves the unweighted matching problem, not
+/// the weighted assignment problem the Hungarian method is named for, so no
+/// cost matrix or dual potentials appear.
 /// Augmenting never un-matches an unknown, so running the parameters first (their
 /// `InitialUnknown` ordering) guarantees the maximum number of them is covered.
 fn match_component(component: &ProjectionComponent) -> Option<Vec<(usize, InitialUnknown)>> {
