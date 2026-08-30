@@ -104,16 +104,130 @@ struct AssetFile {
     owner: String,
 }
 
+/// Target names that are PERMANENTLY RETIRED, with the message resolution
+/// reports. A directory reappearing under one of these names fails the build
+/// here, so the retirement cannot be undone by re-adding files: removing a
+/// name from this list is an explicit reviewed decision, and these
+/// identities never return.
+///
+/// `c-ode` and `embedded-c-galec` are retired because the C export surface is
+/// the combined FMI 3 ME+CS product plus the Solve-rendered embedded target,
+/// and because GALEC never emits C: all Production/Embedded C renders from
+/// the refined Solve product.
+const RETIRED_TARGETS: &[(&str, &str)] = &[
+    (
+        "c-ode",
+        "target 'c-ode' is retired: use the 'fmi3' target (FMI 3.0 ME+CS); Model Exchange serves host-owned integration and Co-Simulation serves the built-in solver",
+    ),
+    (
+        "embedded-c-galec",
+        "target 'embedded-c-galec' is retired: GALEC never emits C; it is superseded by the Solve-rendered embedded C target",
+    ),
+];
+
+/// Target names that are SUSPENDED, with the message resolution reports.
+/// Distinct from retirement: a suspended product's identity is valid
+/// architecture and RETURNS when the checked roots its message names have
+/// landed; removal from this list is that re-registration act, reviewed
+/// against those roots. A directory reappearing while the name is listed
+/// fails the build with the suspension message.
+///
+/// `galec-production` (the eFMU container) is suspended pending its
+/// Solve-rendered Production Code leaf: it returns with two checked per-file
+/// roots, the Algorithm Code leaf from GALEC and the Production Code C/H
+/// leaf from the refined `SolveAlgorithmBlock`. Only its invalid
+/// AC-to-C implementation was deleted.
+const SUSPENDED_TARGETS: &[(&str, &str)] = &[(
+    "galec-production",
+    "target 'galec-production' is suspended pending its Solve-rendered Production Code leaf: the eFMU container returns when both checked per-file roots land (Algorithm Code from GALEC, Production Code C from the refined SolveAlgorithmBlock); the Algorithm Code representation is available today via the 'galec' target",
+)];
+
 fn main() -> BuildResult<()> {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let templates_dir = manifest_dir.join("src/templates");
     println!("cargo:rerun-if-changed={}", templates_dir.display());
 
     let targets = discover_targets(&templates_dir)?;
+    reject_retired_target_dirs(&targets)?;
+    reject_algorithm_code_c_templates(&targets)?;
     validate_unique_shared_names(&targets)?;
     let generated = render_generated_templates_module(&manifest_dir, &targets);
     let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
     fs::write(out_dir.join("templates_generated.rs"), generated)?;
+    Ok(())
+}
+
+/// Fail the build when a retired or suspended target directory reappears.
+/// Both lists are authoritative over the filesystem, so creep-back is a
+/// compile error carrying the retirement or suspension message rather than a
+/// silently revived product. The two states stay distinct: retired
+/// identities never return; a suspended identity returns by removing its
+/// list entry once the checked roots its message names have landed.
+fn reject_retired_target_dirs(targets: &[TargetDir]) -> BuildResult<()> {
+    for target in targets {
+        if let Some((_, message)) = RETIRED_TARGETS
+            .iter()
+            .find(|(name, _)| *name == target.name)
+        {
+            return Err(build_error(format!(
+                "retired target directory reappeared at {}: {message}",
+                target.manifest_path.display()
+            ))
+            .into());
+        }
+        if let Some((_, message)) = SUSPENDED_TARGETS
+            .iter()
+            .find(|(name, _)| *name == target.name)
+        {
+            return Err(build_error(format!(
+                "suspended target directory reappeared at {}: {message}",
+                target.manifest_path.display()
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Fail the build when any Algorithm Code target bundles a C/H template or
+/// declares a C/H product file. GALEC never emits C: every Production or
+/// Embedded C artifact renders from the refined Solve product.
+///
+/// This line/extension scan is a CREEP-BACK TRIPWIRE, not the construction
+/// proof: the authoritative gate is the mandatory closed per-file
+/// kind/context schema and compatibility table (SPEC_0034 GAL-043).
+fn reject_algorithm_code_c_templates(targets: &[TargetDir]) -> BuildResult<()> {
+    for target in targets {
+        let manifest = fs::read_to_string(&target.manifest_path)?;
+        let is_algorithm_code = manifest
+            .lines()
+            .any(|line| line.trim_start().starts_with("ir") && line.contains("\"algorithm-code\""));
+        if !is_algorithm_code {
+            continue;
+        }
+        for template in &target.templates {
+            let stem = template.path.trim_end_matches(".jinja");
+            if stem.ends_with(".c") || stem.ends_with(".h") {
+                return Err(build_error(format!(
+                    "Algorithm Code target '{}' bundles C/H template '{}': GALEC never emits C; render C from the refined Solve product instead",
+                    target.name, template.path
+                ))
+                .into());
+            }
+        }
+        for line in manifest.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("path") && (trimmed.contains(".c\"") || trimmed.contains(".h\""))
+            {
+                return Err(build_error(format!(
+                    "Algorithm Code target '{}' declares C/H product '{}': GALEC never emits C; render C from the refined Solve product instead",
+                    target.name,
+                    trimmed
+                ))
+                .into());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -694,7 +808,25 @@ fn render_generated_templates_module(manifest_dir: &Path, targets: &[TargetDir])
     }
     render_builtin_targets(&mut out, targets);
     render_shared_templates(&mut out, targets);
+    render_retired_targets(&mut out);
     out
+}
+
+fn render_retired_targets(out: &mut String) {
+    out.push_str("\npub const RETIRED_TARGETS: &[RetiredTarget] = &[\n");
+    for (name, message) in RETIRED_TARGETS {
+        out.push_str(&format!(
+            "    RetiredTarget {{ name: \"{name}\", message: \"{message}\" }},\n"
+        ));
+    }
+    out.push_str("];\n");
+    out.push_str("\npub const SUSPENDED_TARGETS: &[SuspendedTarget] = &[\n");
+    for (name, message) in SUSPENDED_TARGETS {
+        out.push_str(&format!(
+            "    SuspendedTarget {{ name: \"{name}\", message: \"{message}\" }},\n"
+        ));
+    }
+    out.push_str("];\n");
 }
 
 fn render_target_constants(out: &mut String, manifest_dir: &Path, target: &TargetDir) {

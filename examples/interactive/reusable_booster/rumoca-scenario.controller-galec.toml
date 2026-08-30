@@ -9,5 +9,5 @@ file = "ReusableBoosterLanding.mo"
 name = "ReusableBoosterEmbeddedControlLaw"
 
 [codegen]
-target = "galec-production"
-output_dir = "gen/reusable_booster_controller_efmu"
+target = "galec"
+output_dir = "gen/reusable_booster_controller_alg"

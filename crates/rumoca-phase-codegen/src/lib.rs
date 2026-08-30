@@ -88,8 +88,7 @@ pub use errors::CodegenError;
 ///   exactly one product file; and
 /// * a **support partial** is declared by a `[[partials]]` entry, renders no
 ///   product file at all, and exists only to be `import`ed, `include`d, or
-///   `extends`ed by artifact templates. `embedded-c-galec/symbols.jinja` — the
-///   single declaration site of the GALEC-derived C symbol policy — is one.
+///   `extends`ed by artifact templates.
 ///
 /// Either kind may be published to the shared render environment under a
 /// globally unique name: `[[partials]].name` for a support partial,
@@ -198,7 +197,53 @@ pub mod templates {
         }
     }
 
+    /// A PERMANENTLY RETIRED target name and the message resolution reports.
+    /// A retired identity never returns.
+    ///
+    /// Retirement is authoritative over the registry: [`builtin_target`]
+    /// refuses a retired name even if a directory under that name were ever
+    /// bundled again, and `build.rs` fails the build first. Removing an entry
+    /// is an explicit reviewed decision, never a side effect of adding files.
+    #[derive(Clone, Copy, Debug)]
+    pub struct RetiredTarget {
+        pub name: &'static str,
+        pub message: &'static str,
+    }
+
+    /// A SUSPENDED target name and the message resolution reports. Distinct
+    /// from retirement: the identity is valid architecture and RETURNS once
+    /// the checked roots its message names have landed; removing its entry is
+    /// that re-registration act, reviewed against those roots.
+    #[derive(Clone, Copy, Debug)]
+    pub struct SuspendedTarget {
+        pub name: &'static str,
+        pub message: &'static str,
+    }
+
+    /// The retirement record for `name`, when it names a retired target.
+    pub fn retired_target(name: &str) -> Option<&'static RetiredTarget> {
+        RETIRED_TARGETS.iter().find(|target| target.name == name)
+    }
+
+    /// Every permanently retired target name.
+    pub fn retired_targets() -> &'static [RetiredTarget] {
+        RETIRED_TARGETS
+    }
+
+    /// The suspension record for `name`, when it names a suspended target.
+    pub fn suspended_target(name: &str) -> Option<&'static SuspendedTarget> {
+        SUSPENDED_TARGETS.iter().find(|target| target.name == name)
+    }
+
+    /// Every currently suspended target name.
+    pub fn suspended_targets() -> &'static [SuspendedTarget] {
+        SUSPENDED_TARGETS
+    }
+
     pub fn builtin_target(name: &str) -> Option<&'static BuiltinTarget> {
+        if retired_target(name).is_some() || suspended_target(name).is_some() {
+            return None;
+        }
         BUILTIN_TARGETS.iter().find(|target| target.name == name)
     }
 
@@ -208,50 +253,6 @@ pub mod templates {
 
     pub fn builtin_template_source(target: &str, template: &str) -> Option<&'static str> {
         builtin_target(target).and_then(|target| target.template_source(template))
-    }
-
-    /// The two templates whose bytes define the emitted GALEC kernel library.
-    const GALEC_KERNEL_LIBRARY_TEMPLATES: [(&str, &str); 2] = [
-        ("embedded-c-galec", "kernels.h.jinja"),
-        ("embedded-c-galec", "kernels.c.jinja"),
-    ];
-
-    /// Content identity of the GALEC array-kernel library this build emits,
-    /// printed into the generated `rumoca_galec_kernels.h` as
-    /// `RUMOCA_GALEC_KERNELS_VERSION` and checked by every generated model
-    /// source.
-    ///
-    /// It is a hash of the *templates*, not of a build timestamp or a version
-    /// string someone has to remember to bump. Byte-identical kernel
-    /// templates therefore always produce the same value, so two builds that
-    /// disagree on it provably emit different kernels — the direction the
-    /// `#error` in the generated sources relies on: mixing a model `.c` with
-    /// kernel sources from a build whose kernels differ fails to compile,
-    /// while a build with identical kernels — the case an integrator relies
-    /// on when deduplicating the library across several eFMUs — compiles.
-    /// The converse is a 32-bit tripwire, not a certificate: agreeing values
-    /// make identical kernels overwhelmingly likely but do not prove them,
-    /// so certification-grade identity must content-hash the emitted files
-    /// (as the ProductionCode manifest checks do), never this constant.
-    ///
-    /// Hashing the templates rather than the rendered files avoids a
-    /// circularity: the rendered files contain this value. It loses nothing,
-    /// because the rendering is a pure function of the template bytes (neither
-    /// template reads the model view).
-    ///
-    /// FNV-1a/32. The digest only has to be stable and well mixed; nothing here
-    /// is a security property.
-    pub fn galec_kernel_library_version() -> u32 {
-        let mut hash: u32 = 0x811c_9dc5;
-        for (target, template) in GALEC_KERNEL_LIBRARY_TEMPLATES {
-            let source = builtin_template_source(target, template)
-                .expect("the GALEC kernel library templates are bundled with the compiler");
-            for byte in source.as_bytes() {
-                hash ^= u32::from(*byte);
-                hash = hash.wrapping_mul(0x0100_0193);
-            }
-        }
-        hash
     }
 
     /// Every template published to the shared render environment, sorted by
