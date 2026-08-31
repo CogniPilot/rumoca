@@ -1,0 +1,19 @@
+[package]
+name = "rumoca-plan-callable"
+description = "Affine checked callable proof plans over retained DAE roots"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

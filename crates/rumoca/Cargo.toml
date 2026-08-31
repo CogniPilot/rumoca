@@ -54,12 +54,12 @@ viewer-web = ["rumoca-sim/viewer-web"]
 process-control = ["rumoca-sim/process-control"]
 native-allocator = ["dep:mimalloc"]
 fmi = ["rumoca-sim/fmi"]
-fmu-packaging = ["dep:zip", "fmi"]
+fmu-packaging = ["fmi", "rumoca-compile/fmu-packaging"]
 examples-smoke-tests = []
 msl-sim-tests = []
-# Opt-in RDD2 metric gates inside `suite_gates` (`tests/rdd2_perf_guard.rs`,
-# `tests/galec_review_surface.rs`). They drive the RELEASE binary as a
-# subprocess and need the out-of-tree `modelica_models` library, so they cannot
+# Opt-in RDD2 metric gate inside `suite_gates` (`tests/rdd2_perf_guard.rs`). It
+# drives the RELEASE binary as a subprocess and needs the out-of-tree
+# `modelica_models` library, so it cannot
 # run in a default `cargo test`; a feature is how this repo gates heavy suites
 # (`#[ignore]` is banned by `architecture_hardening_test`). They still link no
 # `rumoca` library, so they stay in `suite_gates` rather than earning a
@@ -81,10 +81,6 @@ tracing = ["dep:tracing-subscriber", "rumoca-compile/tracing"]
 # Library consumers select only the axes they need.
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
-rumoca-ir-solve = { workspace = true }
-rumoca-ir-galec = { workspace = true }
-rumoca-phase-codegen = { workspace = true }
-rumoca-phase-galec = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers"] }
 rumoca-tool-fmt = { workspace = true }
@@ -96,21 +92,17 @@ anyhow = { workspace = true }
 mimalloc = { workspace = true, optional = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
+getrandom = { workspace = true }
 miette = { workspace = true }
 minijinja = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
-sha1 = { workspace = true }
 time = { workspace = true }
-tempfile = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 tracing-subscriber = { workspace = true, optional = true }
 walkdir = { workspace = true }
 uuid = { workspace = true }
-# Used only by FMU packaging (FMU export = zip archive); pulls C compression
-# backends (bzip2/lzma/zstd), so gate behind `fmu-packaging`.
-zip = { workspace = true, optional = true }
 # Reset SIGPIPE to its default disposition so piping into `head` exits cleanly
 # instead of panicking on a broken-pipe write. Encapsulates the one unsafe libc
 # call so this crate keeps `unsafe_code = "deny"`.
@@ -177,6 +169,10 @@ name = "suite_galec_fmu"
 path = "tests/suite_galec_fmu/main.rs"
 
 [dev-dependencies]
+blake3 = { workspace = true }
+sha1 = { workspace = true }
+tempfile = { workspace = true }
+zip = { workspace = true }
 crossterm = { workspace = true }
 tungstenite = { workspace = true }
 mimalloc = { workspace = true }
@@ -184,15 +180,19 @@ walkdir = { workspace = true }
 serde = { workspace = true }
 syn = { workspace = true }
 proc-macro2 = { workspace = true }
+quote = { workspace = true }
 # Direct phase access for debugging/analysis tests
 rumoca-ir-ast = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-ir-dae = { workspace = true }
+rumoca-ir-galec = { workspace = true }
+rumoca-ir-solve = { workspace = true }
 rumoca-phase-flatten = { workspace = true }
 rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-parse = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
+rumoca-phase-galec = { workspace = true }
 # The Jacobian admission table is the data the battery is generated from
 # (`tests/suite_core/jacobian_admission_battery.rs`), so the gate reads the
 # rules from the crate that owns them rather than restating them where they
@@ -206,22 +206,23 @@ rumoca-eval-solve = { workspace = true }
 # block.
 rumoca-exec-cranelift = { workspace = true }
 # SPEC_0034 GAL-027/GAL-038 independence oracle.
-# `tests/suite_galec_fmu/galec_equivalence.rs`
-# is its consumer: it interprets the same checked AlgorithmCodePackage the
-# `embedded-c-galec` template renders, so the generated C is differentially
-# checked against explicit GALEC semantics instead of only against the
-# Modelica reference. Test-only on purpose — the oracle must stay free of
-# lowering/codegen dependencies, so no shipped crate may depend on it.
+# The eFMI suite consumes it to interpret the checked AlgorithmCodePackage and
+# validate Algorithm Code independently of lowering. Test-only on purpose —
+# the oracle must stay free of lowering/codegen dependencies, so no shipped
+# crate may depend on it.
 rumoca-eval-galec = { workspace = true }
+rumoca-phase-parse-galec = { workspace = true }
 # Runtime state machine + backend-neutral simulation driver (SPEC_0029 §3b);
 # the AD/sensitivity integration tests drive `SolveRuntime` directly.
 rumoca-solver = { workspace = true }
 rumoca-phase-solve = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
-# GALEC target CI (tests only): recompute the SHA-1 checksum web and check
-# manifest.xml well-formedness / attribute order over the exact on-disk bytes.
-# xmllint XSD validation runs the external `xmllint`; the SHA-1 primitive comes
-# through the `rumoca-compile` facade.
+# SPEC_0036 callable-plan boundary: the architecture suite asks the compiler,
+# not a parser, whether the plan root can be cloned, defaulted, or serialized.
+rumoca-plan-callable = { workspace = true }
+# GALEC target CI (tests only): independently recompute the SHA-1 checksum web,
+# inspect ZIP members, and check XML well-formedness / attribute order over the
+# exact on-disk bytes. Production packaging is owned by `rumoca-compile`.
 quick-xml = { workspace = true }
 
 [lints]

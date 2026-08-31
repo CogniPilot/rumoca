@@ -1,0 +1,16 @@
+[package]
+name = "rumoca-phase-callable"
+description = "Single-pass checked DAE callable semantic planning"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-plan-callable = { workspace = true }
+
+[lints]
+workspace = true
