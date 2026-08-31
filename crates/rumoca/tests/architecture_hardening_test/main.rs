@@ -1,23 +1,44 @@
 mod acceptance_surface;
+mod aggregate_function_boundary;
 mod architecture_hardening_support;
+mod artifact_session_boundary;
 mod build_resource_budget;
+mod callable_plan_boundary;
+mod canonical_helper_ownership;
+mod codegen_presentation_boundary;
 mod commit_messages;
+mod connection_transaction;
+mod construction_lints;
 mod crate_tier_edges;
 mod dae_ownership;
 mod diagnostic_codes;
 mod env_var_registry;
 mod fmi_component_boundary;
 mod fmi_me_boundary;
+mod galec_trace_origin;
+mod instance_overlay_insertion;
 mod instantiate_value_fabrication;
+mod lint_suppression_ratchet;
+mod no_internal_compatibility;
 mod parser_contract;
 mod parser_ownership;
 mod phase_diagnostics;
 mod public_api_surface;
+mod retired_target_surface;
+mod semantic_catalog_boundary;
+mod semantic_construction_boundary;
+mod semantic_default_boundary;
+mod semantic_sentinel_fabrication;
 mod size_and_validation;
 mod solver_backend_boundary;
 mod source_comment_hygiene;
 mod string_hashing;
+mod target_codegen_construction;
+mod target_semantic_context;
+mod tensor_graph_boundary;
 mod totality_debt;
+mod websocket_failure_boundary;
+mod worker_wire_contract;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -994,6 +1015,16 @@ fn is_test_or_example_path(path: &Path) -> bool {
 }
 
 #[test]
+fn production_scan_does_not_exempt_test_suffixed_source_modules() {
+    assert!(!is_test_or_example_path(Path::new(
+        "crates/rumoca-ir-flat/src/live_test.rs"
+    )));
+    assert!(is_test_or_example_path(Path::new(
+        "crates/rumoca-ir-flat/src/live_tests.rs"
+    )));
+}
+
+#[test]
 fn test_production_code_has_no_panic_todo_or_unimplemented() {
     let root = workspace_root();
     let mut rs_files = Vec::new();
@@ -1230,11 +1261,7 @@ fn test_production_code_outside_eval_dae_does_not_use_global_eval_dae_runtime_wr
     for path in rs_files {
         let rel = path.strip_prefix(&root).unwrap_or(&path);
         let rel = normalized_rel_path(rel);
-        if path.starts_with(&eval_dae_src)
-            || rel.contains("/tests/")
-            || rel.contains("/benches/")
-            || rel.ends_with("_test.rs")
-        {
+        if path.starts_with(&eval_dae_src) || rel.contains("/tests/") || rel.contains("/benches/") {
             continue;
         }
         let content = fs::read_to_string(&path).expect("read Rust source");
@@ -1257,50 +1284,6 @@ fn test_production_code_outside_eval_dae_does_not_use_global_eval_dae_runtime_wr
         offenders.is_empty(),
         "production code outside rumoca-eval-dae must use request-local EvalRuntimeState APIs \
 instead of eval-DAE global compatibility runtime wrappers: {offenders:#?}"
-    );
-}
-
-#[test]
-fn test_codegen_fallback_inventory_does_not_grow() {
-    let root = workspace_root();
-    let mut rs_files = Vec::new();
-    collect_rs_files(
-        &root.join("crates/rumoca-phase-codegen/src/codegen"),
-        &mut rs_files,
-    );
-
-    let mut value_undefined = Vec::new();
-    let mut optional_empty = Vec::new();
-    let mut unwrap_or_default = Vec::new();
-    for path in rs_files {
-        let content = fs::read_to_string(&path).expect("read rumoca-phase-codegen source");
-        for (line_idx, line) in non_test_module_source_lines(&content) {
-            let location = format!("{}:{}", path.display(), line_idx + 1);
-            if line.contains("Value::UNDEFINED") {
-                value_undefined.push(location.clone());
-            }
-            if line.contains("Ok(None)") {
-                optional_empty.push(location.clone());
-            }
-            if line.contains(".unwrap_or_default()") {
-                unwrap_or_default.push(location);
-            }
-        }
-    }
-
-    assert!(
-        value_undefined.is_empty(),
-        "production codegen must not construct Minijinja Value::UNDEFINED sentinels; \
-use explicit optional objects or structured errors instead: {value_undefined:#?}"
-    );
-    assert!(
-        optional_empty.is_empty(),
-        "production codegen optional render misses must go through an explicit helper \
-instead of raw Ok(None) fallback returns: {optional_empty:#?}"
-    );
-    assert!(
-        unwrap_or_default.is_empty(),
-        "codegen must not add unwrap_or_default fallback paths: {unwrap_or_default:#?}"
     );
 }
 
@@ -1809,10 +1792,10 @@ fn test_solve_ir_owns_backend_neutral_row_ops() {
         "rumoca-ir-solve must own the backend-neutral row operation IR"
     );
     // SPEC_0045's identity ladder freezes the superseded scalar op vocabulary
-    // at 50
-    // variants — new Solve semantics land as typed operations only. The enum
-    // is scheduled for rename to `ScalarOp` (wire-neutral; serde tags by
-    // variant) and eventual deletion at the end of the migration ladder.
+    // at 48 variants after the accepted deletion of `LoadIndexedP` and
+    // `LoadIndexedSeed`; new Solve semantics land as typed operations only.
+    // The enum is scheduled for rename to `ScalarOp` (wire-neutral; serde tags
+    // by variant) and eventual deletion at the end of the migration ladder.
     // Adding a variant here requires amending the ratified structure decision.
     let variant_count = {
         let start = solve_text
@@ -1840,8 +1823,8 @@ fn test_solve_ir_owns_backend_neutral_row_ops() {
             .count()
     };
     assert_eq!(
-        variant_count, 50,
-        "superseded scalar op vocabulary is frozen at 50 variants; \
+        variant_count, 48,
+        "superseded scalar op vocabulary is frozen at 48 variants; \
          new semantics land as typed operations (core-structure decision §1)"
     );
     assert!(

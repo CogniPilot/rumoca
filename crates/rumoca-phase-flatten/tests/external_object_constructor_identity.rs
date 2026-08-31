@@ -68,11 +68,21 @@ fn flatten_source() -> Fixture {
         .def_id
         .expect("constructor has declaration identity");
     let constructor_span = constructor.location.span();
-    let instanced =
-        rumoca_phase_instantiate::instantiate(resolved, "UsesBoth").expect("model instantiates");
-    let ast::InstancedTree { tree, mut overlay } = instanced;
-    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "UsesBoth")
+    let mut overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+        resolved.inner(),
+        "UsesBoth",
+    ) {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+        rumoca_phase_instantiate::InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+            panic!("fixture instantiation failed: {error}")
+        }
+    };
+    rumoca_phase_typecheck::typecheck_instanced(&resolved, &mut overlay, "UsesBoth")
         .expect("model typechecks");
+    let tree = resolved.into_inner();
     let model =
         rumoca_phase_flatten::flatten_ref(&tree, &overlay, "UsesBoth").expect("model flattens");
     Fixture {
@@ -140,8 +150,8 @@ fn external_object_constructor_is_executable_while_record_constructor_is_structu
     assert!(add_pair.external.is_none());
     assert_eq!(
         add_pair.inputs.len(),
-        2,
-        "record input is structurally scalarized to its two fields"
+        1,
+        "record input remains one nominal aggregate argument"
     );
 
     let Expression::FunctionCall {
@@ -173,7 +183,7 @@ fn external_object_constructor_is_executable_while_record_constructor_is_structu
     assert!(!is_constructor);
     assert_eq!(
         args.len(),
-        2,
-        "record construction is structural and supplies the scalarized fields"
+        1,
+        "record construction supplies one nominal aggregate argument"
     );
 }

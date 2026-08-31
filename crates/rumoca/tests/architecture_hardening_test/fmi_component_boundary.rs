@@ -120,12 +120,20 @@ fn fmi_codegen_retains_one_nonconstructible_correlated_aggregate() {
     assert!(lazy.contains("Fmi(Arc<solve::fmi::FmiEventFreeCodegenView>)"));
     assert!(lazy.contains("Self::Fmi(component) => component.problem()"));
     assert!(lazy.contains("Self::Fmi(component) => component.artifacts()"));
-    assert!(lazy.contains("Self::Fmi(component) => Value::from_serialize(component.as_ref())"));
+    assert!(lazy.contains("Self::Standalone(_) => None"));
+    assert!(
+        lazy.contains("Self::Fmi(component) => Some(Value::from_serialize(component.as_ref()))")
+    );
 
     let renderer =
         fs::read_to_string(root.join("crates/rumoca-phase-codegen/src/codegen/solve_renderer.rs"))
             .expect("read Solve renderer");
-    let fmi_constructor = function_signature(&renderer, "new_owned_with_fmi");
+    let fmi_owner = renderer
+        .split_once("impl PreparedFmiComponentRendering")
+        .map(|(_, owner)| owner)
+        .expect("locate prepared FMI rendering owner");
+    let fmi_constructor = function_signature(fmi_owner, "prepare");
+    assert!(fmi_constructor.contains("FmiEventFreeCodegenView"));
     assert!(!fmi_constructor.contains("SolveArtifacts"));
     assert!(!fmi_constructor.contains("artifacts"));
     assert!(renderer.contains("SolveRenderHandle::fmi(component)"));
