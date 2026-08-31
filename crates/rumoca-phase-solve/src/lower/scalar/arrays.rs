@@ -121,8 +121,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let body_scalar = scalar % body_count;
         let values = domain_view
             .structured()
+            .validated()
+            .expect("checked comprehension domain stays valid")
             .index_tuple_at(point)
-            .expect("checked domain remains valid")
             .expect("checked comprehension scalar point is in range");
         self.enter_context(ScalarContextFrame::Domain {
             parent: self.context_id,

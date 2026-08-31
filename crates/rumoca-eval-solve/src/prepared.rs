@@ -21,7 +21,7 @@ use crate::tensor_policy::{
 };
 use crate::{
     EvalSolveError, OutputCursor, PreparedLazyRowPlan, PreparedRowEval, RowEvalContext,
-    RowEvalScratch, RowInputRequirements, SimulationRuntimeState, SpecializedRowProgram,
+    RowEvalScratch, RowInputRequirements, SimulationRuntimeState,
     compute_block_scalarize::{
         checked_contiguous_output_count, scalar_program_output_count,
         scalar_program_output_indices, tensor_output_count, validate_affine_stride_metadata,
@@ -532,37 +532,6 @@ impl PreparedScalarProgramBlock {
             || !row_output_depends_on_y_index(row, output_offset, target_y_index)
     }
 
-    pub(crate) fn can_evaluate_declared_target_assignment(
-        &self,
-        row_idx: usize,
-        output_offset: usize,
-        target_y_index: usize,
-    ) -> bool {
-        self.can_evaluate_target_assignment_output(row_idx, output_offset, target_y_index)
-            && !matches!(
-                self.assignment_shape_for_output(row_idx, output_offset, target_y_index),
-                Some(TargetAssignmentShape::AffineResidual { .. })
-            )
-    }
-
-    pub(crate) fn certifies_direct_target_assignment(
-        &self,
-        row_idx: usize,
-        output_offset: usize,
-        target_y_index: usize,
-    ) -> bool {
-        let Some(row) = self.block.programs().get(row_idx) else {
-            return false;
-        };
-        if row.iter().any(non_causal_linear_op) {
-            return false;
-        }
-        matches!(
-            self.assignment_shape_for_output(row_idx, output_offset, target_y_index),
-            Some(TargetAssignmentShape::Direct { .. })
-        )
-    }
-
     pub fn certifies_exact_target_assignment_output(
         &self,
         row_idx: usize,
@@ -653,18 +622,6 @@ impl PreparedScalarProgramBlock {
             builder.program.push(LinearOp::StoreOutput { src: result });
         }
         Some(program)
-    }
-
-    /// Return the active branch specialization learned by the reference
-    /// evaluator for `row_idx`, if that row has already been evaluated.
-    /// Execution adapters must validate the appended guards on every call and
-    /// fall back to this prepared evaluator when any guard changes.
-    pub fn specialized_row_program(&self, row_idx: usize) -> Option<SpecializedRowProgram> {
-        let row = self.block.programs().get(row_idx)?;
-        self.row_lazy_plans
-            .get(row_idx)?
-            .as_ref()?
-            .specialization(row)
     }
 
     /// Whether this row retains a dependency-driven execution plan capable of
@@ -759,14 +716,13 @@ impl PreparedScalarProgramBlock {
     pub fn apply_target_assignment_rows_unchecked_with_context<'a, I>(
         &self,
         rows: I,
-        mut program_row: impl FnMut(&AlgebraicRefreshRow) -> Option<usize>,
         y: &mut [f64],
         p: &[f64],
         t: f64,
         context: RowEvalContext<'_>,
     ) -> Result<(), EvalSolveError>
     where
-        I: IntoIterator<Item = &'a AlgebraicRefreshRow>,
+        I: IntoIterator<Item = (&'a AlgebraicRefreshRow, usize)>,
         I::IntoIter: ExactSizeIterator,
     {
         let local_runtime_state;
@@ -780,10 +736,7 @@ impl PreparedScalarProgramBlock {
         let rows = rows.into_iter();
         let mut scratch = self.scratch.borrow_mut();
         record_solve_block_eval("target_rows_batch", self.output_count, rows.len());
-        for row in rows {
-            let row_idx = program_row(row).ok_or_else(|| {
-                invalid_prepared_row("target assignment source projection is incomplete")
-            })?;
+        for (row, row_idx) in rows {
             let shape = row.assignment_shape().ok_or_else(|| {
                 invalid_prepared_row_with_span(
                     "batched target assignment row has no selected assignment shape",
@@ -1654,9 +1607,10 @@ fn prepared_affine(
         "prepared affine",
         span,
     )?;
-    let scalar_count = prepared_domain_scalar_count(domain, span)?;
-    let extents = prepared_domain_extents(domain, span)?;
-    let ordinal_strides = prepared_domain_ordinal_strides(domain, span)?;
+    let valid_domain = prepared_valid_domain(domain, span)?;
+    let scalar_count = valid_domain.scalar_count();
+    let extents = valid_domain.extents().to_vec();
+    let ordinal_strides = valid_domain.ordinal_strides().to_vec();
     let output_count = tensor_output_count(domain, output_map, "prepared affine", span)?;
     let next_output_cursor = output_cursor.max(output_count);
     let output_strides = prepared_output_strides(output_map, domain.binders.len(), span)?;
@@ -1692,34 +1646,6 @@ fn prepared_affine(
         },
         next_output_cursor,
     ))
-}
-
-fn prepared_domain_extents(
-    domain: &StructuredIndexDomain,
-    span: rumoca_core::Span,
-) -> Result<Vec<usize>, EvalSolveError> {
-    domain
-        .extents()
-        .map_err(|err| prepared_domain_error(err, span))
-}
-
-fn prepared_domain_ordinal_strides(
-    domain: &StructuredIndexDomain,
-    span: rumoca_core::Span,
-) -> Result<Vec<usize>, EvalSolveError> {
-    domain
-        .ordinal_strides()
-        .map_err(|err| prepared_domain_error(err, span))
-}
-
-fn prepared_domain_error(
-    error: rumoca_core::StructuredIndexDomainError,
-    span: rumoca_core::Span,
-) -> EvalSolveError {
-    EvalSolveError::ShapeContract {
-        message: format!("prepared affine structured index domain is invalid: {error}"),
-        span: Some(span),
-    }
 }
 
 fn prepared_output_strides(

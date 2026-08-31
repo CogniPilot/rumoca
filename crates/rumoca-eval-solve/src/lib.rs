@@ -24,7 +24,6 @@ use rumoca_ir_solve::{
     SolveEventPartition, SolveProblemShapeContractError, SolvePureCallDirectionalSite,
     SolvePureCallSite, SolvePureCallTable, SolveScalarType, SolveStringConversionFormat,
     SolveStringConversionSource, SolveValueKind, SolveValueType, StridedOperand, UnaryOp,
-    resolve_indexed_slot,
 };
 
 mod compute_block_scalarize;
@@ -771,18 +770,6 @@ pub(crate) struct PreparedLazyRowPlan {
     definitions: Box<[usize]>,
     outputs: Box<[Reg]>,
     trace: RefCell<Option<Box<[LazyTraceStep]>>>,
-    trace_native_specialization: bool,
-}
-
-/// One branch-specialized, still-valid Solve-IR program derived from a lazy
-/// reference-evaluator trace. The first `output_count` stores are the row's
-/// ordinary outputs; trailing stores expose the condition registers whose
-/// expected truth values guard this specialization.
-#[derive(Clone, Debug)]
-pub struct SpecializedRowProgram {
-    pub program: Vec<LinearOp>,
-    pub output_count: usize,
-    pub guard_expectations: Box<[bool]>,
 }
 
 impl PreparedLazyRowPlan {
@@ -809,181 +796,8 @@ impl PreparedLazyRowPlan {
             definitions: definitions.into_boxed_slice(),
             outputs: outputs.into_boxed_slice(),
             trace: RefCell::new(None),
-            trace_native_specialization: !row.iter().any(|operation| {
-                matches!(
-                    operation,
-                    LinearOp::FunctionConditional { .. } | LinearOp::GuardedFunctionFold { .. }
-                )
-            }),
         })
     }
-
-    fn specialization(&self, row: &[LinearOp]) -> Option<SpecializedRowProgram> {
-        if !self.trace_native_specialization {
-            return None;
-        }
-        let trace = self.trace.borrow();
-        let trace = trace.as_deref()?;
-        let (selected, outputs) = specialization_trace(trace);
-        let (needed_ops, guards) = self.specialization_requirements(row, &selected, &outputs)?;
-        let mut program = build_specialized_program(row, &selected, &needed_ops)?;
-        let mut guard_expectations = Vec::with_capacity(guards.len());
-        for (condition, expected) in guards {
-            program.push(LinearOp::StoreOutput { src: condition });
-            guard_expectations.push(expected);
-        }
-        Some(SpecializedRowProgram {
-            program,
-            output_count: outputs.len(),
-            guard_expectations: guard_expectations.into_boxed_slice(),
-        })
-    }
-
-    fn specialization_requirements(
-        &self,
-        row: &[LinearOp],
-        selected: &SpecializedSelections,
-        outputs: &[Reg],
-    ) -> Option<(Vec<bool>, BTreeMap<Reg, bool>)> {
-        let mut guards = BTreeMap::new();
-        let mut needed_registers = vec![false; self.definitions.len()];
-        let mut needed_ops = vec![false; row.len()];
-        let mut tasks = outputs.to_vec();
-        while let Some(register) = tasks.pop() {
-            if needed_registers[register as usize] {
-                continue;
-            }
-            needed_registers[register as usize] = true;
-            let op_index = self.definitions[register as usize];
-            if op_index == usize::MAX {
-                return None;
-            }
-            needed_ops[op_index] = true;
-            if let Some(&(cond, expected, src)) = selected.get(&register) {
-                tasks.push(cond);
-                tasks.push(src);
-                guards.insert(cond, expected);
-                continue;
-            }
-            if matches!(row[op_index], LinearOp::Select { .. }) {
-                return None;
-            }
-            let mut dependency_tasks = Vec::new();
-            push_lazy_dependencies(&mut dependency_tasks, row[op_index].clone());
-            tasks.extend(dependency_tasks.into_iter().filter_map(|task| match task {
-                LazyEvalTask::Eval(source) => Some(source),
-                _ => None,
-            }));
-        }
-        while let Some(source) = first_missing_specialization_dependency(
-            row,
-            selected,
-            &needed_ops,
-            self.definitions.len(),
-        ) {
-            let definition = self.definitions[source as usize];
-            if definition == usize::MAX || needed_ops[definition] {
-                return None;
-            }
-            needed_ops[definition] = true;
-        }
-        Some((needed_ops, guards))
-    }
-}
-
-type SpecializedSelections = BTreeMap<Reg, (Reg, bool, Reg)>;
-
-fn specialization_trace(trace: &[LazyTraceStep]) -> (SpecializedSelections, Vec<Reg>) {
-    let mut selected = BTreeMap::new();
-    let mut outputs = Vec::new();
-    for step in trace.iter().copied() {
-        match step {
-            LazyTraceStep::Select {
-                dst,
-                cond,
-                expected,
-                src,
-            } => {
-                selected.insert(dst, (cond, expected, src));
-            }
-            LazyTraceStep::Store(src) => outputs.push(src),
-            LazyTraceStep::Apply(_) => {}
-        }
-    }
-    (selected, outputs)
-}
-
-fn first_missing_specialization_dependency(
-    row: &[LinearOp],
-    selected: &SpecializedSelections,
-    needed_ops: &[bool],
-    register_count: usize,
-) -> Option<Reg> {
-    let mut defined = vec![false; register_count];
-    for (op_index, op) in row.iter().cloned().enumerate() {
-        let Some(effective) = effective_specialization_op(op, selected, needed_ops[op_index])
-        else {
-            continue;
-        };
-        let mut dependency_tasks = Vec::new();
-        match effective {
-            LinearOp::StoreOutput { src } => dependency_tasks.push(LazyEvalTask::Eval(src)),
-            _ => push_lazy_dependencies(&mut dependency_tasks, effective.clone()),
-        }
-        if let Some(source) = dependency_tasks.into_iter().find_map(|task| match task {
-            LazyEvalTask::Eval(source) if !defined[source as usize] => Some(source),
-            _ => None,
-        }) {
-            return Some(source);
-        }
-        if let Some(dst) = effective.dst_register() {
-            let start = dst as usize;
-            let end = start.saturating_add(effective.dst_register_count());
-            defined[start..end].fill(true);
-        }
-    }
-    None
-}
-
-fn effective_specialization_op(
-    op: LinearOp,
-    selected: &SpecializedSelections,
-    needed: bool,
-) -> Option<LinearOp> {
-    if !needed {
-        return matches!(op, LinearOp::StoreOutput { .. }).then_some(op);
-    }
-    Some(match op {
-        LinearOp::Select { dst, .. } => selected
-            .get(&dst)
-            .map_or(op, |(_, _, src)| LinearOp::Move { dst, src: *src }),
-        _ => op,
-    })
-}
-
-fn build_specialized_program(
-    row: &[LinearOp],
-    selected: &SpecializedSelections,
-    needed_ops: &[bool],
-) -> Option<Vec<LinearOp>> {
-    let mut program = Vec::with_capacity(row.len());
-    for (op_index, op) in row.iter().cloned().enumerate() {
-        if let LinearOp::StoreOutput { src } = op {
-            program.push(LinearOp::StoreOutput { src });
-            continue;
-        }
-        if !needed_ops[op_index] {
-            continue;
-        }
-        match op {
-            LinearOp::Select { dst, .. } => {
-                let &(_, _, src) = selected.get(&dst)?;
-                program.push(LinearOp::Move { dst, src });
-            }
-            _ => program.push(op),
-        }
-    }
-    Some(program)
 }
 
 fn lazy_row_op_supported(op: &LinearOp) -> bool {
@@ -993,7 +807,6 @@ fn lazy_row_op_supported(op: &LinearOp) -> bool {
             | LinearOp::LoadTime { .. }
             | LinearOp::LoadY { .. }
             | LinearOp::LoadP { .. }
-            | LinearOp::LoadIndexedP { .. }
             | LinearOp::LoadIndexedRegister { .. }
             | LinearOp::Move { .. }
             | LinearOp::LinearSolveComponent { .. }
@@ -1695,7 +1508,6 @@ fn push_lazy_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
         | LinearOp::LoadP { .. }
         | LinearOp::TensorIdentity { .. }
         | LinearOp::TensorLoad { .. } => {}
-        LinearOp::LoadIndexedP { index, .. } => push_lazy_register(tasks, index),
         LinearOp::LoadIndexedRegister {
             base,
             stride,
@@ -1708,9 +1520,11 @@ fn push_lazy_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
                     push_lazy_register(tasks, *register);
                 }
             }
-            let count = dimensions.iter().fold(stride, |count, extent| {
-                count.saturating_mul(*extent as usize)
-            });
+            let count = dimensions
+                .iter()
+                .map(|&extent| extent as usize)
+                .product::<usize>()
+                * stride;
             push_lazy_register_range(tasks, base, count, 1);
         }
         LinearOp::Move { src, .. } | LinearOp::Unary { arg: src, .. } => {
@@ -1847,14 +1661,16 @@ fn push_lazy_tensor_update_dependencies(
     subscripts: &[rumoca_ir_solve::TensorUpdateSubscript],
     lanes: usize,
 ) {
-    let base_count = dimensions.iter().fold(lanes, |count, extent| {
-        count.saturating_mul(*extent as usize)
-    });
+    let base_count = dimensions
+        .iter()
+        .map(|&extent| extent as usize)
+        .product::<usize>()
+        * lanes;
     let mut value_count = lanes;
     for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()).rev() {
         match subscript {
             rumoca_ir_solve::TensorUpdateSubscript::Whole => {
-                value_count = value_count.saturating_mul(extent as usize);
+                value_count *= extent as usize;
             }
             rumoca_ir_solve::TensorUpdateSubscript::Index(
                 rumoca_ir_solve::TensorIndex::Runtime(register),
@@ -1863,11 +1679,9 @@ fn push_lazy_tensor_update_dependencies(
                 rumoca_ir_solve::TensorIndex::Constant(_),
             ) => {}
             rumoca_ir_solve::TensorUpdateSubscript::Slice { start, dimensions } => {
-                let count = dimensions.iter().fold(1usize, |count, extent| {
-                    count.saturating_mul(*extent as usize)
-                });
+                let count = dimensions.iter().map(|&extent| extent as usize).product();
                 push_lazy_register_range(tasks, *start, count, 1);
-                value_count = value_count.saturating_mul(count);
+                value_count *= count;
             }
         }
     }
@@ -1883,8 +1697,8 @@ fn push_lazy_region_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
             program,
             ..
         } => {
-            push_lazy_register_range(tasks, capture_start, program.capture_count, 1);
-            push_lazy_register_range(tasks, initial_start, program.carried_count, 1);
+            push_lazy_register_range(tasks, capture_start, program.capture_count(), 1);
+            push_lazy_register_range(tasks, initial_start, program.carried_count(), 1);
         }
         LinearOp::GuardedFunctionFold {
             initial_start,
@@ -1893,15 +1707,15 @@ fn push_lazy_region_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
             program,
             ..
         } => {
-            push_lazy_register_range(tasks, capture_start, program.capture_count, 1);
-            push_lazy_register_range(tasks, initial_start, program.carried_count, 1);
+            push_lazy_register_range(tasks, capture_start, program.capture_count(), 1);
+            push_lazy_register_range(tasks, initial_start, program.carried_count(), 1);
             push_lazy_register(tasks, activation);
         }
         LinearOp::FunctionConditional {
             capture_start,
             program,
             ..
-        } => push_lazy_register_range(tasks, capture_start, program.capture_count, 1),
+        } => push_lazy_register_range(tasks, capture_start, program.capture_count(), 1),
         _ => unreachable!("lazy region dependency dispatch receives only region operations"),
     }
 }
@@ -1949,7 +1763,6 @@ fn eval_lazy_pure_op(
         | LinearOp::LoadTime { .. }
         | LinearOp::LoadY { .. }
         | LinearOp::LoadP { .. }
-        | LinearOp::LoadIndexedP { .. }
         | LinearOp::LoadIndexedRegister { .. }
         | LinearOp::Move { .. }
         | LinearOp::LinearSolveComponent { .. }
@@ -1983,15 +1796,6 @@ fn eval_lazy_scalar_op(
         LinearOp::LoadTime { dst } => regs[dst as usize] = input.t,
         LinearOp::LoadY { dst, index } => regs[dst as usize] = input.y[index],
         LinearOp::LoadP { dst, index } => regs[dst as usize] = input.p[index],
-        LinearOp::LoadIndexedP {
-            dst,
-            base,
-            count,
-            index,
-        } => {
-            let slot = resolve_indexed_slot(regs[index as usize], base, count);
-            regs[dst as usize] = input.read_input("p", input.p, slot)?;
-        }
         LinearOp::LoadIndexedRegister {
             dst,
             base,
@@ -2002,9 +1806,7 @@ fn eval_lazy_scalar_op(
             let offset = tensor_register_offset(&dimensions, &indices, |register| {
                 Ok::<f64, EvalSolveError>(regs[register as usize])
             })?;
-            regs[dst as usize] = offset
-                .map(|offset| regs[base as usize + offset * stride])
-                .unwrap_or(f64::NAN);
+            regs[dst as usize] = regs[base as usize + offset * stride];
         }
         LinearOp::Move { dst, src } => regs[dst as usize] = regs[src as usize],
         LinearOp::LinearSolveComponent {
@@ -2247,13 +2049,13 @@ fn eval_lazy_region_op(
             program,
         } => {
             let initial = regs
-                [initial_start as usize..initial_start as usize + program.carried_count]
+                [initial_start as usize..initial_start as usize + program.carried_count()]
                 .to_vec();
             let captures = regs
-                [capture_start as usize..capture_start as usize + program.capture_count]
+                [capture_start as usize..capture_start as usize + program.capture_count()]
                 .to_vec();
             let carried = eval_function_fold(input, &program, &initial, &captures)?;
-            regs[dst_start as usize..dst_start as usize + program.carried_count]
+            regs[dst_start as usize..dst_start as usize + program.carried_count()]
                 .copy_from_slice(&carried);
         }
         LinearOp::GuardedFunctionFold {
@@ -2264,17 +2066,17 @@ fn eval_lazy_region_op(
             program,
         } => {
             let initial = regs
-                [initial_start as usize..initial_start as usize + program.carried_count]
+                [initial_start as usize..initial_start as usize + program.carried_count()]
                 .to_vec();
             if regs[activation as usize] != 0.0 {
                 let captures = regs
-                    [capture_start as usize..capture_start as usize + program.capture_count]
+                    [capture_start as usize..capture_start as usize + program.capture_count()]
                     .to_vec();
                 let carried = eval_function_fold(input, &program, &initial, &captures)?;
-                regs[dst_start as usize..dst_start as usize + program.carried_count]
+                regs[dst_start as usize..dst_start as usize + program.carried_count()]
                     .copy_from_slice(&carried);
             } else {
-                regs[dst_start as usize..dst_start as usize + program.carried_count]
+                regs[dst_start as usize..dst_start as usize + program.carried_count()]
                     .copy_from_slice(&initial);
             }
         }
@@ -2284,9 +2086,9 @@ fn eval_lazy_region_op(
             program,
         } => {
             let captures =
-                &regs[capture_start as usize..capture_start as usize + program.capture_count];
+                &regs[capture_start as usize..capture_start as usize + program.capture_count()];
             let values = eval_function_conditional(input, &program, captures)?;
-            regs[dst_start as usize..dst_start as usize + program.result_count]
+            regs[dst_start as usize..dst_start as usize + program.result_count()]
                 .copy_from_slice(&values);
         }
         _ => unreachable!("lazy region dispatch receives only region operations"),
@@ -2341,12 +2143,6 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
             LinearOp::LoadP { dst, index } => {
                 self.set(dst, self.input.read_input("p", self.input.p, index)?)?;
             }
-            LinearOp::LoadIndexedP {
-                dst,
-                base,
-                count,
-                index,
-            } => self.eval_load_indexed_p(dst, base, count, index)?,
             LinearOp::LoadIndexedRegister {
                 dst,
                 base,
@@ -2356,10 +2152,7 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
             } => {
                 let offset =
                     tensor_register_offset(&dimensions, &indices, |register| self.get(register))?;
-                let value = match offset {
-                    Some(offset) => self.get(base + (offset * stride) as Reg)?,
-                    None => f64::NAN,
-                };
+                let value = self.get(base + (offset * stride) as Reg)?;
                 self.set(dst, value)?;
             }
             LinearOp::LoadIndexedFoldCarried {
@@ -2374,9 +2167,7 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 })?;
                 let offset =
                     tensor_register_offset(&dimensions, &indices, |register| self.get(register))?;
-                let value = offset
-                    .and_then(|offset| carried.get(base + offset * stride).copied())
-                    .unwrap_or(f64::NAN);
+                let value = carried[base + offset * stride];
                 self.set(dst, value)?;
             }
             LinearOp::LoadIndexedFoldCapture {
@@ -2391,17 +2182,9 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 })?;
                 let offset =
                     tensor_register_offset(&dimensions, &indices, |register| self.get(register))?;
-                let value = offset
-                    .and_then(|offset| captures.get(base + offset * stride).copied())
-                    .unwrap_or(f64::NAN);
+                let value = captures[base + offset * stride];
                 self.set(dst, value)?;
             }
-            LinearOp::LoadIndexedSeed {
-                dst,
-                base,
-                count,
-                index,
-            } => self.eval_load_indexed_seed(dst, base, count, index)?,
             LinearOp::LoadSeed { dst, index } => {
                 let seed = self
                     .input
@@ -2749,12 +2532,12 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 capture_start,
                 program,
             } => {
-                let mut initial = Vec::with_capacity(program.carried_count);
-                for offset in 0..program.carried_count {
+                let mut initial = Vec::with_capacity(program.carried_count());
+                for offset in 0..program.carried_count() {
                     initial.push(self.get(initial_start + offset as Reg)?);
                 }
-                let mut captures = Vec::with_capacity(program.capture_count);
-                for offset in 0..program.capture_count {
+                let mut captures = Vec::with_capacity(program.capture_count());
+                for offset in 0..program.capture_count() {
                     captures.push(self.get(capture_start + offset as Reg)?);
                 }
                 let carried = eval_function_fold(self.input, &program, &initial, &captures)?;
@@ -2769,13 +2552,13 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 activation,
                 program,
             } => {
-                let mut carried = Vec::with_capacity(program.carried_count);
-                for offset in 0..program.carried_count {
+                let mut carried = Vec::with_capacity(program.carried_count());
+                for offset in 0..program.carried_count() {
                     carried.push(self.get(initial_start + offset as Reg)?);
                 }
                 if self.get(activation)? != 0.0 {
-                    let mut captures = Vec::with_capacity(program.capture_count);
-                    for offset in 0..program.capture_count {
+                    let mut captures = Vec::with_capacity(program.capture_count());
+                    for offset in 0..program.capture_count() {
                         captures.push(self.get(capture_start + offset as Reg)?);
                     }
                     carried = eval_function_fold(self.input, &program, &carried, &captures)?;
@@ -2789,7 +2572,7 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 capture_start,
                 program,
             } => {
-                let captures = (0..program.capture_count)
+                let captures = (0..program.capture_count())
                     .map(|offset| self.get(capture_start + offset as Reg))
                     .collect::<Result<Vec<_>, _>>()?;
                 let values = eval_function_conditional(self.input, &program, &captures)?;
@@ -2839,9 +2622,7 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 let carried = self.input.fold_carried.ok_or_else(|| {
                     invalid_row("aggregate output escaped its function-fold update body")
                 })?;
-                let count = dimensions.iter().fold(1usize, |count, extent| {
-                    count.saturating_mul(*extent as usize)
-                });
+                let count = dimensions.iter().map(|&extent| extent as usize).product();
                 for element in 0..count {
                     let mut offsets = Vec::with_capacity(updates.len());
                     for update in &updates {
@@ -2910,7 +2691,7 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 let parent = self.input.fold_carried.ok_or_else(|| {
                     invalid_row("nested aggregate fold escaped its parent update body")
                 })?;
-                let mut values = Vec::with_capacity(program.carried_count);
+                let mut values = Vec::with_capacity(program.carried_count());
                 for source in initial.iter() {
                     match *source {
                         rumoca_ir_solve::FoldInitialSource::Registers { start, count } => {
@@ -2929,8 +2710,8 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                     None => true,
                 };
                 if use_nested {
-                    let mut captures = Vec::with_capacity(program.capture_count);
-                    for offset in 0..program.capture_count {
+                    let mut captures = Vec::with_capacity(program.capture_count());
+                    for offset in 0..program.capture_count() {
                         captures.push(self.get(capture_start + offset as Reg)?);
                     }
                     let folded = eval_function_fold(self.input, &program, &values, &captures)?;
@@ -3002,33 +2783,6 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
         )
     }
 
-    fn eval_load_indexed_p(
-        &mut self,
-        dst: Reg,
-        base: usize,
-        count: usize,
-        index: Reg,
-    ) -> Result<(), EvalSolveError> {
-        let slot = resolve_indexed_slot(self.get(index)?, base, count);
-        self.set(dst, self.input.read_input("p", self.input.p, slot)?)
-    }
-
-    fn eval_load_indexed_seed(
-        &mut self,
-        dst: Reg,
-        base: usize,
-        count: usize,
-        index: Reg,
-    ) -> Result<(), EvalSolveError> {
-        let seed = self
-            .input
-            .context
-            .seed
-            .ok_or_else(|| self.input.missing_input("seed", base, 0))?;
-        let slot = resolve_indexed_slot(self.get(index)?, base, count);
-        self.set(dst, self.input.read_input("seed", seed, slot)?)
-    }
-
     fn get(&self, reg: Reg) -> Result<f64, EvalSolveError> {
         get(self.regs, self.initialized, reg, self.input.source_span)
     }
@@ -3089,15 +2843,6 @@ fn eval_row_prepared_fast(
             LinearOp::LoadP { dst, index } => {
                 regs[*dst as usize] = input.p[*index];
             }
-            LinearOp::LoadIndexedP {
-                dst,
-                base,
-                count,
-                index,
-            } => {
-                let slot = resolve_indexed_slot(regs[*index as usize], *base, *count);
-                regs[*dst as usize] = input.read_input("p", input.p, slot)?;
-            }
             LinearOp::LoadIndexedRegister {
                 dst,
                 base,
@@ -3108,9 +2853,7 @@ fn eval_row_prepared_fast(
                 let offset = tensor_register_offset(dimensions, indices, |register| {
                     Ok::<f64, EvalSolveError>(regs[register as usize])
                 })?;
-                regs[*dst as usize] = offset
-                    .map(|offset| regs[*base as usize + offset * *stride])
-                    .unwrap_or(f64::NAN);
+                regs[*dst as usize] = regs[*base as usize + offset * *stride];
             }
             LinearOp::LoadIndexedFoldCarried {
                 dst,
@@ -3125,9 +2868,7 @@ fn eval_row_prepared_fast(
                 let offset = tensor_register_offset(dimensions, indices, |register| {
                     Ok::<f64, EvalSolveError>(regs[register as usize])
                 })?;
-                regs[*dst as usize] = offset
-                    .and_then(|offset| carried.get(*base + offset * *stride).copied())
-                    .unwrap_or(f64::NAN);
+                regs[*dst as usize] = carried[*base + offset * *stride];
             }
             LinearOp::LoadIndexedFoldCapture {
                 dst,
@@ -3142,22 +2883,7 @@ fn eval_row_prepared_fast(
                 let offset = tensor_register_offset(dimensions, indices, |register| {
                     Ok::<f64, EvalSolveError>(regs[register as usize])
                 })?;
-                regs[*dst as usize] = offset
-                    .and_then(|offset| captures.get(*base + offset * *stride).copied())
-                    .unwrap_or(f64::NAN);
-            }
-            LinearOp::LoadIndexedSeed {
-                dst,
-                base,
-                count,
-                index,
-            } => {
-                let seed = input
-                    .context
-                    .seed
-                    .ok_or_else(|| input.missing_input("seed", *base, 0))?;
-                let slot = resolve_indexed_slot(regs[*index as usize], *base, *count);
-                regs[*dst as usize] = input.read_input("seed", seed, slot)?;
+                regs[*dst as usize] = captures[*base + offset * *stride];
             }
             LinearOp::LoadSeed { dst, index } => {
                 let seed = input
@@ -3418,13 +3144,13 @@ fn eval_row_prepared_fast(
                 program,
             } => {
                 let initial = regs
-                    [*initial_start as usize..*initial_start as usize + program.carried_count]
+                    [*initial_start as usize..*initial_start as usize + program.carried_count()]
                     .to_vec();
                 let captures = regs
-                    [*capture_start as usize..*capture_start as usize + program.capture_count]
+                    [*capture_start as usize..*capture_start as usize + program.capture_count()]
                     .to_vec();
                 let carried = eval_function_fold(input, program, &initial, &captures)?;
-                regs[*dst_start as usize..*dst_start as usize + program.carried_count]
+                regs[*dst_start as usize..*dst_start as usize + program.carried_count()]
                     .copy_from_slice(&carried);
             }
             LinearOp::GuardedFunctionFold {
@@ -3434,17 +3160,17 @@ fn eval_row_prepared_fast(
                 activation,
                 program,
             } => {
-                let initial =
-                    &regs[*initial_start as usize..*initial_start as usize + program.carried_count];
+                let initial = &regs
+                    [*initial_start as usize..*initial_start as usize + program.carried_count()];
                 if regs[*activation as usize] != 0.0 {
-                    let captures = &regs
-                        [*capture_start as usize..*capture_start as usize + program.capture_count];
+                    let captures = &regs[*capture_start as usize
+                        ..*capture_start as usize + program.capture_count()];
                     let carried = eval_function_fold(input, program, initial, captures)?;
-                    regs[*dst_start as usize..*dst_start as usize + program.carried_count]
+                    regs[*dst_start as usize..*dst_start as usize + program.carried_count()]
                         .copy_from_slice(&carried);
                 } else {
                     regs.copy_within(
-                        *initial_start as usize..*initial_start as usize + program.carried_count,
+                        *initial_start as usize..*initial_start as usize + program.carried_count(),
                         *dst_start as usize,
                     );
                 }
@@ -3454,10 +3180,10 @@ fn eval_row_prepared_fast(
                 capture_start,
                 program,
             } => {
-                let captures =
-                    &regs[*capture_start as usize..*capture_start as usize + program.capture_count];
+                let captures = &regs
+                    [*capture_start as usize..*capture_start as usize + program.capture_count()];
                 let values = eval_function_conditional(input, program, captures)?;
-                regs[*dst_start as usize..*dst_start as usize + program.result_count]
+                regs[*dst_start as usize..*dst_start as usize + program.result_count()]
                     .copy_from_slice(&values);
             }
             LinearOp::PureCall {
@@ -3503,7 +3229,7 @@ fn eval_row_prepared_fast(
                 let parent = input.fold_carried.ok_or_else(|| {
                     invalid_row("nested aggregate fold escaped its parent update body")
                 })?;
-                let mut values = Vec::with_capacity(program.carried_count);
+                let mut values = Vec::with_capacity(program.carried_count());
                 for source in initial.iter() {
                     match *source {
                         rumoca_ir_solve::FoldInitialSource::Registers { start, count } => {
@@ -3519,8 +3245,8 @@ fn eval_row_prepared_fast(
                     .map(|condition| (regs[condition as usize] != 0.0) == *nested_when_true)
                     .unwrap_or(true);
                 if use_nested {
-                    let captures = &regs
-                        [*capture_start as usize..*capture_start as usize + program.capture_count];
+                    let captures = &regs[*capture_start as usize
+                        ..*capture_start as usize + program.capture_count()];
                     let folded = eval_function_fold(input, program, &values, captures)?;
                     for &nested in &folded[*result_base..*result_base + *count] {
                         sink.store(nested)?;
@@ -3581,9 +3307,7 @@ fn eval_fold_tensor_update(
     let carried = input
         .fold_carried
         .ok_or_else(|| invalid_row("aggregate output escaped its function-fold update body"))?;
-    let count = dimensions.iter().fold(1usize, |count, extent| {
-        count.saturating_mul(*extent as usize)
-    });
+    let count = dimensions.iter().map(|&extent| extent as usize).product();
     let mut offsets = Vec::with_capacity(updates.len());
     let mut values = Vec::with_capacity(nodes.len() + 1);
     for element in 0..count {
@@ -3861,18 +3585,18 @@ fn eval_function_fold(
     initial: &[f64],
     captures: &[f64],
 ) -> Result<Vec<f64>, EvalSolveError> {
-    let register_count = program.register_count;
+    let register_count = program.register_count();
     let mut carried = initial.to_vec();
-    let mut next = vec![0.0; program.carried_count];
-    let points = program
-        .domain
-        .index_tuple_iter()
+    let mut next = vec![0.0; program.carried_count()];
+    let domain = program
+        .domain()
+        .validated()
         .map_err(|error| invalid_row(format!("invalid function-fold domain: {error}")))?;
     let mut scratch = RowEvalScratch::default();
-    for indices in points {
+    for indices in domain.index_tuple_iter() {
         next.fill(0.0);
         let nested = PreparedRowEval::new(
-            &program.update,
+            program.update(),
             register_count,
             input.y,
             input.p,
@@ -3893,11 +3617,11 @@ fn eval_function_conditional(
     program: &rumoca_ir_solve::FunctionConditionalProgram,
     captures: &[f64],
 ) -> Result<Vec<f64>, EvalSolveError> {
-    for (arm_index, arm) in program.arms.iter().enumerate() {
+    for (arm_index, arm) in program.arms().iter().enumerate() {
         let condition = eval_function_conditional_region(
             input,
-            &arm.condition,
-            arm.condition_register_count,
+            arm.condition(),
+            arm.condition_register_count(),
             captures,
             1,
         )?;
@@ -3905,26 +3629,26 @@ fn eval_function_conditional(
             target: "rumoca_eval_solve::function_conditional",
             arm_index,
             condition = condition[0],
-            result_count = program.result_count,
-            capture_count = program.capture_count,
+            result_count = program.result_count(),
+            capture_count = program.capture_count(),
             "evaluate function-conditional arm"
         );
         if condition[0] != 0.0 {
             return eval_function_conditional_region(
                 input,
-                &arm.result,
-                arm.result_register_count,
+                arm.result(),
+                arm.result_register_count(),
                 captures,
-                program.result_count,
+                program.result_count(),
             );
         }
     }
     eval_function_conditional_region(
         input,
-        &program.fallback,
-        program.fallback_register_count,
+        program.fallback(),
+        program.fallback_register_count(),
         captures,
-        program.result_count,
+        program.result_count(),
     )
 }
 
@@ -3959,15 +3683,13 @@ fn tensor_register_offset<E>(
     dimensions: &[u32],
     indices: &[rumoca_ir_solve::TensorIndex],
     mut read: impl FnMut(Reg) -> Result<f64, E>,
-) -> Result<Option<usize>, E> {
+) -> Result<usize, E> {
     let mut offset = 0usize;
     for (&extent, index) in dimensions.iter().zip(indices) {
-        let Some(coordinate) = tensor_index_coordinate(*index, extent, &mut read)? else {
-            return Ok(None);
-        };
+        let coordinate = tensor_index_coordinate(*index, &mut read)?;
         offset = offset * extent as usize + coordinate;
     }
-    Ok(Some(offset))
+    Ok(offset)
 }
 
 fn tensor_update_value_offset<E>(
@@ -3977,9 +3699,7 @@ fn tensor_update_value_offset<E>(
     mut read: impl FnMut(Reg) -> Result<f64, E>,
 ) -> Result<Option<usize>, E> {
     let mut value_offset = 0usize;
-    let mut axis_stride = dimensions.iter().fold(1usize, |count, extent| {
-        count.saturating_mul(*extent as usize)
-    });
+    let mut axis_stride: usize = dimensions.iter().map(|&extent| extent as usize).product();
     for (&extent, subscript) in dimensions.iter().zip(subscripts) {
         axis_stride /= extent as usize;
         let coordinate = (element / axis_stride) % extent as usize;
@@ -3988,9 +3708,7 @@ fn tensor_update_value_offset<E>(
                 value_offset = value_offset * extent as usize + coordinate;
             }
             rumoca_ir_solve::TensorSubscript::Index(index) => {
-                let Some(selected) = tensor_index_coordinate(index, extent, &mut read)? else {
-                    return Ok(None);
-                };
+                let selected = tensor_index_coordinate(index, &mut read)?;
                 if selected != coordinate {
                     return Ok(None);
                 }
@@ -4007,9 +3725,7 @@ fn tensor_update_register_value_offset<E>(
     mut read: impl FnMut(Reg) -> Result<f64, E>,
 ) -> Result<Option<usize>, E> {
     let mut value_offset = 0usize;
-    let mut axis_stride = dimensions.iter().fold(1usize, |count, extent| {
-        count.saturating_mul(*extent as usize)
-    });
+    let mut axis_stride: usize = dimensions.iter().map(|&extent| extent as usize).product();
     for (&extent, subscript) in dimensions.iter().zip(subscripts) {
         axis_stride /= extent as usize;
         let coordinate = (element / axis_stride) % extent as usize;
@@ -4018,17 +3734,13 @@ fn tensor_update_register_value_offset<E>(
                 value_offset = value_offset * extent as usize + coordinate;
             }
             rumoca_ir_solve::TensorUpdateSubscript::Index(index) => {
-                let Some(selected) = tensor_index_coordinate(*index, extent, &mut read)? else {
-                    return Ok(None);
-                };
+                let selected = tensor_index_coordinate(*index, &mut read)?;
                 if selected != coordinate {
                     return Ok(None);
                 }
             }
             rumoca_ir_solve::TensorUpdateSubscript::Slice { start, dimensions } => {
-                let slice_count = dimensions.iter().fold(1usize, |count, extent| {
-                    count.saturating_mul(*extent as usize)
-                });
+                let slice_count = dimensions.iter().map(|&extent| extent as usize).product();
                 let Some(selected) =
                     tensor_slice_coordinate_offset(*start, slice_count, coordinate, &mut read)?
                 else {
@@ -4043,18 +3755,12 @@ fn tensor_update_register_value_offset<E>(
 
 fn tensor_index_coordinate<E>(
     index: rumoca_ir_solve::TensorIndex,
-    extent: u32,
     read: &mut impl FnMut(Reg) -> Result<f64, E>,
-) -> Result<Option<usize>, E> {
-    let value = match index {
-        rumoca_ir_solve::TensorIndex::Constant(coordinate) => return Ok(Some(coordinate as usize)),
-        rumoca_ir_solve::TensorIndex::Runtime(register) => read(register)?,
-    };
-    let rounded = value.round();
-    Ok(
-        (value.is_finite() && rounded == value && rounded >= 1.0 && rounded <= f64::from(extent))
-            .then(|| rounded as usize - 1),
-    )
+) -> Result<usize, E> {
+    match index {
+        rumoca_ir_solve::TensorIndex::Constant(coordinate) => Ok(coordinate as usize),
+        rumoca_ir_solve::TensorIndex::Runtime(register) => Ok(read(register)? as usize - 1),
+    }
 }
 
 fn tensor_slice_coordinate_offset<E>(
@@ -4065,7 +3771,7 @@ fn tensor_slice_coordinate_offset<E>(
 ) -> Result<Option<usize>, E> {
     for offset in 0..count {
         let value = read(start + offset as Reg)?;
-        if value.is_finite() && value.round() == value && value == (coordinate + 1) as f64 {
+        if value == (coordinate + 1) as f64 {
             return Ok(Some(offset));
         }
     }
@@ -4293,12 +3999,10 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
         LinearOp::LoadTime { .. } => "LoadTime",
         LinearOp::LoadY { .. } => "LoadY",
         LinearOp::LoadP { .. } => "LoadP",
-        LinearOp::LoadIndexedP { .. } => "LoadIndexedP",
         LinearOp::LoadIndexedRegister { .. } => "LoadIndexedRegister",
         LinearOp::LoadIndexedFoldCarried { .. } => "LoadIndexedFoldCarried",
         LinearOp::LoadIndexedFoldCapture { .. } => "LoadIndexedFoldCapture",
         LinearOp::LoadSeed { .. } => "LoadSeed",
-        LinearOp::LoadIndexedSeed { .. } => "LoadIndexedSeed",
         LinearOp::LoadFoldCarried { .. } => "LoadFoldCarried",
         LinearOp::LoadFoldIndex { .. } => "LoadFoldIndex",
         LinearOp::LoadFoldCapture { .. } => "LoadFoldCapture",
@@ -4547,16 +4251,8 @@ fn input_requirements_for_op(op: LinearOp) -> Result<RowInputRequirements, EvalS
             p_len: checked_required_len("p", index)?,
             ..Default::default()
         }),
-        LinearOp::LoadIndexedP { base, count, .. } => Ok(RowInputRequirements {
-            p_len: checked_required_indexed_len("p", base, count)?,
-            ..Default::default()
-        }),
         LinearOp::LoadSeed { index, .. } => Ok(RowInputRequirements {
             seed_len: checked_required_len("seed", index)?,
-            ..Default::default()
-        }),
-        LinearOp::LoadIndexedSeed { base, count, .. } => Ok(RowInputRequirements {
-            seed_len: checked_required_indexed_len("seed", base, count)?,
             ..Default::default()
         }),
         // A tensor load reads `count` contiguous entries of its input vector,
@@ -4602,7 +4298,7 @@ fn input_requirements_for_op(op: LinearOp) -> Result<RowInputRequirements, EvalS
         LinearOp::FunctionFold { program, .. }
         | LinearOp::GuardedFunctionFold { program, .. }
         | LinearOp::StoreOutputFunctionFold { program, .. } => {
-            row_input_requirements(&program.update)
+            row_input_requirements(program.update())
         }
         _ => Ok(RowInputRequirements::default()),
     }

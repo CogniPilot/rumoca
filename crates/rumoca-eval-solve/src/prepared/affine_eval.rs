@@ -255,12 +255,14 @@ fn prepared_affine_position(
     Ok((ordinal / stride) % extent)
 }
 
-pub(super) fn prepared_domain_scalar_count(
+/// Prove one prepared affine domain once, so extents, ordinal strides, and
+/// the scalar count are read from the witness instead of rediscovered.
+pub(super) fn prepared_valid_domain(
     domain: &rumoca_core::StructuredIndexDomain,
     span: rumoca_core::Span,
-) -> Result<usize, EvalSolveError> {
+) -> Result<rumoca_core::ValidStructuredIndexDomain<'_>, EvalSolveError> {
     domain
-        .scalar_count()
+        .validated()
         .map_err(|err| EvalSolveError::ShapeContract {
             message: format!("prepared affine structured index domain is invalid: {err}"),
             span: Some(span),

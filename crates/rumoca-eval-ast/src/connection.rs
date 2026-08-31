@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 
+use rumoca_core::ValidStructuredIndexDomain;
 use rumoca_ir_ast as ast;
 
 /// Borrowing scalar compatibility view over a class instance's connections.
@@ -15,7 +16,7 @@ pub struct ScalarConnectionView<'a> {
     source: &'a [ast::InstanceConnection],
     position: usize,
     ordinal: usize,
-    count: usize,
+    domain: Option<ValidStructuredIndexDomain<'a>>,
 }
 
 /// Iterate the scalar compatibility view of a connection list.
@@ -24,17 +25,19 @@ pub fn scalar_connection_view(connections: &[ast::InstanceConnection]) -> Scalar
         source: connections,
         position: 0,
         ordinal: 0,
-        count: 0,
+        domain: None,
     }
 }
 
-impl ScalarConnectionView<'_> {
-    /// Cache the domain cardinality when the cursor enters a new family.
-    fn begin_family(&mut self, family: &ast::InstanceConnectionFamily) -> Result<(), String> {
-        self.count = family
-            .domain
-            .scalar_count()
-            .map_err(|error| format!("invalid connection family domain: {error}"))?;
+impl<'a> ScalarConnectionView<'a> {
+    /// Prove the family domain once when the cursor enters a new family.
+    fn begin_family(&mut self, family: &'a ast::InstanceConnectionFamily) -> Result<(), String> {
+        self.domain = Some(
+            family
+                .domain()
+                .validated()
+                .map_err(|error| format!("invalid connection family domain: {error}"))?,
+        );
         Ok(())
     }
 
@@ -42,19 +45,23 @@ impl ScalarConnectionView<'_> {
     fn advance_connection(&mut self) {
         self.position += 1;
         self.ordinal = 0;
+        self.domain = None;
     }
 }
 
 impl<'a> Iterator for ScalarConnectionView<'a> {
-    type Item = Result<Cow<'a, ast::InstanceConnection>, String>;
+    type Item = Result<Cow<'a, ast::InstanceScalarConnection>, String>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let source = self.source;
         loop {
             let connection = source.get(self.position)?;
-            let Some(family) = &connection.family else {
-                self.advance_connection();
-                return Some(Ok(Cow::Borrowed(connection)));
+            let family = match connection {
+                ast::InstanceConnection::Scalar(connection) => {
+                    self.advance_connection();
+                    return Some(Ok(Cow::Borrowed(connection)));
+                }
+                ast::InstanceConnection::Family(family) => family,
             };
             if self.ordinal == 0
                 && let Err(message) = self.begin_family(family)
@@ -62,35 +69,32 @@ impl<'a> Iterator for ScalarConnectionView<'a> {
                 self.advance_connection();
                 return Some(Err(message));
             }
-            if self.ordinal >= self.count {
+            let Some(tuple) = self
+                .domain
+                .as_ref()
+                .and_then(|domain| domain.index_tuple_at(self.ordinal))
+            else {
                 self.advance_connection();
                 continue;
-            }
-            let ordinal = self.ordinal;
+            };
             self.ordinal += 1;
-            return Some(family_member(connection, family, ordinal).map(Cow::Owned));
+            return Some(family_member(family, &tuple).map(Cow::Owned));
         }
     }
 }
 
 fn family_member(
-    connection: &ast::InstanceConnection,
     family: &ast::InstanceConnectionFamily,
-    ordinal: usize,
-) -> Result<ast::InstanceConnection, String> {
-    let tuple = family
-        .domain
-        .index_tuple_at(ordinal)
-        .map_err(|error| format!("invalid connection family domain: {error}"))?
-        .ok_or_else(|| format!("connection family is missing domain ordinal {ordinal}"))?;
-    Ok(ast::InstanceConnection {
-        a: evaluate_connection_endpoint(&family.a, &tuple)?,
-        b: evaluate_connection_endpoint(&family.b, &tuple)?,
-        connector_type: connection.connector_type,
-        span: connection.span,
-        scope: connection.scope.clone(),
-        family: None,
-    })
+    tuple: &[i64],
+) -> Result<ast::InstanceScalarConnection, String> {
+    ast::InstanceScalarConnection::new(
+        evaluate_connection_endpoint(family.a(), tuple)?,
+        evaluate_connection_endpoint(family.b(), tuple)?,
+        family.connector_type(),
+        family.span(),
+        family.scope().to_string(),
+    )
+    .map_err(|error| format!("invalid scalar connection family member: {error}"))
 }
 
 /// Materialize the scalar compatibility view of an instance connection.
@@ -100,12 +104,12 @@ fn family_member(
 /// scalar connection list; prefer [`scalar_connection_view`] otherwise.
 pub fn scalar_connection_members(
     connection: &ast::InstanceConnection,
-) -> Result<Vec<ast::InstanceConnection>, String> {
+) -> Result<Vec<ast::InstanceScalarConnection>, String> {
     let single = std::slice::from_ref(connection);
     let mut members = Vec::new();
-    if let Some(family) = &connection.family {
+    if let ast::InstanceConnection::Family(family) = connection {
         let count = family
-            .domain
+            .domain()
             .scalar_count()
             .map_err(|error| format!("invalid connection family domain: {error}"))?;
         members
@@ -124,7 +128,7 @@ pub fn evaluate_connection_endpoint(
     binders: &[i64],
 ) -> Result<ast::QualifiedName, String> {
     let mut result = ast::QualifiedName::new();
-    for (name, subscripts) in &endpoint.parts {
+    for (name, subscripts) in endpoint.parts() {
         let mut values = Vec::new();
         values.try_reserve_exact(subscripts.len()).map_err(|_| {
             "connection endpoint subscript count exceeds host memory limits".to_string()
@@ -159,7 +163,10 @@ fn evaluate_affine_form(form: &rumoca_core::AffineForm, binders: &[i64]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_core::{AffineForm, BytePos, Span, StructuredIndexBinder, StructuredIndexDomain};
+    use rumoca_core::{
+        AffineForm, BytePos, Span, StructuredIndexBinder, StructuredIndexBinderId,
+        StructuredIndexDomain,
+    };
 
     fn span() -> Span {
         Span::new(
@@ -169,9 +176,9 @@ mod tests {
         )
     }
 
-    fn binder(id: usize, upper: i64) -> StructuredIndexBinder {
+    fn binder(id: u32, upper: i64) -> StructuredIndexBinder {
         StructuredIndexBinder {
-            id,
+            id: StructuredIndexBinderId::new(id),
             display_name: format!("i{id}"),
             lower: 1,
             upper,
@@ -185,43 +192,39 @@ mod tests {
         binder_index: usize,
         rank: usize,
     ) -> ast::InstanceConnectionEndpoint {
-        ast::InstanceConnectionEndpoint {
-            parts: vec![
-                (
-                    name.to_string(),
-                    vec![AffineForm::unit_binder(binder_index, rank)],
-                ),
-                (member.to_string(), Vec::new()),
-            ],
-        }
+        ast::InstanceConnectionEndpoint::new(vec![
+            (
+                name.to_string(),
+                vec![AffineForm::unit_binder(binder_index, rank)],
+            ),
+            (member.to_string(), Vec::new()),
+        ])
+        .expect("test endpoint is valid")
     }
 
     fn rank_two_family_connection() -> ast::InstanceConnection {
-        ast::InstanceConnection {
-            a: ast::QualifiedName::from_ident("placeholder_a"),
-            b: ast::QualifiedName::from_ident("placeholder_b"),
-            connector_type: None,
-            span: span(),
-            scope: "root".to_string(),
-            family: Some(ast::InstanceConnectionFamily {
-                domain: StructuredIndexDomain {
-                    binders: vec![binder(0, 2), binder(1, 3)],
-                },
-                a: endpoint("a", "p", 0, 2),
-                b: endpoint("b", "p", 1, 2),
-            }),
-        }
+        ast::InstanceConnection::family(
+            StructuredIndexDomain {
+                binders: vec![binder(0, 2), binder(1, 3)],
+            },
+            endpoint("a", "p", 0, 2),
+            endpoint("b", "p", 1, 2),
+            None,
+            span(),
+            "root".to_string(),
+        )
+        .expect("test family is valid")
     }
 
     fn family_free_connection() -> ast::InstanceConnection {
-        ast::InstanceConnection {
-            a: ast::QualifiedName::from_ident("x"),
-            b: ast::QualifiedName::from_ident("y"),
-            connector_type: None,
-            span: span(),
-            scope: String::new(),
-            family: None,
-        }
+        ast::InstanceConnection::scalar(
+            ast::QualifiedName::from_ident("x"),
+            ast::QualifiedName::from_ident("y"),
+            None,
+            span(),
+            String::new(),
+        )
+        .expect("test scalar connection is valid")
     }
 
     /// The scalar view of `rank_two_family_connection`, written out literally.
@@ -245,24 +248,22 @@ mod tests {
         .collect()
     }
 
-    fn rendered(members: &[ast::InstanceConnection]) -> Vec<(String, String)> {
+    fn rendered(members: &[ast::InstanceScalarConnection]) -> Vec<(String, String)> {
         members
             .iter()
-            .map(|member| (member.a.to_flat_string(), member.b.to_flat_string()))
+            .map(|member| (member.a().to_flat_string(), member.b().to_flat_string()))
             .collect()
     }
 
     #[test]
     fn scalar_connection_view_yields_the_documented_domain_order() {
         let connection = rank_two_family_connection();
-        let viewed: Vec<ast::InstanceConnection> =
+        let viewed: Vec<ast::InstanceScalarConnection> =
             scalar_connection_view(std::slice::from_ref(&connection))
                 .map(|member| member.expect("view member").into_owned())
                 .collect();
         assert_eq!(rendered(&viewed), expected_rank_two_members());
-        // Derived members are scalar: they carry no family of their own.
-        assert!(viewed.iter().all(|member| member.family.is_none()));
-        assert!(viewed.iter().all(|member| member.scope == "root"));
+        assert!(viewed.iter().all(|member| member.scope() == "root"));
     }
 
     #[test]
@@ -270,7 +271,31 @@ mod tests {
         let connection = rank_two_family_connection();
         let members = scalar_connection_members(&connection).expect("scalar members");
         assert_eq!(rendered(&members), expected_rank_two_members());
-        assert!(members.iter().all(|member| member.family.is_none()));
+    }
+
+    #[test]
+    fn zero_cardinality_family_has_no_scalar_representative() {
+        let connection = ast::InstanceConnection::family(
+            StructuredIndexDomain {
+                binders: vec![binder(0, 0)],
+            },
+            endpoint("a", "p", 0, 1),
+            endpoint("b", "p", 0, 1),
+            None,
+            span(),
+            "root".to_string(),
+        )
+        .expect("zero-cardinality family is valid");
+
+        assert!(
+            scalar_connection_members(&connection)
+                .expect("empty family is a valid scalar view")
+                .is_empty()
+        );
+        assert_eq!(
+            scalar_connection_view(std::slice::from_ref(&connection)).count(),
+            0
+        );
     }
 
     #[test]
@@ -296,7 +321,7 @@ mod tests {
     fn scalar_connection_view_spans_multiple_connections_in_order() {
         let connections = vec![rank_two_family_connection(), family_free_connection()];
         let rendered: Vec<String> = scalar_connection_view(&connections)
-            .map(|member| member.expect("no error").a.to_flat_string())
+            .map(|member| member.expect("no error").a().to_flat_string())
             .collect();
         assert_eq!(rendered.len(), 7);
         assert_eq!(rendered[0], "a[1].p");

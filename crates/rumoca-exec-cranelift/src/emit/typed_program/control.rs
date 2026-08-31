@@ -4,7 +4,7 @@ use super::{
 };
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, Value, types};
-use rumoca_core::StructuredIndexDomain;
+use rumoca_core::{StructuredIndexDomain, ValidStructuredIndexDomain};
 use rumoca_ir_solve as solve;
 
 impl ProgramLowerer<'_, '_> {
@@ -72,16 +72,10 @@ impl ProgramLowerer<'_, '_> {
         self.pack_registers_at(captures, first, carried_cells)?;
         self.pack_registers_at(captures, second, carried_cells)?;
 
-        let count = domain
-            .scalar_count()
+        let domain = domain
+            .validated()
             .map_err(|error| CompileError::Backend(error.to_string()))?;
-        let extents = domain
-            .extents()
-            .map_err(|error| CompileError::Backend(error.to_string()))?;
-        let strides = domain
-            .ordinal_strides()
-            .map_err(|error| CompileError::Backend(error.to_string()))?;
-        let count = i64::try_from(count)
+        let count = i64::try_from(domain.scalar_count())
             .map_err(|_| CompileError::Backend("typed fold domain exceeds i64".into()))?;
         let header = self.builder.create_block();
         let body = self.builder.create_block();
@@ -109,14 +103,7 @@ impl ProgramLowerer<'_, '_> {
 
         self.builder.switch_to_block(body);
         self.builder.seal_block(body);
-        self.store_domain_binders(
-            domain,
-            &extents,
-            &strides,
-            ordinal,
-            current,
-            carried_cells + capture_cells,
-        )?;
+        self.store_domain_binders(&domain, ordinal, current, carried_cells + capture_cells)?;
         self.lower_region(transition, current, next_frame, false)?;
         let next = self.builder.ins().iadd_imm(ordinal, 1);
         self.builder
@@ -148,16 +135,10 @@ impl ProgramLowerer<'_, '_> {
         let output = create_tape(self.builder, self.pointer_type, output_cells)?;
         self.pack_registers(captures, capture_values)?;
 
-        let count = domain
-            .scalar_count()
+        let domain = domain
+            .validated()
             .map_err(|error| CompileError::Backend(error.to_string()))?;
-        let extents = domain
-            .extents()
-            .map_err(|error| CompileError::Backend(error.to_string()))?;
-        let strides = domain
-            .ordinal_strides()
-            .map_err(|error| CompileError::Backend(error.to_string()))?;
-        let count = i64::try_from(count)
+        let count = i64::try_from(domain.scalar_count())
             .map_err(|_| CompileError::Backend("typed map domain exceeds i64".into()))?;
         let header = self.builder.create_block();
         let iteration = self.builder.create_block();
@@ -176,7 +157,7 @@ impl ProgramLowerer<'_, '_> {
         self.builder.switch_to_block(iteration);
         self.builder.seal_block(iteration);
         self.copy_register_types(captures, capture_values, 0, input, 0)?;
-        self.store_domain_binders(domain, &extents, &strides, ordinal, input, capture_cells)?;
+        self.store_domain_binders(&domain, ordinal, input, capture_cells)?;
         self.lower_region(body, input, output, false)?;
         self.copy_map_output(output, &destination, ordinal, output_cells)?;
         let next = self.builder.ins().iadd_imm(ordinal, 1);
@@ -323,15 +304,17 @@ impl ProgramLowerer<'_, '_> {
 
     fn store_domain_binders(
         &mut self,
-        domain: &StructuredIndexDomain,
-        extents: &[usize],
-        strides: &[usize],
+        domain: &ValidStructuredIndexDomain<'_>,
         ordinal: Value,
         pointer: Value,
         start: u32,
     ) -> Result<(), CompileError> {
-        for (axis, ((binder, extent), stride)) in
-            domain.binders.iter().zip(extents).zip(strides).enumerate()
+        for (axis, ((binder, extent), stride)) in domain
+            .binders()
+            .iter()
+            .zip(domain.extents())
+            .zip(domain.ordinal_strides())
+            .enumerate()
         {
             let position = if *stride == 1 {
                 ordinal

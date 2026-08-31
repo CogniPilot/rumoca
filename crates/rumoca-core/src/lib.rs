@@ -87,8 +87,8 @@ pub use statement_rewriter::{FallibleStatementRewriter, StatementRewriter};
 pub use structured_domain::{
     AffineForm, ArrayAccess, ComprehensionScalarView, ComprehensionTemplate, RegularForFamily,
     StructuredIndexBinder, StructuredIndexBinderId, StructuredIndexDomain,
-    StructuredIndexDomainError, checked_product, flatten_coordinates, row_major_coordinates,
-    row_major_strides,
+    StructuredIndexDomainError, ValidStructuredIndexDomain, checked_product, flatten_coordinates,
+    row_major_coordinates, row_major_strides,
 };
 pub use subscript::Subscript;
 pub use target_invocation_brand::{TargetInvocationBrand, with_target_invocation_brand};

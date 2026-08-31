@@ -158,16 +158,6 @@ fn execute_general_op(
             let value = read_input_value("p", p, index)?;
             set_reg_value(regs, dst as usize, value);
         }
-        LinearOp::LoadIndexedP {
-            dst,
-            base,
-            count,
-            index,
-        } => {
-            let slot = resolve_indexed_slot(read_reg_value(regs, index as usize), base, count);
-            let value = read_input_value("p", p, slot)?;
-            set_reg_value(regs, dst as usize, value);
-        }
         LinearOp::LoadIndexedRegister {
             dst,
             base,
@@ -176,9 +166,7 @@ fn execute_general_op(
             indices,
         } => {
             let offset = tensor_register_offset(regs, &dimensions, &indices);
-            let value = offset
-                .map(|offset| read_reg_value(regs, base as usize + offset * stride))
-                .unwrap_or(f64::NAN);
+            let value = read_reg_value(regs, base as usize + offset * stride);
             set_reg_value(regs, dst as usize, value);
         }
         LinearOp::LoadIndexedFoldCarried {
@@ -194,9 +182,7 @@ fn execute_general_op(
                 )
             })?;
             let offset = tensor_register_offset(regs, &dimensions, &indices);
-            let value = offset
-                .and_then(|offset| carried.get(base + offset * stride).copied())
-                .unwrap_or(f64::NAN);
+            let value = carried[base + offset * stride];
             set_reg_value(regs, dst as usize, value);
         }
         LinearOp::LoadIndexedFoldCapture {
@@ -212,25 +198,12 @@ fn execute_general_op(
                 )
             })?;
             let offset = tensor_register_offset(regs, &dimensions, &indices);
-            let value = offset
-                .and_then(|offset| captures.get(base + offset * stride).copied())
-                .unwrap_or(f64::NAN);
+            let value = captures[base + offset * stride];
             set_reg_value(regs, dst as usize, value);
         }
         LinearOp::LoadSeed { dst, index } => {
             let seed = seed.ok_or_else(|| input_compile_error("seed", index, 0))?;
             let value = read_input_value("seed", seed, index)?;
-            set_reg_value(regs, dst as usize, value);
-        }
-        LinearOp::LoadIndexedSeed {
-            dst,
-            base,
-            count,
-            index,
-        } => {
-            let seed = seed.ok_or_else(|| input_compile_error("seed", base, 0))?;
-            let slot = resolve_indexed_slot(read_reg_value(regs, index as usize), base, count);
-            let value = read_input_value("seed", seed, slot)?;
             set_reg_value(regs, dst as usize, value);
         }
         LinearOp::LoadFoldCarried { dst, index } => {
@@ -505,12 +478,7 @@ fn execute_general_op(
                             let index = match *index {
                                 rumoca_ir_solve::TensorIndex::Constant(index) => index as usize,
                                 rumoca_ir_solve::TensorIndex::Runtime(register) => {
-                                    let value = read_reg_value(regs, register as usize);
-                                    if !value.is_finite() || value.round() != value || value < 1.0 {
-                                        selected = false;
-                                        break;
-                                    }
-                                    value as usize - 1
+                                    read_reg_value(regs, register as usize) as usize - 1
                                 }
                             };
                             if index != coordinate {
@@ -671,21 +639,21 @@ fn execute_general_op(
             capture_start,
             program,
         } => {
-            let mut carried = (0..program.carried_count)
+            let mut carried = (0..program.carried_count())
                 .map(|offset| read_reg_value(regs, initial_start as usize + offset))
                 .collect::<Vec<_>>();
-            let captures = (0..program.capture_count)
+            let captures = (0..program.capture_count())
                 .map(|offset| read_reg_value(regs, capture_start as usize + offset))
                 .collect::<Vec<_>>();
-            let update_count = program.register_count;
-            for indices in program
-                .domain
-                .index_tuple_iter()
-                .map_err(|error| CompileError::Backend(error.to_string()))?
-            {
+            let update_count = program.register_count();
+            let domain = program
+                .domain()
+                .validated()
+                .map_err(|error| CompileError::Backend(error.to_string()))?;
+            for indices in domain.index_tuple_iter() {
                 let mut update_regs = vec![0.0; update_count];
-                let mut outputs = Vec::with_capacity(program.carried_count);
-                for operation in program.update.iter().cloned() {
+                let mut outputs = Vec::with_capacity(program.carried_count());
+                for operation in program.update().iter().cloned() {
                     match operation {
                         LinearOp::StoreOutput { src } => {
                             outputs.push(read_reg_value(&update_regs, src as usize));
@@ -699,9 +667,7 @@ fn execute_general_op(
                             result,
                             lanes,
                         } => {
-                            let count = dimensions.iter().fold(1usize, |count, extent| {
-                                count.saturating_mul(*extent as usize)
-                            });
+                            let count = dimensions.iter().map(|&extent| extent as usize).product();
                             for element in 0..count {
                                 let offsets = updates
                                     .iter()
@@ -774,7 +740,7 @@ fn execute_general_op(
                             condition,
                             nested_when_true,
                         } => {
-                            let mut initial_values = Vec::with_capacity(program.carried_count);
+                            let mut initial_values = Vec::with_capacity(program.carried_count());
                             for source in initial.iter() {
                                 match *source {
                                     rumoca_ir_solve::FoldInitialSource::Registers {
@@ -803,7 +769,7 @@ fn execute_general_op(
                                 })
                                 .unwrap_or(true);
                             if use_nested {
-                                let captures = (0..program.capture_count)
+                                let captures = (0..program.capture_count())
                                     .map(|offset| {
                                         read_reg_value(
                                             &update_regs,
@@ -863,7 +829,7 @@ fn execute_general_op(
                     context,
                 )?;
             } else {
-                for offset in 0..program.carried_count {
+                for offset in 0..program.carried_count() {
                     let value = read_reg_value(regs, initial_start as usize + offset);
                     set_reg_value(regs, dst_start as usize + offset, value);
                 }
@@ -874,27 +840,21 @@ fn execute_general_op(
             capture_start,
             program,
         } => {
-            let captures = (0..program.capture_count)
+            let captures = (0..program.capture_count())
                 .map(|offset| read_reg_value(regs, capture_start as usize + offset))
                 .collect::<Vec<_>>();
             let mut selected = None;
-            for arm in &program.arms {
+            for arm in program.arms() {
                 let condition = eval_function_conditional_region(
-                    &arm.condition,
-                    arm.condition_register_count,
+                    arm.condition(),
+                    arm.condition_register_count(),
                     &captures,
                     context,
                 )?;
-                let [condition] = condition.as_slice() else {
-                    return Err(CompileError::Backend(format!(
-                        "function-conditional condition produced {} values instead of one",
-                        condition.len()
-                    )));
-                };
-                if *condition != 0.0 {
+                if condition[0] != 0.0 {
                     selected = Some(eval_function_conditional_region(
-                        &arm.result,
-                        arm.result_register_count,
+                        arm.result(),
+                        arm.result_register_count(),
                         &captures,
                         context,
                     )?);
@@ -904,17 +864,12 @@ fn execute_general_op(
             let values = match selected {
                 Some(values) => values,
                 None => eval_function_conditional_region(
-                    &program.fallback,
-                    program.fallback_register_count,
+                    program.fallback(),
+                    program.fallback_register_count(),
                     &captures,
                     context,
                 )?,
             };
-            if values.len() != program.result_count {
-                return Err(CompileError::Backend(
-                    "function-conditional result output count mismatch".into(),
-                ));
-            }
             for (offset, value) in values.into_iter().enumerate() {
                 set_reg_value(regs, dst_start as usize + offset, value);
             }
@@ -941,7 +896,7 @@ fn eval_function_fold(
     let initial_start = 0;
     let capture_start = initial.len();
     let dst_start = capture_start + captures.len();
-    let mut registers = vec![0.0; dst_start + program.carried_count];
+    let mut registers = vec![0.0; dst_start + program.carried_count()];
     registers[..initial.len()].copy_from_slice(initial);
     registers[capture_start..dst_start].copy_from_slice(captures);
     execute_general_op(
@@ -1005,13 +960,13 @@ fn tensor_register_offset(
     regs: &[f64],
     dimensions: &[u32],
     indices: &[rumoca_ir_solve::TensorIndex],
-) -> Option<usize> {
+) -> usize {
     let mut offset = 0usize;
     for (&extent, index) in dimensions.iter().zip(indices) {
-        let coordinate = tensor_index_coordinate(regs, extent, *index)?;
+        let coordinate = tensor_index_coordinate(regs, *index);
         offset = offset * extent as usize + coordinate;
     }
-    Some(offset)
+    offset
 }
 
 fn tensor_update_value_offset(
@@ -1021,9 +976,7 @@ fn tensor_update_value_offset(
     element: usize,
 ) -> Option<usize> {
     let mut value_offset = 0usize;
-    let mut axis_stride = dimensions.iter().fold(1usize, |count, extent| {
-        count.saturating_mul(*extent as usize)
-    });
+    let mut axis_stride: usize = dimensions.iter().map(|&extent| extent as usize).product();
     for (&extent, subscript) in dimensions.iter().zip(subscripts) {
         axis_stride /= extent as usize;
         let coordinate = (element / axis_stride) % extent as usize;
@@ -1032,7 +985,7 @@ fn tensor_update_value_offset(
                 value_offset = value_offset * extent as usize + coordinate;
             }
             rumoca_ir_solve::TensorSubscript::Index(index) => {
-                let selected = tensor_index_coordinate(regs, extent, index)?;
+                let selected = tensor_index_coordinate(regs, index);
                 if selected != coordinate {
                     return None;
                 }
@@ -1042,21 +995,11 @@ fn tensor_update_value_offset(
     Some(value_offset)
 }
 
-fn tensor_index_coordinate(
-    regs: &[f64],
-    extent: u32,
-    index: rumoca_ir_solve::TensorIndex,
-) -> Option<usize> {
+fn tensor_index_coordinate(regs: &[f64], index: rumoca_ir_solve::TensorIndex) -> usize {
     match index {
-        rumoca_ir_solve::TensorIndex::Constant(coordinate) => Some(coordinate as usize),
+        rumoca_ir_solve::TensorIndex::Constant(coordinate) => coordinate as usize,
         rumoca_ir_solve::TensorIndex::Runtime(register) => {
-            let value = read_reg_value(regs, register as usize);
-            let rounded = value.round();
-            (value.is_finite()
-                && rounded == value
-                && rounded >= 1.0
-                && rounded <= f64::from(extent))
-            .then(|| rounded as usize - 1)
+            read_reg_value(regs, register as usize) as usize - 1
         }
     }
 }

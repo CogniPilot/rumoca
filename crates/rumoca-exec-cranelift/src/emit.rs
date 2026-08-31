@@ -3324,10 +3324,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         program: &rumoca_ir_solve::FunctionFoldProgram,
     ) -> Result<(), CompileError> {
         let count = program.domain_scalar_count();
-        let extents = program.domain().extents().map_err(|error| {
-            CompileError::Backend(format!("invalid function-fold domain: {error}"))
-        })?;
-        let strides = program.domain().ordinal_strides().map_err(|error| {
+        let domain = program.domain().validated().map_err(|error| {
             CompileError::Backend(format!("invalid function-fold domain: {error}"))
         })?;
         // Shape is still compact in Solve IR; this is the final native-code
@@ -3336,8 +3333,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         // remains addressable, while we eliminate loop control and integer
         // div/rem from every estimator matrix reduction.
         if count <= INLINE_FIXED_FOLD_POINT_LIMIT && program.update().len() <= 128 {
-            for ordinal in 0..count {
-                let constants = fold_index_constants(program.domain(), &extents, &strides, ordinal);
+            for tuple in domain.index_tuple_iter() {
+                let constants = tuple
+                    .into_iter()
+                    .map(|coordinate| coordinate as f64)
+                    .collect::<Vec<_>>();
                 let indices = constants
                     .iter()
                     .map(|&coordinate| self.fb.ins().f64const(coordinate))
@@ -3373,8 +3373,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
         self.fb.switch_to_block(body);
         self.fb.seal_block(body);
-        let mut indices = Vec::with_capacity(program.domain().binders.len());
-        for ((binder, extent), stride) in program.domain().binders.iter().zip(extents).zip(strides)
+        let mut indices = Vec::with_capacity(domain.rank());
+        for ((binder, extent), stride) in domain
+            .binders()
+            .iter()
+            .zip(domain.extents().iter().copied())
+            .zip(domain.ordinal_strides().iter().copied())
         {
             let position = if stride == 1 {
                 ordinal
@@ -6543,24 +6547,6 @@ fn checked_f64_stack_bytes(count: usize, message: &str) -> Result<u32, CompileEr
         .checked_mul(std::mem::size_of::<f64>())
         .and_then(|bytes| u32::try_from(bytes).ok())
         .ok_or_else(|| CompileError::Backend(message.to_string()))
-}
-
-fn fold_index_constants(
-    domain: &rumoca_core::StructuredIndexDomain,
-    extents: &[usize],
-    strides: &[usize],
-    ordinal: usize,
-) -> Vec<f64> {
-    domain
-        .binders
-        .iter()
-        .zip(extents.iter().copied())
-        .zip(strides.iter().copied())
-        .map(|((binder, extent), stride)| {
-            let position = (ordinal / stride) % extent;
-            (position as i64 * binder.step + binder.lower) as f64
-        })
-        .collect()
 }
 
 fn conditional_capture_range(operation: &LinearOp) -> Option<(usize, usize)> {

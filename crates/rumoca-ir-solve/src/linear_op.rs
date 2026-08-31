@@ -1426,48 +1426,93 @@ impl ScalarProgramRegisterFlow {
         fold_domain: Option<&StructuredIndexDomain>,
         conditional_capture_count: Option<usize>,
     ) -> Result<Self, ScalarProgramRegisterError> {
-        let mut initialized = Vec::new();
-        let mut index_evidence = Vec::new();
-        let mut max_register = None;
+        let mut derivation = RegisterFlowDerivation::default();
         for (op_index, op) in program.iter().enumerate() {
-            if let Some(register) = validate_op_sources(
-                op,
-                op_index,
-                &initialized,
-                fold_context,
-                conditional_capture_count,
-            )? {
-                max_register = Some(max_register.map_or(register, |max: Reg| max.max(register)));
-            }
-            validate_runtime_index_evidence(op, op_index, &index_evidence)?;
-            let dst_count = op.dst_register_count();
-            if let Some(dst) = op.dst_register() {
-                let last = register_range_last(op_index, op.kind_name(), dst, dst_count)?;
-                require_register_range_uninitialized(
-                    op_index,
-                    op.kind_name(),
-                    dst,
-                    dst_count,
-                    &initialized,
-                )?;
-                let exact_integer = (dst_count == 1).then(|| {
-                    derive_exact_integer_evidence(op, op_index, &index_evidence, fold_domain)
-                });
-                mark_register_range_initialized(&mut initialized, dst, dst_count);
-                mark_exact_integer_evidence_unknown(&mut index_evidence, dst, dst_count);
-                if let Some(exact_integer) = exact_integer {
-                    index_evidence[dst as usize] = exact_integer;
-                }
-                max_register = Some(max_register.map_or(last, |max: Reg| max.max(last)));
-            }
+            derivation.observe_sources(op, op_index, fold_context, conditional_capture_count)?;
+            validate_runtime_index_evidence(op, op_index, &derivation.index_evidence)?;
+            derivation.issue_destination(op, op_index, fold_domain)?;
         }
         Ok(Self {
-            register_count: checked_register_count(max_register)?,
+            register_count: checked_register_count(derivation.max_register)?,
         })
     }
 
     pub const fn register_count(self) -> usize {
         self.register_count
+    }
+}
+
+/// Working state of one scalar program's register-flow derivation.
+///
+/// The three facts advance together for every operation: which registers are
+/// already written, the exact-integer domain each register currently carries,
+/// and the highest register the program names.
+#[derive(Default)]
+struct RegisterFlowDerivation {
+    initialized: Vec<bool>,
+    index_evidence: Vec<Option<ExactIntegerEvidence>>,
+    max_register: Option<Reg>,
+}
+
+impl RegisterFlowDerivation {
+    /// Check that one operation reads only registers an earlier write
+    /// dominates, and record the highest register it reads.
+    fn observe_sources(
+        &mut self,
+        op: &LinearOp,
+        op_index: usize,
+        fold_context: Option<(usize, usize, usize)>,
+        conditional_capture_count: Option<usize>,
+    ) -> Result<(), ScalarProgramRegisterError> {
+        if let Some(register) = validate_op_sources(
+            op,
+            op_index,
+            &self.initialized,
+            fold_context,
+            conditional_capture_count,
+        )? {
+            self.observe_register(register);
+        }
+        Ok(())
+    }
+
+    /// Claim one operation's destination range and issue the exact-integer
+    /// domain that range now carries.
+    fn issue_destination(
+        &mut self,
+        op: &LinearOp,
+        op_index: usize,
+        fold_domain: Option<&StructuredIndexDomain>,
+    ) -> Result<(), ScalarProgramRegisterError> {
+        let Some(dst) = op.dst_register() else {
+            return Ok(());
+        };
+        let dst_count = op.dst_register_count();
+        let last = register_range_last(op_index, op.kind_name(), dst, dst_count)?;
+        require_register_range_uninitialized(
+            op_index,
+            op.kind_name(),
+            dst,
+            dst_count,
+            &self.initialized,
+        )?;
+        let exact_integer = (dst_count == 1).then(|| {
+            derive_exact_integer_evidence(op, op_index, &self.index_evidence, fold_domain)
+        });
+        mark_register_range_initialized(&mut self.initialized, dst, dst_count);
+        mark_exact_integer_evidence_unknown(&mut self.index_evidence, dst, dst_count);
+        if let Some(exact_integer) = exact_integer {
+            self.index_evidence[dst as usize] = exact_integer;
+        }
+        self.observe_register(last);
+        Ok(())
+    }
+
+    fn observe_register(&mut self, register: Reg) {
+        self.max_register = Some(
+            self.max_register
+                .map_or(register, |max: Reg| max.max(register)),
+        );
     }
 }
 
@@ -1737,6 +1782,23 @@ fn mark_exact_integer_evidence_unknown(
     evidence[start as usize..end].fill(None);
 }
 
+/// Exact-integer evidence currently carried by each register, readable only
+/// through the citation check that keeps a stale entry from being consumed.
+#[derive(Clone, Copy)]
+struct ExactIntegerSources<'a> {
+    evidence: &'a [Option<ExactIntegerEvidence>],
+}
+
+impl ExactIntegerSources<'_> {
+    fn get(self, register: Reg) -> Option<ExactIntegerEvidence> {
+        self.evidence
+            .get(register as usize)
+            .cloned()
+            .flatten()
+            .filter(|source| source.cited_for(register))
+    }
+}
+
 fn derive_exact_integer_evidence(
     op: &LinearOp,
     op_index: usize,
@@ -1748,111 +1810,29 @@ fn derive_exact_integer_evidence(
         operation: op_index,
         register: dst,
     };
-    let source = |register: Reg| {
-        evidence
-            .get(register as usize)
-            .cloned()
-            .flatten()
-            .filter(|source| source.cited_for(register))
-    };
+    let sources = ExactIntegerSources { evidence };
     match *op {
         LinearOp::Const { value, .. } => Some(ExactIntegerEvidence::exact_constant(
             ExactIntegerInterval::exact(value)?,
             producer,
         )),
         LinearOp::LoadFoldIndex { dimension, .. } => {
-            let binder = fold_domain?.binders.get(dimension)?;
-            Some(ExactIntegerEvidence::checked_fold_binder(
-                ExactIntegerInterval::checked(
-                    binder.lower.min(binder.upper),
-                    binder.lower.max(binder.upper),
-                )?,
-                producer,
-            ))
+            fold_binder_evidence(fold_domain?, dimension, producer)
         }
         LinearOp::Move { src, .. } => {
-            let source = source(src)?;
+            let source = sources.get(src)?;
             ExactIntegerEvidence::derived(source.interval, producer, [source])
         }
-        LinearOp::Unary { op, arg, .. } => match op {
-            UnaryOp::Neg => {
-                let source = source(arg)?;
-                ExactIntegerEvidence::derived(source.interval.neg()?, producer, [source])
-            }
-            UnaryOp::Not => None,
-            UnaryOp::Abs => {
-                let source = source(arg)?;
-                ExactIntegerEvidence::derived(source.interval.abs()?, producer, [source])
-            }
-            UnaryOp::Sign => {
-                let source = source(arg)?;
-                ExactIntegerEvidence::derived(
-                    ExactIntegerInterval::checked(-1, 1)?,
-                    producer,
-                    [source],
-                )
-            }
-            UnaryOp::Floor | UnaryOp::Ceil | UnaryOp::Trunc => {
-                let source = source(arg)?;
-                ExactIntegerEvidence::derived(source.interval, producer, [source])
-            }
-            UnaryOp::Sqrt
-            | UnaryOp::Sin
-            | UnaryOp::Cos
-            | UnaryOp::Tan
-            | UnaryOp::Asin
-            | UnaryOp::Acos
-            | UnaryOp::Atan
-            | UnaryOp::Sinh
-            | UnaryOp::Cosh
-            | UnaryOp::Tanh
-            | UnaryOp::Exp
-            | UnaryOp::Log
-            | UnaryOp::Log10 => None,
-        },
-        LinearOp::Binary { op, lhs, rhs, .. } => match op {
-            BinaryOp::Add => {
-                let lhs = source(lhs)?;
-                let rhs = source(rhs)?;
-                ExactIntegerEvidence::derived(lhs.interval.add(rhs.interval)?, producer, [lhs, rhs])
-            }
-            BinaryOp::Sub => {
-                let lhs = source(lhs)?;
-                let rhs = source(rhs)?;
-                ExactIntegerEvidence::derived(lhs.interval.sub(rhs.interval)?, producer, [lhs, rhs])
-            }
-            BinaryOp::Mul => {
-                let lhs = source(lhs)?;
-                let rhs = source(rhs)?;
-                ExactIntegerEvidence::derived(lhs.interval.mul(rhs.interval)?, producer, [lhs, rhs])
-            }
-            BinaryOp::And | BinaryOp::Or => None,
-            BinaryOp::Min => {
-                let lhs = source(lhs)?;
-                let rhs = source(rhs)?;
-                let interval = ExactIntegerInterval::checked(
-                    lhs.interval.lower.min(rhs.interval.lower),
-                    lhs.interval.upper.min(rhs.interval.upper),
-                )?;
-                ExactIntegerEvidence::derived(interval, producer, [lhs, rhs])
-            }
-            BinaryOp::Max => {
-                let lhs = source(lhs)?;
-                let rhs = source(rhs)?;
-                let interval = ExactIntegerInterval::checked(
-                    lhs.interval.lower.max(rhs.interval.lower),
-                    lhs.interval.upper.max(rhs.interval.upper),
-                )?;
-                ExactIntegerEvidence::derived(interval, producer, [lhs, rhs])
-            }
-            BinaryOp::Div | BinaryOp::Pow | BinaryOp::Atan2 => None,
-        },
+        LinearOp::Unary { op, arg, .. } => unary_evidence(op, sources.get(arg)?, producer),
+        LinearOp::Binary { op, lhs, rhs, .. } => {
+            binary_evidence(op, sources.get(lhs)?, sources.get(rhs)?, producer)
+        }
         LinearOp::Compare { .. } => None,
         LinearOp::Select {
             if_true, if_false, ..
         } => {
-            let if_true = source(if_true)?;
-            let if_false = source(if_false)?;
+            let if_true = sources.get(if_true)?;
+            let if_false = sources.get(if_false)?;
             ExactIntegerEvidence::derived(
                 if_true.interval.join(if_false.interval)?,
                 producer,
@@ -1861,6 +1841,80 @@ fn derive_exact_integer_evidence(
         }
         _ => None,
     }
+}
+
+/// Exact-integer domain of one fold binder read: the binder's own closed
+/// value range, oriented low to high.
+fn fold_binder_evidence(
+    domain: &StructuredIndexDomain,
+    dimension: usize,
+    producer: RegisterProducer,
+) -> Option<ExactIntegerEvidence> {
+    let binder = domain.binders.get(dimension)?;
+    Some(ExactIntegerEvidence::checked_fold_binder(
+        ExactIntegerInterval::checked(
+            binder.lower.min(binder.upper),
+            binder.lower.max(binder.upper),
+        )?,
+        producer,
+    ))
+}
+
+/// Exact-integer domain one unary operation preserves. Operations that leave
+/// the integers, and the boolean negation, carry no domain forward.
+fn unary_evidence(
+    op: UnaryOp,
+    source: ExactIntegerEvidence,
+    producer: RegisterProducer,
+) -> Option<ExactIntegerEvidence> {
+    let interval = match op {
+        UnaryOp::Neg => source.interval.neg()?,
+        UnaryOp::Abs => source.interval.abs()?,
+        UnaryOp::Sign => ExactIntegerInterval::checked(-1, 1)?,
+        UnaryOp::Floor | UnaryOp::Ceil | UnaryOp::Trunc => source.interval,
+        UnaryOp::Not
+        | UnaryOp::Sqrt
+        | UnaryOp::Sin
+        | UnaryOp::Cos
+        | UnaryOp::Tan
+        | UnaryOp::Asin
+        | UnaryOp::Acos
+        | UnaryOp::Atan
+        | UnaryOp::Sinh
+        | UnaryOp::Cosh
+        | UnaryOp::Tanh
+        | UnaryOp::Exp
+        | UnaryOp::Log
+        | UnaryOp::Log10 => return None,
+    };
+    ExactIntegerEvidence::derived(interval, producer, [source])
+}
+
+/// Exact-integer domain one binary operation preserves. Division, power,
+/// `atan2`, and the boolean connectives carry no domain forward.
+fn binary_evidence(
+    op: BinaryOp,
+    lhs: ExactIntegerEvidence,
+    rhs: ExactIntegerEvidence,
+    producer: RegisterProducer,
+) -> Option<ExactIntegerEvidence> {
+    let interval = match op {
+        BinaryOp::Add => lhs.interval.add(rhs.interval)?,
+        BinaryOp::Sub => lhs.interval.sub(rhs.interval)?,
+        BinaryOp::Mul => lhs.interval.mul(rhs.interval)?,
+        BinaryOp::Min => ExactIntegerInterval::checked(
+            lhs.interval.lower.min(rhs.interval.lower),
+            lhs.interval.upper.min(rhs.interval.upper),
+        )?,
+        BinaryOp::Max => ExactIntegerInterval::checked(
+            lhs.interval.lower.max(rhs.interval.lower),
+            lhs.interval.upper.max(rhs.interval.upper),
+        )?,
+        BinaryOp::And | BinaryOp::Or | BinaryOp::Div | BinaryOp::Pow | BinaryOp::Atan2 => {
+            return None;
+        }
+    };
+    ExactIntegerEvidence::derived(interval, producer, [lhs, rhs])
 }
 
 fn validate_runtime_index_evidence(
@@ -1917,18 +1971,38 @@ fn validate_runtime_index_evidence(
             dimensions,
             updates,
             ..
-        } => {
-            for update in updates.iter() {
-                for (&extent, subscript) in dimensions.iter().zip(update.subscripts.iter()) {
-                    if let TensorSubscript::Index(index) = *subscript {
-                        validate(index, extent)?;
-                    }
-                }
-            }
-            Ok(())
-        }
+        } => validate_fold_tensor_patch_index_domains(dimensions, updates, validate),
         _ => Ok(()),
     }
+}
+
+/// Runtime index domains read by the aggregate patches of one tensor-valued
+/// fold transition. Whole-axis subscripts name no register.
+fn validate_fold_tensor_patch_index_domains(
+    dimensions: &[u32],
+    updates: &[FoldTensorUpdate],
+    validate: impl Fn(TensorIndex, u32) -> Result<(), ScalarProgramRegisterError>,
+) -> Result<(), ScalarProgramRegisterError> {
+    for update in updates {
+        for (extent, index) in patch_runtime_indices(dimensions, &update.subscripts) {
+            validate(index, extent)?;
+        }
+    }
+    Ok(())
+}
+
+/// Extent-paired indices of one aggregate patch, skipping its whole axes.
+fn patch_runtime_indices<'a>(
+    dimensions: &'a [u32],
+    subscripts: &'a [TensorSubscript],
+) -> impl Iterator<Item = (u32, TensorIndex)> + 'a {
+    dimensions
+        .iter()
+        .zip(subscripts)
+        .filter_map(|(&extent, subscript)| match *subscript {
+            TensorSubscript::Index(index) => Some((extent, index)),
+            TensorSubscript::Whole => None,
+        })
 }
 
 fn validate_tensor_update_index_domains(
@@ -1942,34 +2016,55 @@ fn validate_tensor_update_index_domains(
             TensorUpdateSubscript::Whole => {}
             TensorUpdateSubscript::Index(index) => validate(*index, extent)?,
             TensorUpdateSubscript::Slice { start, dimensions } => {
-                let count = dimensions
-                    .iter()
-                    .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize));
-                let Some(count) = count else {
-                    return Err(ScalarProgramRegisterError::InvalidTensorProjection {
-                        op_index,
-                        reason: "tensor update slice coordinate count overflows",
-                    });
-                };
-                for offset in 0..count {
-                    let offset = Reg::try_from(offset).map_err(|_| {
-                        ScalarProgramRegisterError::InvalidTensorProjection {
-                            op_index,
-                            reason: "tensor update slice register range exceeds register identity",
-                        }
-                    })?;
-                    let register = start.checked_add(offset).ok_or(
-                        ScalarProgramRegisterError::InvalidTensorProjection {
-                            op_index,
-                            reason: "tensor update slice register range overflows",
-                        },
-                    )?;
-                    validate(TensorIndex::Runtime(register), extent)?;
-                }
+                validate_tensor_update_slice_index_domains(
+                    op_index, extent, *start, dimensions, &validate,
+                )?;
             }
         }
     }
     Ok(())
+}
+
+/// Runtime index domains of one contiguous slice subscript: every coordinate
+/// register the slice names must be a one-based coordinate of its axis.
+fn validate_tensor_update_slice_index_domains(
+    op_index: usize,
+    extent: u32,
+    start: Reg,
+    dimensions: &[u32],
+    validate: &impl Fn(TensorIndex, u32) -> Result<(), ScalarProgramRegisterError>,
+) -> Result<(), ScalarProgramRegisterError> {
+    let count = dimensions
+        .iter()
+        .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
+        .ok_or(ScalarProgramRegisterError::InvalidTensorProjection {
+            op_index,
+            reason: "tensor update slice coordinate count overflows",
+        })?;
+    for offset in 0..count {
+        let register = tensor_update_slice_register(op_index, start, offset)?;
+        validate(TensorIndex::Runtime(register), extent)?;
+    }
+    Ok(())
+}
+
+/// One coordinate register of a tensor-update slice's contiguous range.
+fn tensor_update_slice_register(
+    op_index: usize,
+    start: Reg,
+    offset: usize,
+) -> Result<Reg, ScalarProgramRegisterError> {
+    let offset =
+        Reg::try_from(offset).map_err(|_| ScalarProgramRegisterError::InvalidTensorProjection {
+            op_index,
+            reason: "tensor update slice register range exceeds register identity",
+        })?;
+    start
+        .checked_add(offset)
+        .ok_or(ScalarProgramRegisterError::InvalidTensorProjection {
+            op_index,
+            reason: "tensor update slice register range overflows",
+        })
 }
 
 impl std::fmt::Display for ScalarProgramRegisterError {

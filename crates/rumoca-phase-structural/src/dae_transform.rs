@@ -1358,9 +1358,11 @@ fn structured_replacement_is_active<'dae>(
     let Some(domain) = view.domain(family.domain()) else {
         return false;
     };
-    let structured = domain.structured();
+    let Ok(structured) = domain.structured().validated() else {
+        return false;
+    };
     (0..domain.scalar_count() as usize).any(|point| {
-        let Ok(Some(values)) = structured.index_tuple_at(point) else {
+        let Some(values) = structured.index_tuple_at(point) else {
             return false;
         };
         let Some(scalar) = family.scalar_view().body_scalar(point, domain.extents()) else {

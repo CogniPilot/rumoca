@@ -50,7 +50,7 @@ pub(crate) fn lower_solve_problem(
     clocks::reject_clocked_continuous_feedback(view, &clocks, &structural)?;
     clocks::reject_cross_clock_coincident_cycle(view, &clocks, &structural)?;
     let derivatives = index_derivative_rows(view, &structural.rows)?;
-    let continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
+    let mut continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
     let initialization = lower_initialization(view, &lowered, &derivatives, pins)?;
     let (mut discrete, mut events, event_transactions) =
         events::lower_discrete_and_events(view, &lowered, &clocks, &continuous)?;
@@ -63,23 +63,27 @@ pub(crate) fn lower_solve_problem(
         event_transactions,
     )?;
     let pure_calls = lowered.pure_calls.borrow_mut().finish();
-    let mut problem = solve::SolveProblem {
-        schema_version: solve::SOLVE_SCHEMA_VERSION,
-        layout: lowered.layout,
-        solve_layout: lowered.solve_layout,
+    let refresh_owners = rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(
+        &lowered.solve_layout,
+        &mut continuous,
+        &discrete,
+        &events,
+        &clocks.partition,
+    )
+    .map_err(|error| match error.source_span() {
+        Some(span) => LowerError::contract(error.to_string(), span),
+        None => LowerError::unspanned_non_computable(error.to_string()),
+    })?;
+    continuous.refresh_owners = refresh_owners;
+    let problem = solve::SolveProblem::construct(
+        lowered.layout,
+        lowered.solve_layout,
         continuous,
         initialization,
         discrete,
         events,
-        clocks: clocks.partition,
-    };
-    problem.continuous.refresh_owners =
-        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut problem).map_err(
-            |error| match error.source_span() {
-                Some(span) => LowerError::contract(error.to_string(), span),
-                None => LowerError::unspanned_non_computable(error.to_string()),
-            },
-        )?;
+        clocks.partition,
+    )?;
     solve::validate_problem_pure_call_sites(&problem, &pure_calls)?;
     Ok((problem, pure_calls))
 }
@@ -344,11 +348,13 @@ fn index_family_derivative_rows<'dae>(
     let domain = view
         .domain(family.domain())
         .expect("checked family domain resolves");
+    let structured = domain
+        .structured()
+        .validated()
+        .expect("checked family domain stays valid");
     for point in 0..domain.scalar_count() as usize {
-        let values = domain
-            .structured()
+        let values = structured
             .index_tuple_at(point)
-            .expect("checked domain remains valid")
             .expect("checked point ordinal is in range");
         for body in family.bodies().iter() {
             let scalar = family
@@ -1215,11 +1221,13 @@ fn lower_continuous_family<'dae>(
             }
         }
     }
+    let structured = domain
+        .structured()
+        .validated()
+        .expect("checked family domain stays valid");
     for point in 0..domain.scalar_count() as usize {
-        let values = domain
-            .structured()
+        let values = structured
             .index_tuple_at(point)
-            .expect("checked domain remains valid")
             .expect("checked point ordinal is in range");
         row = lower_continuous_family_point(context, output, row, family, point, &values)?;
     }
@@ -2165,11 +2173,13 @@ fn lower_initialization_family<'dae>(
         .view
         .domain(family.domain())
         .expect("checked family domain resolves");
+    let structured = domain
+        .structured()
+        .validated()
+        .expect("checked family domain stays valid");
     for point in 0..domain.scalar_count() as usize {
-        let values = domain
-            .structured()
+        let values = structured
             .index_tuple_at(point)
-            .expect("checked domain remains valid")
             .expect("checked point ordinal is in range");
         lower_initialization_family_point(context, family, point, &values, rows)?;
     }

@@ -328,7 +328,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .and_then(|owners| owners.borrow().owners.get(key).cloned())
         });
         if let Some(cached) = cached {
-            if cached.program.target_widths.as_ref() != target_widths.as_slice() {
+            if cached.program.target_widths().as_ref() != target_widths.as_slice() {
                 return Err(LowerError::contract(
                     "function-conditional owner target layout changed across exact call frames",
                     span,
@@ -448,7 +448,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .and_then(|owners| owners.borrow().owners.get(key).cloned())
         });
         if let Some(cached) = cached {
-            if cached.program.target_widths.as_ref() != [result_count] {
+            if cached.program.target_widths().as_ref() != [result_count] {
                 return Err(LowerError::contract(
                     "function-conditional expression owner result layout changed",
                     span,
@@ -711,7 +711,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 LowerError::contract("function-conditional owner capture ABI overflows", span)
             })
         })?;
-        if program.capture_count != capture_count {
+        if program.capture_count() != capture_count {
             return Err(LowerError::contract(
                 "function-conditional owner capture layout changed across exact call frames",
                 span,
@@ -724,7 +724,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .collect::<Result<Vec<_>, _>>()?;
         let capture_start = self.pack_function_conditional_capture_ranges(&capture_ranges, span)?;
         let start = self.next_register;
-        for _ in 0..program.result_count {
+        for _ in 0..program.result_count() {
             self.register(span)?;
         }
         self.ops.push(solve::LinearOp::FunctionConditional {
@@ -1964,8 +1964,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .domain(domain)
             .expect("checked comprehension domain resolves")
             .structured()
+            .validated()
+            .expect("checked comprehension domain stays valid")
             .index_tuple_at(point)
-            .expect("checked comprehension domain remains valid")
             .expect("checked record field scalar selects a domain point");
         self.enter_context(ScalarContextFrame::Domain {
             parent: self.context_id,
@@ -2701,7 +2702,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .ok_or_else(|| LowerError::contract("nested fold result offset overflow", span))?;
         if result_base
             .checked_add(width)
-            .is_none_or(|end| end > program.carried_count)
+            .is_none_or(|end| end > program.carried_count())
         {
             return Err(LowerError::contract(
                 "nested fold aggregate output range is invalid",

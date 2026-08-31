@@ -275,12 +275,14 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
             .domain(family.domain())
             .expect("checked structured family domain resolves");
         let point_count = domain.scalar_count() as usize;
+        let structured = domain
+            .structured()
+            .validated()
+            .expect("checked structured family domain stays valid");
         let equations_per_point = family.bodies().len();
         for point in 0..point_count {
-            let values = domain
-                .structured()
+            let values = structured
                 .index_tuple_at(point)
-                .expect("checked structured domain stays valid")
                 .expect("point ordinal is inside checked domain");
             for body in family.bodies().iter() {
                 let scalar = family
@@ -358,10 +360,14 @@ fn derive_structured_matching(
     if per_point == 0 || extents.contains(&0) {
         return None;
     }
-    let point_count = extents
+    let extents = extents
         .iter()
-        .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))?;
-    let cell_strides = row_major_strides(extents)?;
+        .map(|extent| *extent as usize)
+        .collect::<Vec<_>>();
+    let point_count = extents.iter().try_fold(1usize, |count, extent| {
+        rumoca_core::checked_product(count, *extent)
+    })?;
+    let cell_strides = rumoca_core::row_major_strides(&extents)?;
     let base_unknowns = (0..per_point)
         .map(|position| singleton_builder_row(rows, first + position))
         .collect::<Option<Vec<_>>>()?;
@@ -384,7 +390,7 @@ fn derive_structured_matching(
         first_equation_index: first,
         equations_per_point: per_point,
         point_count,
-        extents: extents.iter().map(|extent| *extent as usize).collect(),
+        extents,
         cell_strides,
         base_unknowns,
         unknown_steps,
@@ -404,14 +410,6 @@ fn derive_structured_matching(
 fn singleton_builder_row(rows: &IncidenceRowsBuilder, row: usize) -> Option<usize> {
     let values = rows.row(row)?;
     (values.len() == 1).then(|| values[0])
-}
-
-fn row_major_strides(extents: &[u32]) -> Option<Vec<usize>> {
-    let mut strides = vec![1usize; extents.len()];
-    for index in (0..extents.len().saturating_sub(1)).rev() {
-        strides[index] = strides[index + 1].checked_mul(extents[index + 1] as usize)?;
-    }
-    Some(strides)
 }
 
 fn cell_coordinate(point: usize, stride: usize, extent: usize) -> usize {

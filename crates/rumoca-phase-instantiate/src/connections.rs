@@ -4,21 +4,28 @@
 //! them to ast::InstanceConnection structs.
 
 use rumoca_core::{ComponentPath, SourceMap, Span, scoped_component_path_candidates};
+use rumoca_eval_ast::eval_instantiate::{
+    InstantiateEvalCtx, OuterValues, evaluate_component_condition_with_outer_values,
+};
 use rumoca_ir_ast as ast;
 
 use crate::errors::{InstantiateError, InstantiateResult};
 use crate::inheritance::required_location_to_span;
 
 /// Parameters for connection extraction, including both boolean and integer values.
-#[derive(Debug, Clone, Default)]
-pub struct ConnectionParams {
+#[derive(Default)]
+pub struct ConnectionParams<'a> {
     /// Boolean parameters for evaluating conditional branches.
     pub bools: rustc_hash::FxHashMap<String, bool>,
     /// Integer parameters for evaluating for-loop ranges.
     pub integers: rustc_hash::FxHashMap<String, i64>,
+    /// Real structural values used by the shared AST scalar evaluator.
+    pub reals: rustc_hash::FxHashMap<String, f64>,
+    /// Declaration/modifier context for the canonical structural evaluator.
+    pub eval_ctx: Option<&'a InstantiateEvalCtx<'a>>,
 }
 
-impl ConnectionParams {
+impl ConnectionParams<'_> {
     /// Create a new ConnectionParams with no values.
     pub fn new() -> Self {
         Self::default()
@@ -33,7 +40,7 @@ impl ConnectionParams {
 pub fn extract_connections(
     equations: &[ast::Equation],
     prefix: &ast::QualifiedName,
-    params: &ConnectionParams,
+    params: &ConnectionParams<'_>,
     source_map: &SourceMap,
 ) -> InstantiateResult<Vec<ast::InstanceConnection>> {
     if connection_params_debug_enabled() {
@@ -54,9 +61,17 @@ pub fn extract_connections(
     }
 
     let mut connections = Vec::new();
+    let mut expansion_budget = ConnectionExpansionBudget::new();
 
     for eq in equations {
-        extract_connections_from_equation(&mut connections, eq, prefix, params, source_map)?;
+        extract_connections_from_equation(
+            &mut connections,
+            eq,
+            prefix,
+            params,
+            source_map,
+            &mut expansion_budget,
+        )?;
     }
 
     Ok(connections)
@@ -89,13 +104,16 @@ fn extract_connections_from_equation(
     connections: &mut Vec<ast::InstanceConnection>,
     eq: &ast::Equation,
     prefix: &ast::QualifiedName,
-    params: &ConnectionParams,
+    params: &ConnectionParams<'_>,
     source_map: &SourceMap,
+    expansion_budget: &mut ConnectionExpansionBudget,
 ) -> InstantiateResult<()> {
     match eq {
         ast::Equation::Connect { lhs, rhs, .. } => {
             let span =
                 required_location_to_span(eq.get_location(), source_map, "connect equation")?;
+            validate_connection_subscripts(lhs, span)?;
+            validate_connection_subscripts(rhs, span)?;
 
             // Preserve range/slice connects as one authoritative structured
             // family. Flattening derives the scalar union-find view once.
@@ -104,17 +122,19 @@ fn extract_connections_from_equation(
             {
                 connections.push(connection);
             } else {
-                let a = component_ref_to_qualified_name(lhs, prefix, &params.integers);
-                let b = component_ref_to_qualified_name(rhs, prefix, &params.integers);
+                let a = component_ref_to_qualified_name(lhs, prefix, &params.integers, span)?;
+                let b = component_ref_to_qualified_name(rhs, prefix, &params.integers, span)?;
 
-                connections.push(ast::InstanceConnection {
-                    a,
-                    b,
-                    connector_type: None, // Resolved later during flattening
-                    span,
-                    scope: prefix.to_flat_string(),
-                    family: None,
-                });
+                connections.push(
+                    ast::InstanceConnection::scalar(
+                        a,
+                        b,
+                        None, // Resolved later during flattening
+                        span,
+                        prefix.to_flat_string(),
+                    )
+                    .map_err(|error| invalid_connection(error, span))?,
+                );
             }
             Ok(())
         }
@@ -122,19 +142,15 @@ fn extract_connections_from_equation(
         ast::Equation::If {
             cond_blocks,
             else_block,
-        } => {
-            // For if-equations, try to evaluate the condition using parameters.
-            // If the condition is a simple parameter reference, use it to select the branch.
-            // Otherwise, extract connections from ALL branches (conservative).
-            extract_connections_from_if_equation(
-                connections,
-                cond_blocks,
-                else_block,
-                prefix,
-                params,
-                source_map,
-            )
-        }
+        } => extract_connections_from_if_equation(
+            connections,
+            cond_blocks,
+            else_block,
+            prefix,
+            params,
+            source_map,
+            expansion_budget,
+        ),
 
         ast::Equation::For { indices, equations } => {
             // For for-equations, expand the loop and extract connections from each iteration
@@ -146,6 +162,7 @@ fn extract_connections_from_equation(
                 prefix,
                 params,
                 source_map,
+                expansion_budget,
             )
         }
 
@@ -154,63 +171,117 @@ fn extract_connections_from_equation(
     }
 }
 
+fn validate_connection_subscripts(
+    reference: &ast::ComponentReference,
+    span: Span,
+) -> InstantiateResult<()> {
+    let unsupported = reference
+        .parts
+        .iter()
+        .flat_map(|part| part.subs.iter().flatten())
+        .find_map(|subscript| match subscript {
+            ast::Subscript::Range { .. } => Some((
+                "`:`".to_string(),
+                "whole-dimension selection is not yet supported",
+                span,
+            )),
+            _ => ast::subscript_required_value_violation(subscript).map(|violation| {
+                let selector = match subscript {
+                    ast::Subscript::Empty => "Subscript::Empty".to_string(),
+                    _ => format!("`{subscript}`"),
+                };
+                let violation_span = violation.span.unwrap_or(span);
+                (selector, violation.kind.description(), violation_span)
+            }),
+        });
+    if let Some((selector, reason, span)) = unsupported {
+        return Err(Box::new(
+            InstantiateError::unsupported_connection_subscript(selector, reason.to_string(), span),
+        ));
+    }
+    Ok(())
+}
+
 /// Extract connections from an if-equation.
 ///
-/// Tries to evaluate the condition using parameters. If successful, only
-/// extracts from the selected branch. Otherwise, extracts from all branches
-/// to ensure no connections are missed.
+/// A conditional connection is structural: exactly one branch owns its
+/// connection set. If that branch cannot be decided during translation, there
+/// is no conservative union of the branches -- doing so would fabricate
+/// connections that the source program may have disabled.
 fn extract_connections_from_if_equation(
     connections: &mut Vec<ast::InstanceConnection>,
     cond_blocks: &[rumoca_ir_ast::EquationBlock],
     else_block: &Option<Vec<ast::Equation>>,
     prefix: &ast::QualifiedName,
-    params: &ConnectionParams,
+    params: &ConnectionParams<'_>,
     source_map: &SourceMap,
+    expansion_budget: &mut ConnectionExpansionBudget,
 ) -> InstantiateResult<()> {
-    let selected_branch = try_select_branch(cond_blocks, else_block, prefix, params);
-
-    if let Some(branch_eqs) = selected_branch {
-        // Condition was evaluated - only extract from selected branch
-        for nested_eq in &branch_eqs {
-            extract_connections_from_equation(connections, nested_eq, prefix, params, source_map)?;
-        }
+    let contains_connection = cond_blocks
+        .iter()
+        .any(|block| equations_contain_connect(&block.eqs))
+        || else_block.as_deref().is_some_and(equations_contain_connect);
+    if !contains_connection {
         return Ok(());
     }
 
-    // Condition couldn't be evaluated, so retain the existing conservative
-    // branch extraction behavior for structural if-equations.
-    extract_connections_from_all_branches(
-        connections,
-        cond_blocks,
-        else_block,
-        prefix,
-        params,
-        source_map,
-    )
-}
-
-/// Extract connections from all branches of an if-equation.
-///
-/// Used when the condition cannot be evaluated at compile time.
-fn extract_connections_from_all_branches(
-    connections: &mut Vec<ast::InstanceConnection>,
-    cond_blocks: &[rumoca_ir_ast::EquationBlock],
-    else_block: &Option<Vec<ast::Equation>>,
-    prefix: &ast::QualifiedName,
-    params: &ConnectionParams,
-    source_map: &SourceMap,
-) -> InstantiateResult<()> {
     for block in cond_blocks {
-        for nested_eq in &block.eqs {
-            extract_connections_from_equation(connections, nested_eq, prefix, params, source_map)?;
+        let Some(enabled) = evaluate_connection_condition(&block.cond, prefix, params) else {
+            return Err(Box::new(InstantiateError::structural_param_error(
+                block.cond.to_string(),
+                "cannot decide a connection if-equation branch during translation".to_string(),
+                required_location_to_span(
+                    block.cond.get_location(),
+                    source_map,
+                    "connection if-equation condition",
+                )?,
+            )));
+        };
+        if enabled {
+            for nested_eq in &block.eqs {
+                extract_connections_from_equation(
+                    connections,
+                    nested_eq,
+                    prefix,
+                    params,
+                    source_map,
+                    expansion_budget,
+                )?;
+            }
+            return Ok(());
         }
     }
+
     if let Some(else_eqs) = else_block {
         for nested_eq in else_eqs {
-            extract_connections_from_equation(connections, nested_eq, prefix, params, source_map)?;
+            extract_connections_from_equation(
+                connections,
+                nested_eq,
+                prefix,
+                params,
+                source_map,
+                expansion_budget,
+            )?;
         }
     }
     Ok(())
+}
+
+fn evaluate_connection_condition(
+    condition: &ast::Expression,
+    prefix: &ast::QualifiedName,
+    params: &ConnectionParams<'_>,
+) -> Option<bool> {
+    params
+        .eval_ctx
+        .and_then(|eval_ctx| {
+            evaluate_component_condition_with_outer_values(
+                eval_ctx,
+                condition,
+                OuterValues::new(&params.bools, &params.reals),
+            )
+        })
+        .or_else(|| try_eval_bool_expr(condition, &params.bools, &params.integers, prefix))
 }
 
 /// Extract connections from a for-equation by expanding the loop.
@@ -223,8 +294,9 @@ fn extract_connections_from_for_equation(
     indices: &[rumoca_ir_ast::ForIndex],
     equations: &[ast::Equation],
     prefix: &ast::QualifiedName,
-    params: &ConnectionParams,
+    params: &ConnectionParams<'_>,
     source_map: &SourceMap,
+    expansion_budget: &mut ConnectionExpansionBudget,
 ) -> InstantiateResult<()> {
     if !equations_contain_connect(equations) {
         return Ok(());
@@ -233,44 +305,99 @@ fn extract_connections_from_for_equation(
     if indices.is_empty() {
         // No indices, just process the equations directly
         for eq in equations {
-            extract_connections_from_equation(connections, eq, prefix, params, source_map)?;
+            extract_connections_from_equation(
+                connections,
+                eq,
+                prefix,
+                params,
+                source_map,
+                expansion_budget,
+            )?;
         }
         return Ok(());
     }
 
-    if let Some(families) =
-        try_extract_regular_connection_families(indices, equations, prefix, params, source_map)?
-    {
+    let binder_names = indices
+        .iter()
+        .map(|index| index.ident.text.as_ref())
+        .collect::<Vec<_>>();
+    let selected_equations =
+        select_invariant_connection_branches(equations, &binder_names, prefix, params, source_map)?;
+    if !equations_contain_connect(&selected_equations) {
+        return Ok(());
+    }
+
+    if let Some(families) = try_extract_regular_connection_families(
+        indices,
+        &selected_equations,
+        prefix,
+        params,
+        source_map,
+    )? {
         connections.extend(families);
         return Ok(());
     }
+
+    require_materialized_connection_budget(
+        indices,
+        &selected_equations,
+        prefix,
+        params,
+        source_map,
+        expansion_budget,
+    )?;
 
     let first_index = &indices[0];
     let remaining_indices = &indices[1..];
     let index_name = &first_index.ident.text;
 
-    // Try to evaluate the range to get concrete index values, using integer params
-    if let Some(range_values) = expand_for_range(&first_index.range, &params.integers, prefix) {
-        for value in range_values {
-            // Substitute the index variable with this value in all equations
-            let substituted: Vec<ast::Equation> = equations
-                .iter()
-                .map(|eq| substitute_index_in_equation(eq, index_name, value))
-                .collect();
-            let substituted_indices =
-                substitute_index_in_for_indices(remaining_indices, index_name, value);
+    // Try to evaluate the range to get concrete index values, using integer params.
+    match expand_for_range(
+        &first_index.range,
+        &params.integers,
+        prefix,
+        expansion_budget,
+    ) {
+        ForRangeExpansion::Values(range_values) => {
+            for value in range_values {
+                let (substituted_indices, shadowed) =
+                    substitute_index_in_for_indices(remaining_indices, index_name, value);
+                let substituted = if shadowed {
+                    selected_equations.clone()
+                } else {
+                    selected_equations
+                        .iter()
+                        .map(|equation| substitute_index_in_equation(equation, index_name, value))
+                        .collect()
+                };
 
-            // Recursively process with remaining indices
-            extract_connections_from_for_equation(
-                connections,
-                &substituted_indices,
-                &substituted,
-                prefix,
-                params,
-                source_map,
-            )?;
+                // Recursively process with remaining indices
+                extract_connections_from_for_equation(
+                    connections,
+                    &substituted_indices,
+                    &substituted,
+                    prefix,
+                    params,
+                    source_map,
+                    expansion_budget,
+                )?;
+            }
+            return Ok(());
         }
-        return Ok(());
+        ForRangeExpansion::MaterializationLimit { count, remaining } => {
+            return Err(Box::new(InstantiateError::structural_param_error(
+                index_name.to_string(),
+                format!(
+                    "connection for-equation fallback would materialize {count} iterations; SPEC_0032 structural-work limit is {MAX_MATERIALIZED_CONNECTION_ITERATIONS} and remaining transaction budget is {remaining}"
+                ),
+                required_location_to_span(
+                    first_index.range.get_location(),
+                    source_map,
+                    "connection for-equation range",
+                )?,
+            )));
+        }
+        ForRangeExpansion::Unevaluable => {}
     }
 
     Err(Box::new(InstantiateError::structural_param_error(
@@ -287,6 +414,88 @@ fn extract_connections_from_for_equation(
     )))
 }
 
+fn require_materialized_connection_budget(
+    indices: &[rumoca_ir_ast::ForIndex],
+    equations: &[ast::Equation],
+    prefix: &ast::QualifiedName,
+    params: &ConnectionParams<'_>,
+    source_map: &SourceMap,
+    expansion_budget: &ConnectionExpansionBudget,
+) -> InstantiateResult<()> {
+    let Some(work) =
+        estimate_materialized_connection_work(indices, equations, &params.integers, prefix)
+    else {
+        return Ok(());
+    };
+    if work > expansion_budget.remaining {
+        return Err(Box::new(InstantiateError::structural_param_error(
+            indices[0].ident.text.to_string(),
+            format!(
+                "connection for-equation fallback requires {work} iterations (would materialize {work}); SPEC_0032 structural-work limit is {MAX_MATERIALIZED_CONNECTION_ITERATIONS} and remaining transaction budget is {}",
+                expansion_budget.remaining
+            ),
+            required_location_to_span(
+                indices[0].range.get_location(),
+                source_map,
+                "connection for-equation range",
+            )?,
+        )));
+    }
+    Ok(())
+}
+
+fn select_invariant_connection_branches(
+    equations: &[ast::Equation],
+    binder_names: &[&str],
+    prefix: &ast::QualifiedName,
+    params: &ConnectionParams<'_>,
+    source_map: &SourceMap,
+) -> InstantiateResult<Vec<ast::Equation>> {
+    let mut selected = Vec::new();
+    for equation in equations {
+        let ast::Equation::If {
+            cond_blocks,
+            else_block,
+        } = equation
+        else {
+            selected.push(equation.clone());
+            continue;
+        };
+        if cond_blocks.iter().any(|block| {
+            rumoca_ir_ast::collect_component_refs(&block.cond)
+                .iter()
+                .any(|reference| {
+                    matches!(reference.parts.as_slice(), [part]
+                        if binder_names.contains(&part.ident.text.as_ref()))
+                })
+        }) {
+            selected.push(equation.clone());
+            continue;
+        }
+
+        let mut chosen = else_block.as_deref().unwrap_or_default();
+        for block in cond_blocks {
+            let Some(enabled) = evaluate_connection_condition(&block.cond, prefix, params) else {
+                return Err(Box::new(InstantiateError::structural_param_error(
+                    block.cond.to_string(),
+                    "cannot decide a connection if-equation branch during translation".to_string(),
+                    required_location_to_span(
+                        block.cond.get_location(),
+                        source_map,
+                        "connection if-equation condition",
+                    )?,
+                )));
+            };
+            if enabled {
+                chosen = &block.eqs;
+                break;
+            }
+        }
+        selected.extend(chosen.iter().cloned());
+    }
+    Ok(selected)
+}
+
 fn try_extract_regular_connection_families(
     indices: &[rumoca_ir_ast::ForIndex],
     equations: &[ast::Equation],
@@ -298,9 +507,6 @@ fn try_extract_regular_connection_families(
     let Some(domain) = regular_connection_domain(&indices, prefix, &params.integers) else {
         return Ok(None);
     };
-    if domain.scalar_count().ok() == Some(0) {
-        return Ok(Some(Vec::new()));
-    }
     let binder_names = indices
         .iter()
         .map(|index| index.ident.text.as_ref())
@@ -319,12 +525,12 @@ fn try_extract_regular_connection_families(
             continue;
         };
         let Some(a_template) =
-            connection_endpoint_template(lhs, prefix, &binder_names, &params.integers)
+            connection_endpoint_template(lhs, prefix, &binder_names, &params.integers)?
         else {
             return Ok(None);
         };
         let Some(b_template) =
-            connection_endpoint_template(rhs, prefix, &binder_names, &params.integers)
+            connection_endpoint_template(rhs, prefix, &binder_names, &params.integers)?
         else {
             return Ok(None);
         };
@@ -333,52 +539,17 @@ fn try_extract_regular_connection_families(
             source_map,
             "vectorized connect equation",
         )?;
-        let family = ast::InstanceConnectionFamily {
-            domain: domain.clone(),
-            a: a_template,
-            b: b_template,
-        };
-        let tuple = family
-            .domain
-            .index_tuple_at(0)
-            .map_err(|error| {
-                Box::new(InstantiateError::structural_param_error(
-                    "connection family".to_string(),
-                    format!("invalid structured connection domain: {error}"),
-                    span,
-                ))
-            })?
-            .ok_or_else(|| {
-                Box::new(InstantiateError::structural_param_error(
-                    "connection family".to_string(),
-                    "structured connection domain is empty".to_string(),
-                    span,
-                ))
-            })?;
-        let a = rumoca_eval_ast::connection::evaluate_connection_endpoint(&family.a, &tuple)
-            .map_err(|reason| {
-                Box::new(InstantiateError::structural_param_error(
-                    "connection family".to_string(),
-                    reason,
-                    span,
-                ))
-            })?;
-        let b = rumoca_eval_ast::connection::evaluate_connection_endpoint(&family.b, &tuple)
-            .map_err(|reason| {
-                Box::new(InstantiateError::structural_param_error(
-                    "connection family".to_string(),
-                    reason,
-                    span,
-                ))
-            })?;
-        result.push(ast::InstanceConnection {
-            a,
-            b,
-            connector_type: None,
-            span,
-            scope: prefix.to_flat_string(),
-            family: Some(family),
-        });
+        result.push(
+            ast::InstanceConnection::family(
+                domain.clone(),
+                a_template,
+                b_template,
+                None,
+                span,
+                prefix.to_flat_string(),
+            )
+            .map_err(|error| invalid_connection(error, span))?,
+        );
     }
     Ok((!result.is_empty()).then_some(result))
 }
@@ -416,7 +587,7 @@ fn regular_connection_domain(
         }
         let (lower, step, upper) = connection_range_bounds(&index.range, int_params, prefix)?;
         let binder = rumoca_core::StructuredIndexBinder {
-            id,
+            id: rumoca_core::StructuredIndexBinderId::from_ordinal(id)?,
             display_name: name.to_string(),
             lower,
             upper,
@@ -454,7 +625,7 @@ fn connection_endpoint_template(
     prefix: &ast::QualifiedName,
     binder_names: &[&str],
     int_params: &rustc_hash::FxHashMap<String, i64>,
-) -> Option<ast::InstanceConnectionEndpoint> {
+) -> InstantiateResult<Option<ast::InstanceConnectionEndpoint>> {
     let rank = binder_names.len();
     let mut parts = prefix
         .parts
@@ -473,18 +644,19 @@ fn connection_endpoint_template(
         let mut subscripts = Vec::new();
         for subscript in part.subs.as_deref().unwrap_or(&[]) {
             let ast::Subscript::Expression(expression) = subscript else {
-                return None;
+                return Ok(None);
             };
-            subscripts.push(connection_affine_form(
-                expression,
-                binder_names,
-                int_params,
-                prefix,
-            )?);
+            let Some(form) = connection_affine_form(expression, binder_names, int_params, prefix)
+            else {
+                return Ok(None);
+            };
+            subscripts.push(form);
         }
         parts.push((part.ident.text.to_string(), subscripts));
     }
-    Some(ast::InstanceConnectionEndpoint { parts })
+    ast::InstanceConnectionEndpoint::new(parts)
+        .map(Some)
+        .map_err(|error| invalid_connection(error, reference.span))
 }
 
 fn connection_affine_form(
@@ -614,21 +786,29 @@ fn substitute_index_in_for_indices(
     indices: &[rumoca_ir_ast::ForIndex],
     var_name: &str,
     value: i64,
-) -> Vec<rumoca_ir_ast::ForIndex> {
-    indices
+) -> (Vec<rumoca_ir_ast::ForIndex>, bool) {
+    let mut shadowed = false;
+    let indices = indices
         .iter()
-        .map(|idx| {
-            let range = if idx.ident.text.as_ref() == var_name {
-                idx.range.clone()
+        .map(|index| {
+            // A binder is not in scope in its own range. Substitute the
+            // outer value there, then preserve the newly shadowing binder in
+            // every later range in this same for-clause.
+            let range = if shadowed {
+                index.range.clone()
             } else {
-                substitute_index_in_expr(&idx.range, var_name, value)
+                substitute_index_in_expr(&index.range, var_name, value)
             };
+            if index.ident.text.as_ref() == var_name {
+                shadowed = true;
+            }
             rumoca_ir_ast::ForIndex {
-                ident: idx.ident.clone(),
+                ident: index.ident.clone(),
                 range,
             }
         })
-        .collect()
+        .collect();
+    (indices, shadowed)
 }
 
 fn equations_contain_connect(equations: &[ast::Equation]) -> bool {
@@ -659,45 +839,159 @@ fn equations_contain_connect(equations: &[ast::Equation]) -> bool {
 /// Try to expand a for-loop range to concrete integer values.
 ///
 /// Uses integer parameters to resolve parameter references like `m` in `1:m`.
-fn expand_for_range(
+/// SPEC_0032 §7 whole-extraction fallback-iteration budget.
+const MAX_MATERIALIZED_CONNECTION_ITERATIONS: usize = 1_000_000;
+
+struct ConnectionExpansionBudget {
+    remaining: usize,
+}
+
+impl ConnectionExpansionBudget {
+    fn new() -> Self {
+        Self {
+            remaining: MAX_MATERIALIZED_CONNECTION_ITERATIONS,
+        }
+    }
+
+    fn reserve(&mut self, count: usize) -> Result<(), usize> {
+        let remaining = self.remaining;
+        self.remaining = self.remaining.checked_sub(count).ok_or(remaining)?;
+        Ok(())
+    }
+}
+
+enum ForRangeExpansion {
+    Values(Vec<i64>),
+    MaterializationLimit { count: usize, remaining: usize },
+    Unevaluable,
+}
+
+fn estimate_materialized_connection_work(
+    indices: &[rumoca_ir_ast::ForIndex],
+    equations: &[ast::Equation],
+    int_params: &rustc_hash::FxHashMap<String, i64>,
+    scope: &ast::QualifiedName,
+) -> Option<usize> {
+    let own = indices.iter().try_fold(1usize, |count, index| {
+        let domain = for_range_domain(&index.range, int_params, scope)?;
+        let cardinality = domain.scalar_count().ok()?;
+        Some(count.saturating_mul(cardinality))
+    })?;
+    let nested = equations.iter().fold(0usize, |total, equation| {
+        let work = match equation {
+            ast::Equation::For { indices, equations } => {
+                estimate_materialized_connection_work(indices, equations, int_params, scope)
+                    .unwrap_or(0)
+            }
+            ast::Equation::If {
+                cond_blocks,
+                else_block,
+            } => cond_blocks
+                .iter()
+                .map(|block| nested_materialized_work(&block.eqs, int_params, scope))
+                .chain(
+                    else_block
+                        .iter()
+                        .map(|branch| nested_materialized_work(branch, int_params, scope)),
+                )
+                .max()
+                .unwrap_or(0),
+            _ => 0,
+        };
+        total.saturating_add(work)
+    });
+    Some(own.saturating_mul(nested.max(1)))
+}
+
+fn nested_materialized_work(
+    equations: &[ast::Equation],
+    int_params: &rustc_hash::FxHashMap<String, i64>,
+    scope: &ast::QualifiedName,
+) -> usize {
+    equations.iter().fold(0usize, |total, equation| {
+        let work = match equation {
+            ast::Equation::For { indices, equations } => {
+                estimate_materialized_connection_work(indices, equations, int_params, scope)
+                    .unwrap_or(0)
+            }
+            ast::Equation::If {
+                cond_blocks,
+                else_block,
+            } => cond_blocks
+                .iter()
+                .map(|block| nested_materialized_work(&block.eqs, int_params, scope))
+                .chain(
+                    else_block
+                        .iter()
+                        .map(|branch| nested_materialized_work(branch, int_params, scope)),
+                )
+                .max()
+                .unwrap_or(0),
+            _ => 0,
+        };
+        total.saturating_add(work)
+    })
+}
+
+fn for_range_domain(
     range_expr: &ast::Expression,
     int_params: &rustc_hash::FxHashMap<String, i64>,
     scope: &ast::QualifiedName,
-) -> Option<Vec<i64>> {
-    let (lower, step, upper) = match range_expr {
-        ast::Expression::Range {
-            start, step, end, ..
-        } => {
-            let lower = expr_to_i64_with_params(start, int_params, scope)?;
-            let upper = expr_to_i64_with_params(end, int_params, scope)?;
-            let step = match step {
-                Some(step) => expr_to_i64_with_params(step, int_params, scope)?,
-                None => 1,
-            };
-            (lower, step, upper)
-        }
-        // Single expression (like just `m` meaning 1:m)
-        _ => {
-            let n = expr_to_i64_with_params(range_expr, int_params, scope)?;
-            (1, 1, n)
-        }
+) -> Option<rumoca_core::StructuredIndexDomain> {
+    // MLS §8.3.2 / EQN-008: a for-equation iterator expression is a
+    // vector. A scalar Integer is not shorthand for `1:n`.
+    let ast::Expression::Range {
+        start, step, end, ..
+    } = range_expr
+    else {
+        return None;
     };
-    let domain = rumoca_core::StructuredIndexDomain {
+    let lower = expr_to_i64_with_params(start, int_params, scope)?;
+    let step = step.as_ref().map_or(Some(1), |step| {
+        expr_to_i64_with_params(step, int_params, scope)
+    })?;
+    let upper = expr_to_i64_with_params(end, int_params, scope)?;
+    Some(rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "__expanded_connection_index".to_string(),
             lower,
             upper,
             step,
         }],
+    })
+}
+
+fn expand_for_range(
+    range_expr: &ast::Expression,
+    int_params: &rustc_hash::FxHashMap<String, i64>,
+    scope: &ast::QualifiedName,
+    budget: &mut ConnectionExpansionBudget,
+) -> ForRangeExpansion {
+    let Some(domain) = for_range_domain(range_expr, int_params, scope) else {
+        return ForRangeExpansion::Unevaluable;
     };
-    let count = domain.scalar_count().ok()?;
-    let mut values = Vec::new();
-    values.try_reserve_exact(count).ok()?;
-    for ordinal in 0..count {
-        values.push(*domain.index_tuple_at(ordinal).ok()??.first()?);
+    let Ok(domain) = domain.validated() else {
+        return ForRangeExpansion::Unevaluable;
+    };
+    let count = domain.scalar_count();
+    if let Err(remaining) = budget.reserve(count) {
+        return ForRangeExpansion::MaterializationLimit { count, remaining };
     }
-    Some(values)
+    let mut values = Vec::new();
+    if values.try_reserve_exact(count).is_err() {
+        return ForRangeExpansion::Unevaluable;
+    }
+    for ordinal in 0..count {
+        let Some(tuple) = domain.index_tuple_at(ordinal) else {
+            return ForRangeExpansion::Unevaluable;
+        };
+        let Some(value) = tuple.first() else {
+            return ForRangeExpansion::Unevaluable;
+        };
+        values.push(*value);
+    }
+    ForRangeExpansion::Values(values)
 }
 
 /// Try to evaluate an expression to i64, using parameter lookup if needed.
@@ -788,28 +1082,37 @@ fn substitute_index_in_equation(eq: &ast::Equation, var_name: &str, value: i64) 
             lhs: substitute_index_in_comp_ref(lhs, var_name, value),
             rhs: substitute_index_in_comp_ref(rhs, var_name, value),
         },
-        ast::Equation::For { indices, equations } => ast::Equation::For {
-            indices: indices
+        ast::Equation::For { indices, equations } => {
+            let mut shadowed = false;
+            let indices = indices
                 .iter()
-                .map(|idx| {
-                    // Respect loop-variable shadowing: if the nested loop reuses the same
-                    // identifier, do not substitute inside its range expression.
-                    let range = if idx.ident.text.as_ref() == var_name {
-                        idx.range.clone()
+                .map(|index| {
+                    // A for-index is not in scope in its own range. Shadowing
+                    // starts after that range, for later indices and the body.
+                    let range = if shadowed {
+                        index.range.clone()
                     } else {
-                        substitute_index_in_expr(&idx.range, var_name, value)
+                        substitute_index_in_expr(&index.range, var_name, value)
                     };
+                    if index.ident.text.as_ref() == var_name {
+                        shadowed = true;
+                    }
                     rumoca_ir_ast::ForIndex {
-                        ident: idx.ident.clone(),
+                        ident: index.ident.clone(),
                         range,
                     }
                 })
-                .collect(),
-            equations: equations
-                .iter()
-                .map(|e| substitute_index_in_equation(e, var_name, value))
-                .collect(),
-        },
+                .collect();
+            let equations = if shadowed {
+                equations.clone()
+            } else {
+                equations
+                    .iter()
+                    .map(|equation| substitute_index_in_equation(equation, var_name, value))
+                    .collect()
+            };
+            ast::Equation::For { indices, equations }
+        }
         ast::Equation::If {
             cond_blocks,
             else_block,
@@ -962,33 +1265,6 @@ fn substitute_index_in_expr(expr: &ast::Expression, var_name: &str, value: i64) 
     }
 }
 
-/// Try to select a branch based on parameter values.
-///
-/// Returns Some(equations) if a branch was selected, None if the condition
-/// couldn't be evaluated at this stage.
-fn try_select_branch(
-    cond_blocks: &[rumoca_ir_ast::EquationBlock],
-    else_block: &Option<Vec<ast::Equation>>,
-    scope: &ast::QualifiedName,
-    params: &ConnectionParams,
-) -> Option<Vec<ast::Equation>> {
-    for block in cond_blocks {
-        if let Some(value) = try_eval_bool_expr(&block.cond, &params.bools, &params.integers, scope)
-        {
-            if value {
-                return Some(block.eqs.clone());
-            }
-            // Condition is false, continue to next branch
-        } else {
-            // Condition couldn't be evaluated, give up
-            return None;
-        }
-    }
-
-    // All conditions were false - return else branch
-    Some(else_block.clone().unwrap_or_default())
-}
-
 /// Try to evaluate a boolean expression using parameter values.
 fn try_eval_bool_expr(
     expr: &ast::Expression,
@@ -1042,6 +1318,31 @@ fn try_eval_bool_expr(
             Some(l || r)
         }
 
+        ast::Expression::Binary {
+            op: op @ (rumoca_core::OpBinary::Eq | rumoca_core::OpBinary::Neq),
+            lhs,
+            rhs,
+            ..
+        } => {
+            if let (Some(lhs), Some(rhs)) = (
+                try_eval_bool_expr(lhs, bool_params, int_params, scope),
+                try_eval_bool_expr(rhs, bool_params, int_params, scope),
+            ) {
+                return Some(if *op == rumoca_core::OpBinary::Eq {
+                    lhs == rhs
+                } else {
+                    lhs != rhs
+                });
+            }
+            let lhs = expr_to_i64_with_params(lhs, int_params, scope)?;
+            let rhs = expr_to_i64_with_params(rhs, int_params, scope)?;
+            Some(if *op == rumoca_core::OpBinary::Eq {
+                lhs == rhs
+            } else {
+                lhs != rhs
+            })
+        }
+
         // Integer comparison expressions (e.g., i > 1 after index substitution)
         ast::Expression::Binary { op, lhs, rhs, .. } => {
             let l = expr_to_i64_with_params(lhs, int_params, scope)?;
@@ -1089,23 +1390,31 @@ fn component_ref_to_qualified_name(
     comp_ref: &ast::ComponentReference,
     prefix: &ast::QualifiedName,
     int_params: &rustc_hash::FxHashMap<String, i64>,
-) -> ast::QualifiedName {
+    span: Span,
+) -> InstantiateResult<ast::QualifiedName> {
     let mut qn = prefix.clone();
 
     for part in &comp_ref.parts {
-        // Convert subscripts to i64, resolving parameter references via int_params
-        let subscripts: Vec<i64> = if let Some(subs) = &part.subs {
-            subs.iter()
-                .filter_map(|sub| subscript_to_i64(sub, int_params, prefix))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let subscripts = part
+            .subs
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|subscript| {
+                subscript_to_i64(subscript, int_params, prefix).ok_or_else(|| {
+                    Box::new(InstantiateError::unsupported_connection_subscript(
+                        format!("`{subscript}`"),
+                        "selector is not an evaluable scalar Integer".to_string(),
+                        span,
+                    ))
+                })
+            })
+            .collect::<InstantiateResult<Vec<_>>>()?;
 
         qn.push(part.ident.text.to_string(), subscripts);
     }
 
-    qn
+    Ok(qn)
 }
 
 /// Try to convert a subscript to an i64, resolving parameter references.
@@ -1182,42 +1491,33 @@ fn try_compact_range_subscript_connection(
     let domain = rumoca_core::StructuredIndexDomain {
         binders: connection_range_binders(&shape, span)?,
     };
-    let a_template =
-        range_connection_endpoint_template(lhs, prefix, int_params, &lhs_ranges, shape.len())?;
-    let b_template =
-        range_connection_endpoint_template(rhs, prefix, int_params, &rhs_ranges, shape.len())?;
-    let family = ast::InstanceConnectionFamily {
-        domain,
-        a: a_template,
-        b: b_template,
-    };
-    let first = vec![1; shape.len()];
-    let a = rumoca_eval_ast::connection::evaluate_connection_endpoint(&family.a, &first).map_err(
-        |reason| {
-            Box::new(InstantiateError::structural_param_error(
-                "connection range".to_string(),
-                reason,
-                span,
-            ))
-        },
-    )?;
-    let b = rumoca_eval_ast::connection::evaluate_connection_endpoint(&family.b, &first).map_err(
-        |reason| {
-            Box::new(InstantiateError::structural_param_error(
-                "connection range".to_string(),
-                reason,
-                span,
-            ))
-        },
-    )?;
-    Ok(Some(ast::InstanceConnection {
-        a,
-        b,
-        connector_type: None,
+    let a_template = range_connection_endpoint_template(
+        lhs,
+        prefix,
+        int_params,
+        &lhs_ranges,
+        shape.len(),
         span,
-        scope: prefix.to_flat_string(),
-        family: Some(family),
-    }))
+    )?;
+    let b_template = range_connection_endpoint_template(
+        rhs,
+        prefix,
+        int_params,
+        &rhs_ranges,
+        shape.len(),
+        span,
+    )?;
+    Ok(Some(
+        ast::InstanceConnection::family(
+            domain,
+            a_template,
+            b_template,
+            None,
+            span,
+            prefix.to_flat_string(),
+        )
+        .map_err(|error| invalid_connection(error, span))?,
+    ))
 }
 
 fn connection_range_counts(ranges: &[CompactConnectionRange]) -> Vec<usize> {
@@ -1245,7 +1545,16 @@ fn connection_range_binders(
         .enumerate()
         .map(|(dimension, count)| {
             Ok(rumoca_core::StructuredIndexBinder {
-                id: dimension,
+                id: rumoca_core::StructuredIndexBinderId::from_ordinal(dimension).ok_or_else(
+                    || {
+                        Box::new(InstantiateError::array_dim_mismatch(
+                            "connect".to_string(),
+                            "rank within typed binder identity range".to_string(),
+                            shape.len().to_string(),
+                            span,
+                        ))
+                    },
+                )?,
                 display_name: format!("__connection_index_{}", dimension + 1),
                 lower: 1,
                 upper: i64::try_from(count).map_err(|_| {
@@ -1284,7 +1593,7 @@ fn compact_connection_ranges(
             };
             let domain = rumoca_core::StructuredIndexDomain {
                 binders: vec![rumoca_core::StructuredIndexBinder {
-                    id: 0,
+                    id: rumoca_core::StructuredIndexBinderId::new(0),
                     display_name: "__connection_range".to_string(),
                     lower: start,
                     upper: end,
@@ -1311,6 +1620,7 @@ fn range_connection_endpoint_template(
     int_params: &rustc_hash::FxHashMap<String, i64>,
     ranges: &[CompactConnectionRange],
     rank: usize,
+    span: Span,
 ) -> InstantiateResult<ast::InstanceConnectionEndpoint> {
     let mut parts = prefix
         .parts
@@ -1335,18 +1645,20 @@ fn range_connection_endpoint_template(
                 continue;
             }
             let ast::Subscript::Expression(expression) = subscript else {
-                return Err(Box::new(InstantiateError::structural_param_error(
-                    "connection subscript".to_string(),
-                    "non-expression subscript in range connection".to_string(),
-                    reference.span,
-                )));
+                return Err(Box::new(
+                    InstantiateError::unsupported_connection_subscript(
+                        format!("`{subscript}`"),
+                        "selector is not an evaluable scalar Integer".to_string(),
+                        span,
+                    ),
+                ));
             };
             let value =
                 expr_to_i64_with_params(expression, int_params, prefix).ok_or_else(|| {
-                    Box::new(InstantiateError::structural_param_error(
-                        "connection subscript".to_string(),
-                        format!("cannot evaluate connection subscript `{expression}`"),
-                        reference.span,
+                    Box::new(InstantiateError::unsupported_connection_subscript(
+                        format!("`{subscript}`"),
+                        "selector is not an evaluable scalar Integer".to_string(),
+                        span,
                     ))
                 })?;
             subscripts.push(rumoca_core::AffineForm::constant(value, rank));
@@ -1366,7 +1678,19 @@ fn range_connection_endpoint_template(
             subscripts.push(rumoca_core::AffineForm::unit_binder(dimension, rank));
         }
     }
-    Ok(ast::InstanceConnectionEndpoint { parts })
+    ast::InstanceConnectionEndpoint::new(parts).map_err(|error| invalid_connection(error, span))
+}
+
+fn invalid_connection(
+    error: ast::InstanceConnectionConstructionError,
+    span: Span,
+) -> Box<InstantiateError> {
+    Box::new(InstantiateError::array_dim_mismatch(
+        "connect".to_string(),
+        "valid checked connection evidence".to_string(),
+        error.to_string(),
+        span,
+    ))
 }
 
 fn connection_range_affine_form(
@@ -1410,532 +1734,4 @@ pub fn filter_out_connections(equations: &[ast::Equation]) -> Vec<ast::Equation>
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const TEST_FILE: &str = "connections.mo";
-
-    fn test_source_map() -> SourceMap {
-        let mut source_map = SourceMap::new();
-        source_map.add(TEST_FILE, "connect(a.p, b.n); for i in 1:2 loop end for;");
-        source_map
-    }
-
-    fn make_token(text: &str) -> rumoca_core::Token {
-        rumoca_core::Token {
-            text: std::sync::Arc::from(text),
-            location: rumoca_core::Location {
-                start_line: 1,
-                start_column: 1,
-                end_line: 1,
-                end_column: 2,
-                start: 0,
-                end: 1,
-                source: rumoca_core::SourceId::from_source_name(TEST_FILE),
-            },
-            token_number: 0,
-            token_type: 0,
-        }
-    }
-
-    fn make_comp_ref(names: &[&str]) -> ast::ComponentReference {
-        ast::ComponentReference {
-            local: false,
-            parts: names
-                .iter()
-                .map(|name| ast::ComponentRefPart {
-                    ident: make_token(name),
-                    subs: None,
-                    def_id: None,
-                })
-                .collect(),
-            span: rumoca_core::Span::DUMMY,
-            qualified_display_name: None,
-        }
-    }
-
-    fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
-        ast::Expression::ComponentReference(make_comp_ref(names))
-    }
-
-    fn make_integer_terminal(value: &str) -> ast::Expression {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::UnsignedInteger,
-            token: make_token(value),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn make_range_expr(start: ast::Expression, end: ast::Expression) -> ast::Expression {
-        ast::Expression::Range {
-            start: std::sync::Arc::new(start),
-            step: None,
-            end: std::sync::Arc::new(end),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn make_comp_ref_with_sub(expr: ast::Expression, names: &[&str]) -> ast::ComponentReference {
-        make_comp_ref_with_sub_at(expr, names, 0)
-    }
-
-    fn make_comp_ref_with_sub_at(
-        expr: ast::Expression,
-        names: &[&str],
-        sub_part_index: usize,
-    ) -> ast::ComponentReference {
-        let mut parts = Vec::new();
-        for (i, name) in names.iter().enumerate() {
-            parts.push(ast::ComponentRefPart {
-                ident: make_token(name),
-                subs: if i == sub_part_index {
-                    Some(vec![ast::Subscript::Expression(expr.clone())])
-                } else {
-                    None
-                },
-                def_id: None,
-            });
-        }
-        ast::ComponentReference {
-            local: false,
-            parts,
-            span: rumoca_core::Span::DUMMY,
-            qualified_display_name: None,
-        }
-    }
-
-    #[test]
-    fn test_extract_connection() {
-        let eq = ast::Equation::Connect {
-            lhs: make_comp_ref(&["a", "p"]),
-            rhs: make_comp_ref(&["b", "n"]),
-        };
-
-        let prefix = ast::QualifiedName::new();
-        let source_map = test_source_map();
-        let connections =
-            extract_connections(&[eq], &prefix, &ConnectionParams::new(), &source_map).unwrap();
-
-        assert_eq!(connections.len(), 1);
-        assert_eq!(connections[0].a.to_flat_string(), "a.p");
-        assert_eq!(connections[0].b.to_flat_string(), "b.n");
-    }
-
-    #[test]
-    fn test_extract_connection_expands_range_on_non_first_part() {
-        // Regression: connect(mux2.y, mux5.u[1:2]) must expand even when
-        // the range subscript is on the second component-reference part.
-        let range = ast::Expression::Range {
-            start: std::sync::Arc::new(ast::Expression::Terminal {
-                terminal_type: ast::TerminalType::UnsignedInteger,
-                token: make_token("1"),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            step: None,
-            end: std::sync::Arc::new(ast::Expression::Terminal {
-                terminal_type: ast::TerminalType::UnsignedInteger,
-                token: make_token("2"),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        };
-        let eq = ast::Equation::Connect {
-            lhs: make_comp_ref(&["mux2", "y"]),
-            rhs: make_comp_ref_with_sub_at(range, &["mux5", "u"], 1),
-        };
-
-        let prefix = ast::QualifiedName::new();
-        let source_map = test_source_map();
-        let connections =
-            extract_connections(&[eq], &prefix, &ConnectionParams::new(), &source_map).unwrap();
-
-        assert_eq!(connections.len(), 1);
-        assert!(connections[0].family.is_some());
-        let mut got: Vec<(String, String)> =
-            rumoca_eval_ast::connection::scalar_connection_members(&connections[0])
-                .expect("valid range connection family")
-                .into_iter()
-                .map(|connection| (connection.a.to_flat_string(), connection.b.to_flat_string()))
-                .collect();
-        got.sort();
-
-        assert_eq!(
-            got,
-            vec![
-                ("mux2.y[1]".to_string(), "mux5.u[1]".to_string()),
-                ("mux2.y[2]".to_string(), "mux5.u[2]".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_extract_connection_preserves_multidimensional_ranges() {
-        let mut lhs = make_comp_ref(&["a"]);
-        lhs.parts[0].subs = Some(vec![
-            ast::Subscript::Expression(make_range_expr(
-                make_integer_terminal("1"),
-                make_integer_terminal("2"),
-            )),
-            ast::Subscript::Expression(make_range_expr(
-                make_integer_terminal("4"),
-                make_integer_terminal("5"),
-            )),
-        ]);
-        let mut rhs = make_comp_ref(&["b"]);
-        rhs.parts[0].subs = Some(vec![
-            ast::Subscript::Expression(make_range_expr(
-                make_integer_terminal("7"),
-                make_integer_terminal("8"),
-            )),
-            ast::Subscript::Expression(make_range_expr(
-                make_integer_terminal("9"),
-                make_integer_terminal("10"),
-            )),
-        ]);
-
-        let connections = extract_connections(
-            &[ast::Equation::Connect { lhs, rhs }],
-            &ast::QualifiedName::new(),
-            &ConnectionParams::new(),
-            &test_source_map(),
-        )
-        .expect("multidimensional range connection should instantiate");
-
-        assert_eq!(connections.len(), 1);
-        let family = connections[0]
-            .family
-            .as_ref()
-            .expect("multidimensional range connection should remain compact");
-        assert_eq!(family.domain.extents(), Ok(vec![2, 2]));
-        let members = rumoca_eval_ast::connection::scalar_connection_members(&connections[0])
-            .expect("multidimensional connection family should evaluate")
-            .into_iter()
-            .map(|member| (member.a.to_flat_string(), member.b.to_flat_string()))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            members,
-            vec![
-                ("a[1,4]".to_string(), "b[7,9]".to_string()),
-                ("a[1,5]".to_string(), "b[7,10]".to_string()),
-                ("a[2,4]".to_string(), "b[8,9]".to_string()),
-                ("a[2,5]".to_string(), "b[8,10]".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn empty_connection_ranges_produce_empty_scalar_views() {
-        let empty_range = make_range_expr(make_integer_terminal("1"), make_integer_terminal("0"));
-        assert_eq!(
-            expand_for_range(
-                &empty_range,
-                &rustc_hash::FxHashMap::default(),
-                &ast::QualifiedName::new(),
-            ),
-            Some(Vec::new())
-        );
-
-        let mut lhs = make_comp_ref(&["a"]);
-        lhs.parts[0].subs = Some(vec![ast::Subscript::Expression(empty_range.clone())]);
-        let mut rhs = make_comp_ref(&["b"]);
-        rhs.parts[0].subs = Some(vec![ast::Subscript::Expression(empty_range)]);
-        let connections = extract_connections(
-            &[ast::Equation::Connect { lhs, rhs }],
-            &ast::QualifiedName::new(),
-            &ConnectionParams::new(),
-            &test_source_map(),
-        )
-        .expect("an empty range connection is valid");
-
-        assert_eq!(connections.len(), 1);
-        assert_eq!(
-            connections[0]
-                .family
-                .as_ref()
-                .expect("empty connection stays structured")
-                .domain
-                .scalar_count(),
-            Ok(0)
-        );
-        assert!(
-            rumoca_eval_ast::connection::scalar_connection_members(&connections[0])
-                .expect("empty family has a valid derived view")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn test_extract_connections_nested_for_range_depends_on_outer_index() {
-        let eq = nested_dependent_for_connection_eq();
-        let prefix = ast::QualifiedName::new();
-        let source_map = test_source_map();
-        let params = ConnectionParams::new();
-        let conns = extract_connections(&[eq], &prefix, &params, &source_map).unwrap();
-
-        let mut got: Vec<(String, String)> = conns
-            .iter()
-            .flat_map(|connection| {
-                rumoca_eval_ast::connection::scalar_connection_members(connection)
-                    .expect("valid structured connection")
-            })
-            .map(|connection| (connection.a.to_flat_string(), connection.b.to_flat_string()))
-            .collect();
-        got.sort();
-
-        let expected = vec![
-            ("a[1]".to_string(), "b[2]".to_string()),
-            ("a[1]".to_string(), "b[3]".to_string()),
-            ("a[2]".to_string(), "b[3]".to_string()),
-        ];
-        assert_eq!(got, expected);
-    }
-
-    #[test]
-    fn test_extract_connections_multi_index_range_depends_on_prior_index() {
-        let eq = multi_index_dependent_for_connection_eq();
-        let prefix = ast::QualifiedName::new();
-        let source_map = test_source_map();
-        let params = ConnectionParams::new();
-        let conns = extract_connections(&[eq], &prefix, &params, &source_map).unwrap();
-
-        let mut got: Vec<(String, String)> = conns
-            .iter()
-            .flat_map(|connection| {
-                rumoca_eval_ast::connection::scalar_connection_members(connection)
-                    .expect("valid structured connection")
-            })
-            .map(|connection| (connection.a.to_flat_string(), connection.b.to_flat_string()))
-            .collect();
-        got.sort();
-
-        let expected = vec![
-            ("a[1]".to_string(), "b[2]".to_string()),
-            ("a[1]".to_string(), "b[3]".to_string()),
-            ("a[2]".to_string(), "b[3]".to_string()),
-        ];
-        assert_eq!(got, expected);
-    }
-
-    #[test]
-    fn test_extract_connections_skips_non_connection_for_equation_range() {
-        let eq = ast::Equation::For {
-            indices: vec![rumoca_ir_ast::ForIndex {
-                ident: make_token("i"),
-                range: ast::Expression::ComponentReference(make_comp_ref(&["nout"])),
-            }],
-            equations: vec![ast::Equation::Simple {
-                lhs: make_comp_ref_expr(&["aux", "i"]),
-                rhs: make_integer_terminal("0"),
-            }],
-        };
-
-        let prefix = ast::QualifiedName::new();
-        let source_map = SourceMap::new();
-        let connections =
-            extract_connections(&[eq], &prefix, &ConnectionParams::new(), &source_map).unwrap();
-
-        assert!(connections.is_empty());
-    }
-
-    #[test]
-    fn test_extract_regular_for_connection_preserves_one_symbolic_family() {
-        let eq = ast::Equation::For {
-            indices: vec![rumoca_ir_ast::ForIndex {
-                ident: make_token("i"),
-                range: make_range_expr(make_integer_terminal("1"), make_integer_terminal("3")),
-            }],
-            equations: vec![ast::Equation::Connect {
-                lhs: make_comp_ref_with_sub(make_comp_ref_expr(&["i"]), &["a"]),
-                rhs: make_comp_ref_with_sub(make_comp_ref_expr(&["i"]), &["b"]),
-            }],
-        };
-
-        let connections = extract_connections(
-            &[eq],
-            &ast::QualifiedName::new(),
-            &ConnectionParams::new(),
-            &test_source_map(),
-        )
-        .expect("regular vectorized connection should instantiate");
-
-        assert_eq!(connections.len(), 1);
-        let family = connections[0]
-            .family
-            .as_ref()
-            .expect("regular vectorized connection must stay symbolic");
-        assert_eq!(family.domain.scalar_count(), Ok(3));
-        let members = rumoca_eval_ast::connection::scalar_connection_members(&connections[0])
-            .expect("symbolic connection must expose a valid derived scalar view")
-            .into_iter()
-            .map(|member| (member.a.to_flat_string(), member.b.to_flat_string()))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            members,
-            vec![
-                ("a[1]".to_string(), "b[1]".to_string()),
-                ("a[2]".to_string(), "b[2]".to_string()),
-                ("a[3]".to_string(), "b[3]".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn connection_integer_folding_declines_overflow_without_panicking() {
-        assert_eq!(
-            rumoca_core::eval_ast_integer_binary(&rumoca_core::OpBinary::Div, i64::MIN, -1),
-            None
-        );
-        assert_eq!(
-            rumoca_core::eval_ast_integer_binary(&rumoca_core::OpBinary::Add, i64::MAX, 1),
-            None
-        );
-        assert_eq!(eval_unary_i64(&rumoca_core::OpUnary::Minus, i64::MIN), None);
-        assert_eq!(
-            checked_divide_affine(
-                &rumoca_core::AffineForm {
-                    constant: i64::MIN,
-                    coeffs: vec![0],
-                },
-                -1,
-            ),
-            None
-        );
-    }
-
-    fn nested_dependent_for_connection_eq() -> ast::Equation {
-        let outer_idx = rumoca_ir_ast::ForIndex {
-            ident: make_token("j"),
-            range: make_range_expr(make_integer_terminal("1"), make_integer_terminal("2")),
-        };
-        let inner_idx = rumoca_ir_ast::ForIndex {
-            ident: make_token("i"),
-            range: make_range_expr(j_plus_one_expr(), make_integer_terminal("3")),
-        };
-        ast::Equation::For {
-            indices: vec![outer_idx],
-            equations: vec![ast::Equation::For {
-                indices: vec![inner_idx],
-                equations: vec![ast::Equation::Connect {
-                    lhs: make_comp_ref_with_sub(make_comp_ref_expr(&["j"]), &["a"]),
-                    rhs: make_comp_ref_with_sub(make_comp_ref_expr(&["i"]), &["b"]),
-                }],
-            }],
-        }
-    }
-
-    fn multi_index_dependent_for_connection_eq() -> ast::Equation {
-        let prior_idx = rumoca_ir_ast::ForIndex {
-            ident: make_token("i"),
-            range: make_range_expr(make_integer_terminal("1"), make_integer_terminal("2")),
-        };
-        let dependent_idx = rumoca_ir_ast::ForIndex {
-            ident: make_token("j"),
-            range: make_range_expr(i_plus_one_expr(), make_integer_terminal("3")),
-        };
-        ast::Equation::For {
-            indices: vec![prior_idx, dependent_idx],
-            equations: vec![ast::Equation::Connect {
-                lhs: make_comp_ref_with_sub(make_comp_ref_expr(&["i"]), &["a"]),
-                rhs: make_comp_ref_with_sub(make_comp_ref_expr(&["j"]), &["b"]),
-            }],
-        }
-    }
-
-    fn i_plus_one_expr() -> ast::Expression {
-        ast::Expression::Binary {
-            op: rumoca_core::OpBinary::Add,
-            lhs: std::sync::Arc::new(make_comp_ref_expr(&["i"])),
-            rhs: std::sync::Arc::new(make_integer_terminal("1")),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn j_plus_one_expr() -> ast::Expression {
-        ast::Expression::Binary {
-            op: rumoca_core::OpBinary::Add,
-            lhs: std::sync::Arc::new(make_comp_ref_expr(&["j"])),
-            rhs: std::sync::Arc::new(make_integer_terminal("1")),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    #[test]
-    fn test_component_ref_subscript_resolves_leaf_integer_param_key() {
-        // resistor[cellData.nRC].n should keep the subscript when only leaf key
-        // The full component-reference path is available in int_params.
-        let sub_expr = ast::Expression::ComponentReference(ast::ComponentReference {
-            local: false,
-            parts: vec![
-                ast::ComponentRefPart {
-                    ident: make_token("cellData"),
-                    subs: None,
-                    def_id: None,
-                },
-                ast::ComponentRefPart {
-                    ident: make_token("nRC"),
-                    subs: None,
-                    def_id: None,
-                },
-            ],
-            span: rumoca_core::Span::DUMMY,
-            qualified_display_name: None,
-        });
-        let cr = make_comp_ref_with_sub(sub_expr, &["resistor", "n"]);
-        let prefix = ast::QualifiedName::new();
-        let mut int_params = rustc_hash::FxHashMap::default();
-        int_params.insert("cellData.nRC".to_string(), 2);
-
-        let qn = component_ref_to_qualified_name(&cr, &prefix, &int_params);
-        assert_eq!(qn.to_flat_string(), "resistor[2].n");
-    }
-
-    #[test]
-    fn test_component_ref_subscript_resolves_scoped_dotted_param_key() {
-        // cellData.nRC resolves from cell.cellData.nRC only when the instance
-        // scope is cell.
-        let sub_expr = ast::Expression::ComponentReference(ast::ComponentReference {
-            local: false,
-            parts: vec![
-                ast::ComponentRefPart {
-                    ident: make_token("cellData"),
-                    subs: None,
-                    def_id: None,
-                },
-                ast::ComponentRefPart {
-                    ident: make_token("nRC"),
-                    subs: None,
-                    def_id: None,
-                },
-            ],
-            span: rumoca_core::Span::DUMMY,
-            qualified_display_name: None,
-        });
-        let cr = make_comp_ref_with_sub(sub_expr, &["resistor", "n"]);
-        let prefix = ast::QualifiedName::from_dotted("cell");
-        let mut int_params = rustc_hash::FxHashMap::default();
-        int_params.insert("cell.cellData.nRC".to_string(), 2);
-
-        let qn = component_ref_to_qualified_name(&cr, &prefix, &int_params);
-        assert_eq!(qn.to_flat_string(), "cell.resistor[2].n");
-    }
-
-    #[test]
-    fn test_component_ref_subscript_does_not_scan_suffix_param_keys() {
-        let cr = ast::ComponentReference {
-            local: false,
-            parts: vec![ast::ComponentRefPart {
-                ident: make_token("nRC"),
-                subs: None,
-                def_id: None,
-            }],
-            span: rumoca_core::Span::DUMMY,
-            qualified_display_name: None,
-        };
-        let mut int_params = rustc_hash::FxHashMap::default();
-        int_params.insert("cellData.fake_nRC".to_string(), 4);
-        int_params.insert("cellData.real.nRC".to_string(), 2);
-
-        let scope = ast::QualifiedName::new();
-        assert_eq!(resolve_int_param_ref(&cr, &int_params, &scope), None);
-    }
-}
+mod tests;

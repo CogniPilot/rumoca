@@ -121,24 +121,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 span,
             );
         };
-        let key = FunctionFoldOutputKey {
-            call_path: self
-                .call_frames
-                .iter()
-                .map(|frame| MaterializedCallKey {
-                    function: frame.function.index(),
-                    arguments: frame
-                        .arguments
-                        .iter()
-                        .map(|argument| argument.index())
-                        .collect(),
-                    indices: frame.indices.clone(),
-                })
-                .collect(),
-            fold: fold.ordinal(),
-            carried,
-            scalar,
-        };
+        let key = self.function_fold_output_key(fold, carried, scalar);
         if let Some(value) = self.function_fold_output_cache.get(&key) {
             return Ok(value.clone());
         }
@@ -152,26 +135,28 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .view
             .domain(fold_view.domain())
             .expect("checked function fold domain resolves");
-        let structured = domain.structured();
-        let point_count = structured.scalar_count().map_err(|error| {
+        let structured = domain.structured().validated().map_err(|error| {
             unsupported(
                 "function-fold-domain",
                 format!("checked function fold domain became invalid: {error}"),
                 span,
             )
         })?;
-        for point in 0..point_count {
+        for point in 0..structured.scalar_count() {
             let binder_values = structured
                 .index_tuple_at(point)
-                .expect("checked function fold domain remains valid")
                 .expect("checked function fold point is in range")
                 .into_iter()
                 .map(gast::Expression::Integer)
                 .collect();
-            self.comprehension_frames.push(ComprehensionFrame {
-                domain: fold_view.domain().index(),
-                binders: binder_values,
-            });
+            self.enter_iteration_point(
+                IterationOwner::FunctionFold {
+                    function: fold.function().index(),
+                    fold: fold.ordinal(),
+                },
+                fold_view.domain().index(),
+                binder_values,
+            )?;
             self.function_fold_values.push((fold, values));
             let updates = fold_view
                 .update_values()
@@ -182,7 +167,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 .function_fold_values
                 .pop()
                 .expect("function fold frame was just pushed");
-            self.comprehension_frames.pop();
+            self.leave_iteration_point();
             values = updates?;
             debug_assert_eq!(previous.len(), values.len());
         }
@@ -193,6 +178,35 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .ok_or_else(|| GalecTargetError::LoweringInternal {
                 detail: "function fold output scalar is out of range".to_owned(),
             })
+    }
+
+    fn function_fold_output_key(
+        &self,
+        fold: dae::FunctionFoldId<'dae>,
+        carried: u32,
+        scalar: u32,
+    ) -> FunctionFoldOutputKey {
+        FunctionFoldOutputKey {
+            call_path: self
+                .call_frames
+                .iter()
+                .map(|frame| MaterializedCallKey {
+                    owner: frame.owner.index(),
+                    function: frame.function.index(),
+                    arguments: frame
+                        .arguments
+                        .iter()
+                        .map(|argument| argument.index())
+                        .collect(),
+                    indices: frame.indices.clone(),
+                    iteration_path: self.iteration_path(),
+                })
+                .collect(),
+            iteration_path: self.iteration_path(),
+            fold: fold.ordinal(),
+            carried,
+            scalar,
+        }
     }
 
     fn cache_function_fold_outputs(
@@ -211,6 +225,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 self.function_fold_output_cache.insert(
                     FunctionFoldOutputKey {
                         call_path: key.call_path.clone(),
+                        iteration_path: key.iteration_path.clone(),
                         fold: key.fold,
                         carried,
                         scalar,

@@ -2,9 +2,38 @@ use serde::{Deserialize, Serialize};
 
 use crate::Expression;
 
+/// Domain-local semantic identity of one structured iteration binder.
+///
+/// The integer is an ordinal inside exactly one [`StructuredIndexDomain`]. It
+/// is deliberately not a `DefId`: a source loop token and a resolved
+/// declaration occupy different namespaces. Flat wire replay binds this
+/// identity to the token's exact spelling and span in the family template.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct StructuredIndexBinderId(u32);
+
+impl StructuredIndexBinderId {
+    pub const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+
+    pub fn from_ordinal(ordinal: usize) -> Option<Self> {
+        u32::try_from(ordinal).ok().map(Self)
+    }
+}
+
+impl std::fmt::Display for StructuredIndexBinderId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructuredIndexBinder {
-    pub id: usize,
+    pub id: StructuredIndexBinderId,
     pub display_name: String,
     pub lower: i64,
     pub upper: i64,
@@ -283,133 +312,233 @@ impl ComprehensionScalarView {
 }
 
 impl StructuredIndexDomain {
+    /// Prove this domain once and mint the witness that answers extent,
+    /// stride, ordinal, and coordinate questions without rediscovering the
+    /// proof.
+    ///
+    /// Minting is the single failure boundary: it rejects a zero-step binder
+    /// and a scalar count or stride product that leaves `usize`. Every
+    /// accessor on [`ValidStructuredIndexDomain`] is total afterwards.
+    pub fn validated(&self) -> Result<ValidStructuredIndexDomain<'_>, StructuredIndexDomainError> {
+        ValidStructuredIndexDomain::mint(self)
+    }
+
+    pub fn validate(&self) -> Result<usize, StructuredIndexDomainError> {
+        Ok(self.validated()?.scalar_count())
+    }
+
     pub fn scalar_count(&self) -> Result<usize, StructuredIndexDomainError> {
         self.validate()
     }
 
     /// Number of values along each binder, in declaration order.
+    ///
+    /// This validates on every call. Callers that read more than one derived
+    /// fact, or read one inside a loop, should mint the witness with
+    /// [`StructuredIndexDomain::validated`] instead.
     pub fn extents(&self) -> Result<Vec<usize>, StructuredIndexDomainError> {
-        self.validate()?;
-        self.binders
-            .iter()
-            .map(StructuredIndexBinder::value_count)
-            .collect()
+        Ok(self.validated()?.extents().to_vec())
     }
 
-    /// Row-major ordinal strides, with the innermost binder varying fastest.
-    pub fn ordinal_strides(&self) -> Result<Vec<usize>, StructuredIndexDomainError> {
-        ordinal_strides_for_extents(&self.extents()?)
-    }
-
-    /// Convert a row-major domain ordinal to binder coordinates without
-    /// materializing any preceding tuples.
-    pub fn index_tuple_at(
-        &self,
-        ordinal: usize,
-    ) -> Result<Option<Vec<i64>>, StructuredIndexDomainError> {
-        let scalar_count = self.validate()?;
-        if ordinal >= scalar_count {
-            return Ok(None);
-        }
-        let extents = self.extents()?;
-        let strides = ordinal_strides_for_extents(&extents)?;
-        Ok(Some(
-            self.index_tuple_at_validated(ordinal, &extents, &strides)?,
-        ))
-    }
-
-    /// Convert binder coordinates to their row-major ordinal. Coordinates
-    /// outside the domain return `None`.
-    pub fn ordinal_of(
-        &self,
-        index_tuple: &[i64],
-    ) -> Result<Option<usize>, StructuredIndexDomainError> {
-        self.validate()?;
-        if index_tuple.len() != self.binders.len() {
-            return Ok(None);
-        }
-        let strides = self.ordinal_strides()?;
-        let mut ordinal = 0usize;
-        for ((binder, value), stride) in self.binders.iter().zip(index_tuple).zip(strides) {
-            let Some(position) = binder.position_of(*value)? else {
-                return Ok(None);
-            };
-            ordinal = ordinal
-                .checked_add(
-                    position
-                        .checked_mul(stride)
-                        .ok_or(StructuredIndexDomainError::ScalarCountOverflow)?,
-                )
-                .ok_or(StructuredIndexDomainError::ScalarCountOverflow)?;
-        }
-        Ok(Some(ordinal))
-    }
-
-    /// Ordinals needed to inspect the base point and one neighbor along every
-    /// non-singleton binder. This is O(rank), independent of domain cardinality.
-    pub fn corner_ordinals(&self) -> Result<Vec<usize>, StructuredIndexDomainError> {
-        let scalar_count = self.validate()?;
-        if scalar_count == 0 {
-            return Ok(Vec::new());
-        }
-        let extents = self.extents()?;
-        let strides = ordinal_strides_for_extents(&extents)?;
-        let mut ordinals = Vec::with_capacity(1 + extents.len());
-        ordinals.push(0);
-        ordinals.extend(
-            extents
-                .into_iter()
-                .zip(strides)
-                .filter_map(|(extent, stride)| (extent > 1).then_some(stride)),
-        );
-        Ok(ordinals)
-    }
-
-    /// Lazily enumerate binder tuples in deterministic scalar-view order.
+    /// Enumerate binder tuples in deterministic scalar-view order.
+    ///
+    /// The domain is unvalidated here, so minting happens first and the
+    /// iterator itself is total.
     pub fn index_tuple_iter(
         &self,
     ) -> Result<impl ExactSizeIterator<Item = Vec<i64>> + '_, StructuredIndexDomainError> {
-        let scalar_count = self.validate()?;
-        let extents = self.extents()?;
-        let strides = ordinal_strides_for_extents(&extents)?;
-        Ok((0..scalar_count).map(move |ordinal| {
-            self.index_tuple_at_validated(ordinal, &extents, &strides)
-                .expect("validated structured domain ordinal must produce coordinates")
-        }))
+        Ok(self.validated()?.into_index_tuple_iter())
     }
 
+    /// Materialize every binder tuple.
+    ///
+    /// Unlike the iterator this reserves the whole tuple list up front, so it
+    /// still reports a host allocation limit as a typed error.
     pub fn index_tuples(&self) -> Result<Vec<Vec<i64>>, StructuredIndexDomainError> {
-        let tuple_count = self.validate()?;
+        let valid = self.validated()?;
         let mut tuples = Vec::new();
-        reserve_tuple_capacity(&mut tuples, tuple_count)?;
-        tuples.extend(self.index_tuple_iter()?);
+        reserve_tuple_capacity(&mut tuples, valid.scalar_count())?;
+        tuples.extend(valid.index_tuple_iter());
         Ok(tuples)
     }
+}
 
-    pub fn validate(&self) -> Result<usize, StructuredIndexDomainError> {
-        let mut count = 1usize;
-        for binder in &self.binders {
-            count = count
-                .checked_mul(binder.value_count()?)
+/// A [`StructuredIndexDomain`] whose iteration facts were proved at the
+/// validation gate.
+///
+/// `StructuredIndexDomain` is a plain description: any caller can write down
+/// binders whose step is zero or whose extents multiply past `usize`. This
+/// witness is the only way to read the derived facts, and it exists only if
+/// [`StructuredIndexDomain::validated`] proved them. Holding one is therefore
+/// the proof that
+///
+/// - every binder has a non-zero step and a `usize` value count,
+/// - the row-major ordinal strides fit `usize`, and
+/// - the domain's scalar count fits `usize`.
+///
+/// Coordinates are computed on demand from the ordinal, so no accessor ever
+/// materializes a coordinate list the caller did not ask for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidStructuredIndexDomain<'domain> {
+    domain: &'domain StructuredIndexDomain,
+    extents: Vec<usize>,
+    strides: Vec<usize>,
+    scalar_count: usize,
+}
+
+impl<'domain> ValidStructuredIndexDomain<'domain> {
+    fn mint(domain: &'domain StructuredIndexDomain) -> Result<Self, StructuredIndexDomainError> {
+        let extents = domain
+            .binders
+            .iter()
+            .map(StructuredIndexBinder::value_count)
+            .collect::<Result<Vec<_>, _>>()?;
+        let strides = ordinal_strides_for_extents(&extents)?;
+        let mut scalar_count = 1usize;
+        for extent in &extents {
+            scalar_count = scalar_count
+                .checked_mul(*extent)
                 .ok_or(StructuredIndexDomainError::ScalarCountOverflow)?;
         }
-        Ok(count)
+        Ok(Self {
+            domain,
+            extents,
+            strides,
+            scalar_count,
+        })
     }
 
-    fn index_tuple_at_validated(
-        &self,
-        ordinal: usize,
-        extents: &[usize],
-        strides: &[usize],
-    ) -> Result<Vec<i64>, StructuredIndexDomainError> {
-        let mut tuple = Vec::new();
-        reserve_current_tuple_capacity(&mut tuple, self.binders.len())?;
-        for ((binder, extent), stride) in self.binders.iter().zip(extents).zip(strides) {
-            let position = (ordinal / stride) % extent;
-            tuple.push(binder.value_at(position)?);
-        }
-        Ok(tuple)
+    pub fn domain(&self) -> &'domain StructuredIndexDomain {
+        self.domain
     }
+
+    pub fn binders(&self) -> &'domain [StructuredIndexBinder] {
+        &self.domain.binders
+    }
+
+    /// Number of binders, which is the length of every index tuple.
+    pub fn rank(&self) -> usize {
+        self.extents.len()
+    }
+
+    pub fn scalar_count(&self) -> usize {
+        self.scalar_count
+    }
+
+    /// Number of values along each binder, in declaration order.
+    pub fn extents(&self) -> &[usize] {
+        &self.extents
+    }
+
+    /// Row-major ordinal strides, with the innermost binder varying fastest.
+    pub fn ordinal_strides(&self) -> &[usize] {
+        &self.strides
+    }
+
+    /// Binder coordinates of a row-major ordinal, without materializing any
+    /// preceding tuple. Ordinals outside the domain have no coordinates.
+    pub fn index_tuple_at(&self, ordinal: usize) -> Option<Vec<i64>> {
+        (ordinal < self.scalar_count).then(|| self.coordinates(ordinal))
+    }
+
+    /// Row-major ordinal of binder coordinates. Coordinates outside the domain
+    /// have no ordinal.
+    pub fn ordinal_of(&self, index_tuple: &[i64]) -> Option<usize> {
+        if index_tuple.len() != self.rank() {
+            return None;
+        }
+        let mut ordinal = 0usize;
+        for (((binder, value), extent), stride) in self
+            .domain
+            .binders
+            .iter()
+            .zip(index_tuple)
+            .zip(&self.extents)
+            .zip(&self.strides)
+        {
+            let position = binder_position(binder, *extent, *value)?;
+            // `position < extent` and `extent * stride` divides the proved
+            // scalar count, so the running ordinal stays below it.
+            ordinal += position * stride;
+        }
+        Some(ordinal)
+    }
+
+    /// Ordinals needed to inspect the base point and one neighbor along every
+    /// non-singleton binder. This is O(rank), independent of cardinality.
+    pub fn corner_ordinals(&self) -> Vec<usize> {
+        if self.scalar_count == 0 {
+            return Vec::new();
+        }
+        let mut ordinals = Vec::with_capacity(1 + self.rank());
+        ordinals.push(0);
+        ordinals.extend(
+            self.extents
+                .iter()
+                .zip(&self.strides)
+                .filter_map(|(extent, stride)| (*extent > 1).then_some(*stride)),
+        );
+        ordinals
+    }
+
+    /// Lazily enumerate binder tuples in deterministic scalar-view order.
+    pub fn index_tuple_iter(&self) -> impl ExactSizeIterator<Item = Vec<i64>> + '_ {
+        (0..self.scalar_count).map(|ordinal| self.coordinates(ordinal))
+    }
+
+    /// The same enumeration, carrying the witness so the iterator outlives the
+    /// borrow that minted it.
+    pub fn into_index_tuple_iter(self) -> impl ExactSizeIterator<Item = Vec<i64>> + 'domain {
+        (0..self.scalar_count).map(move |ordinal| self.coordinates(ordinal))
+    }
+
+    /// Coordinates of an ordinal the caller already placed inside the domain.
+    fn coordinates(&self, ordinal: usize) -> Vec<i64> {
+        let mut tuple = Vec::with_capacity(self.rank());
+        tuple.extend(
+            self.domain
+                .binders
+                .iter()
+                .zip(&self.extents)
+                .zip(&self.strides)
+                .map(|((binder, extent), stride)| {
+                    binder_coordinate(binder, *extent, *stride, ordinal)
+                }),
+        );
+        tuple
+    }
+}
+
+/// Value of one binder at the position `ordinal` selects along its axis.
+///
+/// The caller places `ordinal` inside the domain, so every extent here is
+/// non-zero and every stride divides the scalar count. The position is below
+/// the binder's value count, which puts the value between the binder's `lower`
+/// and its last stepped value; both are `i64`, so the `i128` arithmetic
+/// narrows exactly.
+fn binder_coordinate(
+    binder: &StructuredIndexBinder,
+    extent: usize,
+    stride: usize,
+    ordinal: usize,
+) -> i64 {
+    let position = (ordinal / stride) % extent;
+    (i128::from(binder.lower) + i128::from(binder.step) * position as i128) as i64
+}
+
+/// Position of `value` along one binder's axis, or `None` when the value is
+/// not one of the binder's `extent` stepped values.
+fn binder_position(binder: &StructuredIndexBinder, extent: usize, value: i64) -> Option<usize> {
+    if extent == 0 {
+        return None;
+    }
+    let distance = i128::from(value) - i128::from(binder.lower);
+    let step = i128::from(binder.step);
+    if distance % step != 0 {
+        return None;
+    }
+    let position = usize::try_from(distance / step).ok()?;
+    (position < extent).then_some(position)
 }
 
 fn ordinal_strides_for_extents(
@@ -429,15 +558,6 @@ fn reserve_tuple_capacity(
     capacity: usize,
 ) -> Result<(), StructuredIndexDomainError> {
     tuples
-        .try_reserve_exact(capacity)
-        .map_err(|_| StructuredIndexDomainError::IndexTupleCapacityOverflow)
-}
-
-fn reserve_current_tuple_capacity(
-    tuple: &mut Vec<i64>,
-    capacity: usize,
-) -> Result<(), StructuredIndexDomainError> {
-    tuple
         .try_reserve_exact(capacity)
         .map_err(|_| StructuredIndexDomainError::IndexTupleCapacityOverflow)
 }
@@ -475,48 +595,15 @@ impl StructuredIndexBinder {
         let step = -(self.step as i128);
         distance / step as u128 + 1
     }
-
-    fn value_at(&self, position: usize) -> Result<i64, StructuredIndexDomainError> {
-        let offset = (self.step as i128) * (position as i128);
-        i64::try_from(self.lower as i128 + offset).map_err(|_| {
-            StructuredIndexDomainError::BinderValueOverflow {
-                binder_id: self.id,
-                display_name: self.display_name.clone(),
-            }
-        })
-    }
-
-    pub fn position_of(&self, value: i64) -> Result<Option<usize>, StructuredIndexDomainError> {
-        let count = self.value_count()?;
-        if count == 0 {
-            return Ok(None);
-        }
-        let distance = value as i128 - self.lower as i128;
-        let step = self.step as i128;
-        if distance % step != 0 {
-            return Ok(None);
-        }
-        let position = distance / step;
-        if position < 0 {
-            return Ok(None);
-        }
-        let position = usize::try_from(position)
-            .map_err(|_| StructuredIndexDomainError::ScalarCountOverflow)?;
-        Ok((position < count).then_some(position))
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StructuredIndexDomainError {
     ZeroStep {
-        binder_id: usize,
+        binder_id: StructuredIndexBinderId,
         display_name: String,
     },
     ScalarCountOverflow,
-    BinderValueOverflow {
-        binder_id: usize,
-        display_name: String,
-    },
     IndexTupleCapacityOverflow,
 }
 
@@ -533,13 +620,6 @@ impl std::fmt::Display for StructuredIndexDomainError {
             Self::ScalarCountOverflow => {
                 write!(f, "structured domain scalar count overflows usize")
             }
-            Self::BinderValueOverflow {
-                binder_id,
-                display_name,
-            } => write!(
-                f,
-                "index binder `{display_name}` ({binder_id}) value stepping overflows i64"
-            ),
             Self::IndexTupleCapacityOverflow => {
                 write!(
                     f,
@@ -559,7 +639,7 @@ mod tests {
     #[test]
     fn structured_index_domain_error_displays_zero_step() {
         let error = StructuredIndexDomainError::ZeroStep {
-            binder_id: 3,
+            binder_id: StructuredIndexBinderId::new(3),
             display_name: "i".to_string(),
         };
 
@@ -579,14 +659,14 @@ mod tests {
         let domain = StructuredIndexDomain {
             binders: vec![
                 StructuredIndexBinder {
-                    id: 0,
+                    id: StructuredIndexBinderId::new(0),
                     display_name: "i".to_string(),
                     lower: 1,
                     upper: 2,
                     step: 1,
                 },
                 StructuredIndexBinder {
-                    id: 1,
+                    id: StructuredIndexBinderId::new(1),
                     display_name: "j".to_string(),
                     lower: 3,
                     upper: 4,
@@ -605,7 +685,7 @@ mod tests {
     fn index_tuples_rejects_zero_step() {
         let domain = StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
-                id: 7,
+                id: StructuredIndexBinderId::new(7),
                 display_name: "k".to_string(),
                 lower: 1,
                 upper: 3,
@@ -616,7 +696,7 @@ mod tests {
         assert_eq!(
             domain.index_tuples(),
             Err(StructuredIndexDomainError::ZeroStep {
-                binder_id: 7,
+                binder_id: StructuredIndexBinderId::new(7),
                 display_name: "k".to_string()
             })
         );
@@ -626,7 +706,7 @@ mod tests {
     fn index_tuples_rejects_scalar_count_overflow() {
         let domain = StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
-                id: 0,
+                id: StructuredIndexBinderId::new(0),
                 display_name: "i".to_string(),
                 lower: i64::MIN,
                 upper: i64::MAX,
@@ -645,14 +725,14 @@ mod tests {
         let domain = StructuredIndexDomain {
             binders: vec![
                 StructuredIndexBinder {
-                    id: 0,
+                    id: StructuredIndexBinderId::new(0),
                     display_name: "i".to_string(),
                     lower: 5,
                     upper: 1,
                     step: -2,
                 },
                 StructuredIndexBinder {
-                    id: 1,
+                    id: StructuredIndexBinderId::new(1),
                     display_name: "j".to_string(),
                     lower: 2,
                     upper: 8,
@@ -661,19 +741,21 @@ mod tests {
             ],
         };
 
-        assert_eq!(domain.extents(), Ok(vec![3, 3]));
-        assert_eq!(domain.ordinal_strides(), Ok(vec![3, 1]));
-        assert_eq!(domain.index_tuple_at(5), Ok(Some(vec![3, 8])));
-        assert_eq!(domain.ordinal_of(&[3, 8]), Ok(Some(5)));
-        assert_eq!(domain.ordinal_of(&[4, 8]), Ok(None));
-        assert_eq!(domain.corner_ordinals(), Ok(vec![0, 3, 1]));
+        let valid = domain.validated().expect("compact reverse domain is valid");
+
+        assert_eq!(valid.extents(), [3, 3]);
+        assert_eq!(valid.ordinal_strides(), [3, 1]);
+        assert_eq!(valid.index_tuple_at(5), Some(vec![3, 8]));
+        assert_eq!(valid.ordinal_of(&[3, 8]), Some(5));
+        assert_eq!(valid.ordinal_of(&[4, 8]), None);
+        assert_eq!(valid.corner_ordinals(), vec![0, 3, 1]);
     }
 
     #[test]
     fn empty_domain_has_no_tuples_or_corners() {
         let domain = StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
-                id: 0,
+                id: StructuredIndexBinderId::new(0),
                 display_name: "i".to_string(),
                 lower: 3,
                 upper: 1,
@@ -681,18 +763,20 @@ mod tests {
             }],
         };
 
-        assert_eq!(domain.scalar_count(), Ok(0));
-        assert_eq!(domain.index_tuple_at(0), Ok(None));
-        assert_eq!(domain.ordinal_of(&[3]), Ok(None));
-        assert_eq!(domain.corner_ordinals(), Ok(Vec::new()));
-        assert_eq!(domain.index_tuple_iter().unwrap().next(), None);
+        let valid = domain.validated().expect("empty domain is valid");
+
+        assert_eq!(valid.scalar_count(), 0);
+        assert_eq!(valid.index_tuple_at(0), None);
+        assert_eq!(valid.ordinal_of(&[3]), None);
+        assert_eq!(valid.corner_ordinals(), Vec::<usize>::new());
+        assert_eq!(valid.index_tuple_iter().next(), None);
     }
 
     #[test]
     fn distant_ordinal_is_computed_without_materializing_prefix() {
         let domain = StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
-                id: 0,
+                id: StructuredIndexBinderId::new(0),
                 display_name: "i".to_string(),
                 lower: 1,
                 upper: 1_000_000,
@@ -700,8 +784,10 @@ mod tests {
             }],
         };
 
-        assert_eq!(domain.index_tuple_at(999_999), Ok(Some(vec![1_000_000])));
-        assert_eq!(domain.ordinal_of(&[1_000_000]), Ok(Some(999_999)));
+        let valid = domain.validated().expect("million-point domain is valid");
+
+        assert_eq!(valid.index_tuple_at(999_999), Some(vec![1_000_000]));
+        assert_eq!(valid.ordinal_of(&[1_000_000]), Some(999_999));
     }
 
     #[test]

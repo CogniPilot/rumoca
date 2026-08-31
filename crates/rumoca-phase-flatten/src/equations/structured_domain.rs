@@ -22,12 +22,13 @@ pub(super) fn compact_domain_from_iterations(
             FlattenError::unsupported_equation("structured equation domain is not compact", span)
         })?;
     let domain = rumoca_core::StructuredIndexDomain { binders };
-    let actual = domain.index_tuple_iter().map_err(|err| {
+    let valid = domain.validated().map_err(|err| {
         FlattenError::unsupported_equation(
             format!("structured equation domain is invalid: {err}"),
             span,
         )
     })?;
+    let actual = valid.index_tuple_iter();
     if actual.len() != iterations.len()
         || actual
             .zip(iterations)
@@ -54,7 +55,7 @@ fn compact_binder(
         .find(|value| *value != lower)
         .map_or(1, |value| value - lower);
     Some(rumoca_core::StructuredIndexBinder {
-        id: dimension,
+        id: rumoca_core::StructuredIndexBinderId::from_ordinal(dimension)?,
         display_name: index.ident.text.to_string(),
         lower,
         upper,
@@ -222,7 +223,8 @@ fn offset_child_binders(
         .enumerate()
         .map(|(dimension, binder)| {
             let mut binder = binder.clone();
-            binder.id = offset + dimension;
+            binder.id = rumoca_core::StructuredIndexBinderId::from_ordinal(offset + dimension)
+                .expect("structured-domain rank must fit its typed binder identity");
             binder
         })
         .collect()

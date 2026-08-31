@@ -3,8 +3,8 @@ use super::source_scope::component_declaration_source_scope;
 use super::type_overrides::TypeOverrideMap;
 use super::{ComponentInstantiationScope, instantiate_component};
 use super::{
-    InstantiateContext, InstantiateResult, find_class_in_tree, get_effective_components,
-    location_to_span,
+    InstantiateContext, InstantiateError, InstantiateResult, find_class_in_tree,
+    get_effective_components, location_to_span,
 };
 use rumoca_eval_ast::eval_instantiate::{InstantiateEvalCtx, try_eval_integer_expr};
 use rumoca_ir_ast as ast;
@@ -152,7 +152,7 @@ fn build_element_plan<'a>(
         ctx.mod_env(),
         scope.effective_components,
         scope.tree,
-    );
+    )?;
     let resolved_mod_names: std::collections::HashSet<String> = resolved_mods
         .iter()
         .map(|(mod_name, _)| mod_name.clone())
@@ -414,7 +414,7 @@ fn projection_source_expression(
     if index_array_expression_for_element(tree, source_components, expression, probe)?.is_some() {
         return Ok(Some(expression.clone()));
     }
-    let resolved = resolve_mod_to_array(expression, mod_env, source_components, tree);
+    let resolved = resolve_mod_to_array(expression, mod_env, source_components, tree)?;
     Ok(
         index_array_expression_for_element(tree, source_components, &resolved, probe)?
             .map(|_| resolved),
@@ -454,7 +454,8 @@ fn component_family_domain(dims: &[i64]) -> rumoca_core::StructuredIndexDomain {
             .iter()
             .enumerate()
             .map(|(position, upper)| rumoca_core::StructuredIndexBinder {
-                id: position,
+                id: rumoca_core::StructuredIndexBinderId::from_ordinal(position)
+                    .expect("structured-domain rank must fit its typed binder identity"),
                 display_name: format!("__comp_i{}", position + 1),
                 lower: 1,
                 upper: *upper,
@@ -523,10 +524,11 @@ fn compaction_attempt(
 fn domain_probe_tuples(
     domain: &rumoca_core::StructuredIndexDomain,
 ) -> Result<Vec<Vec<i64>>, rumoca_core::StructuredIndexDomainError> {
-    let count = domain.scalar_count()?;
+    let domain = domain.validated()?;
+    let count = domain.scalar_count();
     let mut tuples = Vec::new();
     for ordinal in [0, count.saturating_sub(1)] {
-        let Some(tuple) = domain.index_tuple_at(ordinal)? else {
+        let Some(tuple) = domain.index_tuple_at(ordinal) else {
             continue;
         };
         if !tuples.contains(&tuple) {
@@ -605,7 +607,7 @@ pub(super) fn pre_resolve_array_modifications(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-) -> Vec<(String, ast::Expression)> {
+) -> InstantiateResult<Vec<(String, ast::Expression)>> {
     let mut resolved = Vec::new();
     for (name, expr) in &comp.modifications {
         if comp.each_modifications.contains(name) {
@@ -618,12 +620,12 @@ pub(super) fn pre_resolve_array_modifications(
         if matches!(expr, ast::Expression::ComponentReference(_)) {
             continue;
         }
-        let val = resolve_mod_to_array(expr, mod_env, effective_components, tree);
+        let val = resolve_mod_to_array(expr, mod_env, effective_components, tree)?;
         if matches!(val, ast::Expression::Array { .. }) {
             resolved.push((name.clone(), val));
         }
     }
-    resolved
+    Ok(resolved)
 }
 
 /// Apply pre-resolved array modifications to a scalar array element.
@@ -723,76 +725,128 @@ pub(super) fn resolve_mod_to_array(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-) -> ast::Expression {
-    resolve_mod_to_array_depth(expr, mod_env, effective_components, tree, 0)
+) -> InstantiateResult<ast::Expression> {
+    resolve_mod_to_array_inner(
+        expr,
+        mod_env,
+        effective_components,
+        tree,
+        &mut std::collections::HashSet::new(),
+    )
 }
 
-/// Resolve a modification expression to an array value with depth limit.
-fn resolve_mod_to_array_depth(
+fn resolve_mod_to_array_inner(
     expr: &ast::Expression,
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    depth: usize,
-) -> ast::Expression {
-    const MAX_DEPTH: usize = 5;
-    if depth >= MAX_DEPTH {
-        return expr.clone();
-    }
+    active: &mut std::collections::HashSet<rumoca_core::DefId>,
+) -> InstantiateResult<ast::Expression> {
     if let ast::Expression::ComponentReference(cref) = expr
         && cref.parts.len() == 1
     {
-        let name = cref.parts[0].ident.text.as_ref();
-        if let Some(resolved) = resolve_single_ref(name, mod_env, effective_components, tree, depth)
+        if let Some(resolved) =
+            resolve_single_ref(cref, mod_env, effective_components, tree, active)?
         {
-            return resolved;
+            return Ok(resolved);
         }
     }
     // MLS §11.1.2.1: Evaluate array comprehensions like {j for j in 1:m}
     if let Some(array) = try_eval_array_comprehension(expr, mod_env, effective_components, tree) {
-        return array;
+        return Ok(array);
     }
     // Evaluate structural array-valued expressions used in non-`each` modifiers
     // (e.g., k=fill(1, n), phase=-symmetricOrientation(m)). This allows
     // per-element modifier distribution during array component expansion
     // (MLS §7.2.5).
     if let Some(array) = try_eval_structural_array_expr(expr, mod_env, effective_components, tree) {
-        return array;
+        return Ok(array);
     }
-    expr.clone()
+    Ok(expr.clone())
 }
 
 /// Resolve a single-part component reference to an array value.
 fn resolve_single_ref(
-    name: &str,
+    reference: &ast::ComponentReference,
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    depth: usize,
-) -> Option<ast::Expression> {
+    active: &mut std::collections::HashSet<rumoca_core::DefId>,
+) -> InstantiateResult<Option<ast::Expression>> {
+    let part = reference
+        .parts
+        .first()
+        .expect("single-part reference checked by caller");
+    let name = part.ident.text.as_ref();
     let qn = ast::QualifiedName::from_ident(name);
-    if let Some(mv) = mod_env.active.get(&qn) {
-        let resolved =
-            resolve_mod_to_array_depth(&mv.value, mod_env, effective_components, tree, depth + 1);
-        if matches!(resolved, ast::Expression::Array { .. }) {
-            return Some(resolved);
+    let mod_value = mod_env.active.get(&qn);
+    let component = effective_components.get(name);
+    if mod_value.is_none() && component.is_none() {
+        return Ok(None);
+    }
+
+    let reference_def_id = reference.root_def_id().ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("array modifier reference `{name}`"),
+            reference.span,
+        ))
+    })?;
+    let component = component.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("array modifier target `{name}` ({reference_def_id:?})"),
+            reference.span,
+        ))
+    })?;
+    let component_def_id = component.def_id.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("array-valued component `{name}`"),
+            component.location.span(),
+        ))
+    })?;
+    if component_def_id != reference_def_id {
+        return Err(Box::new(InstantiateError::missing_resolved_identity(
+            format!(
+                "array modifier reference `{name}` identifies {reference_def_id:?}, but the active slot identifies {component_def_id:?}"
+            ),
+            reference.span,
+        )));
+    }
+    if !active.insert(reference_def_id) {
+        return Err(Box::new(InstantiateError::instantiation_cycle(
+            format!("array modifier reference `{name}` ({reference_def_id:?})"),
+            reference.span,
+        )));
+    }
+
+    let result = (|| {
+        if let Some(mv) = mod_value {
+            let resolved =
+                resolve_mod_to_array_inner(&mv.value, mod_env, effective_components, tree, active)?;
+            if matches!(resolved, ast::Expression::Array { .. }) {
+                return Ok(Some(resolved));
+            }
         }
-    }
-    // Check effective_components for array-valued bindings (including fill/zeros/ones).
-    let comp = effective_components.get(name)?;
-    if let Some(ref binding) = comp.binding {
-        let resolved =
-            resolve_mod_to_array_depth(binding, mod_env, effective_components, tree, depth + 1);
-        if matches!(resolved, ast::Expression::Array { .. }) {
-            return Some(resolved);
+        if let Some(ref binding) = component.binding {
+            let resolved =
+                resolve_mod_to_array_inner(binding, mod_env, effective_components, tree, active)?;
+            if matches!(resolved, ast::Expression::Array { .. }) {
+                return Ok(Some(resolved));
+            }
         }
-    }
-    let resolved_start =
-        resolve_mod_to_array_depth(&comp.start, mod_env, effective_components, tree, depth + 1);
-    if matches!(resolved_start, ast::Expression::Array { .. }) {
-        return Some(resolved_start);
-    }
-    None
+        let resolved_start = resolve_mod_to_array_inner(
+            &component.start,
+            mod_env,
+            effective_components,
+            tree,
+            active,
+        )?;
+        if matches!(resolved_start, ast::Expression::Array { .. }) {
+            return Ok(Some(resolved_start));
+        }
+        Ok(None)
+    })();
+    active.remove(&reference_def_id);
+    result
 }
 
 /// Evaluate simple structural array expressions to concrete 1-D arrays.
@@ -988,13 +1042,11 @@ fn apply_unary_to_structural_array_element(
     span: rumoca_core::Span,
 ) -> Option<ast::Expression> {
     match op {
-        rumoca_core::OpUnary::Plus
-        | rumoca_core::OpUnary::DotPlus
-        | rumoca_core::OpUnary::Empty => Some(elem.clone()),
+        rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => Some(elem.clone()),
         rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => {
             Some(negate_structural_numeric_expr(elem, span))
         }
-        rumoca_core::OpUnary::Not => None,
+        rumoca_core::OpUnary::Not | rumoca_core::OpUnary::Empty => None,
     }
 }
 
@@ -1149,50 +1201,20 @@ struct LoopIndexSubstituter<'a> {
 }
 
 impl ast::ExpressionTransformer for LoopIndexSubstituter<'_> {
-    fn transform_expression(&mut self, expr: ast::Expression) -> ast::Expression {
-        match expr {
-            ast::Expression::ArrayComprehension {
-                expr: inner_expr,
-                indices,
-                filter,
-                span,
-            } => self.transform_array_comprehension(inner_expr, indices, filter, span),
-            _ => replace_component_reference_with_integer(&expr, self.var_name, self.value)
-                .unwrap_or_else(|| self.walk_expression(expr)),
+    fn transform_expression_in_place(&mut self, expr: &mut ast::Expression) {
+        if matches!(
+            expr,
+            ast::Expression::ArrayComprehension { indices, .. }
+                if indices.iter().any(|index| index.ident.text.as_ref() == self.var_name)
+        ) {
+            return;
         }
-    }
-}
-
-impl LoopIndexSubstituter<'_> {
-    fn transform_array_comprehension(
-        &mut self,
-        inner_expr: Arc<ast::Expression>,
-        indices: Vec<rumoca_ir_ast::ForIndex>,
-        filter: Option<Arc<ast::Expression>>,
-        span: rumoca_core::Span,
-    ) -> ast::Expression {
-        if indices
-            .iter()
-            .any(|for_index| for_index.ident.text.as_ref() == self.var_name)
+        if let Some(replacement) =
+            replace_component_reference_with_integer(expr, self.var_name, self.value)
         {
-            return ast::Expression::ArrayComprehension {
-                expr: inner_expr,
-                indices,
-                filter,
-                span,
-            };
-        }
-
-        ast::Expression::ArrayComprehension {
-            expr: Arc::new(self.transform_expression(inner_expr.as_ref().clone())),
-            indices: indices
-                .into_iter()
-                .map(|for_index| self.transform_for_index(for_index))
-                .collect(),
-            filter: filter.map(|filter_expr| {
-                Arc::new(self.transform_expression(filter_expr.as_ref().clone()))
-            }),
-            span,
+            *expr = replacement;
+        } else {
+            self.walk_expression(expr);
         }
     }
 }

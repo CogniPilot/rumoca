@@ -65,8 +65,9 @@ impl<'dae> ScalarSelector<'dae> {
                     .domain(domain)
                     .expect("checked comprehension domain resolves")
                     .structured()
+                    .validated()
+                    .expect("checked comprehension domain stays valid")
                     .index_tuple_at(point)
-                    .expect("checked domain remains valid")
                     .expect("checked scalar selects a domain point");
                 let mut nested = self.clone();
                 nested.domain_points.push((domain, values));

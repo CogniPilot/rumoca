@@ -83,17 +83,17 @@ impl<'a> MlirFamilyRenderer<'a> {
     }
 
     fn emit_coordinates(&mut self) -> Result<(), minijinja::Error> {
-        let extents = self
+        let domain = self
             .family
             .domain
+            .validated()
+            .map_err(|error| render_err(format!("invalid native-family domain: {error}")))?;
+        for (dimension, (&extent, &stride)) in domain
             .extents()
-            .map_err(|error| render_err(format!("invalid native-family domain: {error}")))?;
-        let strides = self
-            .family
-            .domain
-            .ordinal_strides()
-            .map_err(|error| render_err(format!("invalid native-family domain: {error}")))?;
-        for (dimension, (&extent, &stride)) in extents.iter().zip(&strides).enumerate() {
+            .iter()
+            .zip(domain.ordinal_strides())
+            .enumerate()
+        {
             mlir_i64_index(extent, "native-family binder extent")?;
             mlir_i64_index(stride, "native-family row-major stride")?;
             let coordinate = format!("%{}_coord{dimension}", self.prefix);
@@ -139,12 +139,6 @@ impl<'a> MlirFamilyRenderer<'a> {
             }
             solve::LinearOp::LoadY { dst, index } => self.emit_load(position, dst, index, "y"),
             solve::LinearOp::LoadP { dst, index } => self.emit_load(position, dst, index, "p"),
-            solve::LinearOp::LoadIndexedP {
-                dst,
-                base,
-                count,
-                index,
-            } => self.emit_indexed_p(dst, base, count, index),
             solve::LinearOp::Move { dst, src } => {
                 self.emit_move_from_value(dst, self.reg(src));
                 Ok(())
@@ -317,67 +311,6 @@ impl<'a> MlirFamilyRenderer<'a> {
             terms.extend(stride.terms.iter().cloned());
         }
         combined_affine_const_terms(&terms, &self.family.domain)
-    }
-
-    fn emit_indexed_p(
-        &mut self,
-        dst: solve::Reg,
-        base: usize,
-        count: usize,
-        index_reg: solve::Reg,
-    ) -> Result<(), minijinja::Error> {
-        mlir_i64_index(base, "native-family indexed parameter base")?;
-        if count == 0 {
-            let index = format!("%{}_r{dst}_indexed_base", self.prefix);
-            self.line(format!("      {index} = arith.constant {base} : index"));
-            self.line(format!(
-                "      {} = memref.load %p[{index}] : memref<?xf64>",
-                self.reg(dst)
-            ));
-            return Ok(());
-        }
-        let last = count
-            .checked_sub(1)
-            .ok_or_else(|| render_err("native-family indexed parameter count underflows"))?;
-        mlir_i64_index(last, "native-family indexed parameter upper offset")?;
-        let absolute_last = base.checked_add(last).ok_or_else(|| {
-            render_err("native-family indexed parameter absolute index overflows host range")
-        })?;
-        mlir_i64_index(
-            absolute_last,
-            "native-family indexed parameter absolute upper index",
-        )?;
-        let stem = format!("{}_r{dst}_indexed", self.prefix);
-        self.line(format!(
-            "      %{stem}_round = math.round {} : f64",
-            self.reg(index_reg)
-        ));
-        self.line(format!("      %{stem}_zero = arith.constant 0.0 : f64"));
-        self.line(format!(
-            "      %{stem}_high = arith.constant {}.0 : f64",
-            last
-        ));
-        self.line(format!(
-            "      %{stem}_low = arith.maxnumf %{stem}_round, %{stem}_zero : f64"
-        ));
-        self.line(format!(
-            "      %{stem}_clamp = arith.minnumf %{stem}_low, %{stem}_high : f64"
-        ));
-        self.line(format!(
-            "      %{stem}_i64 = arith.fptosi %{stem}_clamp : f64 to i64"
-        ));
-        self.line(format!("      %{stem}_base = arith.constant {base} : i64"));
-        self.line(format!(
-            "      %{stem}_absolute = arith.addi %{stem}_base, %{stem}_i64 : i64"
-        ));
-        self.line(format!(
-            "      %{stem}_index = arith.index_cast %{stem}_absolute : i64 to index"
-        ));
-        self.line(format!(
-            "      {} = memref.load %p[%{stem}_index] : memref<?xf64>",
-            self.reg(dst)
-        ));
-        Ok(())
     }
 
     fn emit_unary(

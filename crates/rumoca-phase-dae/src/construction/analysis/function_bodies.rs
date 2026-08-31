@@ -326,6 +326,7 @@ pub(super) fn validate_function_statements(
     definitions: &mut FunctionDefinitions,
 ) -> Result<Vec<FunctionStatementPlan>, ToDaeError> {
     let mut plans = plan_function_statements(statements, context)?;
+    definitions.track_record_staging(&plans);
     annotate_iteration_locals(statements, &mut plans, context, &[], &[]);
     resolve_function_definitions(statements, &mut plans, context, definitions)?;
     Ok(plans)
@@ -561,22 +562,13 @@ pub(super) fn plan_function_statements(
         }
         if let Some(assembly) = staged_records.remove(&index) {
             let count = assembly.statement_count;
-            let staged_field = FunctionRecordFieldCoordinate {
-                target: assembly.target.clone(),
-                field: assembly.field.name.clone(),
-            };
-            let finalizes_record = assembly.finalize_fields.is_some();
-            let target = assembly.target.clone();
-            plans.push(FunctionStatementPlan::RecordFieldAssembly(assembly));
+            let plan = FunctionStatementPlan::RecordFieldAssembly(assembly);
+            advance_function_record_staging(&plan, &mut staged_record_fields);
+            plans.push(plan);
             plans.extend(
                 std::iter::repeat_with(|| FunctionStatementPlan::RecordFieldAssemblyMember)
                     .take(count - 1),
             );
-            if finalizes_record {
-                staged_record_fields.retain(|field| field.target != target);
-            } else {
-                staged_record_fields.insert(staged_field);
-            }
             index += count;
             continue;
         }
@@ -586,7 +578,9 @@ pub(super) fn plan_function_statements(
         if let Some((assembly, count)) =
             validate_record_output_assembly(statements, index, statement_context)?
         {
-            plans.push(FunctionStatementPlan::RecordAssembly(assembly));
+            let plan = FunctionStatementPlan::RecordAssembly(assembly);
+            advance_function_record_staging(&plan, &mut staged_record_fields);
+            plans.push(plan);
             plans.extend(
                 std::iter::repeat_with(|| FunctionStatementPlan::RecordAssemblyMember)
                     .take(count - 1),
@@ -594,10 +588,9 @@ pub(super) fn plan_function_statements(
             index += count;
             continue;
         }
-        plans.push(plan_one_function_statement(
-            &statements[index],
-            statement_context,
-        )?);
+        let plan = plan_one_function_statement(&statements[index], statement_context)?;
+        advance_function_record_staging(&plan, &mut staged_record_fields);
+        plans.push(plan);
         index += 1;
     }
     coalesce_function_array_assemblies(statements, &mut plans, context)?;
@@ -787,30 +780,69 @@ fn validate_function_assignment_target(
     component: &rumoca_core::ComponentReference,
     span: Span,
 ) -> Result<FunctionAssignmentPlan, ToDaeError> {
-    let (target, subscripts) = match component.parts() {
-        [target] => (VarName::new(&target.ident), &target.subs),
-        [root, field]
-            if root.subs.is_empty()
-                && context
-                    .function
-                    .outputs
-                    .iter()
-                    .chain(&context.function.locals)
-                    .any(|value| {
-                        value.name == root.ident
-                            && value.type_class == Some(rumoca_core::ClassType::Record)
-                    }) =>
-        {
-            (component.to_var_name(), &field.subs)
-        }
-        _ => {
-            return Err(ToDaeError::unsupported_flat(
-                "function assignment target",
-                "a mutable function value must resolve to one value or one exact record field",
-                span,
-            ));
-        }
-    };
+    let (target, target_def_id, record_field, record_root_name, record_field_name, subscripts) =
+        match component.parts() {
+            [target] => {
+                let Some(value) = resolved_record_value(target, context.function)? else {
+                    return Err(ToDaeError::unsupported_flat(
+                        "function assignment target",
+                        format!("`{}` is not an exact mutable function value", target.ident),
+                        target.span,
+                    ));
+                };
+                (
+                    VarName::new(&value.name),
+                    function_value_def_id(value, context.function)?,
+                    None,
+                    VarName::new(&value.name),
+                    None,
+                    target.subs.as_slice(),
+                )
+            }
+            [root, field] if root.subs.is_empty() => {
+                let Some(value) = resolved_record_value(root, context.function)? else {
+                    return Err(ToDaeError::unsupported_flat(
+                        "function assignment target",
+                        format!("`{}` is not an exact mutable record value", root.ident),
+                        root.span,
+                    ));
+                };
+                if value.type_class != Some(rumoca_core::ClassType::Record) {
+                    return Err(ToDaeError::unsupported_flat(
+                        "function assignment target",
+                        format!("`{}` is not a record value", value.name),
+                        root.span,
+                    ));
+                }
+                let target_def_id = function_value_def_id(value, context.function)?;
+                let constructor = record_constructor(value, context)?;
+                let fields = resolved_constructor_fields(&value.name, constructor)?;
+                let field = require_constructor_field(&value.name, field, &fields)?;
+                (
+                    component.to_var_name(),
+                    target_def_id,
+                    Some(FunctionRecordFieldIdentity {
+                        target: target_def_id,
+                        field: field.def_id,
+                    }),
+                    VarName::new(&value.name),
+                    Some(field.name.clone()),
+                    component
+                        .parts()
+                        .last()
+                        .expect("two-part assignment retains its field")
+                        .subs
+                        .as_slice(),
+                )
+            }
+            _ => {
+                return Err(ToDaeError::unsupported_flat(
+                    "function assignment target",
+                    "a mutable function value must resolve to one value or one exact record field",
+                    span,
+                ));
+            }
+        };
     if context.shapes.get(&target).is_none() {
         return Err(ToDaeError::unsupported_flat(
             "function assignment target",
@@ -824,7 +856,11 @@ fn validate_function_assignment_target(
     validate_function_subscripts(subscripts, context)?;
     Ok(FunctionAssignmentPlan {
         target,
-        subscripts: subscripts.clone().into_boxed_slice(),
+        target_def_id,
+        record_field,
+        record_root_name,
+        record_field_name,
+        subscripts: subscripts.to_vec().into_boxed_slice(),
         seed: None,
     })
 }
@@ -999,50 +1035,135 @@ fn plan_record_multi_output_assembly(
     let [root, _] = first.parts() else {
         return Ok(None);
     };
-    let Some(target) = context
-        .function
-        .outputs
-        .iter()
-        .chain(&context.function.locals)
-        .find(|value| {
-            value.name == root.ident && value.type_class == Some(rumoca_core::ClassType::Record)
-        })
-    else {
+    let Some(target) = resolved_record_value(root, context.function)? else {
         return Ok(None);
     };
-    let constructor = record_constructor(target, context)?;
-    if outputs.len() != constructor.inputs.len() || outputs.iter().any(Option::is_none) {
+    if target.type_class != Some(rumoca_core::ClassType::Record) {
         return Ok(None);
     }
+    let target_def_id = function_value_def_id(target, context.function)?;
+    let constructor = record_constructor(target, context)?;
+    let resolved_fields = resolved_constructor_fields(&target.name, constructor)?;
+    require_complete_record_call_receivers(outputs, &target.name, constructor.inputs.len(), span)?;
 
-    let mut fields = Vec::with_capacity(constructor.inputs.len());
-    for field in &constructor.inputs {
-        let field_def_id = field.def_id.ok_or_else(|| {
-            ToDaeError::unsupported_flat(
+    let receivers = exact_record_call_receivers(
+        outputs,
+        target,
+        target_def_id,
+        &resolved_fields,
+        context.function,
+    )?;
+    let fields = record_call_fields(
+        target,
+        constructor,
+        &resolved_fields,
+        &receivers,
+        certificate,
+        span,
+    )?;
+    Ok(Some(FunctionRecordCallAssemblyPlan {
+        target: VarName::new(&target.name),
+        target_def_id,
+        fields,
+    }))
+}
+
+pub(super) fn require_complete_record_call_receivers(
+    outputs: &[Option<rumoca_core::ComponentReference>],
+    target: &str,
+    field_count: usize,
+    span: Span,
+) -> Result<(), ToDaeError> {
+    if outputs.len() != field_count || outputs.iter().any(Option::is_none) {
+        return Err(ToDaeError::unsupported_flat(
+            "record output assembly",
+            format!(
+                "`{}` requires exactly one receiver for each of its {} constructor fields",
+                target, field_count
+            ),
+            span,
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn exact_record_call_receivers(
+    outputs: &[Option<rumoca_core::ComponentReference>],
+    target: &rumoca_core::FunctionParam,
+    target_def_id: rumoca_core::DefId,
+    resolved_fields: &[ResolvedFunctionRecordField],
+    function: &rumoca_core::Function,
+) -> Result<HashMap<rumoca_core::DefId, usize>, ToDaeError> {
+    let mut receivers = HashMap::with_capacity(outputs.len());
+    for (ordinal, receiver) in outputs.iter().enumerate() {
+        let receiver = receiver
+            .as_ref()
+            .expect("the complete record receiver count check rejects omissions");
+        let [candidate_root, candidate_field] = receiver.parts() else {
+            return Err(ToDaeError::unsupported_flat(
+                "record output assembly",
+                "a record call receiver must be one exact root and one exact field",
+                receiver.span(),
+            ));
+        };
+        let Some(candidate_target) = resolved_record_value(candidate_root, function)? else {
+            return Err(ToDaeError::unsupported_flat(
                 "record output assembly",
                 format!(
-                    "`{}.{}` has no exact field identity",
-                    target.name, field.name
+                    "receiver root `{}` identity {} is not a mutable function value",
+                    candidate_root.ident,
+                    candidate_root.def_id.index()
                 ),
-                field.span,
-            )
-        })?;
-        let Some((ordinal, receiver)) =
-            outputs.iter().enumerate().find_map(|(ordinal, receiver)| {
-                let receiver = receiver.as_ref()?;
-                let [candidate_root, candidate_field] = receiver.parts() else {
-                    return None;
-                };
-                (candidate_root.ident == target.name
-                    && candidate_field.ident == field.name
-                    && candidate_field.def_id == field_def_id
-                    && candidate_root.subs.is_empty()
-                    && candidate_field.subs.is_empty())
-                .then_some((ordinal, candidate_field))
-            })
-        else {
-            return Ok(None);
+                candidate_root.span,
+            ));
         };
+        if function_value_def_id(candidate_target, function)? != target_def_id
+            || candidate_target.name != target.name
+        {
+            return Err(ToDaeError::unsupported_flat(
+                "record output assembly",
+                format!(
+                    "receiver root `{}` does not match exact aggregate target `{}`",
+                    candidate_target.name, target.name
+                ),
+                candidate_root.span,
+            ));
+        }
+        if !candidate_root.subs.is_empty() || !candidate_field.subs.is_empty() {
+            return Err(ToDaeError::unsupported_flat(
+                "record output assembly",
+                "record call receivers must be whole exact fields",
+                candidate_field.span,
+            ));
+        }
+        let resolved = require_constructor_field(&target.name, candidate_field, resolved_fields)?;
+        if receivers.insert(resolved.def_id, ordinal).is_some() {
+            return Err(ToDaeError::unsupported_flat(
+                "record output assembly",
+                format!(
+                    "`{}.{}` is received more than once",
+                    target.name, resolved.name
+                ),
+                candidate_field.span,
+            ));
+        }
+    }
+    Ok(receivers)
+}
+
+fn record_call_fields(
+    target: &rumoca_core::FunctionParam,
+    constructor: &rumoca_core::Function,
+    resolved_fields: &[ResolvedFunctionRecordField],
+    receivers: &HashMap<rumoca_core::DefId, usize>,
+    certificate: &FunctionShapeCertificate,
+    span: Span,
+) -> Result<Vec<FunctionRecordCallField>, ToDaeError> {
+    let mut fields = Vec::with_capacity(constructor.inputs.len());
+    for (field, resolved_field) in constructor.inputs.iter().zip(resolved_fields) {
+        let ordinal = receivers
+            .get(&resolved_field.def_id)
+            .expect("equal unique field counts prove complete constructor coverage");
         let expected = field
             .dimensions()
             .iter()
@@ -1051,13 +1172,20 @@ fn plan_record_multi_output_assembly(
             .map_err(|_| {
                 ToDaeError::unsupported_flat(
                     "record output assembly",
-                    format!("`{}.{}` has an invalid extent", target.name, receiver.ident),
-                    span,
+                    format!("`{}.{}` has an invalid extent", target.name, field.name),
+                    field.span,
                 )
             })?;
-        let Some(result) = certificate.results.get(ordinal) else {
-            return Ok(None);
-        };
+        let result = certificate.results.get(*ordinal).ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "record output assembly",
+                format!(
+                    "the call proves no result shape for ordinal {}",
+                    ordinal + 1
+                ),
+                span,
+            )
+        })?;
         if *result != expected {
             return Err(ToDaeError::unsupported_flat(
                 "record output assembly",
@@ -1074,13 +1202,11 @@ fn plan_record_multi_output_assembly(
         }
         fields.push(FunctionRecordCallField {
             name: VarName::new(&field.name),
-            result_ordinal: ordinal,
+            def_id: resolved_field.def_id,
+            result_ordinal: *ordinal,
         });
     }
-    Ok(Some(FunctionRecordCallAssemblyPlan {
-        target: VarName::new(&target.name),
-        fields,
-    }))
+    Ok(fields)
 }
 
 /// Prove one receiving variable of an MLS §11.2.1.1 multi-result call.
@@ -1171,10 +1297,12 @@ fn resolve_record_field_assembly_definitions(
         };
         definitions.require_readable(value, context, *span)?;
     }
-    let staged = function_record_field_name(&assembly.target, &assembly.field.name);
-    definitions.define_whole(&staged);
+    definitions.define_record_field(FunctionRecordFieldIdentity {
+        target: assembly.target_def_id,
+        field: assembly.field.def_id,
+    });
     if assembly.finalize_fields.is_some() {
-        definitions.define_whole(&assembly.target);
+        definitions.define_function_value(&assembly.target, assembly.target_def_id);
     }
     Ok(())
 }
@@ -1224,7 +1352,7 @@ fn resolve_function_definition(
                 (branches, fallback.as_mut()),
                 context,
                 definitions,
-            )?
+            )?;
         }
         (
             rumoca_core::Statement::If {
@@ -1270,12 +1398,12 @@ fn resolve_function_definition(
         (
             rumoca_core::Statement::FunctionCall { args, span, .. },
             FunctionStatementPlan::RecordMultiOutputAssembly(assembly),
-        ) => resolve_record_multi_output(args, *span, &assembly.target, context, definitions)?,
+        ) => resolve_record_multi_output(args, *span, assembly, context, definitions)?,
         (_, FunctionStatementPlan::ArrayAssembly(assembly)) => {
             definitions.define_whole(&assembly.target)
         }
         (_, FunctionStatementPlan::RecordAssembly(assembly)) => {
-            definitions.define_whole(&assembly.target)
+            definitions.define_function_value(&assembly.target, assembly.target_def_id)
         }
         (_, FunctionStatementPlan::ArrayAssemblyMember)
         | (_, FunctionStatementPlan::RecordAssemblyMember)
@@ -1300,7 +1428,7 @@ fn resolve_planned_conditional(
     ),
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
-) -> Result<Vec<VarName>, ToDaeError> {
+) -> Result<Vec<FunctionConditionalTarget>, ToDaeError> {
     resolve_function_conditional(
         source.0,
         source.1,
@@ -1327,14 +1455,14 @@ fn resolve_generated_boolean_definition(
 fn resolve_record_multi_output(
     arguments: &[Expression],
     span: Span,
-    target: &VarName,
+    assembly: &FunctionRecordCallAssemblyPlan,
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
     for argument in arguments {
         definitions.require_readable(argument, context, span)?;
     }
-    definitions.define_whole(target);
+    definitions.define_function_value(&assembly.target, assembly.target_def_id);
     Ok(())
 }
 
@@ -1369,7 +1497,10 @@ fn resolve_multi_output_definitions(
             definitions.require_readable(expression, context, span)?;
         }
         if plan.is_whole() {
-            definitions.define_whole(plan.target());
+            match plan.record_field() {
+                Some(identity) => definitions.define_record_field(identity),
+                None => definitions.define_function_value(plan.target(), plan.target_def_id()),
+            }
         } else {
             let seed =
                 definitions.write_elements(plan.target(), plan.subscripts(), context, span)?;
@@ -1396,7 +1527,10 @@ fn resolve_function_assignment_definition(
         definitions.require_readable(expression, context, span)?;
     }
     if assignment.is_whole() {
-        definitions.define_whole(&assignment.target);
+        match assignment.record_field {
+            Some(identity) => definitions.define_record_field(identity),
+            None => definitions.define_function_value(&assignment.target, assignment.target_def_id),
+        }
         return Ok(());
     }
     let seed =
@@ -1431,7 +1565,11 @@ fn resolve_function_loop_definitions(
         FunctionLoopLowering::TotalArrayDefinition => {
             for plan in body {
                 if let FunctionStatementPlan::Assignment(assignment) = plan {
-                    definitions.define_whole(&assignment.target);
+                    match assignment.record_field {
+                        Some(identity) => definitions.define_record_field(identity),
+                        None => definitions
+                            .define_function_value(&assignment.target, assignment.target_def_id),
+                    }
                 }
             }
         }
@@ -1467,7 +1605,7 @@ fn resolve_fold_definitions(
     let enclosing_definitions = definitions.clone();
     let (indices, statements) = flattened_function_loop_source(indices, statements, source_depth);
     seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
-    let point_count = domain.scalar_count().map_err(|error| {
+    let domain = domain.validated().map_err(|error| {
         ToDaeError::unsupported_flat(
             "function loop transition",
             format!(
@@ -1477,30 +1615,18 @@ fn resolve_fold_definitions(
             span,
         )
     })?;
-    for ordinal in 0..point_count {
+    for ordinal in 0..domain.scalar_count() {
         definitions.clear_names(iteration_locals);
-        let point = domain
-            .index_tuple_at(ordinal)
-            .map_err(|error| {
-                ToDaeError::unsupported_flat(
-                    "function loop transition",
-                    format!(
-                        "`{}` cannot project its compact domain: {error}",
-                        context.function.name
-                    ),
-                    span,
-                )
-            })?
-            .ok_or_else(|| {
-                ToDaeError::unsupported_flat(
-                    "function loop transition",
-                    format!(
-                        "`{}` has a missing compact-domain point",
-                        context.function.name
-                    ),
-                    span,
-                )
-            })?;
+        let point = domain.index_tuple_at(ordinal).ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "function loop transition",
+                format!(
+                    "`{}` has a missing compact-domain point",
+                    context.function.name
+                ),
+                span,
+            )
+        })?;
         let mut integers = context.static_integers.clone();
         integers.extend(
             indices
@@ -1645,11 +1771,14 @@ fn resolve_fold_record_assembly(
         let span = required_statement_span(&statements[0], "function loop record assembly")?;
         assembly.seed = Some(definitions.whole_loop_seed(&assembly.target, context, span)?);
     }
-    definitions.define_whole(&assembly.target);
+    definitions.define_function_value(&assembly.target, assembly.target_def_id);
     Ok(())
 }
 
-fn union_targets(targets: &mut Vec<VarName>, candidates: Vec<VarName>) {
+fn union_targets(
+    targets: &mut Vec<FunctionConditionalTarget>,
+    candidates: Vec<FunctionConditionalTarget>,
+) {
     for target in candidates {
         if !targets.contains(&target) {
             targets.push(target);
@@ -1674,7 +1803,12 @@ fn resolve_fold_assignment(
     }
     if assignment.subscripts().is_empty() {
         seed_undefined_whole_loop_value(assignment, context, definitions, span)?;
-        definitions.define_whole(assignment.target());
+        match assignment.record_field() {
+            Some(identity) => definitions.define_record_field(identity),
+            None => {
+                definitions.define_function_value(assignment.target(), assignment.target_def_id())
+            }
+        }
         return Ok(());
     }
     let seed =

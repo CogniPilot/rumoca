@@ -849,8 +849,9 @@ where
             .domain(domain)
             .expect("checked comprehension domain resolves")
             .structured()
+            .validated()
+            .expect("checked comprehension domain stays valid")
             .index_tuple_at(point_index)
-            .expect("checked comprehension domain remains valid")
             .expect("checked record field scalar selects its domain");
         self.domain_points.push((domain, point));
         let result = self.record_field(body, field, scalar_index % body_count);
@@ -1002,8 +1003,9 @@ where
         let body_index = scalar_index % body_count;
         let point = domain_view
             .structured()
+            .validated()
+            .expect("checked comprehension domain stays valid")
             .index_tuple_at(point_index)
-            .expect("checked comprehension domain remains valid")
             .expect("checked comprehension scalar index selects its domain");
         self.domain_points.push((domain, point));
         let result = self.expression(body, body_index);

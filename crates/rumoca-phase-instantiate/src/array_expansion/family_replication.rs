@@ -35,6 +35,8 @@ pub(super) struct ReplicationWatermarks {
     outer_prefix_to_inner: usize,
     inner_outer_to_parent_inner: usize,
     synthesized_inners: usize,
+    overconstrained_exposures: usize,
+    overconstrained_record_owners: usize,
     inner_outer_events: usize,
     diagnostics: usize,
     context_depths: ContextDepths,
@@ -79,6 +81,8 @@ pub(super) fn watermarks(
         outer_prefix_to_inner: overlay.outer_prefix_to_inner.len(),
         inner_outer_to_parent_inner: overlay.inner_outer_to_parent_inner.len(),
         synthesized_inners: overlay.synthesized_inners.len(),
+        overconstrained_exposures: overlay.overconstrained_construction_counts().0,
+        overconstrained_record_owners: overlay.overconstrained_construction_counts().1,
         inner_outer_events: ctx.inner_outer_events,
         diagnostics: ctx.diags.len(),
         context_depths: ContextDepths::capture(ctx),
@@ -98,6 +102,12 @@ pub(super) fn template_is_replicable(
         && overlay.outer_prefix_to_inner.len() == before.outer_prefix_to_inner
         && overlay.inner_outer_to_parent_inner.len() == before.inner_outer_to_parent_inner
         && overlay.synthesized_inners.len() == before.synthesized_inners
+        // An overconstrained specialization is occurrence-owned. Until family
+        // replication can replay its complete checked modifier/redeclare
+        // evidence, retain scalar instantiation rather than copying a
+        // declaration-global exposure to another occurrence.
+        && overlay.overconstrained_construction_counts().0 == before.overconstrained_exposures
+        && overlay.overconstrained_construction_counts().1 == before.overconstrained_record_owners
         && ContextDepths::capture(ctx) == before.context_depths
         && template_ids_are_accounted_for(overlay, before)
 }
@@ -247,22 +257,18 @@ pub(super) fn replicate_template(
     let template_prefix = rendered_prefix(request.root, &segment, request.template_tuple);
     let template = snapshot_template(ctx, overlay, before, &template_prefix);
 
-    let count = request
+    let domain = request
         .domain
-        .scalar_count()
+        .validated()
         .map_err(|error| domain_error(&template_prefix, &error.to_string(), request.span))?;
-    for ordinal in 1..count {
-        let tuple = request
-            .domain
-            .index_tuple_at(ordinal)
-            .map_err(|error| domain_error(&template_prefix, &error.to_string(), request.span))?
-            .ok_or_else(|| {
-                domain_error(
-                    &template_prefix,
-                    &format!("missing domain ordinal {ordinal}"),
-                    request.span,
-                )
-            })?;
+    for ordinal in 1..domain.scalar_count() {
+        let tuple = domain.index_tuple_at(ordinal).ok_or_else(|| {
+            domain_error(
+                &template_prefix,
+                &format!("missing domain ordinal {ordinal}"),
+                request.span,
+            )
+        })?;
         let reindex = FamilyReindex {
             ancestors: &ancestors,
             segment: &segment,
@@ -300,19 +306,29 @@ fn replicate_member(
         member.owner_class_id = data
             .owner_class_id
             .map(|owner| template.plan.map_instance_or_same(owner, &ids));
-        ctx.register_known_integer_instance(&member);
-        overlay.add_component(member);
+        overlay.add_component(member).map_err(|reason| {
+            Box::new(InstantiateError::invalid_instance_occurrence(
+                reason.to_string(),
+                span,
+            ))
+        })?;
     }
     for (position, data) in template.classes.iter().enumerate() {
         let instance_id = template
             .plan
             .class_id(position, &ids)
             .ok_or_else(|| missing("member class id was not allocated"))?;
-        let mut member = family_member_class(data, instance_id, reindex);
+        let mut member = family_member_class(data, instance_id, reindex)
+            .map_err(|error| domain_error(&reindex.member_segment(), &error.to_string(), span))?;
         member.owner_component_id = data
             .owner_component_id
             .map(|owner| template.plan.map_instance_or_same(owner, &ids));
-        overlay.add_class(member);
+        overlay.add_class(member).map_err(|reason| {
+            Box::new(InstantiateError::invalid_instance_occurrence(
+                reason.to_string(),
+                span,
+            ))
+        })?;
     }
     for path in &template.disabled_components {
         overlay
@@ -479,7 +495,7 @@ fn render_segment(name: &str, subscripts: &[i64]) -> String {
         if position > 0 {
             rendered.push(',');
         }
-        let _ = write!(rendered, "{value}");
+        write!(rendered, "{value}").expect("writing to a String cannot fail");
     }
     rendered.push(']');
     rendered

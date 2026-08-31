@@ -1,7 +1,10 @@
 #[cfg(test)]
 mod tests;
 
-use rumoca_core::{Span, flatten_coordinates, modelica_sign, row_major_coordinates};
+use rumoca_core::{
+    RealMatrixMultiplySemantics, Span, ValidStructuredIndexDomain, flatten_coordinates,
+    modelica_sign, row_major_coordinates,
+};
 use rumoca_ir_dae as dae;
 use rustc_hash::FxHashMap;
 
@@ -58,12 +61,29 @@ pub struct NumericEvaluator<'dae, F = fn(dae::VariableView<'dae>, usize) -> Opti
     function_arguments: Vec<(dae::FunctionId<'dae>, Vec<Vec<f64>>)>,
     function_fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<f64>>)>,
     domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
+    real_matrix_multiply: RealMatrixMultiplySemantics,
     override_value: F,
 }
 
 impl<'dae> NumericEvaluator<'dae> {
     pub fn new(view: dae::DaeView<'dae>) -> Self {
         Self::with_overrides(view, no_override)
+    }
+
+    /// Evaluate using an explicitly selected Real matrix-product relation.
+    ///
+    /// Target projections whose executable profile can distinguish signed zero
+    /// must use this constructor rather than inheriting the evaluator's
+    /// source-analysis convention.
+    pub fn with_real_matrix_multiply_semantics(
+        view: dae::DaeView<'dae>,
+        real_matrix_multiply: RealMatrixMultiplySemantics,
+    ) -> Self {
+        Self::with_overrides_and_real_matrix_multiply_semantics(
+            view,
+            no_override,
+            real_matrix_multiply,
+        )
     }
 }
 
@@ -72,6 +92,18 @@ where
     F: FnMut(dae::VariableView<'dae>, usize) -> Option<f64>,
 {
     pub fn with_overrides(view: dae::DaeView<'dae>, override_value: F) -> Self {
+        Self::with_overrides_and_real_matrix_multiply_semantics(
+            view,
+            override_value,
+            RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero,
+        )
+    }
+
+    fn with_overrides_and_real_matrix_multiply_semantics(
+        view: dae::DaeView<'dae>,
+        override_value: F,
+        real_matrix_multiply: RealMatrixMultiplySemantics,
+    ) -> Self {
         Self {
             view,
             values: vec![None; view.variable_count()],
@@ -81,6 +113,7 @@ where
             function_arguments: Vec::new(),
             function_fold_values: Vec::new(),
             domain_points: Vec::new(),
+            real_matrix_multiply,
             override_value,
         }
     }
@@ -135,7 +168,7 @@ where
                 })
                 .collect(),
             dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
-                self.binary_expression(operator, lhs, rhs, span)?
+                self.binary_expression(operator, lhs, rhs, node.value_type().scalar_type(), span)?
             }
             dae::ExpressionOperation::Conditional(operands) => self.conditional(operands, span)?,
             dae::ExpressionOperation::Array(elements) => {
@@ -342,25 +375,22 @@ where
                 span,
             )
         })?;
+        let structured = domain_view.structured().validated().map_err(|_| {
+            failure(
+                NumericEvaluationErrorKind::Overflow,
+                "comprehension domain projection overflowed",
+                span,
+            )
+        })?;
         let mut values = Vec::new();
-        for point_index in 0..domain_view.scalar_count() as usize {
-            let point = domain_view
-                .structured()
-                .index_tuple_at(point_index)
-                .map_err(|_| {
-                    failure(
-                        NumericEvaluationErrorKind::Overflow,
-                        "comprehension domain projection overflowed",
-                        span,
-                    )
-                })?
-                .ok_or_else(|| {
-                    failure(
-                        NumericEvaluationErrorKind::OutOfBounds,
-                        "comprehension domain point does not resolve",
-                        span,
-                    )
-                })?;
+        for point_index in 0..structured.scalar_count() {
+            let point = structured.index_tuple_at(point_index).ok_or_else(|| {
+                failure(
+                    NumericEvaluationErrorKind::OutOfBounds,
+                    "comprehension domain point does not resolve",
+                    span,
+                )
+            })?;
             self.domain_points.push((domain, point));
             self.scoped_expression_values.push(FxHashMap::default());
             let body_values = self.expression(body);
@@ -405,8 +435,9 @@ where
             .view
             .domain(fold_view.domain())
             .expect("checked function loop domain resolves");
-        for point_index in 0..domain.scalar_count() as usize {
-            let point = function_loop_point(domain, point_index, span)?;
+        let structured = function_loop_domain(domain, span)?;
+        for point_index in 0..structured.scalar_count() {
+            let point = function_loop_point(&structured, point_index, span)?;
             self.function_fold_values.push((fold, values));
             self.domain_points.push((fold_view.domain(), point));
             self.scoped_expression_values.push(FxHashMap::default());
@@ -778,6 +809,7 @@ where
         operator: dae::BinaryOperator,
         lhs_id: dae::ExprId<'dae>,
         rhs_id: dae::ExprId<'dae>,
+        result_scalar: dae::ScalarType,
         span: Span,
     ) -> Result<Vec<f64>, NumericEvaluationError> {
         let lhs_dimensions = self
@@ -795,7 +827,19 @@ where
         let lhs = self.expression(lhs_id)?;
         let rhs = self.expression(rhs_id)?;
         if operator == dae::BinaryOperator::Multiply {
-            return multiply_values(&lhs, &rhs, lhs_dimensions, rhs_dimensions, span);
+            let real_matrix_multiply = if result_scalar == dae::ScalarType::Real {
+                self.real_matrix_multiply
+            } else {
+                RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero
+            };
+            return multiply_values(
+                &lhs,
+                &rhs,
+                lhs_dimensions,
+                rhs_dimensions,
+                real_matrix_multiply,
+                span,
+            );
         }
         if operator == dae::BinaryOperator::Power && !lhs_dimensions.is_empty() {
             return Err(failure(
@@ -1370,28 +1414,32 @@ where
     }
 }
 
+/// Prove one function-loop domain once, before its points are visited.
+fn function_loop_domain<'dae>(
+    domain: dae::DomainView<'dae>,
+    span: Span,
+) -> Result<ValidStructuredIndexDomain<'dae>, NumericEvaluationError> {
+    domain.structured().validated().map_err(|_| {
+        failure(
+            NumericEvaluationErrorKind::Overflow,
+            "function loop domain projection overflowed",
+            span,
+        )
+    })
+}
+
 fn function_loop_point(
-    domain: dae::DomainView<'_>,
+    domain: &ValidStructuredIndexDomain<'_>,
     point_index: usize,
     span: Span,
 ) -> Result<Vec<i64>, NumericEvaluationError> {
-    domain
-        .structured()
-        .index_tuple_at(point_index)
-        .map_err(|_| {
-            failure(
-                NumericEvaluationErrorKind::Overflow,
-                "function loop domain projection overflowed",
-                span,
-            )
-        })?
-        .ok_or_else(|| {
-            failure(
-                NumericEvaluationErrorKind::OutOfBounds,
-                "function loop domain point does not resolve",
-                span,
-            )
-        })
+    domain.index_tuple_at(point_index).ok_or_else(|| {
+        failure(
+            NumericEvaluationErrorKind::OutOfBounds,
+            "function loop domain point does not resolve",
+            span,
+        )
+    })
 }
 
 /// Reorder one checked transpose result in row-major order. The result shape
@@ -1577,6 +1625,7 @@ fn multiply_values(
     rhs: &[f64],
     lhs_dimensions: &[u32],
     rhs_dimensions: &[u32],
+    real_matrix_multiply: RealMatrixMultiplySemantics,
     span: Span,
 ) -> Result<Vec<f64>, NumericEvaluationError> {
     if lhs_dimensions.is_empty() {
@@ -1604,11 +1653,27 @@ fn multiply_values(
             ));
         }
     };
+    if inner == 0
+        && real_matrix_multiply == RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct
+    {
+        return Err(failure(
+            NumericEvaluationErrorKind::UnsupportedOperation,
+            "a FirstProduct Real matrix product requires a non-empty inner domain",
+            span,
+        ));
+    }
     let mut result = Vec::with_capacity(rows * columns);
     for row in 0..rows {
         for column in 0..columns {
-            let mut sum = 0.0;
-            for term in 0..inner {
+            let (mut sum, first_remaining_term) = match real_matrix_multiply {
+                RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct => {
+                    let lhs_index = matrix_lhs_index(lhs_dimensions, row, inner, 0);
+                    let rhs_index = matrix_rhs_index(rhs_dimensions, 0, columns, column);
+                    (lhs[lhs_index] * rhs[rhs_index], 1)
+                }
+                RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero => (0.0, 0),
+            };
+            for term in first_remaining_term..inner {
                 let lhs_index = matrix_lhs_index(lhs_dimensions, row, inner, term);
                 let rhs_index = matrix_rhs_index(rhs_dimensions, term, columns, column);
                 sum += lhs[lhs_index] * rhs[rhs_index];
