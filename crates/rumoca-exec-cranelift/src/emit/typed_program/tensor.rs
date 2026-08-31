@@ -1,6 +1,6 @@
-use super::{CompileError, ProgramLowerer, scalar_cranelift_type};
+use super::{CompileError, ProgramLowerer, ValueLocation, scalar_cranelift_type};
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::{InstBuilder, TrapCode, Value, types};
+use cranelift_codegen::ir::{Block, InstBuilder, TrapCode, Value, types};
 use rumoca_ir_solve as solve;
 
 struct MatrixIndexRequest {
@@ -9,8 +9,25 @@ struct MatrixIndexRequest {
     shared: Value,
     inner: i64,
     columns: i64,
-    lhs_vector: bool,
-    rhs_vector: bool,
+    lhs_layout: solve::SolveMatrixOperandLayout,
+    rhs_layout: solve::SolveMatrixOperandLayout,
+}
+
+struct MatrixInitialRequest {
+    row: Value,
+    column: Value,
+    zero_index: Value,
+    inner: i64,
+    columns: i64,
+    scalar_type: solve::SolveScalarType,
+    semantics: rumoca_core::RealMatrixMultiplySemantics,
+}
+
+struct MatrixOuterLoop {
+    header: Block,
+    exit: Block,
+    output: Value,
+    zero_index: Value,
 }
 
 impl ProgramLowerer<'_, '_> {
@@ -457,6 +474,10 @@ impl ProgramLowerer<'_, '_> {
         let operand = self.register(operand)?.clone();
         let count = operand.value_type.scalar_count();
         let zero = self.builder.ins().iconst(types::I64, 0);
+        if count == 0 && operator == solve::SolveReductionOperator::All {
+            let identity = one_scalar(self, solve::SolveScalarType::Boolean);
+            return self.store_scalar(&destination, zero, identity);
+        }
         let initial = self.load_scalar(&operand, zero)?;
         let header = self.builder.create_block();
         let body = self.builder.create_block();
@@ -603,56 +624,55 @@ impl ProgramLowerer<'_, '_> {
         destination: solve::SolveRegisterId,
         lhs: solve::SolveRegisterId,
         rhs: solve::SolveRegisterId,
+        plan: solve::SolveMatrixMultiplyPlan,
     ) -> Result<(), CompileError> {
         let destination = self.register(destination)?.clone();
         let lhs = self.register(lhs)?.clone();
         let rhs = self.register(rhs)?.clone();
-        let (rows, inner, columns) =
-            matrix_extents(lhs.value_type.dimensions(), rhs.value_type.dimensions())?;
-        let output_count = rows
-            .checked_mul(columns)
-            .ok_or_else(|| CompileError::Backend("typed matrix output size overflows".into()))?;
-        let output_count = i64::try_from(output_count)
-            .map_err(|_| CompileError::Backend("typed matrix output exceeds i64".into()))?;
-        let inner = i64::try_from(inner)
-            .map_err(|_| CompileError::Backend("typed matrix inner extent exceeds i64".into()))?;
-        let columns = i64::try_from(columns)
-            .map_err(|_| CompileError::Backend("typed matrix column extent exceeds i64".into()))?;
+        if plan.output_count() == 0 {
+            return Ok(());
+        }
+        let output_count = i64::from(plan.output_count());
+        let inner = i64::from(plan.inner());
+        let columns = i64::from(plan.columns());
+        let solve::SolveMatrixMultiplyArithmetic::Real {
+            accumulator,
+            semantics,
+        } = plan.arithmetic();
+        let scalar_type = solve::SolveScalarType::Real {
+            format: accumulator,
+        };
 
-        let outer_header = self.builder.create_block();
-        let outer_body = self.builder.create_block();
-        let outer_exit = self.builder.create_block();
-        self.builder.append_block_param(outer_header, types::I64);
-        let zero_index = self.builder.ins().iconst(types::I64, 0);
-        self.builder.ins().jump(outer_header, &[zero_index.into()]);
-
-        self.builder.switch_to_block(outer_header);
-        let output = self.builder.block_params(outer_header)[0];
-        let output_in_range =
-            self.builder
-                .ins()
-                .icmp_imm(IntCC::UnsignedLessThan, output, output_count);
-        self.builder
-            .ins()
-            .brif(output_in_range, outer_body, &[], outer_exit, &[]);
-
-        self.builder.switch_to_block(outer_body);
-        self.builder.seal_block(outer_body);
+        let outer = self.begin_matrix_outer_loop(output_count);
+        let (output, zero_index) = (outer.output, outer.zero_index);
         let row = self.builder.ins().udiv_imm(output, columns);
         let column = self.builder.ins().urem_imm(output, columns);
         let inner_header = self.builder.create_block();
         let inner_body = self.builder.create_block();
         let inner_exit = self.builder.create_block();
-        let scalar_type = destination.value_type.element_type();
         self.builder.append_block_param(inner_header, types::I64);
         self.builder
             .append_block_param(inner_header, scalar_cranelift_type(scalar_type));
         self.builder
             .append_block_param(inner_exit, scalar_cranelift_type(scalar_type));
-        let zero_value = zero_scalar(self, scalar_type);
-        self.builder
-            .ins()
-            .jump(inner_header, &[zero_index.into(), zero_value.into()]);
+        let (initial_shared, initial_accumulator) = self.matrix_multiply_initial_accumulator(
+            &lhs,
+            &rhs,
+            plan,
+            MatrixInitialRequest {
+                row,
+                column,
+                zero_index,
+                inner,
+                columns,
+                scalar_type,
+                semantics,
+            },
+        )?;
+        self.builder.ins().jump(
+            inner_header,
+            &[initial_shared.into(), initial_accumulator.into()],
+        );
 
         self.builder.switch_to_block(inner_header);
         let shared = self.builder.block_params(inner_header)[0];
@@ -677,8 +697,8 @@ impl ProgramLowerer<'_, '_> {
             shared,
             inner,
             columns,
-            lhs_vector: lhs.value_type.dimensions().len() == 1,
-            rhs_vector: rhs.value_type.dimensions().len() == 1,
+            lhs_layout: plan.lhs_layout(),
+            rhs_layout: plan.rhs_layout(),
         });
         let lhs_value = self.load_scalar(&lhs, lhs_index)?;
         let rhs_value = self.load_scalar(&rhs, rhs_index)?;
@@ -705,26 +725,94 @@ impl ProgramLowerer<'_, '_> {
         let result = self.builder.block_params(inner_exit)[0];
         self.store_scalar(&destination, output, result)?;
         let next_output = self.builder.ins().iadd_imm(output, 1);
-        self.builder.ins().jump(outer_header, &[next_output.into()]);
-        self.builder.seal_block(outer_header);
+        self.builder.ins().jump(outer.header, &[next_output.into()]);
+        self.builder.seal_block(outer.header);
 
-        self.builder.switch_to_block(outer_exit);
-        self.builder.seal_block(outer_exit);
+        self.builder.switch_to_block(outer.exit);
+        self.builder.seal_block(outer.exit);
         Ok(())
     }
 
+    fn begin_matrix_outer_loop(&mut self, output_count: i64) -> MatrixOuterLoop {
+        let header = self.builder.create_block();
+        let body = self.builder.create_block();
+        let exit = self.builder.create_block();
+        self.builder.append_block_param(header, types::I64);
+        let zero_index = self.builder.ins().iconst(types::I64, 0);
+        self.builder.ins().jump(header, &[zero_index.into()]);
+
+        self.builder.switch_to_block(header);
+        let output = self.builder.block_params(header)[0];
+        let output_in_range =
+            self.builder
+                .ins()
+                .icmp_imm(IntCC::UnsignedLessThan, output, output_count);
+        self.builder
+            .ins()
+            .brif(output_in_range, body, &[], exit, &[]);
+        self.builder.switch_to_block(body);
+        self.builder.seal_block(body);
+        MatrixOuterLoop {
+            header,
+            exit,
+            output,
+            zero_index,
+        }
+    }
+
+    fn matrix_multiply_initial_accumulator(
+        &mut self,
+        lhs: &ValueLocation,
+        rhs: &ValueLocation,
+        plan: solve::SolveMatrixMultiplyPlan,
+        request: MatrixInitialRequest,
+    ) -> Result<(Value, Value), CompileError> {
+        match request.semantics {
+            rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct
+                if request.inner > 0 => {}
+            rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct => {
+                return Err(CompileError::Backend(
+                    "checked FirstProduct matrix plan has an empty inner domain".into(),
+                ));
+            }
+            rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero => {
+                return Ok((request.zero_index, zero_scalar(self, request.scalar_type)));
+            }
+        }
+        let (lhs_index, rhs_index) = self.matrix_multiply_indices(MatrixIndexRequest {
+            row: request.row,
+            column: request.column,
+            shared: request.zero_index,
+            inner: request.inner,
+            columns: request.columns,
+            lhs_layout: plan.lhs_layout(),
+            rhs_layout: plan.rhs_layout(),
+        });
+        let lhs_value = self.load_scalar(lhs, lhs_index)?;
+        let rhs_value = self.load_scalar(rhs, rhs_index)?;
+        let product = self.binary_element(
+            solve::SolveBinaryOperator::Multiply,
+            request.scalar_type,
+            lhs_value,
+            rhs_value,
+        )?;
+        Ok((self.builder.ins().iconst(types::I64, 1), product))
+    }
+
     fn matrix_multiply_indices(&mut self, request: MatrixIndexRequest) -> (Value, Value) {
-        let lhs = if request.lhs_vector {
-            request.shared
-        } else {
-            let start = self.builder.ins().imul_imm(request.row, request.inner);
-            self.builder.ins().iadd(start, request.shared)
+        let lhs = match request.lhs_layout {
+            solve::SolveMatrixOperandLayout::Vector => request.shared,
+            solve::SolveMatrixOperandLayout::RowMajorMatrix => {
+                let start = self.builder.ins().imul_imm(request.row, request.inner);
+                self.builder.ins().iadd(start, request.shared)
+            }
         };
-        let rhs = if request.rhs_vector {
-            request.shared
-        } else {
-            let start = self.builder.ins().imul_imm(request.shared, request.columns);
-            self.builder.ins().iadd(start, request.column)
+        let rhs = match request.rhs_layout {
+            solve::SolveMatrixOperandLayout::Vector => request.shared,
+            solve::SolveMatrixOperandLayout::RowMajorMatrix => {
+                let start = self.builder.ins().imul_imm(request.shared, request.columns);
+                self.builder.ins().iadd(start, request.column)
+            }
         };
         (lhs, rhs)
     }
@@ -848,22 +936,4 @@ fn coordinate_at(
             .ins()
             .urem_imm(coordinate, i64::from(extent))
     })
-}
-
-fn matrix_extents(lhs: &[u32], rhs: &[u32]) -> Result<(usize, usize, usize), CompileError> {
-    match (lhs, rhs) {
-        ([inner_lhs], [inner_rhs]) if inner_lhs == inner_rhs => Ok((1, *inner_lhs as usize, 1)),
-        ([rows, inner_lhs], [inner_rhs]) if inner_lhs == inner_rhs => {
-            Ok((*rows as usize, *inner_lhs as usize, 1))
-        }
-        ([inner_lhs], [inner_rhs, columns]) if inner_lhs == inner_rhs => {
-            Ok((1, *inner_lhs as usize, *columns as usize))
-        }
-        ([rows, inner_lhs], [inner_rhs, columns]) if inner_lhs == inner_rhs => {
-            Ok((*rows as usize, *inner_lhs as usize, *columns as usize))
-        }
-        _ => Err(CompileError::Backend(
-            "checked typed matrix extents are inconsistent".into(),
-        )),
-    }
 }
