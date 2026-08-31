@@ -1,5 +1,7 @@
+mod call_kind;
 mod function_context_and_metadata;
 mod lexical_exposures;
+mod type_identity;
 
 use super::*;
 use std::sync::Arc;
@@ -70,77 +72,6 @@ fn test_span() -> Span {
     )
 }
 
-#[test]
-fn vectorization_certificate_rejects_replaceable_exposure_parent() {
-    let package_id = rumoca_core::DefId::new(80_001);
-    let function_id = rumoca_core::DefId::new(80_002);
-    let mut package = class("P", rumoca_core::ClassType::Package, package_id);
-    package.is_replaceable = true;
-    package.classes.insert(
-        "f".to_string(),
-        class("f", rumoca_core::ClassType::Function, function_id),
-    );
-    let mut tree = ast::ClassTree::new();
-    tree.definitions.classes.insert("P".to_string(), package);
-    let index = ast::ClassDefIndex::from_tree(&tree);
-    let reference = core_structured_comp_ref(&[("P", package_id), ("f", function_id)]);
-    let request = FunctionRequest::from_reference(
-        &rumoca_core::Reference::from_component_reference(reference),
-    );
-
-    assert!(!request_proves_transitive_non_replaceability(
-        &index, &request
-    ));
-}
-
-#[test]
-fn vectorization_certificate_ignores_replaceable_nested_sibling() {
-    let package_id = rumoca_core::DefId::new(80_011);
-    let function_id = rumoca_core::DefId::new(80_012);
-    let sibling_id = rumoca_core::DefId::new(80_013);
-    let mut package = class("P", rumoca_core::ClassType::Package, package_id);
-    package.classes.insert(
-        "f".to_string(),
-        class("f", rumoca_core::ClassType::Function, function_id),
-    );
-    let mut sibling = class("Choice", rumoca_core::ClassType::Model, sibling_id);
-    sibling.is_replaceable = true;
-    package.classes.insert("Choice".to_string(), sibling);
-    let mut tree = ast::ClassTree::new();
-    tree.definitions.classes.insert("P".to_string(), package);
-    let index = ast::ClassDefIndex::from_tree(&tree);
-    let reference = core_structured_comp_ref(&[("P", package_id), ("f", function_id)]);
-    let request = FunctionRequest::from_reference(
-        &rumoca_core::Reference::from_component_reference(reference),
-    );
-
-    assert!(request_proves_transitive_non_replaceability(
-        &index, &request
-    ));
-}
-
-#[test]
-fn vectorization_certificate_rejects_unresolved_short_alias() {
-    let function_id = rumoca_core::DefId::new(80_021);
-    let mut function = class("f", rumoca_core::ClassType::Function, function_id);
-    function.extends.push(ast::Extend {
-        base_name: ast::Name::from_string("Missing"),
-        base_def_id: None,
-        ..ast::Extend::default()
-    });
-    let mut tree = ast::ClassTree::new();
-    tree.definitions.classes.insert("f".to_string(), function);
-    let index = ast::ClassDefIndex::from_tree(&tree);
-    let reference = core_structured_comp_ref(&[("f", function_id)]);
-    let request = FunctionRequest::from_reference(
-        &rumoca_core::Reference::from_component_reference(reference),
-    );
-
-    assert!(!request_proves_transitive_non_replaceability(
-        &index, &request
-    ));
-}
-
 fn core_comp_ref(parts: &[&str], def_id: rumoca_core::DefId) -> rumoca_core::ComponentReference {
     let display = parts.join(".");
     rumoca_core::ComponentReference::construct(
@@ -202,7 +133,11 @@ fn ast_comp_ref_with_subscripts(
 #[test]
 fn canonicalize_collected_function_calls_does_not_recover_hierarchy_from_suffix() {
     let mut flat = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Modelica.Math.Polynomials.fitting", test_span());
+    let mut function = rumoca_core::Function::new(
+        "Modelica.Math.Polynomials.fitting",
+        rumoca_core::DefId::new(62_001),
+        test_span(),
+    );
     function
         .body
         .push(rumoca_core::Statement::Return { span: test_span() });
@@ -212,6 +147,7 @@ fn canonicalize_collected_function_calls_does_not_recover_hierarchy_from_suffix(
             name: rumoca_core::Reference::new("Polynomials.fitting"),
             args: vec![],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         test_span(),
@@ -236,6 +172,7 @@ fn canonicalize_collected_function_calls_uses_def_id_for_record_constructors() {
     let mut flat = flat::Model::new();
     let mut constructor = rumoca_core::Function::new(
         "Modelica.Electrical.Machines.Utilities.ParameterRecords.SM_PermanentMagnetData",
+        constructor_def_id,
         test_span(),
     );
     constructor.def_id = Some(constructor_def_id);
@@ -262,6 +199,7 @@ fn canonicalize_collected_function_calls_uses_def_id_for_record_constructors() {
                 ),
                 args: vec![],
                 is_constructor: true,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: test_span(),
             }),
             ..flat::Variable::empty_with_span(test_span())
@@ -298,12 +236,16 @@ fn canonicalize_collected_function_calls_uses_def_id_for_record_constructors() {
 fn reachable_constructor_retains_record_layout_without_component_instance() {
     let record_def_id = rumoca_core::DefId::new(42);
     let field_def_id = rumoca_core::DefId::new(43);
-    let mut constructor = rumoca_core::Function::new("Pkg.ReturnOnlyRecord", test_span());
+    let field_type_def_id = rumoca_core::DefId::new(44);
+    let mut constructor =
+        rumoca_core::Function::new("Pkg.ReturnOnlyRecord", record_def_id, test_span());
     constructor.def_id = Some(record_def_id);
     constructor.is_constructor = true;
-    constructor.add_input(
-        crate::test_support::real_param("values", vec![3], test_span()).with_def_id(field_def_id),
-    );
+    let mut field =
+        crate::test_support::real_param("values", vec![3], test_span()).with_def_id(field_def_id);
+    field.type_def_id = Some(field_type_def_id);
+    let field_type = field.effective_type.clone();
+    constructor.add_input(field);
     let mut flat = flat::Model::new();
 
     retain_constructor_record_type(&mut flat, &constructor)
@@ -316,6 +258,8 @@ fn reachable_constructor_retains_record_layout_without_component_instance() {
             fields: vec![flat::RecordField {
                 name: "values".to_string(),
                 def_id: field_def_id,
+                type_def_id: field_type_def_id,
+                effective_type: field_type,
                 dims: vec![3],
             }],
         })
@@ -326,7 +270,11 @@ fn reachable_constructor_retains_record_layout_without_component_instance() {
 fn exact_instance_completes_valid_nested_constructor_field_projection() {
     let mut flat = flat::Model::new();
     let field_def_id = rumoca_core::DefId::new(45);
-    let mut constructor = rumoca_core::Function::new("Pkg.SyntheticRecord", test_span());
+    let mut constructor = rumoca_core::Function::new(
+        "Pkg.SyntheticRecord",
+        rumoca_core::DefId::new(44),
+        test_span(),
+    );
     constructor.def_id = Some(rumoca_core::DefId::new(44));
     constructor.is_constructor = true;
     constructor.add_input(
@@ -337,7 +285,8 @@ fn exact_instance_completes_valid_nested_constructor_field_projection() {
         .instance_id
         .expect("Flat assigns the canonical constructor instance");
 
-    let mut read = rumoca_core::Function::new("Pkg.read", test_span());
+    let mut read =
+        rumoca_core::Function::new("Pkg.read", rumoca_core::DefId::new(62_002), test_span());
     read.add_input(crate::test_support::real_param(
         "value",
         Vec::new(),
@@ -365,6 +314,7 @@ fn exact_instance_completes_valid_nested_constructor_field_projection() {
             span: test_span(),
         }],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
     flat.add_equation(flat::Equation::new(
@@ -383,6 +333,7 @@ fn exact_instance_completes_valid_nested_constructor_field_projection() {
                 span: test_span(),
             }],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         test_span(),
@@ -429,7 +380,11 @@ fn exact_instance_completes_valid_nested_constructor_field_projection() {
 fn exact_instance_separates_constructor_and_regular_shared_def_exposures() {
     let mut flat = flat::Model::new();
     let shared_def_id = rumoca_core::DefId::new(46);
-    let mut constructor = rumoca_core::Function::new("Pkg.Shared.constructor", test_span());
+    let mut constructor = rumoca_core::Function::new(
+        "Pkg.Shared.constructor",
+        rumoca_core::DefId::new(62_003),
+        test_span(),
+    );
     constructor.def_id = Some(shared_def_id);
     constructor.is_constructor = true;
     flat.add_function(constructor);
@@ -437,7 +392,11 @@ fn exact_instance_separates_constructor_and_regular_shared_def_exposures() {
         .instance_id
         .expect("Flat assigns the constructor exposure identity");
 
-    let mut regular = rumoca_core::Function::new("Pkg.Shared.regular", test_span());
+    let mut regular = rumoca_core::Function::new(
+        "Pkg.Shared.regular",
+        rumoca_core::DefId::new(62_004),
+        test_span(),
+    );
     regular.def_id = Some(shared_def_id);
     regular
         .body
@@ -460,6 +419,7 @@ fn exact_instance_separates_constructor_and_regular_shared_def_exposures() {
                 ),
                 args: vec![],
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: test_span(),
             },
             test_span(),
@@ -502,7 +462,8 @@ fn exact_instance_separates_constructor_and_regular_shared_def_exposures() {
 fn unresolved_name_and_def_matches_do_not_acquire_constructor_kind() {
     let mut flat = flat::Model::new();
     let constructor_def_id = rumoca_core::DefId::new(47);
-    let mut constructor = rumoca_core::Function::new("Pkg.UnresolvedConstructor", test_span());
+    let mut constructor =
+        rumoca_core::Function::new("Pkg.UnresolvedConstructor", constructor_def_id, test_span());
     constructor.def_id = Some(constructor_def_id);
     constructor.is_constructor = true;
     flat.add_function(constructor);
@@ -519,6 +480,7 @@ fn unresolved_name_and_def_matches_do_not_acquire_constructor_kind() {
                 name,
                 args: vec![],
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: test_span(),
             },
             test_span(),
@@ -552,7 +514,8 @@ fn unresolved_name_and_def_matches_do_not_acquire_constructor_kind() {
 #[test]
 fn canonicalize_collected_function_calls_rejects_constructor_marker_on_regular_instance() {
     let mut flat = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.regular", test_span());
+    let mut function =
+        rumoca_core::Function::new("Pkg.regular", rumoca_core::DefId::new(62_005), test_span());
     function
         .body
         .push(rumoca_core::Statement::Return { span: test_span() });
@@ -571,6 +534,7 @@ fn canonicalize_collected_function_calls_rejects_constructor_marker_on_regular_i
             ),
             args: vec![],
             is_constructor: true,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         test_span(),
@@ -599,6 +563,7 @@ fn canonicalize_collected_function_calls_rejects_disagreeing_name_and_resolved_i
     let mut flat = flat::Model::new();
     let mut partial = rumoca_core::Function::new(
         "Modelica.Media.Interfaces.PartialMedium.setState_pTX",
+        rumoca_core::DefId::new(62_006),
         test_span(),
     );
     partial.def_id = Some(function_def_id);
@@ -608,6 +573,7 @@ fn canonicalize_collected_function_calls_rejects_disagreeing_name_and_resolved_i
     flat.add_function(partial);
     let mut concrete = rumoca_core::Function::new(
         "Modelica.Media.Air.ReferenceMoistAir.setState_pTX",
+        function_def_id,
         test_span(),
     );
     concrete.def_id = Some(function_def_id);
@@ -634,6 +600,7 @@ fn canonicalize_collected_function_calls_rejects_disagreeing_name_and_resolved_i
             ),
             args: vec![],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         test_span(),
@@ -676,7 +643,7 @@ fn canonicalize_collected_function_calls_restates_enclosing_scope_identity() {
     let class_index = ast::ClassDefIndex::from_tree(&tree);
 
     let mut flat = flat::Model::new();
-    let mut constructor = rumoca_core::Function::new("P.Concrete.Element", test_span());
+    let mut constructor = rumoca_core::Function::new("P.Concrete.Element", record_def, test_span());
     constructor.def_id = Some(record_def);
     constructor.is_constructor = true;
     constructor.add_input(crate::test_support::real_param(
@@ -698,6 +665,7 @@ fn canonicalize_collected_function_calls_restates_enclosing_scope_identity() {
                 ),
                 args: vec![],
                 is_constructor: true,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: test_span(),
             }),
             ..flat::Variable::empty_with_span(test_span())
@@ -737,7 +705,11 @@ fn canonicalize_collected_function_calls_restates_enclosing_scope_identity() {
 #[test]
 fn canonicalize_collected_function_calls_visits_when_chains() {
     let mut flat = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.Events.trip", test_span());
+    let mut function = rumoca_core::Function::new(
+        "Pkg.Events.trip",
+        rumoca_core::DefId::new(62_007),
+        test_span(),
+    );
     function
         .body
         .push(rumoca_core::Statement::Return { span: test_span() });
@@ -748,6 +720,7 @@ fn canonicalize_collected_function_calls_visits_when_chains() {
             name: rumoca_core::Reference::new("Pkg.Events.trip"),
             args: vec![],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         test_span(),
@@ -758,6 +731,7 @@ fn canonicalize_collected_function_calls_visits_when_chains() {
                 name: rumoca_core::Reference::new("Pkg.Events.trip"),
                 args: vec![],
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: test_span(),
             },
             vec![flat::WhenEquation::FunctionCallOutputs {
@@ -766,6 +740,7 @@ fn canonicalize_collected_function_calls_visits_when_chains() {
                     name: rumoca_core::Reference::new("Pkg.Events.trip"),
                     args: vec![],
                     is_constructor: false,
+                    call_kind: rumoca_core::FunctionCallKind::Invocation,
                     span: test_span(),
                 },
                 span: test_span(),
@@ -778,6 +753,7 @@ fn canonicalize_collected_function_calls_visits_when_chains() {
                 name: rumoca_core::Reference::new("Pkg.Events.trip"),
                 args: vec![],
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: test_span(),
             },
             span: test_span(),
@@ -825,13 +801,20 @@ fn assert_function_call_name(expr: &rumoca_core::Expression, expected: &str) {
 #[test]
 fn canonicalize_collected_function_calls_leaves_ambiguous_suffix() {
     let mut flat = flat::Model::new();
-    let mut math_function =
-        rumoca_core::Function::new("Modelica.Math.Polynomials.fitting", test_span());
+    let mut math_function = rumoca_core::Function::new(
+        "Modelica.Math.Polynomials.fitting",
+        rumoca_core::DefId::new(62_008),
+        test_span(),
+    );
     math_function
         .body
         .push(rumoca_core::Statement::Return { span: test_span() });
     flat.add_function(math_function);
-    let mut user_function = rumoca_core::Function::new("User.Polynomials.fitting", test_span());
+    let mut user_function = rumoca_core::Function::new(
+        "User.Polynomials.fitting",
+        rumoca_core::DefId::new(62_009),
+        test_span(),
+    );
     user_function
         .body
         .push(rumoca_core::Statement::Return { span: test_span() });
@@ -841,6 +824,7 @@ fn canonicalize_collected_function_calls_leaves_ambiguous_suffix() {
             name: rumoca_core::Reference::new("Polynomials.fitting"),
             args: vec![],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         test_span(),
@@ -865,7 +849,12 @@ fn canonicalize_collected_function_calls_distinguishes_duplicate_inherited_def_i
     let exposure_def_id = rumoca_core::DefId::new(899);
     let shared_def_id = rumoca_core::DefId::new(900);
     for name in ["Pkg.A.f", "Pkg.B.f"] {
-        let mut function = rumoca_core::Function::new(name, test_span());
+        let exposure = if name == "Pkg.A.f" {
+            rumoca_core::DefId::new(62_010)
+        } else {
+            rumoca_core::DefId::new(62_011)
+        };
+        let mut function = rumoca_core::Function::new(name, exposure, test_span());
         function.def_id = Some(shared_def_id);
         function
             .body
@@ -883,6 +872,7 @@ fn canonicalize_collected_function_calls_distinguishes_duplicate_inherited_def_i
                 .with_instance_id(rumoca_core::InstanceId::new(77)),
             args: vec![],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         test_span(),
@@ -924,7 +914,8 @@ fn canonicalize_collected_function_calls_prefers_exact_name_over_stale_def_id() 
     let inherited_def_id = rumoca_core::DefId::new(901);
     let flattened_def_id = rumoca_core::DefId::new(902);
     let mut flat = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.Medium.density", test_span());
+    let mut function =
+        rumoca_core::Function::new("Pkg.Medium.density", flattened_def_id, test_span());
     function.def_id = Some(flattened_def_id);
     function
         .body
@@ -936,6 +927,7 @@ fn canonicalize_collected_function_calls_prefers_exact_name_over_stale_def_id() 
             name: rumoca_core::Reference::from_component_reference(call_ref),
             args: vec![],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         test_span(),
@@ -963,7 +955,8 @@ fn canonicalize_collected_function_calls_prefers_exact_name_over_stale_def_id() 
 #[test]
 fn validates_function_output_assignment_before_return() {
     let output_def_id = rumoca_core::DefId::new(4101);
-    let mut function = rumoca_core::Function::new("Pkg.f", test_span());
+    let mut function =
+        rumoca_core::Function::new("Pkg.f", rumoca_core::DefId::new(62_012), test_span());
     function.add_output(
         crate::test_support::real_param("y", Vec::new(), test_span()).with_def_id(output_def_id),
     );
@@ -982,7 +975,8 @@ fn validates_function_output_assignment_before_return() {
 #[test]
 fn rejects_function_output_only_assigned_after_return() {
     let output_def_id = rumoca_core::DefId::new(4102);
-    let mut function = rumoca_core::Function::new("Pkg.f", test_span());
+    let mut function =
+        rumoca_core::Function::new("Pkg.f", rumoca_core::DefId::new(62_013), test_span());
     function.add_output(
         crate::test_support::real_param("y", Vec::new(), test_span()).with_def_id(output_def_id),
     );
@@ -1029,6 +1023,7 @@ fn test_collect_function_call_in_equation() {
             span: test_span(),
         }],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
     let residual = rumoca_core::Expression::Binary {
@@ -1059,7 +1054,8 @@ fn function_request_collection_deduplicates_by_def_id() {
     let target_def_id = rumoca_core::DefId::new(42);
     let y_def_id = rumoca_core::DefId::new(43);
     let z_def_id = rumoca_core::DefId::new(44);
-    let mut function = rumoca_core::Function::new("Pkg.wrapper", test_span());
+    let mut function =
+        rumoca_core::Function::new("Pkg.wrapper", rumoca_core::DefId::new(62_014), test_span());
     function.body.push(rumoca_core::Statement::Assignment {
         comp: core_comp_ref(&["y"], y_def_id),
         value: rumoca_core::Expression::FunctionCall {
@@ -1069,6 +1065,7 @@ fn function_request_collection_deduplicates_by_def_id() {
             ),
             args: Vec::new(),
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         span: test_span(),
@@ -1082,6 +1079,7 @@ fn function_request_collection_deduplicates_by_def_id() {
             ),
             args: Vec::new(),
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         span: test_span(),
@@ -1164,11 +1162,12 @@ fn target_def_id_request_keeps_concrete_exposed_package() {
     };
 
     let type_overlay = crate::test_support::type_overlay(&tree);
+    let semantic_catalogs = crate::test_support::semantic_catalog_projection();
     let (resolved_name, function) = lookup_function_request(
         &tree,
         &class_index,
         &request,
-        FunctionTypeCatalog::new(&type_overlay),
+        FunctionTypeCatalog::new(&type_overlay, &semantic_catalogs),
     )
     .expect("lookup should not error")
     .expect("inherited function should resolve through concrete package");
@@ -1276,6 +1275,7 @@ fn assert_relative_package_function_call_is_exact(
         ),
         args: Vec::new(),
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 
@@ -1311,12 +1311,14 @@ fn test_collect_nested_function_calls() {
             span: test_span(),
         }],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
     let outer_call = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::new("outer"),
         args: vec![inner_call],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
     let residual = rumoca_core::Expression::Binary {
@@ -1348,6 +1350,7 @@ fn validates_flat_boundary_rejects_non_executable_functions() {
     let mut flat = flat::Model::new();
     flat.add_function(rumoca_core::Function::new(
         "Modelica.Media.Interfaces.PartialMedium.setState_phX",
+        rumoca_core::DefId::new(62_015),
         test_span(),
     ));
 
@@ -1364,7 +1367,8 @@ fn validates_flat_boundary_rejects_non_executable_functions() {
 #[test]
 fn validates_flat_boundary_allows_constructors_without_body() {
     let mut flat = flat::Model::new();
-    let mut constructor = rumoca_core::Function::new("RecordType", test_span());
+    let mut constructor =
+        rumoca_core::Function::new("RecordType", rumoca_core::DefId::new(62_016), test_span());
     constructor.is_constructor = true;
     flat.add_function(constructor);
 
@@ -1374,7 +1378,8 @@ fn validates_flat_boundary_allows_constructors_without_body() {
 #[test]
 fn record_function_signature_keeps_constructor_as_structural_dependency() {
     let record_def_id = rumoca_core::DefId::new(41);
-    let mut function = rumoca_core::Function::new("Pkg.makePose", test_span());
+    let mut function =
+        rumoca_core::Function::new("Pkg.makePose", rumoca_core::DefId::new(62_017), test_span());
     function.add_output(
         crate::test_support::aggregate_param("pose", "Pkg.Pose", Vec::new(), test_span())
             .with_type_class(rumoca_core::ClassType::Record)
@@ -1406,7 +1411,8 @@ fn contextualized_record_parameter_updates_declaration_identity() {
     let mut tree = ast::ClassTree::new();
     tree.definitions.classes.insert("Pkg".to_string(), package);
     let class_index = ast::ClassDefIndex::from_tree(&tree);
-    let mut function = rumoca_core::Function::new("Pkg.f", test_span());
+    let mut function =
+        rumoca_core::Function::new("Pkg.f", rumoca_core::DefId::new(62_018), test_span());
     function.add_input(
         crate::test_support::aggregate_param("state", "Pkg.State", Vec::new(), test_span())
             .with_type_class(rumoca_core::ClassType::Record)
@@ -1440,7 +1446,8 @@ fn contextualized_record_parameter_follows_replaceable_type_alias() {
     let mut tree = ast::ClassTree::new();
     tree.definitions.classes.insert("Pkg".to_string(), package);
     let class_index = ast::ClassDefIndex::from_tree(&tree);
-    let mut function = rumoca_core::Function::new("Pkg.f", test_span());
+    let mut function =
+        rumoca_core::Function::new("Pkg.f", rumoca_core::DefId::new(62_019), test_span());
     function.add_input(
         crate::test_support::aggregate_param("orientation", "Orientation", Vec::new(), test_span())
             .with_type_class(rumoca_core::ClassType::Record)
@@ -1465,7 +1472,8 @@ fn contextualized_record_parameter_uses_resolved_identity_for_lexical_alias() {
     let mut tree = ast::ClassTree::new();
     tree.definitions.classes.insert("Pkg".to_string(), package);
     let class_index = ast::ClassDefIndex::from_tree(&tree);
-    let mut function = rumoca_core::Function::new("Pkg.f", test_span());
+    let mut function =
+        rumoca_core::Function::new("Pkg.f", rumoca_core::DefId::new(62_020), test_span());
     function.add_input(
         crate::test_support::aggregate_param(
             "voltage",
@@ -1486,8 +1494,11 @@ fn contextualized_record_parameter_uses_resolved_identity_for_lexical_alias() {
 #[test]
 fn validates_flat_boundary_allows_output_binding_functions() {
     let mut flat = flat::Model::new();
-    let mut function =
-        rumoca_core::Function::new("Modelica.Math.BooleanVectors.anyTrue", test_span());
+    let mut function = rumoca_core::Function::new(
+        "Modelica.Math.BooleanVectors.anyTrue",
+        rumoca_core::DefId::new(62_021),
+        test_span(),
+    );
     function.add_output(
         crate::test_support::boolean_param("result", Vec::new(), test_span()).with_default(
             rumoca_core::Expression::Literal {
@@ -1535,6 +1546,7 @@ fn test_convert_component_to_param_prefers_binding_over_start_default() {
         .predefined_member(&rumoca_core::ComponentPath::from_flat_path("Integer"));
     component.type_def_id = component.type_name.def_id;
     let type_overlay = crate::test_support::type_overlay(&tree);
+    let semantic_catalogs = crate::test_support::semantic_catalog_projection();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let param = convert_component_to_param(
         &class_index,
@@ -1543,7 +1555,7 @@ fn test_convert_component_to_param_prefers_binding_over_start_default() {
         &source_map,
         FunctionExpressionContext {
             predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::from_tree(&tree),
-            type_catalog: FunctionTypeCatalog::new(&type_overlay),
+            type_catalog: FunctionTypeCatalog::new(&type_overlay, &semantic_catalogs),
         },
         &qualify::ImportMap::default(),
         &HashSet::new(),
@@ -1612,6 +1624,7 @@ fn test_convert_component_to_param_preserves_mixed_dynamic_rank() {
         .predefined_member(&rumoca_core::ComponentPath::from_flat_path("Real"));
     component.type_def_id = component.type_name.def_id;
     let type_overlay = crate::test_support::type_overlay(&tree);
+    let semantic_catalogs = crate::test_support::semantic_catalog_projection();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let param = convert_component_to_param(
         &class_index,
@@ -1620,7 +1633,7 @@ fn test_convert_component_to_param_preserves_mixed_dynamic_rank() {
         &source_map,
         FunctionExpressionContext {
             predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::from_tree(&tree),
-            type_catalog: FunctionTypeCatalog::new(&type_overlay),
+            type_catalog: FunctionTypeCatalog::new(&type_overlay, &semantic_catalogs),
         },
         &qualify::ImportMap::default(),
         &HashSet::new(),
@@ -1663,6 +1676,7 @@ fn test_convert_component_to_param_resolves_constant_shape_expr() {
         .insert("Xorshift64star".to_string(), package);
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let type_overlay = crate::test_support::type_overlay(&tree);
+    let semantic_catalogs = crate::test_support::semantic_catalog_projection();
     let n_state_ref = ast_comp_ref(&["nState"], n_state_def);
     let mut component = ast::Component {
         type_name: ast::Name::from_string("Integer"),
@@ -1683,7 +1697,7 @@ fn test_convert_component_to_param_resolves_constant_shape_expr() {
         &test_source_map(),
         FunctionExpressionContext {
             predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::from_tree(&tree),
-            type_catalog: FunctionTypeCatalog::new(&type_overlay),
+            type_catalog: FunctionTypeCatalog::new(&type_overlay, &semantic_catalogs),
         },
         &qualify::ImportMap::default(),
         &HashSet::new(),
@@ -1701,6 +1715,9 @@ fn test_convert_component_to_param_resolves_constant_shape_expr() {
 fn test_convert_component_to_param_inherits_type_alias_dims() {
     let orientation_id = rumoca_core::DefId::new(1);
     let matrix_id = rumoca_core::DefId::new(2);
+    let mut tree = ast::ClassTree::new();
+    crate::test_support::install_predefined_type_identities(&mut tree);
+    let real_id = crate::test_support::predefined_type_def_id(&tree, "Real");
 
     let mut matrix = ast::ClassDef {
         def_id: Some(matrix_id),
@@ -1714,6 +1731,7 @@ fn test_convert_component_to_param_inherits_type_alias_dims() {
     };
     matrix.extends.push(ast::Extend {
         base_name: ast::Name::from_string("Real"),
+        base_def_id: Some(real_id),
         ..Default::default()
     });
 
@@ -1756,8 +1774,6 @@ fn test_convert_component_to_param_inherits_type_alias_dims() {
         .classes
         .insert("Orientation".to_string(), orientation);
 
-    let mut tree = ast::ClassTree::new();
-    crate::test_support::install_predefined_type_identities(&mut tree);
     tree.definitions.classes.insert("Pkg".to_string(), package);
     tree.def_map
         .insert(orientation_id, "Pkg.Orientation".to_string());
@@ -1774,6 +1790,7 @@ fn test_convert_component_to_param_inherits_type_alias_dims() {
     let source_map = test_source_map();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let type_overlay = crate::test_support::type_overlay(&tree);
+    let semantic_catalogs = crate::test_support::semantic_catalog_projection();
     let param = convert_component_to_param(
         &class_index,
         "T",
@@ -1781,7 +1798,7 @@ fn test_convert_component_to_param_inherits_type_alias_dims() {
         &source_map,
         FunctionExpressionContext {
             predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::from_tree(&tree),
-            type_catalog: FunctionTypeCatalog::new(&type_overlay),
+            type_catalog: FunctionTypeCatalog::new(&type_overlay, &semantic_catalogs),
         },
         &qualify::ImportMap::default(),
         &HashSet::new(),
@@ -1794,13 +1811,15 @@ fn test_convert_component_to_param_inherits_type_alias_dims() {
 
 #[test]
 fn test_constructor_signature_preserves_local_default_references() {
-    let orientation_def = rumoca_core::DefId::new(1);
-    let n_def = rumoca_core::DefId::new(2);
+    let record_def = rumoca_core::DefId::new(1);
+    let orientation_def = rumoca_core::DefId::new(2);
+    let n_def = rumoca_core::DefId::new(3);
     let mut class_def = ast::ClassDef {
         name: rumoca_core::Token {
             text: "C".into(),
             ..Default::default()
         },
+        def_id: Some(record_def),
         location: test_location(0, 8),
         class_type: rumoca_core::ClassType::Record,
         components: ast::AstIndexMap::from_iter([
@@ -1834,6 +1853,7 @@ fn test_constructor_signature_preserves_local_default_references() {
     };
     let mut tree = ast::ClassTree::new();
     crate::test_support::install_predefined_type_identities(&mut tree);
+    tree.def_map.insert(record_def, "Pkg.C".to_string());
     tree.def_map
         .insert(orientation_def, "Pkg.C.orientation".to_string());
     tree.def_map.insert(n_def, "Pkg.C.N".to_string());
@@ -1848,6 +1868,7 @@ fn test_constructor_signature_preserves_local_default_references() {
     let source_map = test_source_map();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let type_overlay = crate::test_support::type_overlay(&tree);
+    let semantic_catalogs = crate::test_support::semantic_catalog_projection();
 
     let constructor = convert_constructor_signature(
         &class_index,
@@ -1855,10 +1876,14 @@ fn test_constructor_signature_preserves_local_default_references() {
         "Pkg.C",
         &source_map,
         ast_lower::PredefinedIntrinsicIds::from_tree(&tree),
-        FunctionTypeCatalog::new(&type_overlay),
+        FunctionTypeCatalog::new(&type_overlay, &semantic_catalogs),
     )
     .unwrap();
 
+    assert_eq!(
+        constructor.exposure_def_id, record_def,
+        "the constructor signature carries the record declaration as its exposure"
+    );
     let n_param = constructor
         .inputs
         .iter()
@@ -1928,6 +1953,7 @@ fn record_type_fields_preserve_short_operator_record_base_fields() {
     }
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let type_overlay = crate::test_support::type_overlay(&tree);
+    let semantic_catalogs = crate::test_support::semantic_catalog_projection();
     let flux = class_index
         .get(flux_def)
         .expect("derived operator record class");
@@ -1937,7 +1963,7 @@ fn record_type_fields_preserve_short_operator_record_base_fields() {
         flux,
         "ComplexMagneticFlux",
         &tree,
-        FunctionTypeCatalog::new(&type_overlay),
+        FunctionTypeCatalog::new(&type_overlay, &semantic_catalogs),
     )
     .expect("resolved record field metadata");
 
@@ -1953,7 +1979,8 @@ fn record_type_fields_preserve_short_operator_record_base_fields() {
 #[test]
 fn test_function_local_normalization_rewrites_self_qualified_default() {
     let orientation_def = rumoca_core::DefId::new(14_003);
-    let mut function = rumoca_core::Function::new("Pkg.C", test_span());
+    let mut function =
+        rumoca_core::Function::new("Pkg.C", rumoca_core::DefId::new(62_022), test_span());
     function.add_input(
         crate::test_support::real_param("orientation", Vec::new(), test_span())
             .with_def_id(orientation_def),

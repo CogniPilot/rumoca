@@ -58,23 +58,28 @@ section of the scenario, not CLI flags.
 
 ## `rumoca compile`
 
-`compile` separates three concerns into three flags:
+`compile` separates inspection from checked code generation:
 
-- **`--emit <stage>-mo|<stage>-json`** dumps an intermediate representation.
-  Stages are `ast`, `flat`, `dae`, `solve` (`solve` has no Modelica form, so
-  only `solve-json` exists).
-- **`--target <id|dir|file.jinja>`** runs code generation: a built-in target
-  id (see `rumoca targets`), a directory containing `target.toml`, or a raw
-  Jinja template.
-- **`--phase <ast|flat|dae|solve>`** picks which IR a *raw* `.jinja`
-  template receives (default `dae`). Ignored for built-in and directory
-  targets, which declare their own IR.
+- **`--emit <stage>-json`** dumps the exact intermediate representation.
+  Stages are `ast`, `flat`, `dae`, and `solve`. `--emit dae-mo` emits the
+  checked DAE Modelica presentation; `--emit flat-mo` fails with
+  `unsupported-feature:flat-modelica-text-export` instead of producing a
+  lossy reconstruction. No other `<stage>-mo` form is a general contract.
+- **`--target <id|dir>`** runs code generation from a built-in target id (see
+  `rumoca targets`) or a directory containing `target.toml`. Every rendered
+  file has a checked artifact/context/view plan; standalone templates and an
+  invocation-level IR selector are intentionally unavailable.
+
+Rendering Flat through an external target directory or a `.jinja` template is
+an unchecked IR dump produced by the user's template, not a checked Modelica
+reconstruction. It is subject to the same equation-body loss that the
+`unsupported-feature:flat-modelica-text-export` refusal cites.
 
 ```bash
 rumoca compile Model.mo --emit dae-mo                 # DAE as Modelica, to stdout
 rumoca compile Model.mo --emit solve-json -o out.json # solver IR as JSON
-rumoca compile Model.mo --target c-ode -o out/      # checked Solve target
-rumoca compile Model.mo --target my.jinja --phase flat
+rumoca compile Model.mo --target fmi3 -o out/       # FMI 3.0 ME+CS export
+rumoca compile Model.mo --target path/to/my_target -o out/
 ```
 
 `compile` shares `--model`, `--source-root`, `--inspect`, and `--at` with

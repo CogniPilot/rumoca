@@ -1,38 +1,28 @@
 # Custom Targets
 
-When the built-in targets do not fit, write your own. There are two levels:
-
-## Raw Jinja Templates
-
-For one-off generation, pass a `.jinja` file directly. `--phase` chooses
-which IR the template receives (default `dae`):
-
-```bash
-rumoca compile Model.mo --target my_template.jinja --phase flat -o out.txt
-```
-
-The template gets the canonical stage projection as its context. The
-repository example `examples/codegen/custom_checked_variables.jinja` shows
-this workflow.
-
-To learn the available fields, dump the matching IR as JSON first:
-
-```bash
-rumoca compile Model.mo --emit flat-json | head -50
-```
-
-## Target Directories (`target.toml`)
-
-For anything reusable, create a directory containing a `target.toml`
+When the built-in targets do not fit, create a directory containing a `target.toml`
 manifest and the templates it references, then pass the directory:
 
 ```bash
 rumoca compile Model.mo --target path/to/my_target -o out/
 ```
 
-The manifest declares which IR stage the target consumes and which
-templates render which output files. The target — not individual templates —
-owns the IR choice, so a bundle stays consistent.
+Every file declaration names an artifact kind, one of the exact IR-crate
+contexts (`ast`, `flat`, `dae`, `galec`, or `solve`), and an optional checked
+view within that context. The manifest constructor validates those facts before
+any template can render. A standalone `.jinja` file is therefore not a target:
+it cannot retain the proof that its bytes came from the declared checked view.
+
+An external target consuming Flat is an unregistered, user-authored rendering
+extension, not a Rumoca-checked Flat/Base Modelica product. Its files still
+declare `semantic_context = "flat"` and the exact closed artifact kind; giving
+the directory a retired built-in target name does not restore that product or
+its guarantees.
+
+Raw Flat rendering through an external target directory or a `.jinja` template
+is an unchecked IR dump produced by the user's template, not a checked Modelica
+reconstruction. It is subject to the same equation-body loss that the named
+`unsupported-feature:flat-modelica-text-export` refusal cites.
 
 The repository ships a complete worked example:
 `examples/codegen/checked_dae_report/target.toml` renders a readable report
