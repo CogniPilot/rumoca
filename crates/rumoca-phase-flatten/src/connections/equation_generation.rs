@@ -8,30 +8,59 @@ pub(super) type InterfaceStreamEndpointsByScope =
 type InterfaceConnectorRootSet = IndexSet<rumoca_core::ComponentPath>;
 pub(super) type InterfaceConnectorRootsByScope = IndexMap<String, InterfaceConnectorRootSet>;
 
+/// One connection value derived from one required declaration-selection proof.
+///
+/// This is deliberately phase-local. Flat does not expose a caller-authored
+/// endpoint/origin constructor: the connection transaction derives the value,
+/// role, sign, cardinality, and residual together and commits the completed
+/// projection atomically.
+struct ConnectionMemberValue {
+    expression: rumoca_core::Expression,
+    owner: ConnectionDeclarationOwner,
+}
+
+fn connection_member_value(
+    flat: &flat::Model,
+    var_name: &rumoca_core::VarName,
+    span: ProvenanceSpan,
+) -> Result<ConnectionMemberValue, FlattenError> {
+    let evidence = require_connection_declaration(flat, var_name, span.span())?;
+    let owner = ConnectionDeclarationOwner::from_evidence(&evidence)?;
+    let declaration = evidence.declaration();
+    let name = match declaration.component_ref.clone() {
+        Some(component_ref) => rumoca_core::Reference::with_component_reference(
+            evidence.base().as_str(),
+            component_ref,
+        ),
+        None => rumoca_core::Reference::from_var_name(evidence.base().clone()),
+    };
+    let expression = rumoca_core::Expression::VarRef {
+        name: name.with_instance_id(declaration.instance_id),
+        subscripts: evidence
+            .indices()
+            .iter()
+            .copied()
+            .map(|value| rumoca_core::Subscript::generated_index_with_provenance(value, span))
+            .collect(),
+        span: span.span(),
+    };
+    Ok(ConnectionMemberValue { expression, owner })
+}
+
 /// Compute scalar count from variable dimensions.
 ///
 /// For array variables, scalar_count = product of dimensions.
 /// For scalars (empty dims), returns 1.
-fn compute_var_scalar_count(var: &flat::Variable) -> usize {
-    scalar_count_of_dims(&var.dims)
-}
-
-fn add_connection_equation(
-    flat: &mut flat::Model,
-    equation: flat::Equation,
-    preferred_dims: Option<&[i64]>,
-) -> Result<(), FlattenError> {
-    let equation_index = flat.equations.len();
-    let family = crate::equations::array_family::structured_array_equation_family(
-        equation_index,
-        &equation,
-        preferred_dims,
-    )?;
-    flat.add_equation(equation);
-    if let Some(family) = family {
-        flat.structured_equations.push(family);
-    }
-    Ok(())
+fn compute_var_scalar_count(var: &flat::Variable) -> Result<usize, FlattenError> {
+    scalar_count_of_dims(&var.dims).map_err(|reason| {
+        FlattenError::invalid_connection_evidence(
+            format!(
+                "invalid dimensions for Flat variable `{}`: {reason}",
+                var.name
+            ),
+            var.source_span,
+        )
+    })
 }
 
 /// Scalar leaves denoted by one connection-set member.
@@ -42,9 +71,9 @@ fn add_connection_equation(
 /// subscripted path.
 ///
 /// A member whose subscript sits on an inner path segment (`a[1].e`) has no
-/// declaration of its own and is not a trailing element of one either, so
-/// [`connection_endpoint_dims`] cannot answer for it. It is still measured by
-/// what MLS §10.5 says it denotes: the declaration its index-free path names,
+/// declaration of its own and is not a trailing element of one either. It is
+/// measured by what MLS §10.5 says it denotes: the declaration its checked
+/// selection evidence names,
 /// with one leading dimension consumed per literal subscript the path carries.
 /// Returning a constant 1 instead is the same defect the trailing-subscript
 /// case had — it silently shrinks the generated equation to one scalar and
@@ -54,48 +83,133 @@ fn add_connection_equation(
 /// (unknown), never 1: callers distinguish "denotes one scalar" from "no
 /// evidence", and a fabricated 1 is what makes a mixed scalar/array flow set
 /// collapse to a single Kirchhoff equation in [`generate_flow_equation`].
+#[cfg(test)]
 pub(super) fn resolve_var_scalar_count(
     flat: &flat::Model,
     var: &rumoca_core::VarName,
 ) -> Option<usize> {
-    if let Some(dims) = connection_endpoint_dims(flat, var) {
-        return Some(scalar_count_of_dims(&dims));
+    match var_shape_evidence(flat, var) {
+        ShapeEvidence::Known(shape) => Some(shape.scalar_count),
+        ShapeEvidence::Missing | ShapeEvidence::Invalid(_) => None,
     }
-    let index_free = strip_embedded_array_indices(var.as_str())?;
-    let dims = connection_endpoint_dims(flat, &rumoca_core::VarName::new(index_free))?;
-    let consumed = literal_subscript_count(var.as_str());
-    if consumed >= dims.len() {
-        // Every declared dimension is selected away (or the declaration lost
-        // its dimensions to connector-array collapsing, which this phase
-        // cannot distinguish from a scalar member): the member denotes one
-        // scalar, exactly as before.
-        return Some(1);
-    }
-    Some(scalar_count_of_dims(&dims[consumed..]))
 }
 
-/// Number of scalar subscripts a connection member path carries, over all of
-/// its segments. MLS §10.5 consumes one leading declared dimension per
-/// subscript, so this is how many of the index-free declaration's dimensions
-/// the member selects away.
-fn literal_subscript_count(path: &str) -> usize {
-    crate::path_utils::segments(path)
-        .iter()
-        .filter_map(|part| split_trailing_index_groups(part))
-        .flat_map(|(_, groups)| groups)
-        .map(|group| group.split(',').count())
-        .sum()
+#[derive(Clone, Debug)]
+struct ConnectionShape {
+    dims: Vec<i64>,
+    scalar_count: usize,
+}
+
+enum ShapeEvidence {
+    Known(ConnectionShape),
+    Missing,
+    Invalid(String),
+}
+
+fn var_shape_evidence(flat: &flat::Model, var: &rumoca_core::VarName) -> ShapeEvidence {
+    if let Some(declared) = flat.variables.get(var) {
+        return shape_from_dims(&declared.dims);
+    }
+    match declared_array_element_evidence(var, flat) {
+        Ok(Some(selected)) => {
+            if !selected.declaration.is_primitive {
+                return ShapeEvidence::Invalid(
+                    "a selected composite declaration must be expanded to exact primitive members before equation planning"
+                        .to_string(),
+                );
+            }
+            let selected_shape =
+                shape_from_dims(&selected.declaration.dims[selected.indices.len()..]);
+            if matches!(
+                &selected_shape,
+                ShapeEvidence::Known(ConnectionShape {
+                    scalar_count: 0,
+                    ..
+                })
+            ) {
+                // A strict selection of an empty value denotes no scalar
+                // connection members. It neither needs a connected-subdomain
+                // owner nor marks any part of the compact declaration connected.
+                return selected_shape;
+            }
+            let selects_strict_subdomain = selected
+                .declaration
+                .dims
+                .iter()
+                .take(selected.indices.len())
+                .any(|extent| *extent > 1);
+            if selects_strict_subdomain {
+                // AS-017 / SPEC_0043 §7: Flat currently owns only a
+                // declaration-wide connected bit. Marking it for one strict
+                // subdomain would suppress zero-flow equations for untouched
+                // elements, so refusal must precede every Flat mutation until
+                // construction owns checked connected subdomains.
+                return ShapeEvidence::Invalid(
+                    "partial connectivity of a compact array is not representable; expand the connector occurrence before connection lowering"
+                    .to_string(),
+                );
+            }
+            selected_shape
+        }
+        Ok(None) => ShapeEvidence::Missing,
+        Err(reason) => ShapeEvidence::Invalid(reason),
+    }
+}
+
+fn shape_from_dims(dims: &[i64]) -> ShapeEvidence {
+    match scalar_count_of_dims(dims) {
+        Ok(scalar_count) => ShapeEvidence::Known(ConnectionShape {
+            dims: dims.to_vec(),
+            scalar_count,
+        }),
+        Err(reason) => ShapeEvidence::Invalid(reason),
+    }
+}
+
+fn require_var_shape(
+    flat: &flat::Model,
+    var: &rumoca_core::VarName,
+    span: rumoca_core::Span,
+) -> Result<ConnectionShape, FlattenError> {
+    match var_shape_evidence(flat, var) {
+        ShapeEvidence::Known(shape) => Ok(shape),
+        ShapeEvidence::Missing => Err(FlattenError::undefined_variable(var.as_str(), span)),
+        ShapeEvidence::Invalid(reason) => Err(FlattenError::invalid_connection_evidence(
+            format!("connection member `{var}` cannot be represented safely: {reason}"),
+            span,
+        )),
+    }
 }
 
 /// Scalar count of a dimension list, sharing one clamp with
 /// [`compute_var_scalar_count`] so a declaration and one of its elements can
 /// never be counted by two different rules.
-fn scalar_count_of_dims(dims: &[i64]) -> usize {
-    if dims.is_empty() {
-        1
-    } else {
-        dims.iter().copied().map(|d| d.max(0)).product::<i64>() as usize
+pub(super) fn scalar_count_of_dims(dims: &[i64]) -> Result<usize, String> {
+    for extent in dims {
+        if *extent < 0 {
+            return Err(format!("negative array extent `{extent}`"));
+        }
     }
+    // An array with any zero extent is empty regardless of the other extents.
+    // Decide that only after validating every extent so a later negative
+    // dimension cannot be hidden by an earlier zero.
+    if dims.contains(&0) {
+        return Ok(0);
+    }
+
+    let mut count = 1usize;
+    for extent in dims {
+        let extent = usize::try_from(*extent)
+            .map_err(|_| format!("array extent `{extent}` exceeds the host index range"))?;
+        count = count
+            .checked_mul(extent)
+            .ok_or_else(|| "array cardinality exceeds the host index range".to_string())?;
+        let ir_limit = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
+        if count > ir_limit {
+            return Err("array cardinality exceeds the Flat IR index range".to_string());
+        }
+    }
+    Ok(count)
 }
 
 pub(super) fn strip_embedded_array_indices(path: &str) -> Option<String> {
@@ -115,25 +229,43 @@ pub(super) fn strip_embedded_array_indices(path: &str) -> Option<String> {
     )
 }
 
-fn mark_connected(flat: &mut flat::Model, var: &rumoca_core::VarName) {
-    if let Some(v) = flat.variables.get_mut(var) {
-        v.connected = true;
-        return;
-    }
-    if let Some(base) = subscripted_base_var(var, flat)
-        && let Some(v) = flat.variables.get_mut(&base)
-    {
-        v.connected = true;
-    }
-}
-
+#[cfg(test)]
 pub(super) fn mark_stream_connection_set(
     flat: &mut flat::Model,
     variables: &[rumoca_core::VarName],
-) {
-    for var in variables {
-        mark_connected(flat, var);
+    span: Span,
+) -> Result<(), FlattenError> {
+    let mut projection = OpenConnectionProjection::new(flat);
+    plan_mark_stream_connection_set(flat, variables, span, &mut projection)?;
+    projection.seal_without_stream().commit(flat)
+}
+
+fn plan_mark_stream_connection_set(
+    flat: &flat::Model,
+    variables: &[rumoca_core::VarName],
+    span: Span,
+    projection: &mut OpenConnectionProjection,
+) -> Result<(), FlattenError> {
+    let connected = variables
+        .iter()
+        .map(|var| {
+            let evidence = require_connection_declaration(flat, var, span)?;
+            let shape = require_var_shape(flat, var, span)?;
+            Ok((var, shape.scalar_count, evidence))
+        })
+        .collect::<Result<Vec<_>, FlattenError>>()?;
+    for (var, scalar_count, evidence) in connected {
+        if scalar_count == 0 {
+            continue;
+        }
+        let provenance = require_connection_provenance(
+            evidence.declaration().source_span,
+            "stream connected-state owner",
+        )?;
+        let value = connection_member_value(flat, var, provenance)?;
+        projection.mark_connected(flat, &value.owner)?;
     }
+    Ok(())
 }
 
 /// Generate one connection equation for every connected outside stream
@@ -148,42 +280,141 @@ pub(super) fn mark_stream_connection_set(
 ///
 /// These equations are created before stream-operator rewriting so any nested
 /// `inStream()` of a further outside peer is expanded by that pass.
-fn generate_outside_stream_equations(
+#[cfg(test)]
+pub(super) fn generate_outside_stream_equations(
     flat: &mut flat::Model,
     endpoints_by_scope: &InterfaceStreamEndpointsByScope,
     stream_endpoints: &super::stream_operators::StreamConnectionEndpoints,
 ) -> Result<(), FlattenError> {
-    for endpoints in endpoints_by_scope.values() {
-        for (stream, span) in endpoints {
-            let scalar_count = resolve_var_scalar_count(flat, stream).unwrap_or(1);
-            if scalar_count == 0 {
-                continue;
-            }
-            let provenance =
-                require_connection_provenance(*span, "outside stream connection equation")?;
-            let stream_expr = connection_member_expr(flat, stream, provenance);
-            // A connector that reached interface discovery without joining a
-            // stream connection set at that scope is the MLS §15.2 unconnected
-            // case; it keeps the conceptual `inStream()` right-hand side.
-            let mix = stream_endpoints
-                .outside_equation_rhs(stream, provenance.span())
-                .unwrap_or_else(|| rumoca_core::Expression::FunctionCall {
-                    name: rumoca_core::Reference::generated("inStream"),
-                    args: vec![stream_expr.clone()],
-                    is_constructor: false,
-                    span: provenance.span(),
-                });
-            let residual = create_equality_residual(stream_expr, mix, provenance);
-            let origin = rumoca_ir_flat::EquationOrigin::Connection {
-                lhs: stream.as_str().to_string(),
-                rhs: format!("inStream({stream})"),
-            };
-            let preferred_dims = connection_endpoint_dims(flat, stream);
-            let equation = flat::Equation::new_array(residual, *span, origin, scalar_count);
-            add_connection_equation(flat, equation, preferred_dims.as_deref())?;
-            mark_connected(flat, stream);
+    let mut projection = OpenConnectionProjection::new(flat);
+    plan_outside_stream_equations(
+        flat,
+        endpoints_by_scope,
+        stream_endpoints,
+        super::stream_operators::StreamOperatorIdentities::fixture(),
+        &mut projection,
+    )?;
+    projection.seal_without_stream().commit(flat)
+}
+
+fn plan_outside_stream_equations(
+    flat: &flat::Model,
+    endpoints_by_scope: &InterfaceStreamEndpointsByScope,
+    stream_endpoints: &super::stream_operators::StreamConnectionEndpoints,
+    operator_identities: super::stream_operators::StreamOperatorIdentities,
+    projection: &mut OpenConnectionProjection,
+) -> Result<(), FlattenError> {
+    let measured_endpoints = endpoints_by_scope
+        .values()
+        .flat_map(|endpoints| endpoints.iter())
+        .map(|(stream, span)| {
+            let shape = require_var_shape(flat, stream, *span)?;
+            let provenance = (shape.scalar_count != 0)
+                .then(|| require_connection_provenance(*span, "outside stream connection equation"))
+                .transpose()?;
+            Ok((stream, *span, shape, provenance))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for (stream, span, shape, provenance) in measured_endpoints {
+        if shape.scalar_count == 0 {
+            continue;
+        }
+        let provenance = provenance.expect("nonempty endpoints were prevalidated with provenance");
+        let stream_value = connection_member_value(flat, stream, provenance)?;
+        let stream_owner = stream_value.owner.clone();
+        // A connector that reached interface discovery without joining a
+        // stream connection set at that scope is the MLS §15.2 unconnected
+        // case; it keeps the conceptual `inStream()` right-hand side.
+        let mix = stream_endpoints
+            .outside_equation_rhs(stream, operator_identities, provenance.span())
+            .unwrap_or_else(|| {
+                operator_identities.call(
+                    super::stream_operators::StreamOperatorRole::InStream,
+                    vec![stream_value.expression.clone()],
+                    provenance.span(),
+                )
+            });
+        let residual = create_equality_residual(stream_value.expression, mix, provenance);
+        let origin = flat::EquationOrigin::OutsideStream {
+            variable: stream.as_str().to_string(),
+        };
+        let equation = flat::Equation::new_array(residual, span, origin, shape.scalar_count);
+        projection.plan_equation(equation, Some(&shape.dims))?;
+        projection.mark_connected(flat, &stream_owner)?;
+    }
+    Ok(())
+}
+
+/// Preserve MLS §9.3 equality checks for connected parameter/constant members.
+///
+/// Scalar members become ordinary Flat assertion owners. Empty values require
+/// no scalar assertions. Flat currently has no compact assertion-family owner,
+/// so a nonempty array is refused instead of constructing an array-valued `==`
+/// where an assertion requires one scalar Boolean condition.
+fn generate_structural_connection_assertions(
+    flat: &flat::Model,
+    variables: &[rumoca_core::VarName],
+    span: rumoca_core::Span,
+    projection: &mut OpenConnectionProjection,
+) -> Result<(), FlattenError> {
+    let provenance = require_connection_provenance(span, "structural connection assertion")?;
+    let shapes = variables
+        .iter()
+        .map(|variable| require_var_shape(flat, variable, span))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (window, pair) in variables.windows(2).zip(shapes.windows(2)) {
+        if pair[0].dims != pair[1].dims {
+            return Err(FlattenError::incompatible_connectors(
+                window[0].as_str(),
+                window[1].as_str(),
+                span,
+            ));
         }
     }
+    let Some(shape) = shapes.first() else {
+        return Ok(());
+    };
+    if shape.scalar_count == 0 {
+        return Ok(());
+    }
+    if !shape.dims.is_empty() {
+        return Err(FlattenError::invalid_connection_evidence(
+            format!(
+                "nonempty structural connection array with dimensions {:?} requires a compact assertion-family owner",
+                shape.dims
+            ),
+            span,
+        ));
+    }
+
+    let mut planned = Vec::with_capacity(variables.len().saturating_sub(1));
+    for window in variables.windows(2) {
+        let lhs_name = &window[0];
+        let rhs_name = &window[1];
+        let lhs = connection_member_value(flat, lhs_name, provenance)?;
+        let rhs = connection_member_value(flat, rhs_name, provenance)?;
+        let condition = rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Eq,
+            lhs: Box::new(lhs.expression),
+            rhs: Box::new(rhs.expression),
+            span,
+        };
+        let message = rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(
+                "Connected constants/parameters must be equal".to_string(),
+            ),
+            span,
+        };
+        let origin = flat::EquationOrigin::Connection {
+            lhs: lhs_name.as_str().to_string(),
+            rhs: rhs_name.as_str().to_string(),
+        };
+        planned.push(flat::AssertEquation::new(
+            condition, message, None, span, origin,
+        ));
+    }
+    projection.extend_assertions(planned);
     Ok(())
 }
 
@@ -193,166 +424,113 @@ fn generate_outside_stream_equations(
 /// `v1 = v2, v2 = v3, ..., v(n-1) = vn`
 ///
 /// In residual form: `v1 - v2 = 0, v2 - v3 = 0, ...`
+#[cfg(test)]
 pub(super) fn generate_equality_equations(
     flat: &mut flat::Model,
+    overconstrained: &ast::FinalizedOverconstrainedCatalog<'_>,
     variables: &[rumoca_core::VarName],
     span: rumoca_core::Span,
     oc_forest: &mut crate::vcg::OverconstrainedEquationForest,
 ) -> Result<(), FlattenError> {
-    let provenance = require_connection_provenance(span, "connection equality equation")?;
-    // Generate chain of equality equations: v1 - v2 = 0, v2 - v3 = 0, ...
-    for window in variables.windows(2) {
-        let var_a = &window[0];
-        let var_b = &window[1];
+    let rollback_forest = oc_forest.clone();
+    let mut owned_forest = std::mem::replace(
+        oc_forest,
+        crate::vcg::OverconstrainedEquationForest::empty(),
+    );
+    let mut projection = OpenConnectionProjection::new(flat);
+    let result = plan_equality_equations(
+        flat,
+        overconstrained,
+        variables,
+        span,
+        &mut owned_forest,
+        &mut projection,
+    )
+    .and_then(|()| projection.seal_without_stream().commit(flat));
+    match result {
+        Ok(()) => {
+            *oc_forest = owned_forest;
+            Ok(())
+        }
+        Err(error) => {
+            *oc_forest = rollback_forest;
+            Err(error)
+        }
+    }
+}
 
-        // MLS §10.5: an element/slice member denotes the dimensions its
-        // subscripts leave, so both sides are measured by what they denote.
-        let lhs_dims = connection_endpoint_dims(flat, var_a);
-        let rhs_dims = connection_endpoint_dims(flat, var_b);
-        let lhs_size = lhs_dims.as_deref().map(scalar_count_of_dims);
-        let rhs_size = rhs_dims.as_deref().map(scalar_count_of_dims);
-        if let (Some(lhs_size), Some(rhs_size)) = (lhs_size, rhs_size)
-            && lhs_size != rhs_size
-        {
+fn plan_equality_equations(
+    flat: &flat::Model,
+    overconstrained: &ast::FinalizedOverconstrainedCatalog<'_>,
+    variables: &[rumoca_core::VarName],
+    span: rumoca_core::Span,
+    oc_forest: &mut crate::vcg::OverconstrainedEquationForest,
+    projection: &mut OpenConnectionProjection,
+) -> Result<(), FlattenError> {
+    let provenance = require_connection_provenance(span, "connection equality equation")?;
+    let shapes = variables
+        .iter()
+        .map(|var| require_var_shape(flat, var, span))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (window, pair) in variables.windows(2).zip(shapes.windows(2)) {
+        if pair[0].dims != pair[1].dims {
             return Err(FlattenError::incompatible_connectors(
-                var_a.as_str(),
-                var_b.as_str(),
+                window[0].as_str(),
+                window[1].as_str(),
                 span,
             ));
         }
-        let scalar_count = lhs_size.or(rhs_size).unwrap_or(1);
+    }
+    for (window, shape) in variables.windows(2).zip(shapes) {
+        let var_a = &window[0];
+        let var_b = &window[1];
+        let scalar_count = shape.scalar_count;
 
         // Skip empty arrays (Real[0]) — no equations needed
         if scalar_count == 0 {
             continue;
         }
 
-        match oc_forest.generated_equality_disposition(flat, var_a, var_b)? {
+        match oc_forest.generated_equality_disposition(overconstrained, flat, var_a, var_b, span)? {
             crate::vcg::GeneratedEqualityDisposition::Retain => {}
             crate::vcg::GeneratedEqualityDisposition::Omit => continue,
             crate::vcg::GeneratedEqualityDisposition::Replace {
                 lhs_record,
                 rhs_record,
-                constraint_size,
             } => {
-                generate_equality_constraint_equation(
+                if let Some(equation) = plan_equality_constraint_equation(
                     flat,
+                    overconstrained,
                     &lhs_record,
                     &rhs_record,
-                    constraint_size,
                     span,
-                )?;
+                    projection.next_equation_index(),
+                )? {
+                    projection.push_planned_equation(equation);
+                }
                 continue;
             }
         }
 
-        // Mark both variables as connected
-        mark_connected(flat, var_a);
-        mark_connected(flat, var_b);
-
         // Create residual: var_a - var_b = 0
-        let expr_a = connection_member_expr(flat, var_a, provenance);
-        let expr_b = connection_member_expr(flat, var_b, provenance);
-        let residual = create_equality_residual(expr_a, expr_b, provenance);
+        let value_a = connection_member_value(flat, var_a, provenance)?;
+        let value_b = connection_member_value(flat, var_b, provenance)?;
+        let owner_a = value_a.owner.clone();
+        let owner_b = value_b.owner.clone();
+        let residual = create_equality_residual(value_a.expression, value_b.expression, provenance);
 
-        let origin = rumoca_ir_flat::EquationOrigin::Connection {
+        let origin = flat::EquationOrigin::Connection {
             lhs: var_a.as_str().to_string(),
             rhs: var_b.as_str().to_string(),
         };
-        let preferred_dims = lhs_dims
-            .into_iter()
-            .chain(rhs_dims)
-            .find(|dims| scalar_count_of_dims(dims) == scalar_count);
-        let eq = flat::Equation::new_array(residual, span, origin, scalar_count);
-        add_connection_equation(flat, eq, preferred_dims.as_deref())?;
+        projection.plan_equation(
+            flat::Equation::new_array(residual, span, origin, scalar_count),
+            Some(&shape.dims),
+        )?;
+        projection.mark_connected(flat, &owner_a)?;
+        projection.mark_connected(flat, &owner_b)?;
     }
 
-    Ok(())
-}
-
-/// One whole-record argument of a generated `equalityConstraint` call.
-///
-/// The Flat record instance carries the exact `ComponentReference` proven when
-/// the instance was recorded; keeping it on the argument lets later record
-/// lowering project fields by identity instead of re-deriving them from the
-/// rendered name.
-fn record_instance_expr(
-    rendered: &str,
-    instance: &flat::RecordInstance,
-    span: ProvenanceSpan,
-) -> rumoca_core::Expression {
-    rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::with_component_reference(
-            rendered,
-            instance.component_ref.clone(),
-        )
-        .with_instance_id(instance.instance_id),
-        subscripts: Vec::new(),
-        span: span.span(),
-    }
-}
-
-fn generate_equality_constraint_equation(
-    flat: &mut flat::Model,
-    lhs_record: &str,
-    rhs_record: &str,
-    constraint_size: usize,
-    span: rumoca_core::Span,
-) -> Result<(), FlattenError> {
-    let provenance = require_connection_provenance(span, "overconstrained equalityConstraint")?;
-    let lhs_name = rumoca_core::VarName::new(lhs_record);
-    let rhs_name = rumoca_core::VarName::new(rhs_record);
-    let lhs_instance = flat.record_instances.get(&lhs_name).ok_or_else(|| {
-        FlattenError::internal(format!(
-            "overconstrained record `{lhs_record}` is absent from Flat record metadata"
-        ))
-    })?;
-    let rhs_instance = flat.record_instances.get(&rhs_name).ok_or_else(|| {
-        FlattenError::internal(format!(
-            "overconstrained record `{rhs_record}` is absent from Flat record metadata"
-        ))
-    })?;
-    if lhs_instance.type_def_id != rhs_instance.type_def_id {
-        return Err(FlattenError::internal(format!(
-            "overconstrained record edge `{lhs_record}`--`{rhs_record}` has incompatible record types"
-        )));
-    }
-    let record_type = flat
-        .record_types
-        .get(&lhs_instance.type_def_id)
-        .ok_or_else(|| {
-            FlattenError::internal(format!(
-                "overconstrained record `{lhs_record}` has no Flat record type metadata"
-            ))
-        })?;
-    let function_name = format!("{}.equalityConstraint", record_type.name);
-    // MLS §9.3.1: both arguments are the whole overdetermined record instances.
-    // Record-parameter lowering projects each declared field off them, which
-    // requires the exact structured identity of the instance rather than its
-    // rendered flat name, so the argument references are built from the Flat
-    // record metadata that already proved that identity.
-    let lhs_arg = record_instance_expr(lhs_record, lhs_instance, provenance);
-    let rhs_arg = record_instance_expr(rhs_record, rhs_instance, provenance);
-    let residual = rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::generated(function_name.clone()),
-        args: vec![lhs_arg, rhs_arg],
-        is_constructor: false,
-        span: provenance.span(),
-    };
-    let origin = flat::EquationOrigin::Connection {
-        lhs: format!("zeros({constraint_size})"),
-        rhs: format!("{function_name}({lhs_record}, {rhs_record})"),
-    };
-    add_connection_equation(
-        flat,
-        flat::Equation::new_array(residual, span, origin, constraint_size),
-        Some(&[i64::try_from(constraint_size).map_err(|_| {
-            FlattenError::unsupported_equation(
-                "equalityConstraint output exceeds structured-domain index range",
-                span,
-            )
-        })?]),
-    )?;
     Ok(())
 }
 
@@ -363,6 +541,7 @@ fn generate_equality_constraint_equation(
 /// Per MLS §9.2 (CONN-026):
 /// - Inside connectors (component ports): sign = +1
 /// - Outside connectors (model boundary): sign = -1
+#[cfg(test)]
 pub(super) fn generate_flow_equation(
     flat: &mut flat::Model,
     variables: &[rumoca_core::VarName],
@@ -370,98 +549,124 @@ pub(super) fn generate_flow_equation(
     interface_flow_vars_by_scope: &IndexMap<String, FlowVarSet>,
     span: rumoca_core::Span,
 ) -> Result<(), FlattenError> {
+    let mut projection = OpenConnectionProjection::new(flat);
+    plan_flow_equation(
+        flat,
+        variables,
+        scope,
+        interface_flow_vars_by_scope,
+        span,
+        &mut projection,
+    )?;
+    projection.seal_without_stream().commit(flat)
+}
+
+fn plan_flow_equation(
+    flat: &flat::Model,
+    variables: &[rumoca_core::VarName],
+    scope: &str,
+    interface_flow_vars_by_scope: &IndexMap<String, FlowVarSet>,
+    span: rumoca_core::Span,
+    projection: &mut OpenConnectionProjection,
+) -> Result<(), FlattenError> {
     if variables.is_empty() {
         return Ok(());
     }
     let provenance = require_connection_provenance(span, "connection flow equation")?;
 
-    // Get scalar count from the first variable's dimensions (MLS §8.4)
-    // All variables in a flow connection set should have the same dimensions.
-    // First check for empty arrays (Real[0]) which have scalar_count=0.
-    let first_count = variables
+    let flow_shapes = variables
         .iter()
-        .find_map(|var| resolve_var_scalar_count(flat, var));
-    if first_count == Some(0) {
+        .map(|var| require_var_shape(flat, var, span))
+        .collect::<Result<Vec<_>, _>>()?;
+    if flow_shapes.iter().all(|shape| shape.scalar_count == 0) {
+        if let Some((index, _)) = flow_shapes
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find(|(_, shape)| shape.dims != flow_shapes[0].dims)
+        {
+            return Err(FlattenError::incompatible_connectors(
+                variables[0].as_str(),
+                variables[index].as_str(),
+                span,
+            ));
+        }
         return Ok(());
     }
-    let flow_sizes: Vec<usize> = variables
-        .iter()
-        .filter_map(|var| resolve_var_scalar_count(flat, var))
-        .collect();
-    let has_scalar_flow = flow_sizes.contains(&1);
-    let array_sizes: Vec<usize> = flow_sizes.iter().copied().filter(|&c| c > 1).collect();
-    let array_var_sizes: Vec<_> = variables
-        .iter()
-        .filter_map(|var| {
-            resolve_var_scalar_count(flat, var)
-                .filter(|&count| count > 1)
-                .map(|count| (var, count))
-        })
-        .collect();
-    if let Some((first_var, first_size)) = array_var_sizes.first()
-        && let Some((other_var, _)) = array_var_sizes.iter().find(|(_, size)| size != first_size)
-    {
+    if let Some(zero_index) = flow_shapes.iter().position(|shape| shape.scalar_count == 0) {
+        let nonzero_index = flow_shapes
+            .iter()
+            .position(|shape| shape.scalar_count != 0)
+            .expect("not all flow cardinalities are zero");
         return Err(FlattenError::incompatible_connectors(
-            first_var.as_str(),
-            other_var.as_str(),
+            variables[zero_index].as_str(),
+            variables[nonzero_index].as_str(),
             span,
         ));
     }
-    // Mixed scalar + array flow sets (e.g., scalar heat port connected to an array
-    // of heat ports) represent one scalar Kirchhoff equation over all elements in
-    // the set when there is exactly one array term.
-    // If multiple array terms are present, keep array-sized scalarization.
-    let scalar_count = if has_scalar_flow && array_sizes.len() == 1 {
-        1
-    } else {
-        array_sizes.into_iter().next().unwrap_or(1)
-    };
-
-    // Mark all variables as connected
-    for var in variables {
-        mark_connected(flat, var);
+    if let Some((other_index, _)) = flow_shapes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, shape)| shape.dims != flow_shapes[0].dims)
+    {
+        return Err(FlattenError::incompatible_connectors(
+            variables[0].as_str(),
+            variables[other_index].as_str(),
+            span,
+        ));
     }
+    // A Flat flow-sum equation is pointwise over one proven common shape. A
+    // scalar plus an array would construct a scalar residual containing an
+    // aggregate operand (or claim array scalarization for a scalar operand),
+    // neither of which is valid IR. Connector expansion must supply matching
+    // scalar members before reaching this owner.
+    let scalar_count = flow_shapes[0].scalar_count;
 
     // Create sum expression with proper signs per MLS §9.2
     // Inside connectors: +f, Outside connectors: -f
-    let flow_exprs: Vec<rumoca_core::Expression> = variables
+    let checked_members = variables
         .iter()
         .map(|var| {
-            let expr = connection_member_expr(flat, var, provenance);
-            if is_outside_flow_var_for_scope(var, scope, interface_flow_vars_by_scope) {
+            let value = connection_member_value(flat, var, provenance)?;
+            let negative = is_outside_flow_var_for_scope(var, scope, interface_flow_vars_by_scope);
+            let expression = if negative {
                 // Outside connector: negate (sign = -1)
                 rumoca_core::Expression::Unary {
                     op: rumoca_core::OpUnary::Minus,
-                    rhs: Box::new(expr),
+                    rhs: Box::new(value.expression),
                     span: provenance.span(),
                 }
             } else {
                 // Inside connector: positive (sign = +1)
-                expr
-            }
+                value.expression
+            };
+            let rendered = if negative {
+                format!("-{}", var.as_str())
+            } else {
+                var.as_str().to_string()
+            };
+            Ok((expression, rendered, value.owner))
         })
-        .collect();
+        .collect::<Result<Vec<_>, FlattenError>>()?;
+    let mut flow_exprs = Vec::with_capacity(checked_members.len());
+    let mut rendered_members = Vec::with_capacity(checked_members.len());
+    let mut owners = Vec::with_capacity(checked_members.len());
+    for (expression, rendered, owner) in checked_members {
+        flow_exprs.push(expression);
+        rendered_members.push(rendered);
+        owners.push(owner);
+    }
     let sum = create_sum(flow_exprs, provenance);
 
-    let signed_vars: Vec<String> = variables
-        .iter()
-        .map(|v| {
-            if is_outside_flow_var_for_scope(v, scope, interface_flow_vars_by_scope) {
-                format!("-{}", v.as_str())
-            } else {
-                v.as_str().to_string()
-            }
-        })
-        .collect();
-    let origin = rumoca_ir_flat::EquationOrigin::FlowSum {
-        description: format!("{} = 0", signed_vars.join(" + ")),
+    let origin = flat::EquationOrigin::FlowSum {
+        description: format!("{} = 0", rendered_members.join(" + ")),
     };
-    let preferred_dims = variables
-        .iter()
-        .filter_map(|name| connection_endpoint_dims(flat, name))
-        .find(|dims| scalar_count_of_dims(dims) == scalar_count);
     let eq = flat::Equation::new_array(sum, span, origin, scalar_count);
-    add_connection_equation(flat, eq, preferred_dims.as_deref())?;
+    projection.plan_equation(eq, Some(&flow_shapes[0].dims))?;
+    for owner in &owners {
+        projection.mark_connected(flat, owner)?;
+    }
 
     Ok(())
 }
@@ -523,14 +728,14 @@ fn has_outside_connector_role(
 /// Check if a connection involves a disabled component.
 /// MLS §4.8: Conditional components with false conditions are disabled.
 pub(crate) fn connection_involves_disabled(
-    conn: &ast::InstanceConnection,
+    conn: &ast::InstanceScalarConnection,
     disabled_components: &indexmap::IndexSet<rumoca_core::ComponentPath>,
 ) -> bool {
     for disabled in disabled_components {
-        if conn.a.starts_with_component_path(disabled) {
+        if super::qualified_connection_endpoint_starts_with(conn.a(), disabled) {
             return true;
         }
-        if conn.b.starts_with_component_path(disabled) {
+        if super::qualified_connection_endpoint_starts_with(conn.b(), disabled) {
             return true;
         }
     }
@@ -538,12 +743,7 @@ pub(crate) fn connection_involves_disabled(
     false
 }
 
-/// Build a prefix-to-children index for O(1) sub-variable lookups.
-///
-/// Maps each dotted prefix to all descendant variable names.
-/// For flat variables `["a.b.c", "a.b.d", "a.e"]`, produces:
-/// - `"a.b"` → `["a.b.c", "a.b.d"]`
-/// - `"a"` → `["a.b.c", "a.b.d", "a.e"]`
+/// Build the dotted-prefix-to-descendant index for sub-variable lookup.
 pub(super) fn build_prefix_children(
     flat: &flat::Model,
 ) -> FxHashMap<String, Vec<rumoca_core::VarName>> {
@@ -565,79 +765,89 @@ pub(super) fn build_prefix_children(
 
 pub(crate) fn process_connections(
     flat: &mut flat::Model,
-    overlay: &ast::InstanceOverlay,
-    strict_validation: bool,
+    overconstrained: &ast::FinalizedOverconstrainedCatalog<'_>,
+    mut oc_forest: crate::vcg::OverconstrainedEquationForest,
+    operator_identities: super::stream_operators::StreamOperatorIdentities,
+) -> Result<crate::vcg::OverconstrainedEquationForest, FlattenError> {
+    let overlay = overconstrained.overlay();
+    super::ensure_connection_scalarization_budget(overlay)?;
+    let projection = OpenConnectionProjection::new(flat);
+    let projection = plan_connections(
+        flat,
+        overlay,
+        overconstrained,
+        &mut oc_forest,
+        operator_identities,
+        projection,
+    )?;
+    projection.commit(flat)?;
+    Ok(oc_forest)
+}
+
+#[cfg(test)]
+pub(super) fn process_connections_for_test(
+    flat: &mut flat::Model,
+    overconstrained: &ast::FinalizedOverconstrainedCatalog<'_>,
     oc_forest: &mut crate::vcg::OverconstrainedEquationForest,
 ) -> Result<(), FlattenError> {
-    // Build prefix-to-children index once for O(1) sub-variable lookups
-    let prefix_children = build_prefix_children(flat);
-
-    // Collect all connections from class instances, excluding disabled components.
-    // MLS §5.4: Redirect outer-prefixed connection paths to their inner equivalents.
-    let mut owned_connections: Vec<ast::InstanceConnection> = Vec::new();
-
-    for (_def_id, class_data) in &overlay.classes {
-        // SPEC_0032 §1: compact connection families stay authoritative in the
-        // instance overlay; derive their scalar members lazily here instead of
-        // materializing a second copy of the whole overlay up front.
-        for conn in rumoca_eval_ast::connection::scalar_connection_view(&class_data.connections) {
-            let conn = conn.map_err(crate::structured_connection_error)?;
-            // MLS §4.8: Skip connections involving disabled conditional components
-            if connection_involves_disabled(&conn, &overlay.disabled_components) {
-                continue;
-            }
-            let redirected = redirect_connection_for_inner_outer(&conn, overlay);
-            owned_connections.push(redirected);
+    let owned = std::mem::replace(
+        oc_forest,
+        crate::vcg::OverconstrainedEquationForest::empty(),
+    );
+    // Production consumes the forest and aborts compilation on failure. This
+    // borrowed test adapter must preserve its caller-owned fixture instead;
+    // clone only that bounded fixture before transferring ownership.
+    let rollback_forest = owned.clone();
+    match process_connections(
+        flat,
+        overconstrained,
+        owned,
+        super::stream_operators::StreamOperatorIdentities::fixture(),
+    ) {
+        Ok(updated) => {
+            *oc_forest = updated;
+            Ok(())
+        }
+        Err(error) => {
+            *oc_forest = rollback_forest;
+            Err(error)
         }
     }
+}
 
-    let all_connections: Vec<&ast::InstanceConnection> = owned_connections.iter().collect();
+fn plan_connections(
+    flat: &flat::Model,
+    overlay: &ast::InstanceOverlay,
+    overconstrained: &ast::FinalizedOverconstrainedCatalog<'_>,
+    oc_forest: &mut crate::vcg::OverconstrainedEquationForest,
+    operator_identities: super::stream_operators::StreamOperatorIdentities,
+    mut projection: OpenConnectionProjection,
+) -> Result<SealedConnectionProjection, FlattenError> {
+    let prefix_children = build_prefix_children(flat);
     let var_index = ConnectionVarIndex::new(flat);
     let endpoint_index = ConnectionEndpointIndex::new(overlay);
-
-    // MLS §10.5: an endpoint subscript must select along a declared dimension.
-    // Checked before any path matching, because path matching normalizes
-    // indices away and would otherwise connect the whole component the
-    // subscript was meant to index.
-    endpoint_index.check_connection_endpoint_subscripts(&all_connections)?;
-
-    // MLS §9.1.3 augmentation must happen before connection-set construction.
-    // Until the union elaboration exists, reject the unsupported case instead
-    // of silently connecting only the intersection of declared bus members.
-    reject_expandable_connector_augmentation(
-        &all_connections,
+    // FLAT-C01: pruning and augmentation precede source identification.
+    let pruned_sources = prune_connection_sources(overlay)?;
+    let closed_sources = pruned_sources
+        .plan_after_expandable_check(flat, &endpoint_index, &prefix_children, &var_index)?
+        .close()?;
+    let topology_inputs = closed_sources.topology_inputs();
+    let all_connections = topology_inputs
+        .iter()
+        .map(|input| input.connection)
+        .collect::<Vec<_>>();
+    let mut source_consumption = closed_sources.consumption()?;
+    validate_closed_connection_inputs(
         flat,
-        &endpoint_index,
+        &closed_sources,
+        &all_connections,
         &prefix_children,
         &var_index,
     )?;
 
-    #[cfg(feature = "tracing")]
-    {
-        tracing::debug!(
-            connection_count = all_connections.len(),
-            "processing flattened connections"
-        );
-        for conn in &all_connections {
-            tracing::debug!(scope = %conn.scope, a = %conn.a, b = %conn.b, "flattened connection");
-        }
-    }
-
-    // Validation establishes the connector invariants consumed below.
-    if strict_validation {
-        validate_connections(
-            &all_connections,
-            flat,
-            &overlay.type_roots,
-            &prefix_children,
-            &var_index,
-        )?;
-    }
-
-    // Track which flow variables participate in connections at each scope.
-    // Used to detect sub-component interface flows that need external flow=0.
+    // Retain per-scope roles for external flow-zero planning.
     let flow_vars_at_scope =
-        collect_flow_vars_by_scope(&all_connections, flat, &prefix_children, &var_index);
+        collect_flow_vars_by_scope(&all_connections, flat, &prefix_children, &var_index)?;
 
     let interface_connector_roots_by_scope = collect_interface_connector_roots_by_scope(overlay);
     let interface_flow_vars_by_scope = collect_interface_flow_vars_by_scope(
@@ -646,69 +856,156 @@ pub(crate) fn process_connections(
         &prefix_children,
         &var_index,
         &interface_connector_roots_by_scope,
-    );
+    )?;
     let interface_stream_endpoints_by_scope = collect_interface_stream_endpoints_by_scope(
         &all_connections,
         flat,
         &prefix_children,
         &var_index,
         &interface_connector_roots_by_scope,
-    );
-
-    // Build connection sets (variables connected together)
-    let (connection_sets, stream_sets) =
-        build_connection_sets(&all_connections, flat, &prefix_children, &var_index)?;
-
-    // Generate equations for each connection set
-    for set in connection_sets {
-        match set.kind {
-            ConnectionKind::Flow => generate_flow_equation(
-                flat,
-                &set.variables,
-                set.scope.as_str(),
-                &interface_flow_vars_by_scope,
-                set.span,
-            )?,
-            ConnectionKind::Potential => {
-                generate_equality_equations(flat, &set.variables, set.span, oc_forest)?;
-            }
-        }
-    }
-
-    for stream_set in &stream_sets {
-        mark_stream_connection_set(flat, &stream_set.variables);
-    }
-    let stream_endpoints = super::stream_operators::build_stream_connection_endpoints(
-        flat,
-        &stream_sets,
-        &interface_stream_endpoints_by_scope,
-    )?;
-    generate_outside_stream_equations(
-        flat,
-        &interface_stream_endpoints_by_scope,
-        &stream_endpoints,
     )?;
 
-    // MLS §15.2-15.3: eliminate inStream()/actualStream() while the semantic
-    // stream connection sets and their associated flow variables are present.
-    super::stream_operators::rewrite_stream_operators(flat, &stream_sets, &stream_endpoints)?;
+    let (connection_sets, stream_sets) = build_connection_sets(
+        &topology_inputs,
+        flat,
+        &prefix_children,
+        &var_index,
+        &mut source_consumption,
+    )?;
 
-    // MLS §9.2: Generate equations for unconnected flow variables.
-    // Flow variables not in any connection set get `flow_var = 0` equations.
-    generate_unconnected_flow_equations(flat)?;
+    let endpoints = {
+        let mut derived = DerivedConnectionProjection {
+            flat,
+            overconstrained,
+            oc_forest,
+            operator_identities,
+            projection: &mut projection,
+        };
+        derived.plan_sets_and_outside_streams(
+            connection_sets,
+            &stream_sets,
+            &interface_flow_vars_by_scope,
+            &interface_stream_endpoints_by_scope,
+        )?
+    };
 
-    // MLS §9.2: Generate flow=0 for interface flow variables not connected
-    // at their parent scope or at the model boundary for standalone checking.
-    generate_external_unconnected_flow_equations(
+    // MLS §9.2 unconnected flow rows remain in the same projection.
+    plan_unconnected_flow_equations(flat, &mut projection)?;
+
+    plan_external_unconnected_flow_equations(
         flat,
         &flow_vars_at_scope,
         &all_connections,
         &prefix_children,
         &var_index,
         &interface_connector_roots_by_scope,
+        &mut projection,
     )?;
 
-    Ok(())
+    source_consumption.finish()?;
+
+    projection.seal_stream_rewrite(flat, &stream_sets, &endpoints, operator_identities)
+}
+
+fn validate_closed_connection_inputs(
+    flat: &flat::Model,
+    _sources: &ClosedConnectionSources,
+    connections: &[&ast::InstanceScalarConnection],
+    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
+    var_index: &ConnectionVarIndex,
+) -> Result<(), FlattenError> {
+    flat.validate().map_err(|error| {
+        let span = connections
+            .first()
+            .map_or(Span::DUMMY, |connection| connection.span());
+        FlattenError::invalid_connection_evidence(
+            format!(
+                "connection compatibility requires a complete finalized Flat effective-type catalog: {error:?}"
+            ),
+            span,
+        )
+    })?;
+    #[cfg(feature = "tracing")]
+    {
+        tracing::debug!(
+            connection_count = connections.len(),
+            source_count = _sources.source_count(),
+            "processing flattened connections"
+        );
+        for connection in connections {
+            tracing::debug!(scope = %connection.scope(), a = %connection.a(), b = %connection.b(), "flattened connection");
+        }
+    }
+    validate_connections(connections, flat, prefix_children, var_index)
+}
+
+struct DerivedConnectionProjection<'a, 'catalog, 'overlay> {
+    flat: &'a flat::Model,
+    overconstrained: &'catalog ast::FinalizedOverconstrainedCatalog<'overlay>,
+    oc_forest: &'a mut crate::vcg::OverconstrainedEquationForest,
+    operator_identities: super::stream_operators::StreamOperatorIdentities,
+    projection: &'a mut OpenConnectionProjection,
+}
+
+impl DerivedConnectionProjection<'_, '_, '_> {
+    fn plan_sets_and_outside_streams(
+        &mut self,
+        connection_sets: Vec<ConnectionSet>,
+        stream_sets: &[StreamConnectionSet],
+        interface_flows: &IndexMap<String, FlowVarSet>,
+        interface_streams: &InterfaceStreamEndpointsByScope,
+    ) -> Result<super::stream_operators::StreamConnectionEndpoints, FlattenError> {
+        let endpoints = super::stream_operators::build_stream_connection_endpoints(
+            self.flat,
+            stream_sets,
+            interface_streams,
+        )?;
+        for set in connection_sets {
+            self.plan_set(set, interface_flows)?;
+        }
+        plan_outside_stream_equations(
+            self.flat,
+            interface_streams,
+            &endpoints,
+            self.operator_identities,
+            self.projection,
+        )?;
+        for set in stream_sets {
+            plan_mark_stream_connection_set(self.flat, &set.variables, set.span, self.projection)?;
+        }
+        Ok(endpoints)
+    }
+
+    fn plan_set(
+        &mut self,
+        set: ConnectionSet,
+        interface_flows: &IndexMap<String, FlowVarSet>,
+    ) -> Result<(), FlattenError> {
+        match set.kind {
+            ConnectionKind::Flow => plan_flow_equation(
+                self.flat,
+                &set.variables,
+                set.scope.as_str(),
+                interface_flows,
+                set.span,
+                self.projection,
+            ),
+            ConnectionKind::Potential => plan_equality_equations(
+                self.flat,
+                self.overconstrained,
+                &set.variables,
+                set.span,
+                self.oc_forest,
+                self.projection,
+            ),
+            ConnectionKind::StructuralAssertion => generate_structural_connection_assertions(
+                self.flat,
+                &set.variables,
+                set.span,
+                self.projection,
+            ),
+        }
+    }
 }
 
 /// Generate `flow_var = 0` equations for unconnected flow variables.
@@ -716,14 +1013,29 @@ pub(crate) fn process_connections(
 /// Per MLS §9.2: "For every outside connector of the model, the sum of
 /// the corresponding flow variables is also set equal to zero."
 /// For a single unconnected flow variable, this means `flow_var = 0`.
-fn generate_unconnected_flow_equations(flat: &mut flat::Model) -> Result<(), FlattenError> {
+#[cfg(test)]
+pub(super) fn generate_unconnected_flow_equations(
+    flat: &mut flat::Model,
+) -> Result<(), FlattenError> {
+    let mut projection = OpenConnectionProjection::new(flat);
+    plan_unconnected_flow_equations(flat, &mut projection)?;
+    projection.seal_without_stream().commit(flat)?;
+    Ok(())
+}
+
+fn plan_unconnected_flow_equations(
+    flat: &flat::Model,
+    projection: &mut OpenConnectionProjection,
+) -> Result<(), FlattenError> {
     // Find all flow variables that are NOT marked as connected
     let unconnected_flows: Vec<(rumoca_core::VarName, usize)> = flat
         .variables
         .iter()
-        .filter(|(_, var)| var.flow && !var.connected)
-        .map(|(name, var)| (name.clone(), compute_var_scalar_count(var)))
-        .collect();
+        .filter(|(name, var)| var.flow && !var.connected && !projection.is_connected(name))
+        .map(|(name, var)| {
+            compute_var_scalar_count(var).map(|scalar_count| (name.clone(), scalar_count))
+        })
+        .collect::<Result<_, _>>()?;
 
     for (var_name, scalar_count) in unconnected_flows {
         // Skip empty arrays (Real[0]) — no equations needed
@@ -740,17 +1052,18 @@ fn generate_unconnected_flow_equations(flat: &mut flat::Model) -> Result<(), Fla
         // Create equation: flow_var = 0 (in residual form: flow_var - 0 = flow_var)
         let provenance =
             require_flat_variable_provenance(flat, &var_name, "unconnected flow equation")?;
-        let var_expr = var_to_expr(&var_name, provenance);
+        let value = connection_member_value(flat, &var_name, provenance)?;
 
-        let origin = rumoca_ir_flat::EquationOrigin::UnconnectedFlow {
+        let origin = flat::EquationOrigin::UnconnectedFlow {
             variable: var_name.as_str().to_string(),
         };
         let preferred_dims = flat
             .variables
             .get(&var_name)
             .map(|variable| variable.dims.clone());
-        let eq = flat::Equation::new_array(var_expr, provenance.span(), origin, scalar_count);
-        add_connection_equation(flat, eq, preferred_dims.as_deref())?;
+        let equation =
+            flat::Equation::new_array(value.expression, provenance.span(), origin, scalar_count);
+        projection.plan_equation(equation, preferred_dims.as_deref())?;
 
         // Note: We do NOT mark the variable as connected here because it's
         // semantically UNCONNECTED. The `connected` flag indicates involvement
@@ -768,24 +1081,38 @@ fn generate_unconnected_flow_equations(flat: &mut flat::Model) -> Result<(), Fla
 /// in connections at that scope. Used to detect sub-component interface connectors
 /// that are internally connected but not externally connected.
 fn collect_flow_vars_by_scope(
-    connections: &[&ast::InstanceConnection],
+    connections: &[&ast::InstanceScalarConnection],
     flat: &flat::Model,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
-) -> IndexMap<String, FlowVarSet> {
+) -> Result<IndexMap<String, FlowVarSet>, FlattenError> {
     let mut result: IndexMap<String, FlowVarSet> = IndexMap::default();
 
     for conn in connections {
-        let path_a = conn.a.to_flat_string();
-        let path_b = conn.b.to_flat_string();
+        let path_a = conn.a().to_flat_string();
+        let path_b = conn.b().to_flat_string();
 
         // Collect flow sub-variables for each side of the connection
-        let scope_set = result.entry(conn.scope.clone()).or_default();
-        collect_flow_vars_from_conn_path(flat, &path_a, scope_set, prefix_children, var_index);
-        collect_flow_vars_from_conn_path(flat, &path_b, scope_set, prefix_children, var_index);
+        let scope_set = result.entry(conn.scope().to_string()).or_default();
+        collect_flow_vars_from_conn_path(
+            flat,
+            &path_a,
+            scope_set,
+            conn.span(),
+            prefix_children,
+            var_index,
+        )?;
+        collect_flow_vars_from_conn_path(
+            flat,
+            &path_b,
+            scope_set,
+            conn.span(),
+            prefix_children,
+            var_index,
+        )?;
     }
 
-    result
+    Ok(result)
 }
 
 /// Add flow variables from a connection path to the given set.
@@ -793,17 +1120,32 @@ fn collect_flow_vars_from_conn_path(
     flat: &flat::Model,
     path: &str,
     dest: &mut FlowVarSet,
+    span: rumoca_core::Span,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
-) {
+) -> Result<(), FlattenError> {
     let var_name = rumoca_core::VarName::new(path);
 
     // Check if it's a direct flow variable
-    if let Some(var) = flat.variables.get(&var_name) {
+    if let Some(var) = flat.variables.get(&var_name)
+        && var.is_primitive
+    {
         if var.flow {
             dest.insert(var_name);
         }
-        return;
+        return Ok(());
+    }
+
+    // A compact primitive array selection has no exact synthetic Flat row.
+    // Resolve it through the same required selection proof used by validation;
+    // otherwise interface role collection can silently lose its flow prefix.
+    if let Some(evidence) = classify_connection_declaration(flat, &var_name, span)?
+        && evidence.declaration().is_primitive
+    {
+        if evidence.declaration().flow {
+            dest.insert(var_name);
+        }
+        return Ok(());
     }
 
     // It's a connector - find flow sub-variables
@@ -813,6 +1155,7 @@ fn collect_flow_vars_from_conn_path(
             dest.insert(sub);
         }
     }
+    Ok(())
 }
 
 fn collect_stream_vars_from_conn_path(
@@ -822,13 +1165,24 @@ fn collect_stream_vars_from_conn_path(
     span: rumoca_core::Span,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
-) {
+) -> Result<(), FlattenError> {
     let var_name = rumoca_core::VarName::new(path);
-    if let Some(variable) = flat.variables.get(&var_name) {
+    if let Some(variable) = flat.variables.get(&var_name)
+        && variable.is_primitive
+    {
         if variable.stream {
             dest.entry(var_name).or_insert(span);
         }
-        return;
+        return Ok(());
+    }
+
+    if let Some(evidence) = classify_connection_declaration(flat, &var_name, span)?
+        && evidence.declaration().is_primitive
+    {
+        if evidence.declaration().stream {
+            dest.entry(var_name).or_insert(span);
+        }
+        return Ok(());
     }
 
     for sub in find_sub_variables_indexed(path, prefix_children, var_index) {
@@ -840,6 +1194,7 @@ fn collect_stream_vars_from_conn_path(
             dest.entry(sub).or_insert(span);
         }
     }
+    Ok(())
 }
 
 fn collect_interface_connector_roots_by_scope(
@@ -869,54 +1224,55 @@ fn collect_interface_connector_roots_by_scope(
 /// An interface connector is a public connector-typed component declared directly
 /// in the connection scope. Connection paths can name the connector itself or a
 /// nested connector member below that root, e.g. `plug.pin`.
-fn collect_interface_flow_vars_by_scope(
-    connections: &[&ast::InstanceConnection],
+pub(super) fn collect_interface_flow_vars_by_scope(
+    connections: &[&ast::InstanceScalarConnection],
     flat: &flat::Model,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
     interface_connector_roots_by_scope: &InterfaceConnectorRootsByScope,
-) -> IndexMap<String, FlowVarSet> {
+) -> Result<IndexMap<String, FlowVarSet>, FlattenError> {
     let mut result: IndexMap<String, FlowVarSet> = IndexMap::default();
 
     for conn in connections {
-        let scope = &conn.scope;
+        let scope = &conn.scope();
 
-        for path_qn in [&conn.a, &conn.b] {
+        for path_qn in [&conn.a(), &conn.b()] {
             let path = path_qn.to_flat_string();
             if is_interface_connection_path_for_scope(
                 &path,
                 scope,
                 interface_connector_roots_by_scope,
             ) {
-                let scope_set = result.entry(scope.clone()).or_default();
+                let scope_set = result.entry(scope.to_string()).or_default();
                 collect_flow_vars_from_conn_path(
                     flat,
                     &path,
                     scope_set,
+                    conn.span(),
                     prefix_children,
                     var_index,
-                );
+                )?;
             }
         }
     }
 
-    result
+    Ok(result)
 }
 
-fn collect_interface_stream_endpoints_by_scope(
-    connections: &[&ast::InstanceConnection],
+pub(super) fn collect_interface_stream_endpoints_by_scope(
+    connections: &[&ast::InstanceScalarConnection],
     flat: &flat::Model,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
     interface_connector_roots_by_scope: &InterfaceConnectorRootsByScope,
-) -> InterfaceStreamEndpointsByScope {
+) -> Result<InterfaceStreamEndpointsByScope, FlattenError> {
     let mut result = InterfaceStreamEndpointsByScope::default();
     for conn in connections {
-        for path_qn in [&conn.a, &conn.b] {
+        for path_qn in [&conn.a(), &conn.b()] {
             let path = path_qn.to_flat_string();
             if !is_interface_connection_path_for_scope(
                 &path,
-                &conn.scope,
+                &conn.scope(),
                 interface_connector_roots_by_scope,
             ) {
                 continue;
@@ -924,14 +1280,14 @@ fn collect_interface_stream_endpoints_by_scope(
             collect_stream_vars_from_conn_path(
                 flat,
                 &path,
-                result.entry(conn.scope.clone()).or_default(),
-                conn.span,
+                result.entry(conn.scope().to_string()).or_default(),
+                conn.span(),
                 prefix_children,
                 var_index,
-            );
+            )?;
         }
     }
-    result
+    Ok(result)
 }
 
 pub(super) fn is_interface_connection_path_for_scope(
@@ -1026,13 +1382,14 @@ fn is_at_ancestor_scope(
 /// Interface connectors are identified by being single identifiers relative
 /// to their connection scope, which correctly handles record-typed flows
 /// (e.g., Complex `Phi.re`/`Phi.im`) without dot-count heuristics.
-fn generate_external_unconnected_flow_equations(
-    flat: &mut flat::Model,
+fn plan_external_unconnected_flow_equations(
+    flat: &flat::Model,
     flow_vars_at_scope: &IndexMap<String, FlowVarSet>,
-    connections: &[&ast::InstanceConnection],
+    connections: &[&ast::InstanceScalarConnection],
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
     interface_connector_roots_by_scope: &InterfaceConnectorRootsByScope,
+    projection: &mut OpenConnectionProjection,
 ) -> Result<(), FlattenError> {
     let interface_flow_vars_by_scope = collect_interface_flow_vars_by_scope(
         connections,
@@ -1040,34 +1397,31 @@ fn generate_external_unconnected_flow_equations(
         prefix_children,
         var_index,
         interface_connector_roots_by_scope,
-    );
+    )?;
     let need_flow_zero =
-        find_unconnected_interface_flows(&interface_flow_vars_by_scope, flow_vars_at_scope, flat);
+        find_unconnected_interface_flows(&interface_flow_vars_by_scope, flow_vars_at_scope, flat)?;
 
     for (var_name, scalar_count) in need_flow_zero {
         // Skip empty arrays (Real[0]) — no equations needed
         if scalar_count == 0 {
             continue;
         }
-        let origin = rumoca_ir_flat::EquationOrigin::UnconnectedFlow {
-            variable: var_name.as_str().to_string(),
-        };
         let provenance = require_flat_variable_provenance(
             flat,
             &var_name,
             "external unconnected flow equation",
         )?;
+        let value = connection_member_value(flat, &var_name, provenance)?;
+        let origin = flat::EquationOrigin::UnconnectedFlow {
+            variable: var_name.as_str().to_string(),
+        };
         let preferred_dims = flat
             .variables
             .get(&var_name)
             .map(|variable| variable.dims.clone());
-        let eq = flat::Equation::new_array(
-            var_to_expr(&var_name, provenance),
-            provenance.span(),
-            origin,
-            scalar_count,
-        );
-        add_connection_equation(flat, eq, preferred_dims.as_deref())?;
+        let equation =
+            flat::Equation::new_array(value.expression, provenance.span(), origin, scalar_count);
+        projection.plan_equation(equation, preferred_dims.as_deref())?;
     }
 
     Ok(())
@@ -1078,7 +1432,7 @@ fn find_unconnected_interface_flows(
     interface_flows: &IndexMap<String, FlowVarSet>,
     flow_vars_at_scope: &IndexMap<String, FlowVarSet>,
     flat: &flat::Model,
-) -> IndexMap<rumoca_core::VarName, usize> {
+) -> Result<IndexMap<rumoca_core::VarName, usize>, FlattenError> {
     let mut result: IndexMap<rumoca_core::VarName, usize> = IndexMap::default();
 
     for (scope, interface_vars) in interface_flows {
@@ -1093,12 +1447,12 @@ fn find_unconnected_interface_flows(
                 !scope.is_empty() && is_at_ancestor_scope(var_name, scope, flow_vars_at_scope);
 
             if !connected_externally && let Some(var) = flat.variables.get(var_name) {
-                result.insert(var_name.clone(), compute_var_scalar_count(var));
+                result.insert(var_name.clone(), compute_var_scalar_count(var)?);
             }
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Redirect a ast::QualifiedName if its flat string starts with an outer prefix (MLS §5.4).
@@ -1158,44 +1512,43 @@ fn redirect_inner_outer_bridge_for_scope(
 /// Second pass: if no redirect happened, redirect same-level `inner outer`
 /// component references to the parent's inner for correct flow equation scoping.
 /// In both cases, reset the scope to root so flow sums merge properly.
-fn redirect_connection_for_inner_outer(
-    conn: &ast::InstanceConnection,
+pub(super) fn redirect_connection_for_inner_outer(
+    conn: &ast::InstanceScalarConnection,
     overlay: &ast::InstanceOverlay,
-) -> ast::InstanceConnection {
-    let mut redirected = conn.clone();
-    let a_before = redirected.a.to_flat_string();
-    let b_before = redirected.b.to_flat_string();
+) -> Result<ast::InstanceScalarConnection, ast::InstanceConnectionConstructionError> {
+    let mut a = conn.a().clone();
+    let mut b = conn.b().clone();
+    let mut scope = conn.scope().to_string();
+    let a_before = a.to_flat_string();
+    let b_before = b.to_flat_string();
 
     // First pass: redirect pure outer→inner
-    redirect_qualified_name(&mut redirected.a, &overlay.outer_prefix_to_inner);
-    redirect_qualified_name(&mut redirected.b, &overlay.outer_prefix_to_inner);
-    let a_after = redirected.a.to_flat_string();
-    let b_after = redirected.b.to_flat_string();
+    redirect_qualified_name(&mut a, &overlay.outer_prefix_to_inner);
+    redirect_qualified_name(&mut b, &overlay.outer_prefix_to_inner);
+    let a_after = a.to_flat_string();
+    let b_after = b.to_flat_string();
 
     if a_before != a_after || b_before != b_after {
-        redirected.scope = String::new();
-        return redirected;
-    }
-
-    // Second pass: inner outer bridge redirect (only when first pass had no effect)
-    if !overlay.inner_outer_to_parent_inner.is_empty() {
+        scope.clear();
+    } else if !overlay.inner_outer_to_parent_inner.is_empty() {
+        // Second pass: inner outer bridge redirect (only when first pass had no effect)
         redirect_inner_outer_bridge_for_scope(
-            &mut redirected.a,
+            &mut a,
             &overlay.inner_outer_to_parent_inner,
-            &conn.scope,
+            conn.scope(),
         );
         redirect_inner_outer_bridge_for_scope(
-            &mut redirected.b,
+            &mut b,
             &overlay.inner_outer_to_parent_inner,
-            &conn.scope,
+            conn.scope(),
         );
-        let a_bridged = a_after != redirected.a.to_flat_string();
-        let b_bridged = b_after != redirected.b.to_flat_string();
+        let a_bridged = a_after != a.to_flat_string();
+        let b_bridged = b_after != b.to_flat_string();
         if a_bridged || b_bridged {
-            redirected.scope = String::new();
+            scope.clear();
         }
     }
-    redirected
+    ast::InstanceScalarConnection::new(a, b, conn.connector_type(), conn.span(), scope)
 }
 
 #[cfg(test)]
@@ -1203,15 +1556,41 @@ mod equation_generation_tests {
     use super::is_single_identifier_relative_path;
     use super::*;
 
-    fn conn(a: &str, b: &str, scope: &str) -> ast::InstanceConnection {
-        ast::InstanceConnection {
-            a: ast::QualifiedName::from_dotted(a),
-            b: ast::QualifiedName::from_dotted(b),
-            connector_type: None,
-            span: rumoca_core::Span::DUMMY,
-            scope: scope.to_string(),
-            family: None,
-        }
+    fn conn(a: &str, b: &str, scope: &str) -> ast::InstanceScalarConnection {
+        ast::InstanceScalarConnection::new(
+            ast::QualifiedName::from_dotted(a),
+            ast::QualifiedName::from_dotted(b),
+            None,
+            rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name("inner_outer_connection_test.mo"),
+                1,
+                2,
+            ),
+            scope.to_string(),
+        )
+        .expect("test connection has valid endpoints and provenance")
+    }
+
+    #[test]
+    fn equation_shape_refuses_a_selected_composite_declaration() {
+        let mut model = flat::Model::new();
+        model.add_variable(
+            rumoca_core::VarName::new("bus"),
+            flat::Variable {
+                dims: vec![2],
+                is_primitive: false,
+                ..flat::Variable::empty_with_span(rumoca_core::Span::DUMMY)
+            },
+        );
+
+        let error = require_var_shape(
+            &model,
+            &rumoca_core::VarName::new("bus[1]"),
+            rumoca_core::Span::DUMMY,
+        )
+        .expect_err("a selected connector cannot masquerade as an equation value");
+
+        assert!(error.to_string().contains("selected composite declaration"));
     }
 
     fn overlay_with_inner_outer_bridge() -> ast::InstanceOverlay {
@@ -1244,17 +1623,18 @@ mod equation_generation_tests {
             "tankController.makeProduct",
         );
 
-        let redirected = redirect_connection_for_inner_outer(&input, &overlay);
+        let redirected = redirect_connection_for_inner_outer(&input, &overlay)
+            .expect("redirected connection remains valid");
 
         assert_eq!(
-            redirected.a.to_flat_string(),
+            redirected.a().to_flat_string(),
             "tankController.makeProduct.outerState.subgraphStatePort"
         );
         assert_eq!(
-            redirected.b.to_flat_string(),
+            redirected.b().to_flat_string(),
             "stateGraphRoot.subgraphStatePort"
         );
-        assert_eq!(redirected.scope, "");
+        assert_eq!(redirected.scope(), "");
     }
 
     #[test]
@@ -1266,16 +1646,32 @@ mod equation_generation_tests {
             "tankController.makeProduct.fillTank1",
         );
 
-        let redirected = redirect_connection_for_inner_outer(&input, &overlay);
+        let redirected = redirect_connection_for_inner_outer(&input, &overlay)
+            .expect("redirected connection remains valid");
 
         assert_eq!(
-            redirected.a.to_flat_string(),
+            redirected.a().to_flat_string(),
             "tankController.makeProduct.fillTank1.outerStatePort.subgraphStatePort"
         );
         assert_eq!(
-            redirected.b.to_flat_string(),
+            redirected.b().to_flat_string(),
             "tankController.makeProduct.stateGraphRoot.subgraphStatePort"
         );
-        assert_eq!(redirected.scope, "tankController.makeProduct.fillTank1");
+        assert_eq!(redirected.scope(), "tankController.makeProduct.fillTank1");
+    }
+
+    #[test]
+    fn connection_entry_refuses_an_unfinalized_empty_occurrence_catalog_before_mutation() {
+        let overlay = ast::InstanceOverlay::new();
+        let Err(error) = crate::finalized_overconstrained_catalog(&overlay) else {
+            panic!("even an empty overconstrained catalog requires one-shot finalization");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("finalized overconstrained occurrence catalog"),
+            "unexpected refusal: {error}"
+        );
     }
 }
