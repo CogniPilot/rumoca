@@ -10,7 +10,7 @@
 //! ratio*tau/(ratio^2*J1 + J2) = 2*tau/5).
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, lower_dae_for_simulation, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, lower_dae_for_simulation, simulate_dae};
 
 const MINI_GEAR: &str = r#"
 model MiniGear
@@ -47,7 +47,9 @@ fn gear_torque_loop_converges_to_physical_solution() -> Result<(), Box<dyn std::
         .model("MiniGear")
         .compile_str(MINI_GEAR, "MiniGear.mo")?;
     assert_eq!(
-        compiled.dae.inspect(|view| view.continuous_family_count()),
+        compiled
+            .dae()
+            .inspect(|view| view.continuous_family_count()),
         1,
         "the source for-equation must reach structural lowering as one compact family"
     );
@@ -56,19 +58,19 @@ fn gear_torque_loop_converges_to_physical_solution() -> Result<(), Box<dyn std::
         t_end: 1.0,
         ..SimOptions::default()
     };
-    let solve_model = lower_dae_for_simulation(&compiled.dae, &opts)?;
+    let solve_model = lower_dae_for_simulation(compiled.dae(), &opts)?;
     assert!(
         solve_model
             .problem
-            .continuous
+            .continuous()
             .algebraic_projection_plan
             .blocks
             .iter()
             .any(|block| block.rows.len() == 4 && block.y_indices.len() == 4),
         "gear torque projection must remain a 4x4 coupled block: {:?}",
-        solve_model.problem.continuous.algebraic_projection_plan
+        solve_model.problem.continuous().algebraic_projection_plan
     );
-    let sim = simulate_dae_with_diagnostics(&compiled.dae, &opts)?;
+    let sim = simulate_dae(compiled.dae(), &opts)?;
 
     let w2_idx = sim
         .names

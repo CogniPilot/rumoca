@@ -41,7 +41,7 @@ fn for_loop_element_derivative_rows_are_not_whole_array_aliases() {
         .compile_str(SHARED_ALGEBRAIC_FOR_LOOP, "ForLoopSharedAlgebraic.mo")
         .expect("compile to DAE should succeed");
 
-    let report = structural_report_for_dae(&compiled.dae, &SimOptions::default())
+    let report = structural_report_for_dae(compiled.dae(), &SimOptions::default())
         .expect("structural analysis should succeed");
 
     // 3 element rows + the algebraic definition, against der(x[1..3]) and u.
@@ -54,7 +54,7 @@ fn for_loop_element_derivative_rows_are_not_whole_array_aliases() {
     );
 
     let probe = eval_dae_at(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions::default(),
         &[("x[1]".to_string(), 1.0)],
         0.0,

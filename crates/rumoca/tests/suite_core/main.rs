@@ -26,6 +26,10 @@
 
 mod history_operator_checked;
 
+// Support module rather than a test member: the re-sealing witness the
+// lowered-Solve-root fixtures share.
+mod solve_root_contract;
+
 mod algorithm_parameter_range;
 mod array_der_coupling_test;
 mod array_subscript_test;
@@ -57,6 +61,7 @@ mod function_projection_array_shape_test;
 mod function_proven_branch_test;
 mod function_quotient_sim;
 mod function_record_array_test;
+mod function_record_call_owner;
 mod function_return_checked;
 mod function_slice_compaction_rank_position;
 mod function_spd_loop_compaction;
@@ -74,6 +79,7 @@ mod jacobian_finite_difference;
 mod jacobian_refusal_diagnostic;
 mod jacobian_refused_forms;
 mod jacobian_standard_modelica;
+mod mixed_record_equation;
 mod mlir_verification_wiring;
 mod mod_propagation_test;
 mod model_algorithm_continuous;
@@ -88,6 +94,7 @@ mod periodic_source_counter_regression;
 mod pipeline_test;
 mod prepared_vectors_refresh;
 mod replaceable_function_redeclare;
+mod required_tool_markers;
 mod semi_linear_zero_flow;
 // quadrotor_se23_regression_test.rs lives in `suite_heavy_solve`
 // (required-features = ["heavy-solve-tests"]): until the compact Solve

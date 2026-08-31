@@ -8,7 +8,7 @@
 //! collapsed to zero would match nothing, so the magnitude is asserted too.
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, SimResult, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, SimResult, simulate_dae};
 
 /// One differentiated function and the shape of its Jacobian.
 struct Case {
@@ -569,8 +569,8 @@ fn run_probe(case: &Case, source: &str) -> (f64, f64) {
         .model(case.name)
         .compile_str(source, &format!("{}.mo", case.name))
         .unwrap_or_else(|error| panic!("{} probe must compile: {error:#}\n{source}", case.name));
-    let result = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let result = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 0.01,
             ..SimOptions::default()

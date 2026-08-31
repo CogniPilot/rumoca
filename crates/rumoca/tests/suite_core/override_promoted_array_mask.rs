@@ -9,7 +9,7 @@ use rumoca::Compiler;
 use rumoca_ir_solve::ScalarSlot;
 use rumoca_sim::{
     SimOptions, build_simulation_with_stage_timing_and_solve_model, lower_dae_for_simulation,
-    lower_for_simulation_with_overrides, refresh_prepared_vectors,
+    lower_for_simulation_with_overrides,
 };
 use std::sync::Arc;
 
@@ -34,11 +34,11 @@ end PromotedMask;
 "#;
 
 fn compile_mask_dae() -> Arc<rumoca_ir_dae::Dae> {
-    Compiler::new()
+    let compiled = Compiler::new()
         .model("PromotedMask")
         .compile_str(SOURCE, "promoted_mask.mo")
-        .expect("compile PromotedMask")
-        .dae
+        .expect("compile PromotedMask");
+    Arc::clone(compiled.dae())
 }
 
 /// The three `m[i]` parameter-slot values. Asserts `m` is a parameter slot (i.e.
@@ -46,10 +46,12 @@ fn compile_mask_dae() -> Arc<rumoca_ir_dae::Dae> {
 /// rather than the already-working solver-algebraic settle.
 fn mask_param_values(model: &rumoca_ir_solve::SolveModel) -> Vec<f64> {
     (1..=3)
-        .map(|i| match model.problem.layout.binding(&format!("m[{i}]")) {
-            Some(ScalarSlot::P { index, .. }) => model.parameters[index],
-            other => panic!("m[{i}] must be a promoted parameter slot, got {other:?}"),
-        })
+        .map(
+            |i| match model.problem.layout().binding(&format!("m[{i}]")) {
+                Some(ScalarSlot::P { index, .. }) => model.parameters[index],
+                other => panic!("m[{i}] must be a promoted parameter slot, got {other:?}"),
+            },
+        )
         .collect()
 }
 
@@ -125,36 +127,4 @@ fn aoa_override_rederives_promoted_array_mask() {
         m_over,
         "timed/prepared lowering must re-derive promoted masks the same way as one-shot lowering"
     );
-}
-
-/// The WebGPU host (`update_gpu_parameters`) path: override-aware lowering followed
-/// by `refresh_prepared_vectors`. The returned parameter vector `p0` must carry the
-/// re-derived mask, so the on-device kernels read a mask that follows the slider.
-#[test]
-fn gpu_parameter_update_path_rederives_mask_in_p0() {
-    let dae = compile_mask_dae();
-    let opts = SimOptions {
-        param_overrides: vec![("aoa".to_string(), 60.0)],
-        ..SimOptions::default()
-    };
-    let model = lower_for_simulation_with_overrides(&dae, &opts).expect("lower override");
-    let (_y0, p0) =
-        refresh_prepared_vectors(&model, 0.0, &[("aoa".to_string(), 60.0)]).expect("refresh");
-
-    for i in 1..=3 {
-        let ScalarSlot::P { index, .. } = model
-            .problem
-            .layout
-            .binding(&format!("m[{i}]"))
-            .expect("m slot")
-        else {
-            panic!("m[{i}] must be a parameter slot");
-        };
-        let expected = 0.5 + i as f64;
-        assert!(
-            (p0[index] - expected).abs() < 1e-9,
-            "p0 m[{i}] = {}, expected {expected} (GPU host must see the re-derived mask)",
-            p0[index]
-        );
-    }
 }

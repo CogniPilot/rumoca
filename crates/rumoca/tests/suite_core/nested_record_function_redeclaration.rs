@@ -74,7 +74,7 @@ end P;
         .compile_str(source, "nested_record_function_redeclaration.mo")
         .expect("redeclared package record fixture should compile");
     let product = compiled
-        .flat
+        .flat()
         .functions
         .get(&rumoca_core::VarName::new("P.Concrete.product"))
         .expect("concrete product function should be collected");
@@ -94,15 +94,15 @@ end P;
         "nested concrete record fields must be fully represented in the Flat function signature"
     );
 
-    let solve = rumoca_sim::lower_solve_problem(&compiled.dae)
+    let solve = rumoca_sim::lower_solve_problem(compiled.dae())
         .expect("nested record fixture should lower through Solve IR");
     assert!(matches!(
-        solve.layout.binding("x"),
+        solve.layout().binding("x"),
         Some(rumoca_ir_solve::ScalarSlot::Y { index: 0, .. })
     ));
 
     let simulation = rumoca_sim::simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &rumoca_sim::SimOptions {
             t_end: 0.01,
             dt: Some(0.005),
@@ -154,11 +154,11 @@ end Q;
         .compile_str(source, "zero_size_array_pure_call.mo")
         .expect("zero-size array fixture should compile");
 
-    rumoca_sim::lower_solve_problem(&compiled.dae)
+    rumoca_sim::lower_solve_problem(compiled.dae())
         .expect("zero-size array fixture should lower through Solve IR");
 
     let simulation = rumoca_sim::simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &rumoca_sim::SimOptions {
             t_end: 0.01,
             dt: Some(0.005),

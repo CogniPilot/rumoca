@@ -257,7 +257,7 @@
 //!   `b`, so nothing here can be read as an activation claim, and no test below
 //!   asserts this shape.
 
-use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae};
 
 /// Compile `source` and run it over `[0, 1]` with a 0.05 output interval — the
 /// grid the OpenModelica runs in the module table used.
@@ -266,11 +266,8 @@ use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnos
 /// refuses a model with no state equations. An unused integrator cannot move any
 /// `y`, so the OpenModelica values in the table are unaffected by it.
 ///
-/// The entry point matters: plain `simulate_dae` is the diffsol module's own
-/// function and runs diffsol whatever `solver_mode` says, so a test that used it
-/// would silently assert one backend while claiming the other. This dispatches
-/// on the mode, and the mode is the explicit rk-like session — the path the
-/// OpenModelica comparison in the module header was measured against.
+/// The canonical entry dispatches on `solver_mode`; this requests the explicit
+/// rk-like session used for the OpenModelica comparison in the module header.
 fn simulate(name: &str, source: &str) -> (rumoca::CompilationResult, SimResult) {
     simulate_on(SimSolverMode::RkLike, name, source)
 }
@@ -292,8 +289,8 @@ fn simulate_on(
         .model(name)
         .compile_str(source, "time_event_when_activation.mo")
         .unwrap_or_else(|error| panic!("`{name}` should compile: {error}"));
-    let sim = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let sim = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 1.0,
             dt: Some(0.05),
@@ -334,7 +331,7 @@ fn value_at(sim: &SimResult, name: &str, t: f64) -> f64 {
 /// `(root_count, time_event_count)` of the compiled model.
 fn event_owners(compiled: &rumoca::CompilationResult) -> (usize, usize) {
     compiled
-        .dae
+        .dae()
         .inspect(|view| (view.root_count(), view.time_event_count()))
 }
 
@@ -1311,8 +1308,8 @@ fn an_algorithm_section_chain_without_an_activation_owner_is_rejected() {
         .model("ElseWhenAlgorithm")
         .compile_str(ELSE_WHEN_ALGORITHM, "time_event_when_activation.mo")
         .expect("front-end compilation preserves the unsupported transaction for diagnosis");
-    let error = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let error = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 1.0,
             dt: Some(0.05),
@@ -1652,8 +1649,8 @@ fn the_diffsol_session_agrees_on_a_scheduled_instant() {
         .model("BdfScheduled")
         .compile_str(BDF_SCHEDULED, "time_event_when_activation.mo")
         .expect("BdfScheduled should compile");
-    let sim = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let sim = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 1.0,
             dt: Some(0.05),
@@ -1696,7 +1693,7 @@ fn a_rescheduling_vector_activation_owns_a_dynamic_time_event() {
         .compile_str(RESCHEDULING_VECTOR, "time_event_when_activation.mo")
         .expect("a rescheduled activation now has a checked dynamic owner");
 
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         assert_eq!(view.root_count(), 0, "the deadline is not a root search");
         assert_eq!(view.time_event_count(), 1);
         let event = view

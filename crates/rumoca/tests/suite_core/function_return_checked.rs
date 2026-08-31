@@ -30,7 +30,7 @@ fn guarded_return_round_trips_and_remains_computable() {
         .compile_str(GUARDED_RETURN, "guarded_return.mo")
         .expect("proved guarded return should construct checked DAE");
     let wire =
-        serde_json::to_string(&compiled.dae).expect("guarded return should serialize through v11");
+        serde_json::to_string(compiled.dae()).expect("guarded return should serialize through v11");
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("wire-v11 reconstructs conditional result ownership");
     let simulation = simulate_dae(&decoded, &SimOptions::default())
@@ -116,7 +116,7 @@ fn a_declared_output_default_survives_the_return_guard_lowering() {
         .model("DefaultedReturn")
         .compile_str(DEFAULTED_RETURN, "defaulted_return.mo")
         .expect("a defaulted output with a guarded return should construct a checked DAE");
-    let simulation = simulate_dae(&compiled.dae, &SimOptions::default())
+    let simulation = simulate_dae(compiled.dae(), &SimOptions::default())
         .expect("defaulted return should lower to computable Solve IR");
     let x = simulation
         .names
@@ -189,7 +189,7 @@ fn a_record_output_default_survives_the_return_guard_lowering() {
         .model("DefaultedRecordReturn")
         .compile_str(DEFAULTED_RECORD_RETURN, "defaulted_record_return.mo")
         .expect("a defaulted record output with a guarded return should construct a checked DAE");
-    let simulation = simulate_dae(&compiled.dae, &SimOptions::default())
+    let simulation = simulate_dae(compiled.dae(), &SimOptions::default())
         .expect("defaulted record return should lower to computable Solve IR");
     let x = simulation
         .names
@@ -385,7 +385,7 @@ fn a_declared_output_default_is_the_live_seed_of_the_lowered_body() {
         .model("DefaultedReturn")
         .compile_str(DEFAULTED_RETURN, "defaulted_return.mo")
         .expect("a defaulted output with a guarded return should construct a checked DAE");
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         let function = (0..view.function_count())
             .filter_map(|index| view.function_id(index))
             .filter_map(|id| view.function(id))

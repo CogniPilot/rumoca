@@ -77,7 +77,7 @@ fn inlined_function_output_shadow_does_not_inherit_caller_bindings() {
         .compile_str(OUTPUT_SHADOW_MODEL, "OutputShadow.mo")
         .expect("compile to DAE should succeed");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("output-shadow model should lower and evaluate");
     let report = &probe.report;
     assert!(report.error.is_none(), "eval error: {:?}", report.error);

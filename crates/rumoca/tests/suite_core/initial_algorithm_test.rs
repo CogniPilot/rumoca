@@ -79,7 +79,7 @@ fn deferred_parameters_are_determined_by_their_initial_algorithm() {
         .model("InitialAlgorithmCalculatedParameters")
         .compile_str(CALCULATED_PARAMETERS, "initial_algorithm.mo")
         .expect("an initial algorithm over deferred parameters has a checked owner");
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("the calculated parameters evaluate with the parameter set");
     assert!(
         probe.report.error.is_none(),
@@ -139,7 +139,7 @@ end GuardedInitialAssertion;
         .model("GuardedInitialAssertion")
         .compile_str(SOURCE, "guarded_initial_assertion.mo")
         .expect("a guarded assertion has a checked owner");
-    let simulation = simulate_dae(&compiled.dae, &SimOptions::default())
+    let simulation = simulate_dae(compiled.dae(), &SimOptions::default())
         .expect("an unreached guard leaves the assertion silent");
     let x = simulation
         .names
@@ -185,7 +185,7 @@ end ReachedInitialAssertion;
         .model("ReachedInitialAssertion")
         .compile_str(SOURCE, "reached_initial_assertion.mo")
         .expect("a guarded assertion has a checked owner");
-    let error = simulate_dae(&compiled.dae, &SimOptions::default())
+    let error = simulate_dae(compiled.dae(), &SimOptions::default())
         .expect_err("a reached guard fails its assertion");
     let rendered = format!("{error:?}");
     assert!(
@@ -232,7 +232,7 @@ fn a_checking_call_replays_as_the_assertions_its_body_raises() {
         .model("InitialAlgorithmCheckingCall")
         .compile_str(CHECKING_CALL, "initial_algorithm_checking_call.mo")
         .expect("a zero-output checking call has a checked initialization owner");
-    simulate_dae(&compiled.dae, &SimOptions::default())
+    simulate_dae(compiled.dae(), &SimOptions::default())
         .expect("a monotonic table satisfies every assertion the call raises");
 }
 
@@ -247,7 +247,7 @@ fn every_unrolled_iteration_of_a_checking_call_owns_its_own_assertion() {
         .model("InitialAlgorithmCheckingCall")
         .compile_str(&source, "initial_algorithm_checking_call.mo")
         .expect("a zero-output checking call has a checked initialization owner");
-    let error = simulate_dae(&compiled.dae, &SimOptions::default())
+    let error = simulate_dae(compiled.dae(), &SimOptions::default())
         .expect_err("a table that is not monotonic fails the assertion the call raises");
     let rendered = format!("{error:?}");
     assert!(
@@ -413,7 +413,7 @@ fn discrete_initial_value_trace(t_end: f64) -> rumoca_sim::SimResult {
         t_end,
         ..SimOptions::default()
     };
-    simulate_dae(&compiled.dae, &options).expect("the determined discrete values simulate")
+    simulate_dae(compiled.dae(), &options).expect("the determined discrete values simulate")
 }
 
 /// The DAE wire is how the MSL simulation worker receives a compiled model, so
@@ -425,7 +425,7 @@ fn discrete_initial_values_survive_the_dae_wire() {
         .model("InitialAlgorithmDiscreteTarget")
         .compile_str(DISCRETE_INITIAL_VALUES, "initial_algorithm.mo")
         .expect("an initial algorithm over discrete coordinates has a checked owner");
-    let encoded = serde_json::to_value(&compiled.dae).expect("compiled DAE serializes");
+    let encoded = serde_json::to_value(compiled.dae()).expect("compiled DAE serializes");
     let decoded: rumoca_ir_dae::Dae =
         serde_json::from_value(encoded.clone()).expect("compiled DAE reconstructs");
     assert_eq!(

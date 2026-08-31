@@ -6,7 +6,7 @@
 //! left- and right-limit evidence around the canonical event coordinate.
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae};
 
 /// One scheduled time event at `t = 0.5` and nothing else: `Vs` steps from 0 to
 /// `Vb`, and the continuous state is driven through the step. The event instant
@@ -33,8 +33,8 @@ fn simulate(source: &str, model: &str, solver_mode: SimSolverMode, t_end: f64) -
         .model(model)
         .compile_str(source, &format!("{model}.mo"))
         .unwrap_or_else(|error| panic!("compile {model}: {error:?}"));
-    simulate_dae_with_diagnostics(
-        &compiled.dae,
+    simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end,
             dt: Some(0.01),

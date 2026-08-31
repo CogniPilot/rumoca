@@ -103,7 +103,7 @@ fn noelse_if_keeps_guard_when_condition_false() {
         .compile_str(NOELSE_MODEL, "NoElseIf.mo")
         .expect("compile to DAE should succeed");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("no-else-if model should lower and evaluate");
     let report = &probe.report;
     assert!(report.error.is_none(), "eval error: {:?}", report.error);
@@ -138,7 +138,7 @@ fn noelse_if_branch_still_fires_when_condition_true() {
         .compile_str(NOELSE_MODEL_NEG, "NoElseIfNeg.mo")
         .expect("compile to DAE should succeed");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("no-else-if model should lower and evaluate");
     let report = &probe.report;
     assert!(report.error.is_none(), "eval error: {:?}", report.error);
@@ -169,7 +169,7 @@ fn runtime_array_index_out_of_range_fails_instead_of_clamping() {
         .compile_str(&source, "NoElseIfOutOfRange.mo")
         .expect("runtime-bounded index model remains structurally computable");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("evaluation returns a diagnostic report");
     assert!(
         probe.report.error.is_some(),

@@ -44,7 +44,7 @@ fn complete_record_element_writes_form_one_array_and_evaluate() {
         .model("FunctionRecordArray")
         .compile_str(MODEL, "FunctionRecordArray.mo")
         .expect("record arrays and fill extents should construct a checked DAE");
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("checked record-array function should evaluate");
     assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
     let result = probe

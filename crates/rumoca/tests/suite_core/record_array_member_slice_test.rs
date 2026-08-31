@@ -86,7 +86,7 @@ fn record_array_member_slice_scalarizes_per_element() {
         .compile_str(SLICE_MEMBER_MODEL, "SliceMember.mo")
         .expect("member slice model should compile to DAE");
 
-    let projected_expressions = compiled.dae.inspect(|dae| {
+    let projected_expressions = compiled.dae().inspect(|dae| {
         (0..dae.expression_count())
             .filter_map(|index| {
                 let expression = dae.expression(dae.expression_id(index)?)?;
@@ -99,11 +99,11 @@ fn record_array_member_slice_scalarizes_per_element() {
     assert!(
         projected_expressions
             .iter()
-            .any(|provenance| compiled.dae.source_text(*provenance) == Some("pin[:].v")),
+            .any(|provenance| compiled.dae().source_text(*provenance) == Some("pin[:].v")),
         "record projection expressions must retain the exact source occurrence"
     );
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("member slice model should lower and evaluate at t=0");
     let report = &probe.report;
     assert!(report.error.is_none(), "eval error: {:?}", report.error);
@@ -169,7 +169,7 @@ fn nested_component_array_member_slice_selects_its_own_instance() {
         .compile_str(NESTED_SLICE_MEMBER_MODEL, "NestedSliceMember.mo")
         .expect("a slice on a nested component array should compile to DAE");
 
-    let projected = compiled.dae.inspect(|dae| {
+    let projected = compiled.dae().inspect(|dae| {
         (0..dae.expression_count())
             .filter_map(|index| {
                 let expression = dae.expression(dae.expression_id(index)?)?;
@@ -182,11 +182,11 @@ fn nested_component_array_member_slice_selects_its_own_instance() {
     assert!(
         projected
             .iter()
-            .any(|provenance| compiled.dae.source_text(*provenance) == Some("ac.pin[:].v")),
+            .any(|provenance| compiled.dae().source_text(*provenance) == Some("ac.pin[:].v")),
         "the nested projection must retain its exact source occurrence"
     );
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("nested member slice should lower and evaluate at t=0");
     let report = &probe.report;
     assert!(report.error.is_none(), "eval error: {:?}", report.error);
@@ -251,7 +251,7 @@ fn member_slice_steps_over_the_class_occurrences_an_extends_adds() {
         .compile_str(INHERITED_PLUG_SLICE_MODEL, "InheritedPlugSlice.mo")
         .expect("a slice through an inherited connector array should compile to DAE");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("inherited plug slice should lower and evaluate at t=0");
     let report = &probe.report;
     assert!(report.error.is_none(), "eval error: {:?}", report.error);

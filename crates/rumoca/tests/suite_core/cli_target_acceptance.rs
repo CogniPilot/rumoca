@@ -3,10 +3,10 @@
 //! A code-gen target that consumes DAE-derived IR carries its whole
 //! admissibility proof in the manifest's `[capabilities]` table: the
 //! compact-family gate, the residual-algebraic gate, the Phase-DAE
-//! temporal-operator invariant, and `SolveProblem::validate` itself all run
-//! only through it. A manifest that omits the table therefore states nothing
-//! about which models it can render, and rendering it anyway publishes bytes as
-//! if they had been checked.
+//! temporal-operator invariant, and the sealed `SolveProblem` construction
+//! check itself all run only through it. A manifest that omits the table
+//! therefore states nothing about which models it can render, and rendering it
+//! anyway publishes bytes as if they had been checked.
 //!
 //! Every refusal below is paired with a positive control that differs only by
 //! the table, so neither can pass vacuously.
@@ -207,10 +207,10 @@ fn flat_target_needs_no_capabilities_table() {
     );
 }
 
-/// The shipped registry must stay renderable through the same entry point: the
-/// refusal above must not have caught a built-in target.
+/// The lossy Modelica-family targets are removed rather than retained as
+/// always-failing registered products.
 #[test]
-fn builtin_flat_targets_still_render_without_a_capabilities_table() {
+fn removed_flat_modelica_targets_are_unknown_and_emit_nothing() {
     let dir = tempdir().expect("tempdir");
     let model_file = dir.path().join("AcceptanceFixture.mo");
     fs::write(&model_file, FIXTURE).expect("write model fixture");
@@ -227,13 +227,17 @@ fn builtin_flat_targets_still_render_without_a_capabilities_table() {
             .expect("run rumoca compile --target");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            output.status.success(),
-            "built-in target `{target}` must still render (status {:?}):\n{stderr}",
+            !output.status.success(),
+            "removed target `{target}` must fail (status {:?})",
             output.status.code()
         );
         assert!(
-            rendered_any_file(&out_dir),
-            "built-in target `{target}` wrote no file:\n{stderr}"
+            stderr.to_ascii_lowercase().contains("unknown target"),
+            "removed target `{target}` must be rejected before rendering:\n{stderr}"
+        );
+        assert!(
+            !rendered_any_file(&out_dir),
+            "removed target `{target}` must not write an artifact:\n{stderr}"
         );
     }
 }

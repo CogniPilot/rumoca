@@ -67,7 +67,7 @@ fn evaluated_derivatives(source: &str, model: &str, file: &str) -> Vec<f64> {
         .model(model)
         .compile_str(source, file)
         .unwrap_or_else(|error| panic!("`{model}` should compile to a DAE: {error}"));
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .unwrap_or_else(|error| panic!("`{model}` should lower and evaluate: {error}"));
     assert!(
         probe.report.error.is_none(),
@@ -135,7 +135,7 @@ end CascadedFirstOrder;
         .model("CascadedFirstOrder")
         .compile_str(source, "CascadedFirstOrder.mo")
         .expect("the compact partial derivative family should compile");
-    let solve = rumoca_sim::lower_solve_problem(&compiled.dae)
+    let solve = rumoca_sim::lower_solve_problem(compiled.dae())
         .expect("the partial derivative family should lower to Solve IR");
     let counts = solve.compute_node_counts();
     assert_eq!(
@@ -167,7 +167,7 @@ end StructuredCall;
         .model("StructuredCall")
         .compile_str(source, "StructuredCall.mo")
         .expect("a compact domain binder carries scalar shape evidence into call selection");
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         assert_eq!(view.continuous_family_count(), 1);
         let family = view
             .continuous_family(0)
@@ -200,7 +200,7 @@ end MixedFamily;
         .model("MixedFamily")
         .compile_str(source, "MixedFamily.mo")
         .expect("the source loop supersedes child array views instead of overlapping them");
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         let mut row_counts = view
             .continuous_owners()
             .filter_map(|owner| match owner {

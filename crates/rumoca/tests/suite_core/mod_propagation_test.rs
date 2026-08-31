@@ -6,7 +6,7 @@ use rumoca_core::ComponentPath;
 use rumoca_ir_ast as ast;
 use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
 use rumoca_phase_parse::parse_to_ast;
-use rumoca_phase_resolve::resolve;
+use rumoca_phase_resolve::{ResolvedTree, resolve};
 use rumoca_phase_typecheck::typecheck_instanced;
 
 /// Helper: Find a component by qualified name in the overlay.
@@ -495,9 +495,8 @@ fn test_dimension_evaluation_after_typecheck() {
     tree.source_map.add("<test>", source);
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve failed");
-    let tree = resolved.into_inner();
 
-    let mut overlay = match instantiate_model_with_outcome(&tree, "Test") {
+    let mut overlay = match instantiate_model_with_outcome(resolved.inner(), "Test") {
         InstantiationOutcome::Success(o) => o,
         InstantiationOutcome::NeedsInner { missing_inners, .. } => {
             panic!("Needs inner: {:?}", missing_inners);
@@ -527,7 +526,7 @@ fn test_dimension_evaluation_after_typecheck() {
     );
 
     // Run typecheck_instanced
-    let result = typecheck_instanced(&tree, &mut overlay, "");
+    let result = typecheck_instanced(&resolved, &mut overlay, "");
     if let Err(diags) = result {
         println!("\nTypecheck errors:");
         for d in diags.iter() {
@@ -613,8 +612,7 @@ fn test_nested_colon_parameter_binding_drives_size_dimension() {
     tree.source_map.add("<test>", source);
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve failed");
-    let tree = resolved.into_inner();
-    let mut overlay = match instantiate_model_with_outcome(&tree, "P.Test") {
+    let mut overlay = match instantiate_model_with_outcome(resolved.inner(), "P.Test") {
         InstantiationOutcome::Success(o) => o,
         InstantiationOutcome::NeedsInner { missing_inners, .. } => {
             panic!("Needs inner: {:?}", missing_inners);
@@ -624,7 +622,7 @@ fn test_nested_colon_parameter_binding_drives_size_dimension() {
         }
     };
 
-    typecheck_instanced(&tree, &mut overlay, "P.Test").expect("typecheck should succeed");
+    typecheck_instanced(&resolved, &mut overlay, "P.Test").expect("typecheck should succeed");
 
     let q = find_component(&overlay, "pathPlanning.path.q").expect("path.q should exist");
     assert_eq!(q.dims, vec![6]);
@@ -729,7 +727,8 @@ fn test_dffreg_like_structure() {
     assert_integer_binding(&overlay, "dFFREG.dFFR.n", "2");
 
     // Run typecheck and verify dimensions
-    let _ = typecheck_instanced(&tree, &mut overlay, "");
+    typecheck_instanced(&tree, &mut overlay, "")
+        .expect("DFFREG modifier propagation should typecheck");
     assert_dims(&overlay, "dFFREG.dataIn", &[2]);
     assert_dims(&overlay, "dFFREG.dFFR.dataIn", &[2]);
 }
@@ -1088,7 +1087,8 @@ fn test_constrainedby_mod_survives_redeclare_for_replaceable_component() {
     "#;
 
     let (tree, mut overlay) = instantiate_test_model(source, "Top");
-    let _ = typecheck_instanced(&tree, &mut overlay, "");
+    typecheck_instanced(&tree, &mut overlay, "")
+        .expect("redeclared component dimensions should typecheck");
 
     assert_integer_binding(&overlay, "p.comb.n", "2");
     assert_dims(&overlay, "p.comb.u", &[2]);
@@ -1216,7 +1216,7 @@ fn test_nested_record_parameter_alias_preserves_child_field_bindings() {
         .compile_str(source, "test.mo")
         .expect("Top should compile");
 
-    let unbound = compiled.flat.unbound_fixed_parameters();
+    let unbound = compiled.flat().unbound_fixed_parameters();
     assert!(
         !unbound
             .iter()
@@ -1226,14 +1226,14 @@ fn test_nested_record_parameter_alias_preserves_child_field_bindings() {
     );
 
     let child_a = compiled
-        .flat
+        .flat()
         .variables
         .iter()
         .find(|(name, _)| name.as_str() == "p.c.rp.a")
         .and_then(|(_, var)| var.binding.as_ref())
         .expect("p.c.rp.a should have binding");
     let child_b = compiled
-        .flat
+        .flat()
         .variables
         .iter()
         .find(|(name, _)| name.as_str() == "p.c.rp.b")
@@ -1284,7 +1284,7 @@ fn test_nested_modifier_forwarding_keeps_outer_alias_scope() {
         .expect("Top should compile");
 
     let binding = compiled
-        .flat
+        .flat()
         .variables
         .iter()
         .find(|(name, _)| name.as_str() == "mach.friction.frictionParameters.wRef")
@@ -1301,7 +1301,7 @@ fn test_nested_modifier_forwarding_keeps_outer_alias_scope() {
         "nested modifier forwarding should preserve outer alias source; binding={binding:?}"
     );
 
-    let unbound = compiled.flat.unbound_fixed_parameters();
+    let unbound = compiled.flat().unbound_fixed_parameters();
     assert!(
         !unbound
             .iter()
@@ -1341,7 +1341,7 @@ fn test_nested_modifier_on_array_component_selects_element_row() {
     for index in 1..=2 {
         let name = format!("pumps[{index}].per.motorEfficiency.eta");
         let eta = compiled
-            .flat
+            .flat()
             .variables
             .get(&rumoca_core::VarName::new(&name))
             .unwrap_or_else(|| panic!("{name} should be present"));
@@ -1363,7 +1363,7 @@ fn test_nested_modifier_on_array_component_selects_element_row() {
         }
 
         let shared = format!("shared[{index}].per.motorEfficiency.eta");
-        let binding = compiled.flat.variables[&rumoca_core::VarName::new(&shared)]
+        let binding = compiled.flat().variables[&rumoca_core::VarName::new(&shared)]
             .binding
             .as_ref()
             .expect("each binding should be preserved");
@@ -1376,18 +1376,14 @@ fn test_nested_modifier_on_array_component_selects_element_row() {
 }
 
 /// Helper: Parse source and instantiate a model.
-fn instantiate_test_model(
-    source: &str,
-    model_name: &str,
-) -> (ast::ClassTree, ast::InstanceOverlay) {
+fn instantiate_test_model(source: &str, model_name: &str) -> (ResolvedTree, ast::InstanceOverlay) {
     let stored_def = parse_to_ast(source, "<test>").expect("parse failed");
     let mut tree = ast::ClassTree::from_parsed(stored_def);
     tree.source_map.add("<test>", source);
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve failed");
-    let tree = resolved.into_inner();
 
-    let overlay = match instantiate_model_with_outcome(&tree, model_name) {
+    let overlay = match instantiate_model_with_outcome(resolved.inner(), model_name) {
         InstantiationOutcome::Success(o) => o,
         InstantiationOutcome::NeedsInner { missing_inners, .. } => {
             panic!("Needs inner: {:?}", missing_inners);
@@ -1396,7 +1392,7 @@ fn instantiate_test_model(
             panic!("Error: {:?}", e);
         }
     };
-    (tree, overlay)
+    (resolved, overlay)
 }
 
 /// Helper: Print components matching a predicate.

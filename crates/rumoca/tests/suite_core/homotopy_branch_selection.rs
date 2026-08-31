@@ -29,7 +29,7 @@
 //! Solve lowering can put a λ read in.
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, SimResult, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, SimResult, simulate_dae};
 
 fn simulate(
     source: &str,
@@ -43,7 +43,7 @@ fn simulate(
         t_end,
         ..SimOptions::default()
     };
-    Ok(simulate_dae_with_diagnostics(&compiled.dae, &opts)?)
+    Ok(simulate_dae(compiled.dae(), &opts)?)
 }
 
 fn channel<'sim>(sim: &'sim SimResult, name: &str) -> &'sim [f64] {

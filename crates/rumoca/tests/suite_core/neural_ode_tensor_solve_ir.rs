@@ -11,7 +11,7 @@ fn neural_ode_tensor_indexed_parameter_loads_stay_in_parameter_vector() {
             "/../../examples/models/NeuralODETensor.mo"
         ))
         .expect("NeuralODETensor should compile");
-    result.dae.inspect(|view| {
+    result.dae().inspect(|view| {
         assert_eq!(view.root_count(), 0);
         assert_eq!(view.structured_root_count(), 0);
     });
@@ -20,7 +20,7 @@ fn neural_ode_tensor_indexed_parameter_loads_stay_in_parameter_vector() {
         dt: Some(0.02),
         ..SimOptions::default()
     };
-    let solve = rumoca_sim::lower_for_simulation_with_overrides(&result.dae, &opts)
+    let solve = rumoca_sim::lower_for_simulation_with_overrides(result.dae(), &opts)
         .expect("NeuralODETensor should lower for simulation");
 
     let p_len = solve.parameters.len();
@@ -45,31 +45,31 @@ fn neural_ode_tensor_indexed_parameter_loads_stay_in_parameter_vector() {
 fn check_problem_blocks(solve: &SolveModel, p_len: usize, failures: &mut Vec<String>) {
     check_block(
         "continuous.implicit_rhs",
-        &solve.problem.continuous.implicit_rhs,
+        &solve.problem.continuous().implicit_rhs,
         p_len,
         failures,
     );
     check_block(
         "continuous.residual",
-        &solve.problem.continuous.residual,
+        &solve.problem.continuous().residual,
         p_len,
         failures,
     );
     check_block(
         "continuous.derivative_rhs",
-        &solve.problem.continuous.derivative_rhs,
+        &solve.problem.continuous().derivative_rhs,
         p_len,
         failures,
     );
     check_block(
         "initialization.residual",
-        &solve.problem.initialization.residual,
+        &solve.problem.initialization().residual,
         p_len,
         failures,
     );
     check_block(
         "initialization.update_rhs",
-        &ComputeBlock::from_scalar_program_block(solve.problem.initialization.update_rhs.clone()),
+        &ComputeBlock::from_scalar_program_block(solve.problem.initialization().update_rhs.clone()),
         p_len,
         failures,
     );
@@ -78,30 +78,35 @@ fn check_problem_blocks(solve: &SolveModel, p_len: usize, failures: &mut Vec<Str
 fn check_event_blocks(solve: &SolveModel, p_len: usize, failures: &mut Vec<String>) {
     check_program(
         "discrete.runtime_assignment_rhs",
-        &solve.problem.discrete.runtime_assignment_rhs,
+        &solve.problem.discrete().runtime_assignment_rhs,
         p_len,
         failures,
     );
-    check_program("discrete.rhs", &solve.problem.discrete.rhs, p_len, failures);
+    check_program(
+        "discrete.rhs",
+        &solve.problem.discrete().rhs,
+        p_len,
+        failures,
+    );
     check_program(
         "events.root_conditions",
-        &solve.problem.events.root_conditions,
+        &solve.problem.events().root_conditions,
         p_len,
         failures,
     );
     check_program(
         "events.dynamic_time_event_rhs",
-        &solve.problem.events.dynamic_time_event_rhs,
+        &solve.problem.events().dynamic_time_event_rhs,
         p_len,
         failures,
     );
     check_program(
         "events.action_conditions",
-        &solve.problem.events.action_conditions,
+        &solve.problem.events().action_conditions,
         p_len,
         failures,
     );
-    for (action_idx, action) in solve.problem.events.actions.iter().enumerate() {
+    for (action_idx, action) in solve.problem.events().actions.iter().enumerate() {
         for (part_idx, part) in action.message.parts.iter().enumerate() {
             if let rumoca_ir_solve::SolveEventMessagePart::Conversion { value: ops, .. } = part {
                 check_ops(
@@ -194,12 +199,6 @@ fn check_ops(label: &str, ops: &[LinearOp], p_len: usize, failures: &mut Vec<Str
         match *op {
             LinearOp::LoadP { index, .. } if index >= p_len => {
                 failures.push(format!("{label}: {op:?}; {}", ops_summary(ops)));
-            }
-            LinearOp::LoadIndexedP { base, count, .. } => {
-                let end = base.saturating_add(count);
-                if base >= p_len || end > p_len {
-                    failures.push(format!("{label}: {op:?}; {}", ops_summary(ops)));
-                }
             }
             _ => {}
         }

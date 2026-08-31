@@ -72,7 +72,7 @@ fn lower(name: &str, body: &str) -> Lowered {
         .model(name)
         .compile_str(&source, &format!("{name}.mo"))
         .expect("a perfect inner element loop must compile");
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("a perfect inner element loop must evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -87,7 +87,7 @@ fn lower(name: &str, body: &str) -> Lowered {
         .collect();
     let mut loop_depth = 0;
     let mut statement_count = 0;
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         let function = (0..view.function_count())
             .filter_map(|index| view.function_id(index).and_then(|id| view.function(id)))
             .find(|function| function.name().as_str().ends_with("elementLoop"))

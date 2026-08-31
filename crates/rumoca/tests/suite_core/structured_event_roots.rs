@@ -28,7 +28,7 @@ fn structured_relation_owns_one_compact_root_family_and_two_solve_views() {
         .compile_str(STRUCTURED_CONTACT, "StructuredContact.mo")
         .expect("structured state relations must compile with an event owner");
 
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         assert_eq!(view.structured_root_count(), 1);
         assert_eq!(view.root_count(), 0);
         let root = view
@@ -47,14 +47,14 @@ fn structured_relation_owns_one_compact_root_family_and_two_solve_views() {
         );
     });
 
-    let solve = lower_dae_for_simulation(&compiled.dae, &SimOptions::default())
+    let solve = lower_dae_for_simulation(compiled.dae(), &SimOptions::default())
         .expect("structured root family must have a Solve view");
-    solve.problem.validate().expect("Solve contract");
-    assert_eq!(solve.problem.events.root_conditions.len(), 2);
-    assert_eq!(solve.problem.events.root_zero_domains.len(), 2);
-    assert_eq!(solve.problem.events.root_relation_memory_targets.len(), 2);
+    crate::solve_root_contract::reseal_solve_problem(&solve.problem).expect("Solve contract");
+    assert_eq!(solve.problem.events().root_conditions.len(), 2);
+    assert_eq!(solve.problem.events().root_zero_domains.len(), 2);
+    assert_eq!(solve.problem.events().root_relation_memory_targets.len(), 2);
 
-    let json = serde_json::to_string(&compiled.dae).expect("serialize compact DAE");
+    let json = serde_json::to_string(compiled.dae()).expect("serialize compact DAE");
     let decoded: rumoca_ir_dae::Dae =
         serde_json::from_str(&json).expect("replay compact root owner");
     decoded.inspect(|view| assert_eq!(view.structured_root_count(), 1));

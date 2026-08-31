@@ -200,7 +200,7 @@ fn loop_derivatives(source: &str, model: &str, file: &str) -> Vec<f64> {
         .model(model)
         .compile_str(source, file)
         .expect("a loop-carried scalar must compile");
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("a loop-carried scalar must evaluate");
     assert!(
         probe.report.error.is_none(),

@@ -231,7 +231,7 @@ fn nested_call_preserves_function_produced_array_shape() {
         .compile_str(NESTED_ARRAY_CALL_MODEL, "NestedArrayCall.mo")
         .expect("nested dimension-generic array functions should compile");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("nested dimension-generic array functions should lower and evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -249,7 +249,7 @@ fn observed_scalar_field_lowers_record_function_matrix_slice_assignments() {
         .compile_str(RECORD_RESULT_MODEL, "ObserveRecordScalar.mo")
         .expect("record-valued function with matrix slice assignments should compile");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("observed record field should lower and evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -258,7 +258,7 @@ fn observed_scalar_field_lowers_record_function_matrix_slice_assignments() {
     );
     assert_eq!(slot_value(&probe.report, "observed"), 6.0);
 
-    let (record_nodes, field_nodes, record_provenance) = compiled.dae.inspect(|view| {
+    let (record_nodes, field_nodes, record_provenance) = compiled.dae().inspect(|view| {
         let mut record_nodes = 0;
         let mut field_nodes = 0;
         let mut record_provenance = None;
@@ -289,13 +289,13 @@ fn observed_scalar_field_lowers_record_function_matrix_slice_assignments() {
     );
     assert!(
         compiled
-            .dae
+            .dae()
             .source_text(record_provenance)
             .is_some_and(|source| source.contains("result.matrix")),
         "generated aggregate retains its semantically responsible source assignment"
     );
 
-    let wire = serde_json::to_string(&compiled.dae).expect("record DAE wire encoding");
+    let wire = serde_json::to_string(compiled.dae()).expect("record DAE wire encoding");
     let decoded: rumoca_ir_dae::Dae =
         serde_json::from_str(&wire).expect("record DAE wire reconstruction");
     let decoded_probe = eval_dae_at(&decoded, &SimOptions::default(), &[], 0.0)
@@ -313,7 +313,7 @@ fn record_fields_remain_readable_before_later_fields_are_assigned() {
         )
         .expect("independently total record fields should stage in source order");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("interleaved record field assembly should evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -330,7 +330,7 @@ fn shape_derived_integer_local_proves_later_compact_loop_domain() {
         .compile_str(SHAPE_DERIVED_LOCAL_LOOP_MODEL, "ObserveShapeDerivedLoop.mo")
         .expect("a local settled from a specialized input shape should prove the loop domain");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("the compact shape-derived loop should evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -350,7 +350,7 @@ fn loop_conditional_retains_carried_value_when_branch_is_false() {
         )
         .expect("a conditional loop update should retain its prior value on fallthrough");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("the conditional loop carry should evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -367,7 +367,7 @@ fn continuous_multi_output_equation_owns_each_typed_result() {
         .compile_str(MULTI_OUTPUT_EQUATION_MODEL, "ObserveMultiOutputEquation.mo")
         .expect("a typed tuple equation should lower each function-result ordinal");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("the multi-output equation should evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -389,7 +389,7 @@ fn single_element_matrix_constructor_remains_rank_two_in_a_function() {
         )
         .expect("a single-element matrix function should compile");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("a single-element matrix function should lower and evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -428,7 +428,7 @@ fn exhaustive_loop_conditional_defines_tensor_rows_without_a_seed() {
         )
         .expect("an exhaustive row definition should construct one compact tensor owner");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("the conditional row definition should evaluate");
     assert!(
         probe.report.error.is_none(),

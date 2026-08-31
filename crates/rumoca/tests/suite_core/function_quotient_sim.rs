@@ -9,7 +9,7 @@
 //! result keeps the typed pure-call rejection instead of riding Binary64.
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, SimResult, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, SimResult, simulate_dae};
 
 fn series<'a>(result: &'a SimResult, name: &str) -> &'a [f64] {
     let index = result
@@ -42,8 +42,8 @@ fn function_body_mod_matches_the_floored_definition_across_a_wrap() {
         .model("WrapMod")
         .compile_str(WRAP_MOD, "WrapMod.mo")
         .expect("function-body mod compiles");
-    let result = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let result = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 1.0,
             ..SimOptions::default()
@@ -95,8 +95,8 @@ fn function_body_div_and_rem_match_the_truncated_definitions_across_a_sign_chang
         .model("TruncatedForms")
         .compile_str(TRUNCATED_FORMS, "TruncatedForms.mo")
         .expect("function-body div/rem compiles");
-    let result = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let result = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 4.0,
             ..SimOptions::default()
@@ -146,8 +146,8 @@ fn mixed_integer_divisor_promotes_and_matches_the_floored_definition() {
         .model("MixedIntegerDivisor")
         .compile_str(MIXED_INTEGER_DIVISOR, "MixedIntegerDivisor.mo")
         .expect("mixed Integer divisor compiles");
-    let result = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let result = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 2.0,
             ..SimOptions::default()
@@ -199,8 +199,8 @@ fn signed_mls_examples_match_the_normative_values() {
         .model("SignedMlsExamples")
         .compile_str(SIGNED_MLS_EXAMPLES, "SignedMlsExamples.mo")
         .expect("signed example fixture compiles");
-    let result = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let result = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 1.0,
             ..SimOptions::default()
@@ -246,7 +246,7 @@ fn integer_result_quotient_keeps_the_typed_pure_call_rejection() {
         .model("IntegerResult")
         .compile_str(INTEGER_RESULT, "IntegerResult.mo")
         .expect("the Integer-result fixture still constructs its DAE");
-    let error = simulate_dae_with_diagnostics(&compiled.dae, &SimOptions::default())
+    let error = simulate_dae(compiled.dae(), &SimOptions::default())
         .expect_err("an Integer-result function quotient must fail typed");
     let message = error.to_string();
     assert!(
@@ -308,8 +308,8 @@ fn simulate_function_builtin(source: &str, model: &str) -> SimResult {
         .model(model)
         .compile_str(source, &format!("{model}.mo"))
         .expect("the function-body builtin fixture constructs its DAE");
-    simulate_dae_with_diagnostics(
-        &compiled.dae,
+    simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 2.0,
             ..SimOptions::default()
@@ -343,7 +343,7 @@ fn homotopy_in_function_body_keeps_its_typed_rejection() {
         .model("HomotopyInFunction")
         .compile_str(HOMOTOPY_IN_FUNCTION, "HomotopyInFunction.mo")
         .expect("the homotopy fixture constructs its DAE");
-    let error = simulate_dae_with_diagnostics(&compiled.dae, &SimOptions::default())
+    let error = simulate_dae(compiled.dae(), &SimOptions::default())
         .expect_err("function-body homotopy must fail without a continuation owner");
     assert!(
         error

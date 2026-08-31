@@ -49,7 +49,7 @@ fn proved_loop_reductions_round_trip_and_remain_runtime_computable() {
         .model("CheckedLoopReductions")
         .compile_str(LOOP_REDUCTIONS, "checked_loop_reductions.mo")
         .expect("proved loop reductions should construct checked DAE");
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         assert!(
             (0..view.expression_count())
                 .filter_map(|index| view.expression_id(index))
@@ -61,8 +61,8 @@ fn proved_loop_reductions_round_trip_and_remain_runtime_computable() {
         );
     });
 
-    let wire =
-        serde_json::to_string(&compiled.dae).expect("loop reductions should serialize through v11");
+    let wire = serde_json::to_string(compiled.dae())
+        .expect("loop reductions should serialize through v11");
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("wire-v11 reconstructs loop-reduction expressions");
     let simulation = simulate_dae(&decoded, &SimOptions::default())

@@ -25,7 +25,7 @@
 //! 2.589e-02 → 4.913e-05 for the model.
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, SimResult, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, SimResult, simulate_dae};
 
 const ZERO_FLOW_MIXING: &str = r"
 model ZeroFlowMixing
@@ -60,7 +60,7 @@ fn simulate(source: &str, model: &str, t_end: f64) -> SimResult {
         t_end,
         ..SimOptions::default()
     };
-    simulate_dae_with_diagnostics(&compiled.dae, &options).expect("the fixture simulates")
+    simulate_dae(compiled.dae(), &options).expect("the fixture simulates")
 }
 
 fn channel<'sim>(sim: &'sim SimResult, name: &str) -> &'sim [f64] {
@@ -130,7 +130,7 @@ fn the_rule_one_selector_is_not_a_state_event_owner() {
         .compile_str(ZERO_FLOW_MIXING, "ZeroFlowMixing.mo")
         .expect("the fixture compiles");
 
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         // The only crossing in the fixture is the `time < 1.0` driver, which MLS
         // §8.5 schedules as a time event. The `x >= 0` relation Rule 1 lifts out
         // of the operator's own `smooth(0, ...)` adds no root: rumoca keeps the

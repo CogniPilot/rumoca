@@ -40,7 +40,7 @@ fn checked_dae_flows_through_structural_and_solve_phases() {
 
     let solve = rumoca_sim::lower_solve_problem(&result.dae)
         .expect("checked DAE lowers to computable Solve IR");
-    assert_eq!(solve.layout.y_scalars(), 1);
+    assert_eq!(solve.layout().y_scalars(), 1);
 }
 
 #[test]

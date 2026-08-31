@@ -5,7 +5,7 @@
 
 use rumoca_core::{BuiltinFunction, Expression, ExpressionVisitor, OpBinary};
 use rumoca_phase_flatten::flatten_ref;
-use rumoca_phase_instantiate::instantiate_model;
+use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
 use rumoca_phase_resolve::resolve;
 use rumoca_phase_typecheck::typecheck_instanced;
 use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae};
@@ -112,8 +112,14 @@ end SampleTime;
     let model = "SampleTime";
     let tree = resolved.inner();
 
-    let mut overlay = instantiate_model(tree, model).expect("instantiate should succeed");
-    typecheck_instanced(tree, &mut overlay, model).expect("typecheck should succeed");
+    let mut overlay = match instantiate_model_with_outcome(tree, model) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
+    typecheck_instanced(&resolved, &mut overlay, model).expect("typecheck should succeed");
     let flat = flatten_ref(tree, &overlay, model).expect("flatten should succeed");
 
     let sample_rhs = flat
@@ -290,9 +296,9 @@ fn native_simulation_updates_condition_memory_after_clocked_sample_time() {
         .model("SampleTime")
         .compile_str(SAMPLE_TIME_SOURCE, "sample_time.mo")
         .expect("clocked sample(time) model should compile");
-    assert_canonical_clock_ownership(&compiled.dae);
+    assert_canonical_clock_ownership(compiled.dae());
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.2,
             dt: Some(0.1),
@@ -322,9 +328,9 @@ fn rk_like_simulation_updates_condition_memory_after_clocked_sample_time() {
         .model("SampleTime")
         .compile_str(SAMPLE_TIME_SOURCE, "sample_time.mo")
         .expect("clocked sample(time) model should compile");
-    assert_canonical_clock_ownership(&compiled.dae);
+    assert_canonical_clock_ownership(compiled.dae());
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.2,
@@ -391,7 +397,7 @@ end PreviousCounter;
         .model("PreviousCounter")
         .compile_str(source, "previous_counter.mo")
         .expect("typed previous history should compile through Solve IR");
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         assert_eq!(view.previous_value_count(), 1);
         let previous = view
             .previous(view.previous_id(0).expect("one branded previous identity"))
@@ -411,7 +417,7 @@ end PreviousCounter;
     });
 
     let result = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.2,
             dt: Some(0.1),
@@ -438,7 +444,7 @@ end SampledAlgorithmCounter;
         .model("SampledAlgorithmCounter")
         .compile_str(source, "sampled_algorithm_counter.mo")
         .expect("sampled algorithm history should be valid by construction");
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         assert_eq!(view.clock_count(), 1);
         assert_eq!(view.clock_ownership_count(), 1);
         let ownership = view
@@ -455,7 +461,7 @@ end SampledAlgorithmCounter;
     });
 
     let result = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.2,
             dt: Some(0.1),
@@ -486,7 +492,7 @@ end ExactRationalClock;
         .model("ExactRationalClock")
         .compile_str(source, "exact_rational_clock.mo")
         .expect("Clock(intervalCounter, resolution) must resolve to a static schedule");
-    assert_periodic_clock_period(&compiled.dae, 1, 50);
+    assert_periodic_clock_period(compiled.dae(), 1, 50);
 }
 
 /// MLS §16.7: clock partitioning is static, so a `Clock` coordinate defined by
@@ -517,7 +523,7 @@ end ParameterSelectedClock;
         .model("ParameterSelectedClock")
         .compile_str(source, "parameter_selected_clock.mo")
         .expect("a parameter `if` equation must resolve its clock coordinate");
-    assert_periodic_clock_period(&compiled.dae, 20000, 1);
+    assert_periodic_clock_period(compiled.dae(), 20000, 1);
 
     // The same source with the other parameter value must resolve to the OTHER
     // constructor. With only the `subSampled = true` case, the selection rule
@@ -532,7 +538,7 @@ end ParameterSelectedClock;
         .model("ParameterSelectedClock")
         .compile_str(&unsampled, "parameter_selected_clock_false.mo")
         .expect("the false branch must resolve its clock coordinate too");
-    assert_periodic_clock_period(&compiled.dae, 1, 50);
+    assert_periodic_clock_period(compiled.dae(), 1, 50);
 }
 
 /// MLS §16.3 `sample(u, c)`: the named clock proves the partition owner instead
@@ -560,7 +566,7 @@ end NamedSampleOwner;
         .model("NamedSampleOwner")
         .compile_str(source, "named_sample_owner.mo")
         .expect("sample(u, c) must own its partition through the named clock");
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         let ownership = view
             .clock_ownership(
                 view.clock_ownership_id(0)
@@ -611,8 +617,8 @@ end InferredWhenClock;
         .model("InferredWhenClock")
         .compile_str(source, "inferred_when_clock.mo")
         .expect("when Clock() must infer its owner from the connected partition");
-    assert_periodic_clock_period(&compiled.dae, 1, 10);
-    compiled.dae.inspect(|view| {
+    assert_periodic_clock_period(compiled.dae(), 1, 10);
+    compiled.dae().inspect(|view| {
         assert_eq!(
             view.clock_count(),
             1,
@@ -643,7 +649,7 @@ end BareClockedPartition;
         .model("BareClockedPartition")
         .compile_str(source, "bare_clocked_partition.mo")
         .expect("previous(...) outside a when clause must classify its operand as clocked");
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         assert_eq!(
             view.previous_value_count(),
             1,
@@ -685,7 +691,7 @@ end ValueShiftSample;
         .model("ValueShiftSample")
         .compile_str(source, "value_shift_sample.mo")
         .expect("a value-level shiftSample has a checked canonical owner");
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         assert_eq!(
             view.clock_count(),
             2,
@@ -833,10 +839,10 @@ end ClockedConnectedInput;
         .model("ClockedConnectedInput")
         .compile_str(source, "clocked_connected_input.mo")
         .expect("a connected clocked input must compile");
-    assert_connected_input_left_the_continuous_system(&compiled.dae);
+    assert_connected_input_left_the_continuous_system(compiled.dae());
 
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.3,
             dt: Some(0.1),
@@ -975,8 +981,14 @@ fn flatten_source(
     tree.source_map.add(file_name, source);
     let parsed = rumoca_ir_ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("source resolves");
-    let mut overlay = instantiate_model(resolved.inner(), model_name).expect("source instantiates");
-    typecheck_instanced(resolved.inner(), &mut overlay, model_name).expect("source typechecks");
+    let mut overlay = match instantiate_model_with_outcome(resolved.inner(), model_name) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
+    typecheck_instanced(&resolved, &mut overlay, model_name).expect("source typechecks");
     let flat = flatten_ref(resolved.inner(), &overlay, model_name).expect("source flattens");
     (resolved.into_inner(), flat)
 }

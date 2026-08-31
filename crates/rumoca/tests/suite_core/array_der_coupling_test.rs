@@ -49,7 +49,7 @@ fn array_der_rows_do_not_form_spurious_coupled_scc() {
         .compile_str(ARRAY_DER_MODEL, "ArrayDer.mo")
         .expect("compile to DAE should succeed");
 
-    let report = structural_report_for_dae(&compiled.dae, &SimOptions::default())
+    let report = structural_report_for_dae(compiled.dae(), &SimOptions::default())
         .expect("structural analysis should succeed");
 
     // The explicit ODE has no algebraic loop: every block must be scalar.
@@ -61,7 +61,7 @@ fn array_der_rows_do_not_form_spurious_coupled_scc() {
     );
 
     // And it must actually evaluate to a finite, correct derivative.
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("explicit ODE should lower and evaluate");
     assert!(
         probe.report.error.is_none(),

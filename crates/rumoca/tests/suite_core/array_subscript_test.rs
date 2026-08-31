@@ -4,7 +4,7 @@
 
 use rumoca_ir_ast as ast;
 use rumoca_phase_flatten::flatten_ref;
-use rumoca_phase_instantiate::instantiate_model;
+use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
 use rumoca_phase_resolve::resolve;
 use rumoca_phase_typecheck::typecheck_instanced;
 
@@ -56,8 +56,14 @@ end ArrayTest;
     let model = "ArrayTest.TestArray";
     let tree = resolved.inner();
 
-    let mut overlay = instantiate_model(tree, model).expect("instantiate should succeed");
-    typecheck_instanced(tree, &mut overlay, model).expect("typecheck should succeed");
+    let mut overlay = match instantiate_model_with_outcome(tree, model) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
+    typecheck_instanced(&resolved, &mut overlay, model).expect("typecheck should succeed");
     let flat = flatten_ref(tree, &overlay, model).expect("flatten should succeed");
 
     let variable_names = flat

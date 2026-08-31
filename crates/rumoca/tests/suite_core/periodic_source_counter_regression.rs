@@ -294,7 +294,7 @@ fn const_threshold_when_accumulator_fires_exactly_once() {
         .compile_str(CONST_THRESHOLD_COUNTER, "const_threshold_counter.mo")
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 1.0,
             dt: Some(0.05),
@@ -326,10 +326,10 @@ fn exact_sample_alias_fires_every_tick_and_does_not_allocate_condition_memory() 
             "sample_alias_counter_with_unrelated_event.mo",
         )
         .expect("exact sample alias should compile");
-    let solve = rumoca_phase_solve::lower_solve_problem(&compiled.dae)
+    let solve = rumoca_phase_solve::lower_solve_problem(compiled.dae())
         .expect("sample alias has a checked Solve owner");
     let condition_memory_rows = solve
-        .discrete
+        .discrete()
         .row_roles
         .iter()
         .filter(|role| **role == rumoca_ir_solve::DiscreteRowRole::ConditionMemory)
@@ -340,7 +340,7 @@ fn exact_sample_alias_fires_every_tick_and_does_not_allocate_condition_memory() 
     );
 
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.5,
             dt: Some(0.025),
@@ -375,7 +375,7 @@ fn const_threshold_guard_does_not_refire_on_later_unrelated_event() {
         )
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.8,
             dt: Some(0.05),
@@ -401,7 +401,7 @@ fn self_rescheduling_counter_advances_every_period() {
         .compile_str(SELF_RESCHEDULING_COUNTER, "self_rescheduling_counter.mo")
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.5,
             dt: Some(0.02),
@@ -466,7 +466,7 @@ fn initial_self_rescheduling_counter_never_starts_when_its_threshold_is_already_
         )
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.36,
             dt: Some(0.02),
@@ -496,7 +496,7 @@ fn vector_self_rescheduling_counter_advances_every_period() {
         )
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.5,
             dt: Some(0.02),
@@ -532,7 +532,7 @@ fn indexed_parameter_threshold_does_not_refire_on_later_unrelated_event() {
         )
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.8,
             dt: Some(0.05),
@@ -558,7 +558,7 @@ fn discrete_vector_assignment_captures_every_component_at_event() {
         .compile_str(DISCRETE_VECTOR_CAPTURE, "discrete_vector_capture.mo")
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.2,
             dt: Some(0.02),
@@ -587,7 +587,7 @@ fn one_event_captures_multiple_discrete_vectors() {
         )
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.2,
             dt: Some(0.02),
@@ -634,7 +634,7 @@ fn nonlinear_pre_factor_guard_does_not_refire_on_later_unrelated_event() {
         )
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.3,
             dt: Some(0.02),
@@ -663,7 +663,7 @@ fn non_target_pre_delta_guard_does_not_refire_on_later_unrelated_event() {
         )
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.3,
             dt: Some(0.02),
@@ -692,7 +692,7 @@ fn stateful_self_rescheduling_counter_advances_every_period() {
         )
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.36,
             dt: Some(0.02),
@@ -722,7 +722,7 @@ fn stateful_initial_self_rescheduling_counter_also_stalls_on_a_met_threshold() {
         )
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.36,
             dt: Some(0.02),
@@ -749,7 +749,7 @@ fn sample_when_accumulator_advances_once_per_tick() {
         .compile_str(SAMPLE_COUNTER, "sample_counter.mo")
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.36,
             dt: Some(0.02),
@@ -776,7 +776,7 @@ fn rk_like_sample_when_accumulator_advances_once_per_tick() {
         .compile_str(SAMPLE_COUNTER, "sample_counter.mo")
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.36,
@@ -804,7 +804,7 @@ fn rk_like_zero_phase_sample_when_accumulator_advances_after_initial_tick() {
         .compile_str(ZERO_PHASE_SAMPLE_COUNTER, "zero_phase_sample_counter.mo")
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.36,
@@ -841,7 +841,7 @@ fn pre_threshold_guard_does_not_refire_on_later_unrelated_event() {
         )
         .expect("model should compile");
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.8,
             dt: Some(0.05),

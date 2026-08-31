@@ -27,7 +27,7 @@ fn fixed_state_holonomic_reduction_fails_before_simulation() {
         .model("CartesianPendulum")
         .compile_str(CARTESIAN_PENDULUM, "CartesianPendulum.mo")
         .expect("the source model constructs its checked DAE");
-    let error = lower_dae_for_simulation(&compiled.dae, &SimOptions::default())
+    let error = lower_dae_for_simulation(compiled.dae(), &SimOptions::default())
         .expect_err("reduction must not discard an untransferred fixed-state equation");
     let message = error.to_string();
     assert!(

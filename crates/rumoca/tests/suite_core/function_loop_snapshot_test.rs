@@ -39,7 +39,7 @@ fn indexed_mutation_does_not_replace_an_earlier_snapshot_with_a_live_read() {
         .model("ObserveLoopSnapshot")
         .compile_str(MODEL, "ObserveLoopSnapshot.mo")
         .expect("the invariant guard should move inside the compact nested loop");
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("the checked snapshot DAE should evaluate");
     assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
     let observed = probe

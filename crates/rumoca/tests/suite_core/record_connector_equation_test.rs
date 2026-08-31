@@ -60,7 +60,7 @@ fn whole_record_connector_equation_preserves_array_fields() {
     let compiled = compiler
         .compile_str(MODEL, "record_connector_equation.mo")
         .expect("whole-record connector equality should compile to DAE");
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("record-routed model should evaluate at t=0");
     assert!(
         probe.report.error.is_none(),

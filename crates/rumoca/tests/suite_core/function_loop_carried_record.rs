@@ -8,7 +8,7 @@
 //! against the value OpenModelica computes for the same source.
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, SimResult, eval_dae_at, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, SimResult, eval_dae_at, simulate_dae};
 
 /// `p` is overwritten outright on every iteration and read only after the
 /// loop, so the value that leaves the loop is the one the last iteration
@@ -154,8 +154,8 @@ fn simulated_output(source: &str, model: &str, file: &str) -> f64 {
         .model(model)
         .compile_str(source, file)
         .expect("a loop-carried record must compile");
-    let result = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let result = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 1.0,
             ..SimOptions::default()
@@ -186,7 +186,7 @@ fn a_constant_record_carry_folds_to_its_last_write() {
         .model("ObserveConstantRecordCarry")
         .compile_str(CONSTANT_RECORD_CARRY, "ObserveConstantRecordCarry.mo")
         .expect("a constant loop-carried record must compile");
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("a constant loop-carried record must evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -225,8 +225,8 @@ fn a_nested_record_carry_is_rejected_by_a_coded_and_spanned_diagnostic() {
         .model("ObserveNestedRecordCarry")
         .compile_str(NESTED_RECORD_CARRY, "ObserveNestedRecordCarry.mo")
         .expect("a nested loop-carried record must reach Solve lowering");
-    let error = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let error = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 1.0,
             ..SimOptions::default()

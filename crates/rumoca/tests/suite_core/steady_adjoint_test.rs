@@ -42,7 +42,7 @@ fn steady_state_adjoint_matches_forward_and_analytic() {
 
     let adjoint = |objective: &str| {
         let probe = rumoca_sim::steady_state_adjoint_objective_gradient_for_dae(
-            &result.dae,
+            result.dae(),
             &SimOptions::default(),
             &overrides,
             objective,
@@ -58,7 +58,7 @@ fn steady_state_adjoint_matches_forward_and_analytic() {
     };
     let forward = |objective: &str| {
         let probe = rumoca_sim::steady_state_objective_gradient_for_dae(
-            &result.dae,
+            result.dae(),
             &SimOptions::default(),
             &overrides,
             objective,
@@ -146,7 +146,7 @@ fn steady_state_adjoint_matches_forward_on_chain() {
 
     for objective in ["x1", "x2", "x3", "x4", "x5"] {
         let adjoint = rumoca_sim::steady_state_adjoint_objective_gradient_for_dae(
-            &result.dae,
+            result.dae(),
             &opts,
             &overrides,
             objective,
@@ -154,7 +154,7 @@ fn steady_state_adjoint_matches_forward_on_chain() {
         )
         .unwrap_or_else(|e| panic!("adjoint `{objective}`: {e:?}"));
         let forward = rumoca_sim::steady_state_objective_gradient_for_dae(
-            &result.dae,
+            result.dae(),
             &opts,
             &overrides,
             objective,
@@ -222,7 +222,7 @@ fn steady_state_adjoint_handles_algebraic_objective() {
 
     let adjoint = |objective: &str| {
         let probe = rumoca_sim::steady_state_adjoint_objective_gradient_for_dae(
-            &result.dae,
+            result.dae(),
             &opts,
             &overrides,
             objective,
@@ -238,7 +238,7 @@ fn steady_state_adjoint_handles_algebraic_objective() {
     };
     let forward = |objective: &str| {
         let probe = rumoca_sim::steady_state_objective_gradient_for_dae(
-            &result.dae,
+            result.dae(),
             &opts,
             &overrides,
             objective,

@@ -25,7 +25,7 @@ fn enumeration_compact_range_lowers_to_its_enumeration_values() {
         .model("EnumerationCompactRange")
         .compile_str(ENUMERATION_RANGE_MODEL, "enumeration_compact_range.mo")
         .expect("an enumeration compact range has a checked DAE owner");
-    let wire = serde_json::to_string(&compiled.dae).expect("the enumeration array serializes");
+    let wire = serde_json::to_string(compiled.dae()).expect("the enumeration array serializes");
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("the wire reconstructs the enumeration array");
     let simulation = simulate_dae(&decoded, &SimOptions::default())
@@ -65,7 +65,7 @@ end EnumerationOrdinal;
             "enumeration_ordinal.mo",
         )
         .expect("Integer() of an enumeration value has a checked DAE owner");
-    let simulation = simulate_dae(&compiled.dae, &SimOptions::default())
+    let simulation = simulate_dae(compiled.dae(), &SimOptions::default())
         .expect("the enumeration ordinal lowers to a Solve value");
     let y = simulation
         .names

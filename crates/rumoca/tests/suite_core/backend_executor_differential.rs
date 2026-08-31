@@ -144,7 +144,7 @@ fn scalar(label: &str, block: &ScalarProgramBlock, into: &mut Vec<NamedBlock>) {
 /// through a different entry point.
 fn blocks_under_test(model: &SolveModel) -> Vec<NamedBlock> {
     let mut blocks = Vec::new();
-    let continuous = &model.problem.continuous;
+    let continuous = model.problem.continuous();
     scalarized(
         "continuous.implicit_rhs",
         &continuous.implicit_rhs,
@@ -161,7 +161,7 @@ fn blocks_under_test(model: &SolveModel) -> Vec<NamedBlock> {
         &continuous.manifold_residual,
         &mut blocks,
     );
-    let initialization = &model.problem.initialization;
+    let initialization = model.problem.initialization();
     scalarized(
         "initialization.residual",
         &initialization.residual,
@@ -172,7 +172,7 @@ fn blocks_under_test(model: &SolveModel) -> Vec<NamedBlock> {
         &initialization.update_rhs,
         &mut blocks,
     );
-    let discrete = &model.problem.discrete;
+    let discrete = model.problem.discrete();
     scalar("discrete.rhs", &discrete.rhs, &mut blocks);
     scalar(
         "discrete.runtime_assignment_rhs",
@@ -186,7 +186,7 @@ fn blocks_under_test(model: &SolveModel) -> Vec<NamedBlock> {
     );
     scalar(
         "events.root_conditions",
-        &model.problem.events.root_conditions,
+        &model.problem.events().root_conditions,
         &mut blocks,
     );
     scalar("visible_value_rows", &model.visible_value_rows, &mut blocks);
@@ -200,13 +200,13 @@ fn census(ops: &[LinearOp], into: &mut BTreeSet<&'static str>) {
         match op {
             LinearOp::FunctionFold { program, .. }
             | LinearOp::GuardedFunctionFold { program, .. }
-            | LinearOp::StoreOutputFunctionFold { program, .. } => census(&program.update, into),
+            | LinearOp::StoreOutputFunctionFold { program, .. } => census(program.update(), into),
             LinearOp::FunctionConditional { program, .. } => {
-                for arm in &program.arms {
-                    census(&arm.condition, into);
-                    census(&arm.result, into);
+                for arm in program.arms() {
+                    census(arm.condition(), into);
+                    census(arm.result(), into);
                 }
-                census(&program.fallback, into);
+                census(program.fallback(), into);
             }
             _ => {}
         }
@@ -344,7 +344,7 @@ fn differential(source: &str, model_name: &str) -> Differential {
         .compile_str(source, &format!("{model_name}.mo"))
         .unwrap_or_else(|error| panic!("compile {model_name}: {error:?}"));
     let opts = SimOptions::default();
-    let model = rumoca_sim::lower_for_simulation_with_overrides(&compiled.dae, &opts)
+    let model = rumoca_sim::lower_for_simulation_with_overrides(compiled.dae(), &opts)
         .unwrap_or_else(|error| panic!("lower {model_name}: {error:?}"));
 
     let pure_calls = rumoca_exec_cranelift::compile_pure_call_table(&model.pure_calls).ok();

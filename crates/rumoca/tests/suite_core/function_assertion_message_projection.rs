@@ -10,7 +10,7 @@
 
 use rumoca::Compiler;
 use rumoca_ir_solve as solve;
-use rumoca_sim::{SimOptions, SimResult, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, SimResult, simulate_dae};
 
 const CONCATENATED_MESSAGE: &str = r#"
 model ConcatenatedMessage
@@ -103,7 +103,7 @@ fn lower(source: &str, model: &str, file: &str) -> rumoca_phase_solve::LoweredSo
         .model(model)
         .compile_str(source, file)
         .unwrap_or_else(|error| panic!("{model} compiles: {error}"));
-    rumoca_phase_solve::lower_solve_package(&compiled.dae)
+    rumoca_phase_solve::lower_solve_package(compiled.dae())
         .unwrap_or_else(|error| panic!("{model} lowers: {error}"))
 }
 
@@ -112,8 +112,8 @@ fn simulate(source: &str, model: &str, file: &str, t_end: f64) -> SimResult {
         .model(model)
         .compile_str(source, file)
         .unwrap_or_else(|error| panic!("{model} compiles: {error}"));
-    simulate_dae_with_diagnostics(
-        &compiled.dae,
+    simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end,
             ..SimOptions::default()
@@ -146,11 +146,11 @@ fn message_conversions(action: &solve::SolveEventAction) -> Vec<&[solve::LinearO
 }
 
 fn assertion_message(package: &rumoca_phase_solve::LoweredSolvePackage, y: &[f64]) -> String {
-    let events = &package.problem.events;
+    let events = package.problem.events();
     let request = rumoca_eval_solve::eval_event_action_request(
         events,
         y,
-        &vec![0.0; package.problem.layout.p_scalars()],
+        &vec![0.0; package.problem.layout().p_scalars()],
         0.0,
         rumoca_eval_solve::RowEvalContext {
             pure_calls: Some(&package.pure_calls),
@@ -171,7 +171,7 @@ fn concatenated_literal_message_keeps_its_source_order_and_simulates() {
         "ConcatenatedMessage",
         "ConcatenatedMessage.mo",
     );
-    let [action] = package.problem.events.actions.as_slice() else {
+    let [action] = package.problem.events().actions.as_slice() else {
         panic!("one call-specialized assertion owns one action");
     };
     assert_eq!(
@@ -208,7 +208,7 @@ fn converted_message_projects_the_shared_call_owner_instead_of_the_body() {
         "ConvertedResultMessage",
         "ConvertedResultMessage.mo",
     );
-    let events = &package.problem.events;
+    let events = package.problem.events();
     let [action] = events.actions.as_slice() else {
         panic!("one call-specialized assertion owns one action");
     };
@@ -264,8 +264,8 @@ fn a_converted_argument_reads_the_value_the_owner_was_already_given() {
         .model("ArgCallMessage")
         .compile_str(ARGUMENT_FROM_A_CALL, "ArgCallMessage.mo")
         .expect("ArgCallMessage compiles");
-    let error = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let error = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 0.5,
             ..SimOptions::default()
@@ -304,7 +304,7 @@ fn a_message_that_would_call_a_function_is_refused_at_its_own_span() {
         .model("EagerCallLit")
         .compile_str(EAGER_MESSAGE_CALL, "EagerCallLit.mo")
         .expect("the model itself is well typed");
-    let error = rumoca_phase_solve::lower_solve_package(&compiled.dae)
+    let error = rumoca_phase_solve::lower_solve_package(compiled.dae())
         .err()
         .expect("a message that would invoke a function is refused");
     assert_eq!(
@@ -333,8 +333,8 @@ fn a_refused_message_never_fires_the_nested_assertion_it_would_have_called() {
     // `run`'s condition holds for every reachable state, so no message may be
     // rendered and `sq`'s assertion may never be reached. Compiling the message
     // eagerly must not turn that unreachable effect into a live action row.
-    let error = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let error = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 1.0,
             ..SimOptions::default()

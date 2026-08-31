@@ -47,7 +47,7 @@ fn continuous_model_algorithm_remains_an_algebraic_equation() {
         .compile_str(CONTINUOUS_ALGORITHM, "continuous_algorithm.mo")
         .expect("continuous algorithm should construct checked DAE");
 
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         let y = view
             .variables()
             .find(|(_, variable)| variable.name().as_str() == "y")
@@ -67,7 +67,7 @@ fn continuous_model_algorithm_remains_an_algebraic_equation() {
         );
     });
 
-    let wire = serde_json::to_string(&compiled.dae)
+    let wire = serde_json::to_string(compiled.dae())
         .expect("continuous algorithm should serialize through wire-v11");
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("wire-v11 should reconstruct the checked owners");
@@ -102,7 +102,7 @@ fn event_guarded_model_algorithm_constructs_one_checked_discrete_action() {
         .compile_str(EVENT_GUARDED_ALGORITHM, "event_guarded_algorithm.mo")
         .expect("event-guarded algorithm should construct checked DAE");
 
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         let f = view
             .variables()
             .find(|(_, variable)| variable.name().as_str() == "f")
@@ -127,7 +127,7 @@ fn event_guarded_model_algorithm_constructs_one_checked_discrete_action() {
     });
 
     let wire =
-        serde_json::to_string(&compiled.dae).expect("event-guarded algorithm should serialize");
+        serde_json::to_string(compiled.dae()).expect("event-guarded algorithm should serialize");
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("wire-v11 should reconstruct the checked event owner");
     decoded.inspect(|view| {
@@ -185,7 +185,7 @@ end RecordTransition;
         )
         .expect("a whole record call receiver should construct discrete leaf owners");
 
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         let projected_calls = (0..view.expression_count())
             .filter_map(|index| view.expression(view.expression_id(index)?))
             .filter(|expression| {
@@ -208,7 +208,7 @@ end RecordTransition;
     });
 
     let simulation = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_end: 0.0,
             ..SimOptions::default()
@@ -260,7 +260,7 @@ end RecordAssignment;
         )
         .expect("a direct record-valued call assignment should construct one call owner");
 
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         let owners = (0..view.expression_count())
             .filter_map(|index| view.expression(view.expression_id(index)?))
             .filter_map(|expression| match expression.operation() {
@@ -350,7 +350,7 @@ end TotalArrayAlgorithm;
         )
         .expect("total array algorithm should construct one compact owner");
 
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         assert_eq!(view.continuous_owner_count(), 1);
         let ContinuousOwnerView::Structured { family, .. } = view
             .continuous_owner(0)
@@ -366,7 +366,7 @@ end TotalArrayAlgorithm;
     });
 
     let wire =
-        serde_json::to_string(&compiled.dae).expect("compact array algorithm should serialize");
+        serde_json::to_string(compiled.dae()).expect("compact array algorithm should serialize");
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("wire-v11 should reconstruct the compact owner");
     let simulation = simulate_dae(&decoded, &SimOptions::default())
@@ -407,7 +407,7 @@ end SeparatedArrayReduction;
         )
         .expect("proved array reduction should construct checked DAE");
 
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         let total = view
             .variables()
             .find(|(_, variable)| variable.name().as_str() == "total")
@@ -429,7 +429,7 @@ end SeparatedArrayReduction;
         );
     });
 
-    let wire = serde_json::to_string(&compiled.dae)
+    let wire = serde_json::to_string(compiled.dae())
         .expect("compact array reduction should serialize through wire-v11");
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("wire-v11 should reconstruct both checked owners");

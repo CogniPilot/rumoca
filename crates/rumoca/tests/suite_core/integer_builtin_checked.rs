@@ -18,7 +18,7 @@ end IntegerBuiltin;
             "integer_builtin.mo",
         )
         .expect("integer() should have one typed checked DAE operation");
-    let wire = serde_json::to_string(&compiled.dae).expect("integer() should serialize");
+    let wire = serde_json::to_string(compiled.dae()).expect("integer() should serialize");
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("wire-v11 should reconstruct integer()");
     let simulation = simulate_dae(&decoded, &SimOptions::default())

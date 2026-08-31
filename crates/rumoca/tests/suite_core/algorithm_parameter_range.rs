@@ -26,7 +26,7 @@ fn simulate(source: &str, model: &str) -> rumoca_sim::SimResult {
         .model(model)
         .compile_str(source, &format!("{model}.mo"))
         .expect("a translation-settled algorithm range has a checked DAE owner");
-    let wire = serde_json::to_string(&compiled.dae).expect("the checked DAE serializes");
+    let wire = serde_json::to_string(compiled.dae()).expect("the checked DAE serializes");
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("the checked DAE reconstructs from wire form");
     simulate_dae(&decoded, &SimOptions::default()).expect("the compact algorithm range simulates")

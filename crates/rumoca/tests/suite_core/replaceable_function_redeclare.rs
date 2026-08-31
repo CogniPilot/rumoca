@@ -15,7 +15,7 @@ fn simulated_final_value(source: &str, file: &str, model: &str, variable: &str) 
         .compile_str(source, file)
         .expect("redeclare fixture should compile");
     let simulation = rumoca_sim::simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &rumoca_sim::SimOptions {
             t_end: 0.2,
             dt: Some(0.1),

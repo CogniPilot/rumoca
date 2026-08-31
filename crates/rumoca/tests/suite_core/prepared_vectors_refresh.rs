@@ -11,7 +11,7 @@ fn lower_tunable_model() -> rumoca_ir_solve::SolveModel {
         .model("TunableAngle")
         .compile_str(TUNABLE_SOURCE, "tunable.mo")
         .expect("compile TunableAngle");
-    lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).expect("lower solve model")
+    lower_dae_for_simulation(compiled.dae(), &SimOptions::default()).expect("lower solve model")
 }
 
 const TUNABLE_SOURCE: &str = r#"
@@ -26,7 +26,7 @@ end TunableAngle;
 "#;
 
 fn slot_index(model: &rumoca_ir_solve::SolveModel, name: &str) -> (bool, usize) {
-    match model.problem.layout.binding(name) {
+    match model.problem.layout().binding(name) {
         Some(ScalarSlot::Y { index, .. }) => (true, index),
         Some(ScalarSlot::P { index, .. }) => (false, index),
         other => panic!("unexpected slot for `{name}`: {other:?}"),

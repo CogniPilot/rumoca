@@ -215,7 +215,7 @@ fn evaluate(source: &str, model: &str, file: &str) -> rumoca_sim::EvalAtReport {
         .model(model)
         .compile_str(source, file)
         .expect("model should compile to a checked DAE");
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("checked DAE should evaluate");
     assert!(
         probe.report.error.is_none(),

@@ -13,7 +13,7 @@
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat::EquationOrigin;
 use rumoca_phase_flatten::flatten_ref;
-use rumoca_phase_instantiate::instantiate_model;
+use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
 use rumoca_phase_resolve::resolve;
 use rumoca_phase_typecheck::typecheck_instanced;
 
@@ -80,12 +80,37 @@ fn flatten_model(source: &str, model_name: &str) -> rumoca_ir_flat::Model {
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve should succeed");
     let tree = resolved.inner();
-    let mut overlay = instantiate_model(tree, model_name).expect("instantiate should succeed");
-    typecheck_instanced(tree, &mut overlay, model_name).expect("typecheck should succeed");
+    let mut overlay = match instantiate_model_with_outcome(tree, model_name) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
+    typecheck_instanced(&resolved, &mut overlay, model_name).expect("typecheck should succeed");
     flatten_ref(tree, &overlay, model_name).expect("flatten should succeed")
 }
 
-/// Every generated connection equation as a `(lhs, rhs)` origin pair.
+fn record_name(flat: &rumoca_ir_flat::Model, instance: rumoca_core::InstanceId) -> String {
+    flat.record_instances
+        .iter()
+        .find(|(_, record)| record.instance_id == instance)
+        .map(|(name, _)| name.as_str().to_string())
+        .expect("typed equalityConstraint owner resolves to one record instance")
+}
+
+fn function_name(
+    flat: &rumoca_ir_flat::Model,
+    instance: rumoca_core::FunctionInstanceId,
+) -> String {
+    flat.functions
+        .iter()
+        .find(|(_, function)| function.instance_id == Some(instance))
+        .map(|(name, _)| name.as_str().to_string())
+        .expect("typed equalityConstraint owner resolves to one function")
+}
+
+/// Every ordinary generated connection equation as a rendered endpoint pair.
 fn connection_origins(flat: &rumoca_ir_flat::Model) -> Vec<(String, String)> {
     flat.equations
         .iter()
@@ -96,29 +121,45 @@ fn connection_origins(flat: &rumoca_ir_flat::Model) -> Vec<(String, String)> {
         .collect()
 }
 
+fn equality_constraint_origins(
+    flat: &rumoca_ir_flat::Model,
+) -> Vec<(String, String, String, usize)> {
+    flat.equations
+        .iter()
+        .filter_map(|equation| match equation.origin {
+            EquationOrigin::EqualityConstraint {
+                lhs_record,
+                rhs_record,
+                function,
+            } => Some((
+                record_name(flat, lhs_record),
+                record_name(flat, rhs_record),
+                function_name(flat, function),
+                equation.scalar_count,
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn loop_closing_connect_emits_reduced_equality_constraint_residual() {
     let flat = flatten_model(SOURCE, "OcLoop.Loop3");
-    let origins = connection_origins(&flat);
-
-    let residuals: Vec<&(String, String)> = origins
-        .iter()
-        .filter(|(_, rhs)| rhs.contains("equalityConstraint"))
-        .collect();
+    let residuals = equality_constraint_origins(&flat);
 
     assert_eq!(
         residuals.len(),
         1,
-        "exactly one loop-closing connect must be replaced by equalityConstraint; got {origins:?}"
+        "exactly one loop-closing connect must be replaced by equalityConstraint; got {residuals:?}"
     );
-    let (lhs, rhs) = residuals[0];
+    let (_, _, function, scalar_count) = &residuals[0];
     assert_eq!(
-        lhs, "zeros(1)",
+        *scalar_count, 1,
         "the residual width must be the equalityConstraint output size, not the record size"
     );
-    assert!(
-        rhs.starts_with("OcLoop.Ori.equalityConstraint("),
-        "residual must call the connector record's own equalityConstraint; got `{rhs}`"
+    assert_eq!(
+        function, "OcLoop.Ori.equalityConstraint",
+        "residual must call the connector record's own equalityConstraint"
     );
 }
 
@@ -127,23 +168,14 @@ fn loop_closing_connect_drops_both_element_wise_equalities() {
     let flat = flatten_model(SOURCE, "OcLoop.Loop3");
     let origins = connection_origins(&flat);
 
-    // The broken edge is the one named by the equalityConstraint residual.
-    let (_, residual_rhs) = origins
-        .iter()
-        .find(|(_, rhs)| rhs.contains("equalityConstraint"))
+    let equality_constraints = equality_constraint_origins(&flat);
+    let (lhs_record, rhs_record, _, _) = equality_constraints
+        .first()
         .expect("a loop-closing connect must produce a residual");
-    let broken_pair: Vec<&str> = residual_rhs
-        .trim_end_matches(')')
-        .split_once('(')
-        .expect("residual origin records its two record paths")
-        .1
-        .split(", ")
-        .collect();
-    assert_eq!(broken_pair.len(), 2, "residual names exactly two records");
 
     for field in ["a", "b"] {
-        let lhs = format!("{}.{field}", broken_pair[0]);
-        let rhs = format!("{}.{field}", broken_pair[1]);
+        let lhs = format!("{lhs_record}.{field}");
+        let rhs = format!("{rhs_record}.{field}");
         assert!(
             !origins
                 .iter()

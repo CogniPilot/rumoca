@@ -38,7 +38,7 @@ fn steady_state_sensitivity_matches_analytic() {
 
     // Evaluate at the analytic steady state x*=4.5, w*=3.
     let probe = rumoca_sim::steady_state_parameter_sensitivity_for_dae(
-        &result.dae,
+        result.dae(),
         &SimOptions::default(),
         &[("x".to_string(), 4.5), ("w".to_string(), 3.0)],
         0.0,
@@ -98,7 +98,7 @@ fn steady_state_objective_gradient_matches_analytic() {
     let overrides = [("x".to_string(), 4.5), ("w".to_string(), 3.0)];
     let grad = |objective: &str| {
         let probe = rumoca_sim::steady_state_objective_gradient_for_dae(
-            &result.dae,
+            result.dae(),
             &SimOptions::default(),
             &overrides,
             objective,
@@ -159,13 +159,13 @@ fn nonlinear_algebraic_refresh_converges_to_true_root() {
         .model("SteadyModel")
         .compile_str(SOURCE, "SteadyModel.mo")
         .expect("SteadyModel should compile");
-    let solve_model = rumoca_sim::lower_dae_for_simulation(&result.dae, &SimOptions::default())
+    let solve_model = rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
         .expect("lowering should succeed");
     let runtime = rumoca_solver::SolveRuntime::new(&solve_model).expect("runtime should build");
 
     // Settle the algebraics from the steady state x*=4.5, w*=3 (z is the third,
     // nonlinear, solver-y slot).
-    let names = &solve_model.problem.solve_layout.solver_maps.names;
+    let names = &solve_model.problem.solve_layout().solver_maps.names;
     let z_index = names
         .iter()
         .position(|n| n == "z")
@@ -211,7 +211,7 @@ fn steady_state_objective_gradient_supports_output_objective() {
         .expect("OutputObjectiveModel should compile");
 
     let probe = rumoca_sim::steady_state_objective_gradient_for_dae(
-        &result.dae,
+        result.dae(),
         &SimOptions::default(),
         &[("x".to_string(), 4.5), ("w".to_string(), 3.0)],
         "obj",

@@ -200,7 +200,7 @@ fn spd_solve_keeps_array_assignments_and_compact_loop_owners() {
         .model("ObserveSolve")
         .compile_str(MODEL, "ObserveSolve.mo")
         .expect("the tensor-native SPD solve should compile");
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("the tensor-native SPD solve should evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -223,7 +223,7 @@ fn spd_solve_preserves_sequential_scratch_and_bounds_fold_expansion() {
         .model("ObserveSolve3")
         .compile_str(MODEL, "ObserveSolve3.mo")
         .expect("the three-dimensional SPD solve should compile");
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("the three-dimensional SPD solve should evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -244,9 +244,9 @@ fn spd_solve_preserves_sequential_scratch_and_bounds_fold_expansion() {
         );
     }
 
-    let solve = rumoca_sim::lower_solve_problem(&compiled.dae)
+    let solve = rumoca_sim::lower_solve_problem(compiled.dae())
         .expect("the three-dimensional SPD solve should lower to Solve IR");
-    let scalar = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.residual)
+    let scalar = rumoca_eval_solve::to_scalar_program_block(&solve.continuous().residual)
         .expect("the algebraic residual has one shared scalar view");
     let largest_program = scalar.programs().iter().map(Vec::len).max().unwrap_or(0);
     assert!(
@@ -261,7 +261,7 @@ fn multiply_used_loop_scratch_has_one_iteration_local_definition() {
         .model("ObserveSharedScratch")
         .compile_str(SHARED_LOOP_SCRATCH_MODEL, "ObserveSharedScratch.mo")
         .expect("multiply-used scratch should stay owned by one compact loop");
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         let function = (0..view.function_count())
             .filter_map(|index| view.function_id(index).and_then(|id| view.function(id)))
             .find(|function| function.name().as_str().ends_with("sharedScratch"))
@@ -300,7 +300,7 @@ fn multiply_used_loop_scratch_has_one_iteration_local_definition() {
             "iteration-local scratch must not acquire a seeded carried slot"
         );
     });
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("the shared-scratch function should evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -323,7 +323,7 @@ fn runtime_rank_two_index_reads_and_updates_the_same_coordinate() {
         .model("RuntimeMatrixIndex")
         .compile_str(RUNTIME_MATRIX_INDEX_MODEL, "RuntimeMatrixIndex.mo")
         .expect("a rank-two runtime index should compile");
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("a rank-two runtime index should lower and evaluate");
     assert!(
         probe.report.error.is_none(),
@@ -346,7 +346,7 @@ fn assertion_only_loop_preserves_each_call_scoped_action() {
         .model("AssertionLoopSuccess")
         .compile_str(ASSERTION_ONLY_LOOP_MODEL, "AssertionOnlyLoop.mo")
         .expect("an assertion-only function loop should compile");
-    success.dae.inspect(|view| {
+    success.dae().inspect(|view| {
         let function = (0..view.function_count())
             .filter_map(|index| view.function_id(index).and_then(|id| view.function(id)))
             .find(|function| function.name().as_str().ends_with("checkSamples"))
@@ -356,15 +356,15 @@ fn assertion_only_loop_preserves_each_call_scoped_action() {
             "the compact loop must retain its call-scoped assertion"
         );
     });
-    let success_package = rumoca_phase_solve::lower_solve_package(&success.dae)
+    let success_package = rumoca_phase_solve::lower_solve_package(success.dae())
         .expect("every assertion iteration should have an exact Solve schedule");
     let success_solve = &success_package.problem;
-    assert_eq!(success_solve.events.actions.len(), 1);
-    assert_eq!(success_solve.events.root_conditions.len(), 1);
+    assert_eq!(success_solve.events().actions.len(), 1);
+    assert_eq!(success_solve.events().root_conditions.len(), 1);
     let success_request = rumoca_eval_solve::eval_event_action_request(
-        &success_solve.events,
-        &vec![0.0; success_solve.layout.y_scalars()],
-        &vec![0.0; success_solve.layout.p_scalars()],
+        success_solve.events(),
+        &vec![0.0; success_solve.layout().y_scalars()],
+        &vec![0.0; success_solve.layout().p_scalars()],
         0.0,
         rumoca_eval_solve::RowEvalContext {
             pure_calls: Some(&success_package.pure_calls),
@@ -381,15 +381,15 @@ fn assertion_only_loop_preserves_each_call_scoped_action() {
         .model("AssertionLoopFailure")
         .compile_str(ASSERTION_ONLY_LOOP_MODEL, "AssertionOnlyLoop.mo")
         .expect("a runtime-failing assertion loop should still compile");
-    let failure_package = rumoca_phase_solve::lower_solve_package(&failure.dae)
+    let failure_package = rumoca_phase_solve::lower_solve_package(failure.dae())
         .expect("a failing assertion still has a computable Solve schedule");
     let failure_solve = &failure_package.problem;
-    assert_eq!(failure_solve.events.actions.len(), 1);
-    assert_eq!(failure_solve.events.root_conditions.len(), 1);
+    assert_eq!(failure_solve.events().actions.len(), 1);
+    assert_eq!(failure_solve.events().root_conditions.len(), 1);
     let failure_request = rumoca_eval_solve::eval_event_action_request(
-        &failure_solve.events,
-        &vec![0.0; failure_solve.layout.y_scalars()],
-        &vec![0.0; failure_solve.layout.p_scalars()],
+        failure_solve.events(),
+        &vec![0.0; failure_solve.layout().y_scalars()],
+        &vec![0.0; failure_solve.layout().p_scalars()],
         0.0,
         rumoca_eval_solve::RowEvalContext {
             pure_calls: Some(&failure_package.pure_calls),

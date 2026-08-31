@@ -1,6 +1,6 @@
 use rumoca::Compiler;
 use rumoca_ir_dae as dae;
-use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae};
 
 const BALL_WITH_TERMINATE: &str = r#"
 model BallTerminate
@@ -48,8 +48,8 @@ fn terminate_inside_when_stops_at_root_event() {
         .model("BallTerminate")
         .compile_str(BALL_WITH_TERMINATE, "ball_terminate.mo")
         .expect("compile BallTerminate");
-    let sim = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let sim = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 10.0,
@@ -82,8 +82,8 @@ fn bdf_terminate_inside_when_stops_at_root_event() {
         .model("BallTerminate")
         .compile_str(BALL_WITH_TERMINATE, "ball_terminate_bdf.mo")
         .expect("compile BallTerminate for BDF");
-    let sim = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let sim = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             solver_mode: SimSolverMode::Bdf,
             t_end: 10.0,
@@ -115,8 +115,8 @@ fn bdf_terminate_at_scheduled_time_preserves_time_and_message() {
         .model("TimedTerminate")
         .compile_str(TIMED_TERMINATE, "timed_terminate_bdf.mo")
         .expect("compile TimedTerminate for BDF");
-    let sim = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let sim = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             solver_mode: SimSolverMode::Bdf,
             t_end: 1.0,
@@ -153,7 +153,7 @@ fn pre_state_in_reinit_reads_the_event_entry_left_limit() {
         .model("BallReinit")
         .compile_str(BALL_WITH_PRE_REINIT, "ball_reinit.mo")
         .expect("compile BallReinit");
-    let pre_state_reads = compiled.dae.inspect(|view| {
+    let pre_state_reads = compiled.dae().inspect(|view| {
         (0..view.expression_count())
             .filter_map(|index| {
                 let expression = view
@@ -179,8 +179,8 @@ fn pre_state_in_reinit_reads_the_event_entry_left_limit() {
         "the reinit value must read v through its event-entry pre lane"
     );
 
-    let sim = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let sim = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.6,

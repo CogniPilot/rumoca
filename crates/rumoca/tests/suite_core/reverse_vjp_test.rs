@@ -28,7 +28,7 @@ fn reverse_vjp_matches_forward_jvp_dot_product() {
         .model("RevModel")
         .compile_str(SOURCE, "RevModel.mo")
         .expect("RevModel should compile");
-    let solve_model = rumoca_sim::lower_dae_for_simulation(&result.dae, &SimOptions::default())
+    let solve_model = rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
         .expect("lowering should succeed");
     let runtime = SolveRuntime::new(&solve_model).expect("runtime should build");
 
@@ -37,7 +37,7 @@ fn reverse_vjp_matches_forward_jvp_dot_product() {
     assert_eq!(runtime.solver_count, 2, "pure ODE: solver_y == states");
     // The seed/cotangent space is [solver_y | parameter scalars]; the parameter
     // count includes any compiler-internal scalars beyond `a`/`b`.
-    let p_scalars = solve_model.problem.layout.p_scalars();
+    let p_scalars = solve_model.problem.layout().p_scalars();
     let seed_len = runtime.solver_count + p_scalars;
 
     let state = vec![0.5_f64, -0.2];
@@ -138,7 +138,7 @@ fn reverse_vjp_rejects_models_with_algebraics() {
         .model("AlgModel")
         .compile_str(ALGEBRAIC_SOURCE, "AlgModel.mo")
         .expect("AlgModel should compile");
-    let solve_model = rumoca_sim::lower_dae_for_simulation(&result.dae, &SimOptions::default())
+    let solve_model = rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
         .expect("lowering should succeed");
     let runtime = SolveRuntime::new(&solve_model).expect("runtime should build");
 
@@ -159,7 +159,7 @@ fn reverse_vjp_rejects_models_with_algebraics() {
             max_iters: 64,
         },
     };
-    let mut out = vec![0.0_f64; runtime.solver_count + solve_model.problem.layout.p_scalars()];
+    let mut out = vec![0.0_f64; runtime.solver_count + solve_model.problem.layout().p_scalars()];
     let err = runtime
         .reverse_state_derivative_vjp(lin, &[1.0], &vec![1.0; runtime.state_count], &mut out)
         .expect_err("reverse VJP must reject a model with solver algebraics");
@@ -189,12 +189,12 @@ fn reverse_vjp_max_subgradient_matches_forward() {
         .model("MaxModel")
         .compile_str(MAX_SOURCE, "MaxModel.mo")
         .expect("MaxModel should compile");
-    let solve_model = rumoca_sim::lower_dae_for_simulation(&result.dae, &SimOptions::default())
+    let solve_model = rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
         .expect("lowering should succeed");
     let runtime = SolveRuntime::new(&solve_model).expect("runtime should build");
     assert_eq!(runtime.solver_count, runtime.state_count, "pure ODE");
 
-    let p_scalars = solve_model.problem.layout.p_scalars();
+    let p_scalars = solve_model.problem.layout().p_scalars();
     let seed_len = runtime.solver_count + p_scalars;
     let state = vec![2.0_f64];
     let params = solve_model.parameters.clone();

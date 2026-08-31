@@ -145,8 +145,8 @@ fn edge_and_change_expand_once_round_trip_and_fire_at_exact_transitions() {
         .model("HistoryPulse")
         .compile_str(HISTORY_MODEL, "history_pulse.mo")
         .expect("certified edge/change occurrences construct checked DAE");
-    assert_history_provenance(&compiled.dae);
-    let wire = serde_json::to_string(&compiled.dae).expect("history DAE serializes");
+    assert_history_provenance(compiled.dae());
+    let wire = serde_json::to_string(compiled.dae()).expect("history DAE serializes");
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("history DAE reconstructs through checked wire replay");
     assert_history_provenance(&decoded);
@@ -175,7 +175,7 @@ end ArrayHistory;
             "array_history.mo",
         )
         .expect("whole-array edge/change keep one checked array expression");
-    compiled.dae.inspect(|view| {
+    compiled.dae().inspect(|view| {
         let history = (0..view.expression_count())
             .filter_map(|index| view.expression_id(index))
             .filter_map(|id| view.expression(id))
@@ -201,7 +201,7 @@ end ArrayHistory;
             2
         );
     });
-    let wire = serde_json::to_string(&compiled.dae).expect("array history DAE serializes");
+    let wire = serde_json::to_string(compiled.dae()).expect("array history DAE serializes");
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("array history DAE reconstructs with compact shapes");
     decoded.inspect(|view| assert_eq!(view.discrete_value_owner_count(), 3));

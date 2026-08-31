@@ -9,7 +9,7 @@
 //! disagreement with a reference implementation, not merely with this test.
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae};
 
 /// `a = b` with the initial condition stated on the non-state member.
 const ALIAS_PIN: &str = r#"
@@ -361,8 +361,8 @@ fn simulate(source: &str, model: &str) -> SimResult {
         .model(model)
         .compile_str(source, &format!("{model}.mo"))
         .unwrap_or_else(|error| panic!("{model} should compile: {error}"));
-    simulate_dae_with_diagnostics(
-        &compiled.dae,
+    simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 0.1,
             dt: Some(0.05),
@@ -425,7 +425,7 @@ fn two_members_of_one_class_may_not_pin_different_initial_values() {
         .model("AliasBothPinned")
         .compile_str(ALIAS_BOTH_PINNED, "AliasBothPinned.mo")
         .expect("the DAE itself is well formed; the contradiction is structural");
-    let error = simulate_dae_with_diagnostics(&compiled.dae, &SimOptions::default())
+    let error = simulate_dae(compiled.dae(), &SimOptions::default())
         .expect_err("conflicting stated initial values are not a choice to make silently");
     let report = error.to_string();
     assert!(
@@ -511,7 +511,7 @@ fn stated_values_that_disagree_for_every_parameter_value_fail_loudly() {
         .model("ParamDisplacedDisagree")
         .compile_str(PARAMETER_AGREEMENT, "ParamDisplacedDisagree.mo")
         .expect("the contradiction is numeric, not a construction failure");
-    let error = simulate_dae_with_diagnostics(&compiled.dae, &SimOptions::default())
+    let error = simulate_dae(compiled.dae(), &SimOptions::default())
         .expect_err("an initial value no solution satisfies must not pass silently");
     let report = error.to_string();
     assert!(
@@ -530,7 +530,7 @@ fn contradicting_pins_are_rejected_in_a_class_that_holds_no_state() {
         .model("NoStateConflict")
         .compile_str(NO_STATE_CONFLICT, "NoStateConflict.mo")
         .expect("the DAE itself is well formed; the contradiction is structural");
-    let error = simulate_dae_with_diagnostics(&compiled.dae, &SimOptions::default())
+    let error = simulate_dae(compiled.dae(), &SimOptions::default())
         .expect_err("two stated values that differ by 1 have no common solution");
     let report = error.to_string();
     assert!(

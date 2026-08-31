@@ -39,12 +39,9 @@ fn solve_model_round_trip_simulates_identically() {
         dt: Some(0.05),
         ..Default::default()
     };
-    let lowered = lower_correlated_for_simulation_with_overrides(&compiled.dae, &opts)
+    let lowered = lower_correlated_for_simulation_with_overrides(compiled.dae(), &opts)
         .expect("lower correlated model");
-    lowered
-        .model()
-        .problem
-        .validate()
+    crate::solve_root_contract::reseal_solve_problem(&lowered.model().problem)
         .expect("lowered SolveProblem must satisfy its construction contract");
 
     // The addon boundary: hand the correlated component construction across as JSON.
@@ -120,8 +117,8 @@ fn solve_model_wire_rejects_caller_supplied_jvp_artifacts() {
         .model("ArrayDecay")
         .compile_str(ARRAY_SOURCE, "array.mo")
         .expect("compile ArrayDecay");
-    let model =
-        lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).expect("lower solve model");
+    let model = lower_dae_for_simulation(compiled.dae(), &SimOptions::default())
+        .expect("lower solve model");
     assert!(
         !model.artifacts.continuous.full_jacobian_v.is_empty(),
         "fixture must carry a mechanically derived JVP"
@@ -158,8 +155,8 @@ fn solve_model_replay_rejects_unproved_root_correlations() {
         .model("ArrayDecay")
         .compile_str(ARRAY_SOURCE, "array.mo")
         .expect("compile ArrayDecay");
-    let model =
-        lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).expect("lower solve model");
+    let model = lower_dae_for_simulation(compiled.dae(), &SimOptions::default())
+        .expect("lower solve model");
     let model_wire =
         rumoca_phase_solve::solve_model_wire(&model).expect("construct SolveModel wire");
     let wire = serde_json::to_value(model_wire).expect("serialize SolveModel");
@@ -179,7 +176,12 @@ fn solve_model_replay_rejects_unproved_root_correlations() {
     assert!(error.to_string().contains("initial_y"), "{error}");
 
     let mut wrong_metadata = wire.clone();
-    wrong_metadata["variable_meta"][0]["name"] = serde_json::json!("forged");
+    assert!(
+        wrong_metadata.get("variable_meta").is_none(),
+        "trace metadata must be derived rather than serialized as an authority"
+    );
+    wrong_metadata["variable_catalog"]["entries"][0]["scalar_names"][0] =
+        serde_json::json!("forged");
     let error = replay_wire(&wrong_metadata)
         .expect_err("visible names and metadata are one correlated projection");
     assert!(error.to_string().contains("metadata at index 0"), "{error}");
@@ -202,8 +204,8 @@ fn solve_model_wire_view_fails_closed_before_serialization() {
         .model("ArrayDecay")
         .compile_str(ARRAY_SOURCE, "array.mo")
         .expect("compile ArrayDecay");
-    let model =
-        lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).expect("lower solve model");
+    let model = lower_dae_for_simulation(compiled.dae(), &SimOptions::default())
+        .expect("lower solve model");
 
     let mut wrong_vector = model.clone();
     wrong_vector.initial_y.pop();

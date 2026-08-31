@@ -66,7 +66,7 @@ fn transfer_values_at(source: &str, model: &str, file: &str, time: f64) -> (f64,
         .compile_str(source, file)
         .unwrap_or_else(|error| panic!("`{file}` should compile: {error:?}"));
     let sim = simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.06,

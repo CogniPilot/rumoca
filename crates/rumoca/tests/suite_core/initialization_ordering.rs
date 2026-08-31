@@ -17,7 +17,7 @@
 //!   number is that guess.
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae};
 
 fn simulate(source: &str, model: &str, t_end: f64) -> rumoca_sim::SimResult {
     simulate_over(source, model, 0.0, t_end)
@@ -29,7 +29,7 @@ fn simulate_over(source: &str, model: &str, t_start: f64, t_end: f64) -> rumoca_
         .compile_str(source, "initialization_ordering.mo")
         .unwrap_or_else(|error| panic!("{model} should compile: {error:?}"));
     simulate_dae(
-        &compiled.dae,
+        compiled.dae(),
         &SimOptions {
             t_start,
             t_end,
@@ -44,8 +44,8 @@ fn simulate_on(source: &str, model: &str, solver_mode: SimSolverMode) -> rumoca_
         .model(model)
         .compile_str(source, "initialization_ordering.mo")
         .unwrap_or_else(|error| panic!("{model} should compile: {error:?}"));
-    simulate_dae_with_diagnostics(
-        &compiled.dae,
+    simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 0.05,
             dt: Some(0.01),

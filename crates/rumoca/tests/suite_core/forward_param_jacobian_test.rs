@@ -33,7 +33,7 @@ fn parameter_jacobian_matches_finite_difference() {
         .expect("ParamGrad should compile");
 
     let opts = SimOptions::default();
-    let solve_model = rumoca_sim::lower_dae_for_simulation(&result.dae, &opts)
+    let solve_model = rumoca_sim::lower_dae_for_simulation(result.dae(), &opts)
         .expect("ParamGrad should lower to a solve model");
     let runtime = SolveRuntime::new(&solve_model).expect("solve runtime should build");
 
@@ -118,7 +118,7 @@ fn forward_sensitivity_rhs_matches_directional_finite_difference() {
         .model("ParamGrad")
         .compile_str(SOURCE, "ParamGrad.mo")
         .expect("ParamGrad should compile");
-    let solve_model = rumoca_sim::lower_dae_for_simulation(&result.dae, &SimOptions::default())
+    let solve_model = rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
         .expect("ParamGrad should lower");
     let runtime = SolveRuntime::new(&solve_model).expect("solve runtime should build");
 

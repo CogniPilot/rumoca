@@ -46,7 +46,7 @@ fn nested_class_member_shadows_enclosing_class_member() {
         .compile_str(SHADOWED_NESTED_MODEL, "EnclosingShadow.mo")
         .expect("nested shadowed member should compile to DAE");
 
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+    let probe = eval_dae_at(compiled.dae(), &SimOptions::default(), &[], 0.0)
         .expect("shadowed nested model should lower and evaluate at t=0");
     let report = &probe.report;
     assert!(report.error.is_none(), "eval error: {:?}", report.error);

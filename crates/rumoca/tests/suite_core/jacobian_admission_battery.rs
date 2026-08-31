@@ -22,10 +22,10 @@
 
 use rumoca::Compiler;
 use rumoca_phase_autodiff::admission::{Family, Row, Verdict, table};
-use rumoca_sim::{SimOptions, SimResult, simulate_dae_with_diagnostics};
-use std::path::Path;
+use rumoca_sim::{SimOptions, SimResult, simulate_dae};
 
 use super::jacobian_finite_difference::Points;
+use super::required_tool_markers::omc_differential_is_required;
 
 /// The name of the differentiated function inside the probe at `index`.
 ///
@@ -156,8 +156,8 @@ fn run_here(row: &Row, index: usize) -> Result<(f64, f64), String> {
         .model(&name)
         .compile_str(&source, &format!("{name}.mo"))
         .map_err(|error| format!("{error:#}"))?;
-    let result = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let result = simulate_dae(
+        compiled.dae(),
         &SimOptions {
             t_end: 0.01,
             ..SimOptions::default()
@@ -379,7 +379,7 @@ fn untypable_pairs_are_not_modelica_programs() {
 
     if !omc_available() {
         assert!(
-            !Path::new("target/msl/omc-differential-required").is_file(),
+            !omc_differential_is_required(),
             "the OpenModelica typing row is required in this lane, but no working `omc` is on \
              PATH"
         );
@@ -443,7 +443,7 @@ fn the_generated_battery_elaborates_under_omc() {
 
     if !omc_available() {
         assert!(
-            !Path::new("target/msl/omc-differential-required").is_file(),
+            !omc_differential_is_required(),
             "the OpenModelica elaboration row is required in this lane, but no working `omc` is \
              on PATH"
         );
@@ -582,7 +582,7 @@ fn pairs_this_compiler_cannot_run_agree_with_central_differences_under_omc() {
 
     if !omc_available() {
         assert!(
-            !std::path::Path::new("target/msl/omc-differential-required").is_file(),
+            !omc_differential_is_required(),
             "the OpenModelica differential row is required in this lane, but no working `omc` \
              is on PATH"
         );
