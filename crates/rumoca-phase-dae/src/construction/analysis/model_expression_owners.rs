@@ -259,7 +259,7 @@ mod tests {
         parameter.min = Some(marker(22));
         parameter.max = Some(marker(23));
         parameter.shape_expr = vec![Subscript::expr(Box::new(marker(24)), Span::DUMMY)];
-        let mut function = Function::new("f", Span::DUMMY);
+        let mut function = Function::new("f", rumoca_core::DefId::new(64_001), Span::DUMMY);
         function.inputs.push(parameter);
         function.body.push(statement([25, 26, 27]));
         model.add_function(function);

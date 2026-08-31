@@ -1,3 +1,12 @@
+//! Function fixtures for direct Flat-to-DAE construction.
+//!
+//! A collected Flat function exposes exactly one source declaration, which it
+//! carries as its exposure identity. These models are written directly rather
+//! than resolved from a class tree, so the `63_1xx` band names the function
+//! declarations this module writes: one value per declaration, so the two
+//! declarations that share a model stay distinct and every fixture that
+//! rebuilds one declaration reuses its value.
+
 use rumoca_core::{Reference, ResolvedFunctionReference, TypeId};
 
 use super::super::*;
@@ -27,7 +36,11 @@ fn identity_function(
     output: rumoca_core::FunctionParam,
 ) -> rumoca_core::Function {
     let assignment_span = source.span("y := u", 0);
-    let mut function = rumoca_core::Function::new("f", source.span("function f", 0));
+    let mut function = rumoca_core::Function::new(
+        "f",
+        rumoca_core::DefId::new(63_101),
+        source.span("function f", 0),
+    );
     function.add_input(input);
     function.add_output(output);
     function.body.push(rumoca_core::Statement::Assignment {
@@ -49,6 +62,7 @@ fn add_function_call(model: &mut flat::Model, source: &TestSource, argument: Exp
             name: Reference::new("f"),
             args: vec![argument],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: call_span,
         },
         call_span,
@@ -56,6 +70,38 @@ fn add_function_call(model: &mut flat::Model, source: &TestSource, argument: Exp
             component: String::new(),
         },
     ));
+}
+
+fn indexed_test_component_reference(
+    name: &str,
+    index: i64,
+    span: Span,
+) -> rumoca_core::ComponentReference {
+    indexed_test_component_reference_with_def_id(
+        name,
+        index,
+        rumoca_core::DefId::new(test_instance_id(name).index().max(1)),
+        span,
+    )
+}
+
+fn indexed_test_component_reference_with_def_id(
+    name: &str,
+    index: i64,
+    def_id: rumoca_core::DefId,
+    span: Span,
+) -> rumoca_core::ComponentReference {
+    rumoca_core::ComponentReference::construct(
+        false,
+        span,
+        vec![rumoca_core::ComponentRefPart {
+            ident: name.to_string(),
+            span,
+            subs: vec![rumoca_core::Subscript::Index { value: index, span }],
+            def_id,
+        }],
+    )
+    .expect("test indexed component reference has exact identity")
 }
 
 fn assert_function_scalar_types(dae: &dae::Dae, expected: dae::ScalarType) {
@@ -76,6 +122,605 @@ fn assert_function_scalar_types(dae: &dae::Dae, expected: dae::ScalarType) {
             view.value_type(output.value_type()).unwrap().scalar_type(),
             expected
         );
+    });
+}
+
+fn scalar_array_element_function(
+    source: &TestSource,
+    indices: impl IntoIterator<Item = i64>,
+) -> rumoca_core::Function {
+    let mut function = rumoca_core::Function::new(
+        "f",
+        rumoca_core::DefId::new(63_102),
+        source.span("function f", 0),
+    );
+    let output = real_function_param("y", vec![4], source.span("output Real y[4]", 0)).with_def_id(
+        rumoca_core::DefId::new(test_instance_id("y").index().max(1)),
+    );
+    function.add_output(output);
+    for index in indices {
+        let text = format!("y[{index}] := {index}.0");
+        let assignment = source.span(&text, 0);
+        function.body.push(rumoca_core::Statement::Assignment {
+            comp: indexed_test_component_reference("y", index, assignment),
+            value: Expression::Literal {
+                value: Literal::Real(index as f64),
+                span: source.span(&format!("{index}.0"), 0),
+            },
+            span: assignment,
+        });
+    }
+    function
+}
+
+fn scalar_array_literal_function(
+    source: &TestSource,
+    members: &[(&str, Literal)],
+) -> rumoca_core::Function {
+    let mut function = rumoca_core::Function::new(
+        "f",
+        rumoca_core::DefId::new(63_103),
+        source.span("function f", 0),
+    );
+    let output_text = format!("output Real y[{}]", members.len());
+    let y_def = rumoca_core::DefId::new(test_instance_id("y").index().max(1));
+    function.add_output(
+        real_function_param(
+            "y",
+            vec![members.len() as i64],
+            source.span(&output_text, 0),
+        )
+        .with_def_id(y_def),
+    );
+    for (ordinal, (literal_text, literal)) in members.iter().enumerate() {
+        let index = ordinal as i64 + 1;
+        let assignment_text = format!("y[{index}] := {literal_text}");
+        let assignment = source.span(&assignment_text, 0);
+        function.body.push(rumoca_core::Statement::Assignment {
+            comp: indexed_test_component_reference_with_def_id("y", index, y_def, assignment),
+            value: Expression::Literal {
+                value: literal.clone(),
+                span: source.span(literal_text, 0),
+            },
+            span: assignment,
+        });
+    }
+    function
+}
+
+fn add_projected_scalar_array_call(model: &mut flat::Model, source: &TestSource) {
+    let instance_id = model.functions[&VarName::new("f")]
+        .instance_id
+        .expect("Flat assigns the array function an exact instance");
+    let call_span = source.span("f()", 0);
+    let projection_span = source.span("f()[1]", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::Index {
+            base: Box::new(Expression::FunctionCall {
+                name: Reference::new("f").with_resolved_function(ResolvedFunctionReference {
+                    instance_id,
+                    base_part_count: 1,
+                    transitively_non_replaceable: true,
+                }),
+                args: Vec::new(),
+                is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
+                span: call_span,
+            }),
+            subscripts: vec![rumoca_core::Subscript::Index {
+                value: 1,
+                span: projection_span,
+            }],
+            span: projection_span,
+        },
+        projection_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+}
+
+#[test]
+fn complete_scalar_array_element_definitions_construct_one_whole_assignment() {
+    let source = TestSource::new(
+        "function f output Real y[4]; algorithm y[1] := 1.0; y[2] := 2.0; \
+         y[3] := 3.0; y[4] := 4.0; end f; f()[1];",
+    );
+    let mut model = test_model();
+    model.add_function(scalar_array_element_function(&source, 1..=4));
+    model.is_partial = true;
+    add_projected_scalar_array_call(&mut model, &source);
+
+    let dae = construct(&model, source.map).expect("complete scalar array constructs");
+    dae.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        let output = function
+            .values()
+            .find(|value| value.name().as_str() == "y")
+            .expect("the exact output reaches DAE");
+        let output_type = view.value_type(output.value_type()).unwrap();
+        assert_eq!(output.role(), dae::FunctionValueRole::Output);
+        assert_eq!(output_type.scalar_type(), dae::ScalarType::Real);
+        assert_eq!(output_type.dimensions(), &[4]);
+        let statements = function.statements().collect::<Vec<_>>();
+        let [dae::FunctionStatementView::Assignment { definition }] = statements.as_slice() else {
+            panic!(
+                "complete canonical element coverage must construct one whole assignment, got {}",
+                statements.len()
+            )
+        };
+        assert_eq!(definition.target(), output.id());
+        assert_eq!(function.result_values().get(0).unwrap().id(), definition.id());
+        assert_eq!(
+            view.source_text(definition.provenance()),
+            Some("y[1] := 1.0")
+        );
+        let rhs = view.expression(definition.rhs()).unwrap();
+        assert_eq!(rhs.value_type().scalar_type(), dae::ScalarType::Real);
+        assert_eq!(rhs.value_type().dimensions(), &[4]);
+        let dae::ExpressionOperation::Array(elements) = rhs.operation() else {
+            panic!("the sole definition must retain the complete rank-one aggregate")
+        };
+        assert_eq!(elements.len(), 4);
+        for (ordinal, (expected, source_text)) in
+            [(1.0, "1.0"), (2.0, "2.0"), (3.0, "3.0"), (4.0, "4.0")]
+                .into_iter()
+                .enumerate()
+        {
+            let element = view.expression(elements.get(ordinal).unwrap()).unwrap();
+            assert!(
+                matches!(element.operation(), dae::ExpressionOperation::Literal(dae::DaeLiteral::Real(value)) if *value == expected),
+                "aggregate member {ordinal} must retain its exact literal"
+            );
+            assert_eq!(view.source_text(element.provenance()), Some(source_text));
+        }
+    });
+}
+
+#[test]
+fn noncanonical_scalar_array_element_order_cannot_forge_one_aggregate() {
+    let source = TestSource::new(
+        "function f output Real y[4]; algorithm y[2] := 2.0; y[1] := 1.0; \
+         y[3] := 3.0; y[4] := 4.0; end f; f()[1];",
+    );
+    let mut model = test_model();
+    model.add_function(scalar_array_element_function(&source, [2, 1, 3, 4]));
+    model.is_partial = true;
+    add_projected_scalar_array_call(&mut model, &source);
+
+    let dae = construct(&model, source.map).expect("noncanonical scalar array constructs");
+    dae.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        let output = function
+            .values()
+            .find(|value| value.name().as_str() == "y")
+            .expect("the exact output reaches DAE");
+        let statements = function.statements().collect::<Vec<_>>();
+        assert_eq!(
+            statements.len(),
+            5,
+            "the checked seed plus every reordered element write must remain explicit"
+        );
+        let dae::FunctionStatementView::Assignment {
+            definition: seed_definition,
+        } = &statements[0]
+        else {
+            panic!("noncanonical element coverage must retain its checked seed")
+        };
+        assert_eq!(seed_definition.target(), output.id());
+        assert_eq!(
+            view.source_text(seed_definition.provenance()),
+            Some("function f")
+        );
+        for (ordinal, (index, value, source_text)) in [
+            (2, 2.0, "y[2] := 2.0"),
+            (1, 1.0, "y[1] := 1.0"),
+            (3, 3.0, "y[3] := 3.0"),
+            (4, 4.0, "y[4] := 4.0"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let dae::FunctionStatementView::Assignment { definition } = &statements[ordinal + 1]
+            else {
+                panic!("reordered element {ordinal} must remain an assignment")
+            };
+            assert_eq!(definition.target(), output.id());
+            assert_eq!(view.source_text(definition.provenance()), Some(source_text));
+            let rhs = view.expression(definition.rhs()).unwrap();
+            let dae::ExpressionOperation::ArrayUpdate {
+                value: updated,
+                subscripts,
+                ..
+            } = rhs.operation()
+            else {
+                panic!("reordered element {ordinal} must remain one array update")
+            };
+            let updated = view.expression(updated).unwrap();
+            assert!(
+                matches!(updated.operation(), dae::ExpressionOperation::Literal(dae::DaeLiteral::Real(found)) if *found == value)
+            );
+            let mut subscripts = subscripts.iter();
+            let Some(dae::SubscriptView::Index { expression, .. }) = subscripts.next() else {
+                panic!("reordered element {ordinal} must retain one exact index")
+            };
+            assert!(subscripts.next().is_none());
+            let expression = view.expression(expression).unwrap();
+            assert!(
+                matches!(expression.operation(), dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(found)) if *found == index)
+            );
+        }
+        let final_definition = match statements.last().unwrap() {
+            dae::FunctionStatementView::Assignment { definition } => definition,
+            _ => unreachable!("the four exact statements are assignments"),
+        };
+        assert_eq!(
+            function.result_values().get(0).unwrap().id(),
+            final_definition.id(),
+            "the last source update remains the returned reaching definition"
+        );
+    });
+}
+
+#[test]
+fn foreign_scalar_array_target_identity_is_rejected_before_assembly() {
+    let source = TestSource::new(
+        "function f output Real y[4]; algorithm y[1] := 1.0; y[2] := 2.0; \
+         y[3] := 3.0; y[4] := 4.0; end f; f()[1];",
+    );
+    let expected = rumoca_core::DefId::new(test_instance_id("y").index().max(1));
+    let foreign = rumoca_core::DefId::new(test_instance_id("foreign-y").index().max(1));
+    assert_ne!(
+        expected, foreign,
+        "the mutation must change semantic identity"
+    );
+
+    let mut function = rumoca_core::Function::new(
+        "f",
+        rumoca_core::DefId::new(63_104),
+        source.span("function f", 0),
+    );
+    function.add_output(
+        real_function_param("y", vec![4], source.span("output Real y[4]", 0)).with_def_id(expected),
+    );
+    let mut foreign_span = Span::DUMMY;
+    for index in 1..=4 {
+        let text = format!("y[{index}] := {index}.0");
+        let assignment = source.span(&text, 0);
+        if index == 2 {
+            foreign_span = assignment;
+        }
+        function.body.push(rumoca_core::Statement::Assignment {
+            comp: indexed_test_component_reference_with_def_id(
+                "y",
+                index,
+                if index == 2 { foreign } else { expected },
+                assignment,
+            ),
+            value: Expression::Literal {
+                value: Literal::Real(index as f64),
+                span: source.span(&format!("{index}.0"), 0),
+            },
+            span: assignment,
+        });
+    }
+    let mut model = test_model();
+    model.add_function(function);
+    model.is_partial = true;
+    add_projected_scalar_array_call(&mut model, &source);
+
+    let error = construct(&model, source.map)
+        .expect_err("a foreign target identity must not reach array assembly");
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics { feature, span, .. }
+            if feature == "function assignment target" && span == foreign_span
+    ));
+}
+
+#[test]
+fn same_spelled_function_value_cannot_redirect_scalar_array_assembly() {
+    let source = TestSource::new(
+        "function f output Real y[4]; protected Real y[2]; algorithm \
+         y[1] := 1.0; y[2] := 2.0; y[3] := 3.0; y[4] := 4.0; end f; f()[1];",
+    );
+    let output_def = rumoca_core::DefId::new(test_instance_id("output-y").index().max(1));
+    let local_def = rumoca_core::DefId::new(test_instance_id("local-y").index().max(1));
+    assert_ne!(
+        output_def, local_def,
+        "the mutation needs distinct identities"
+    );
+
+    let mut function = rumoca_core::Function::new(
+        "f",
+        rumoca_core::DefId::new(63_105),
+        source.span("function f", 0),
+    );
+    function.add_output(
+        real_function_param("y", vec![4], source.span("output Real y[4]", 0))
+            .with_def_id(output_def),
+    );
+    function.add_local(
+        real_function_param("y", vec![2], source.span("protected Real y[2]", 0))
+            .with_def_id(local_def),
+    );
+    for index in 1..=4 {
+        let assignment_text = format!("y[{index}] := {index}.0");
+        let assignment = source.span(&assignment_text, 0);
+        function.body.push(rumoca_core::Statement::Assignment {
+            comp: indexed_test_component_reference_with_def_id("y", index, output_def, assignment),
+            value: Expression::Literal {
+                value: Literal::Real(index as f64),
+                span: source.span(&format!("{index}.0"), 0),
+            },
+            span: assignment,
+        });
+    }
+    let mut model = test_model();
+    model.add_function(function);
+    model.is_partial = true;
+    add_projected_scalar_array_call(&mut model, &source);
+
+    let local_span = source.span("protected Real y[2]", 0);
+    let error = construct(&model, source.map)
+        .expect_err("a duplicate spelling must fail before it can redirect the output plan");
+    assert!(matches!(
+        error,
+        ToDaeError::Construction {
+            source: dae::DaeConstructionError::DuplicateKey {
+                kind: "function value",
+                ref key,
+                span,
+            },
+            ..
+        } if key == "y" && span == local_span
+    ));
+}
+
+#[test]
+fn callable_scalar_elements_retain_sequential_function_statements() {
+    let source = TestSource::new(
+        "function next output Real v; external \"C\" v = next_value(); end next; \
+         function f output Real y[2]; algorithm y[1] := next(); y[2] := next(); \
+         end f; f()[1];",
+    );
+    let mut next = rumoca_core::Function::new(
+        "next",
+        rumoca_core::DefId::new(63_106),
+        source.span("function next", 0),
+    );
+    next.pure = true;
+    next.purity_declared = false;
+    next.add_output(real_function_param(
+        "v",
+        Vec::new(),
+        source.span("output Real v", 0),
+    ));
+    next.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("next_value".to_string()),
+        output_name: Some("v".to_string()),
+        args: Vec::new(),
+        annotations: Vec::new(),
+    });
+
+    let mut model = test_model();
+    model.add_function(next);
+    let next_instance = model.functions[&VarName::new("next")]
+        .instance_id
+        .expect("Flat assigns the external function an exact instance");
+    let next_reference = || {
+        Reference::new("next").with_resolved_function(ResolvedFunctionReference {
+            instance_id: next_instance,
+            base_part_count: 1,
+            transitively_non_replaceable: true,
+        })
+    };
+
+    let y_def = rumoca_core::DefId::new(test_instance_id("y").index().max(1));
+    let mut caller = rumoca_core::Function::new(
+        "f",
+        rumoca_core::DefId::new(63_107),
+        source.span("function f", 0),
+    );
+    caller.add_output(
+        real_function_param("y", vec![2], source.span("output Real y[2]", 0)).with_def_id(y_def),
+    );
+    for (index, occurrence) in [(1, 0), (2, 1)] {
+        let assignment = source.span(&format!("y[{index}] := next()"), 0);
+        caller.body.push(rumoca_core::Statement::Assignment {
+            comp: indexed_test_component_reference_with_def_id("y", index, y_def, assignment),
+            value: Expression::FunctionCall {
+                name: next_reference(),
+                args: Vec::new(),
+                is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
+                span: source.span("next()", occurrence),
+            },
+            span: assignment,
+        });
+    }
+    model.add_function(caller);
+    let caller_instance = model.functions[&VarName::new("f")]
+        .instance_id
+        .expect("Flat assigns the caller an exact instance");
+    model.is_partial = true;
+    let call_span = source.span("f()", 0);
+    let projection_span = source.span("f()[1]", 0);
+    model.initial_equations.push(flat::Equation::new(
+        Expression::Index {
+            base: Box::new(Expression::FunctionCall {
+                name: Reference::new("f").with_resolved_function(ResolvedFunctionReference {
+                    instance_id: caller_instance,
+                    base_part_count: 1,
+                    transitively_non_replaceable: true,
+                }),
+                args: Vec::new(),
+                is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
+                span: call_span,
+            }),
+            subscripts: vec![rumoca_core::Subscript::Index {
+                value: 1,
+                span: projection_span,
+            }],
+            span: projection_span,
+        },
+        projection_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let dae = construct(&model, source.map)
+        .expect("a deprecated bare external call remains callable in an initial equation");
+    dae.inspect(|view| {
+        let caller = (0..)
+            .map_while(|index| view.function_id(index))
+            .filter_map(|id| view.function(id))
+            .find(|function| function.name().as_str() == "f")
+            .expect("caller reaches the DAE");
+        assert_ne!(
+            caller.statements().count(),
+            1,
+            "callable elements must retain their exact source statement order"
+        );
+    });
+}
+
+#[test]
+fn incompatible_scalar_array_member_reports_its_exact_expression() {
+    let source = TestSource::new(
+        "function f output Real y[4]; algorithm y[1] := 1.0; y[2] := 2.0; \
+         y[3] := 3.0; y[4] := false; end f; f()[1];",
+    );
+    let y_def = rumoca_core::DefId::new(test_instance_id("y").index().max(1));
+    let mut function = rumoca_core::Function::new(
+        "f",
+        rumoca_core::DefId::new(63_108),
+        source.span("function f", 0),
+    );
+    function.add_output(
+        real_function_param("y", vec![4], source.span("output Real y[4]", 0)).with_def_id(y_def),
+    );
+    for index in 1..=4 {
+        let assignment_text = if index == 4 {
+            "y[4] := false".to_string()
+        } else {
+            format!("y[{index}] := {index}.0")
+        };
+        let assignment = source.span(&assignment_text, 0);
+        let value = if index == 4 {
+            Expression::Literal {
+                value: Literal::Boolean(false),
+                span: source.span("false", 0),
+            }
+        } else {
+            Expression::Literal {
+                value: Literal::Real(index as f64),
+                span: source.span(&format!("{index}.0"), 0),
+            }
+        };
+        function.body.push(rumoca_core::Statement::Assignment {
+            comp: indexed_test_component_reference_with_def_id("y", index, y_def, assignment),
+            value,
+            span: assignment,
+        });
+    }
+
+    let mut model = test_model();
+    model.add_function(function);
+    model.is_partial = true;
+    add_projected_scalar_array_call(&mut model, &source);
+    let bad_expression = source.span("false", 0);
+    let first_assignment = source.span("y[1] := 1.0", 0);
+
+    let error = construct(&model, source.map).expect_err("Boolean cannot define Real y[4]");
+    assert_ne!(
+        error.source_span(),
+        Some(first_assignment),
+        "the generated aggregate owner must not blame the first valid member"
+    );
+    assert_eq!(
+        error.source_span(),
+        Some(bad_expression),
+        "the invalid member must retain its constructor-bound expression owner"
+    );
+}
+
+#[test]
+fn invalid_first_scalar_array_member_is_reported_before_later_valid_members() {
+    let source = TestSource::new(
+        "function f output Real y[2]; algorithm y[1] := false; y[2] := 2.0; end f; f()[1];",
+    );
+    let mut model = test_model();
+    model.add_function(scalar_array_literal_function(
+        &source,
+        &[
+            ("false", Literal::Boolean(false)),
+            ("2.0", Literal::Real(2.0)),
+        ],
+    ));
+    model.is_partial = true;
+    add_projected_scalar_array_call(&mut model, &source);
+    let bad_member = source.span("false", 0);
+
+    let error = construct(&model, source.map).expect_err("Boolean cannot define Real y[1]");
+    assert_eq!(error.source_span(), Some(bad_member));
+}
+
+#[test]
+fn homogeneous_wrong_scalar_array_reports_its_first_invalid_member() {
+    let source = TestSource::new(
+        "function f output Real y[2]; algorithm y[1] := false; y[2] := true; end f; f()[1];",
+    );
+    let mut model = test_model();
+    model.add_function(scalar_array_literal_function(
+        &source,
+        &[
+            ("false", Literal::Boolean(false)),
+            ("true", Literal::Boolean(true)),
+        ],
+    ));
+    model.is_partial = true;
+    add_projected_scalar_array_call(&mut model, &source);
+    let bad_member = source.span("false", 0);
+
+    let error = construct(&model, source.map).expect_err("Boolean array cannot define Real y");
+    assert_eq!(error.source_span(), Some(bad_member));
+}
+
+#[test]
+fn integer_scalar_array_members_widen_only_at_the_real_target_assignment() {
+    let source = TestSource::new(
+        "function f output Real y[2]; algorithm y[1] := 1; y[2] := 2; end f; f()[1];",
+    );
+    let mut model = test_model();
+    model.add_function(scalar_array_literal_function(
+        &source,
+        &[("1", Literal::Integer(1)), ("2", Literal::Integer(2))],
+    ));
+    model.is_partial = true;
+    add_projected_scalar_array_call(&mut model, &source);
+
+    let dae = construct(&model, source.map).expect("Integer aggregate widens at Real assignment");
+    dae.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        let output = function
+            .values()
+            .find(|value| value.role() == dae::FunctionValueRole::Output)
+            .unwrap();
+        assert_eq!(
+            view.value_type(output.value_type()).unwrap().scalar_type(),
+            dae::ScalarType::Real
+        );
+        let definition = match function.statements().next().unwrap() {
+            dae::FunctionStatementView::Assignment { definition } => definition,
+            _ => panic!("the aggregate reaches one assignment"),
+        };
+        let rhs = view.expression(definition.rhs()).unwrap();
+        assert_eq!(rhs.value_type().scalar_type(), dae::ScalarType::Integer);
+        assert_eq!(rhs.value_type().dimensions(), &[2]);
     });
 }
 
@@ -189,6 +834,7 @@ fn enumeration_function_values_use_registered_canonical_identity() {
                     span: source.span("c", 1),
                 }],
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: call_span,
             }),
             span: equation_span,
@@ -258,7 +904,8 @@ fn executable_external_object_constructor_reaches_lifecycle_boundary() {
     let call_span = source.span("Handle(1.0)", 0);
     let literal_span = source.span("1.0", 0);
 
-    let mut constructor = rumoca_core::Function::new("Handle", function_span);
+    let mut constructor =
+        rumoca_core::Function::new("Handle", rumoca_core::DefId::new(63_109), function_span);
     constructor.add_input(real_function_param("seed", Vec::new(), input_span));
     constructor.add_output(function_param(
         "handle",
@@ -290,6 +937,7 @@ fn executable_external_object_constructor_reaches_lifecycle_boundary() {
                 span: literal_span,
             }],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: call_span,
         },
         call_span,
@@ -319,7 +967,8 @@ fn nested_assert_function_model(source: &TestSource, assertion_span: Span) -> fl
     let function_span = source.span("function f", 0);
     let output_span = source.span("output Real y", 0);
     let conditional_span = source.span("if true then assert(true, \"bad\"); end if", 0);
-    let mut function = rumoca_core::Function::new("f", function_span);
+    let mut function =
+        rumoca_core::Function::new("f", rumoca_core::DefId::new(63_110), function_span);
     function.add_output(real_function_param("y", Vec::new(), output_span));
     function.body = vec![rumoca_core::Statement::If {
         cond_blocks: vec![rumoca_core::StatementBlock {
@@ -353,6 +1002,7 @@ fn nested_assert_function_model(source: &TestSource, assertion_span: Span) -> fl
             name: Reference::new("f"),
             args: Vec::new(),
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: call_span,
         },
         call_span,
@@ -366,7 +1016,11 @@ fn nested_assert_function_model(source: &TestSource, assertion_span: Span) -> fl
 fn integer_assertion_function(source: &TestSource) -> rumoca_core::Function {
     let assertion_span = source.span("assert(i >= 1, \"i must be positive\")", 0);
     let assignment_span = source.span("y := i", 0);
-    let mut function = rumoca_core::Function::new("positive", source.span("function positive", 0));
+    let mut function = rumoca_core::Function::new(
+        "positive",
+        rumoca_core::DefId::new(63_111),
+        source.span("function positive", 0),
+    );
     function.add_input(integer_function_param(
         "i",
         Vec::new(),
@@ -423,7 +1077,11 @@ fn integer_assertion_function(source: &TestSource) -> rumoca_core::Function {
 fn real_assertion_function(source: &TestSource) -> rumoca_core::Function {
     let assertion_span = source.span("assert(r >= 0.0, \"r must be positive\")", 0);
     let assignment_span = source.span("y := r", 0);
-    let mut function = rumoca_core::Function::new("positive", source.span("function positive", 0));
+    let mut function = rumoca_core::Function::new(
+        "positive",
+        rumoca_core::DefId::new(63_112),
+        source.span("function positive", 0),
+    );
     function.add_input(real_function_param(
         "r",
         Vec::new(),
@@ -489,6 +1147,7 @@ fn add_integer_assertion_call(model: &mut flat::Model, source: &TestSource, argu
                 name: Reference::new("positive"),
                 args: vec![argument],
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: call_span,
             }),
             span: equation_span,
@@ -601,7 +1260,11 @@ fn declared_function_named_assert_is_not_predefined_assertion_elision() {
         "function assert output Integer y; algorithm y := 1; end assert; function f output Integer y; algorithm assert(); y := 1; end f; 1.0 * f();",
     );
     let call_statement_span = source.span("assert()", 0);
-    let mut user_assert = rumoca_core::Function::new("assert", source.span("function assert", 0));
+    let mut user_assert = rumoca_core::Function::new(
+        "assert",
+        rumoca_core::DefId::new(63_113),
+        source.span("function assert", 0),
+    );
     user_assert.add_output(integer_function_param(
         "y",
         Vec::new(),
@@ -620,7 +1283,11 @@ fn declared_function_named_assert_is_not_predefined_assertion_elision() {
     let assert_instance = model.functions[&VarName::new("assert")]
         .instance_id
         .expect("Flat assigns the declared assert function an exact instance");
-    let mut caller = rumoca_core::Function::new("f", source.span("function f", 0));
+    let mut caller = rumoca_core::Function::new(
+        "f",
+        rumoca_core::DefId::new(63_114),
+        source.span("function f", 0),
+    );
     caller.add_output(integer_function_param(
         "y",
         Vec::new(),
@@ -665,6 +1332,7 @@ fn declared_function_named_assert_is_not_predefined_assertion_elision() {
                 name: Reference::new("f"),
                 args: Vec::new(),
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: call_span,
             }),
             span: equation_span,
@@ -768,7 +1436,8 @@ fn production_lowering_preserves_function_locals_and_statement_order() {
     let local_span = source.span("Real z", 0);
     let first_span = source.span("z := u + 1.0", 0);
     let second_span = source.span("y := z * 2.0", 0);
-    let mut function = rumoca_core::Function::new("f", function_span);
+    let mut function =
+        rumoca_core::Function::new("f", rumoca_core::DefId::new(63_115), function_span);
     function.add_input(real_function_param("u", Vec::new(), input_span));
     function.add_output(real_function_param("y", Vec::new(), output_span));
     function.add_local(real_function_param("z", Vec::new(), local_span));
@@ -820,6 +1489,7 @@ fn production_lowering_preserves_function_locals_and_statement_order() {
                 span: source.span("1.0", 1),
             }],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: call_span,
         },
         call_span,
@@ -952,7 +1622,8 @@ fn production_lowering_constructs_a_compact_checked_function_loop() {
     let range_span = source.span("1:n", 0);
     let assertion_span = source.span("assert(k > 0, \"positive\")", 0);
     let update_span = source.span("y := y + k", 0);
-    let mut function = rumoca_core::Function::new("sum3", function_span);
+    let mut function =
+        rumoca_core::Function::new("sum3", rumoca_core::DefId::new(63_116), function_span);
     function.add_output(integer_function_param("y", Vec::new(), output_span));
     function.add_local(
         integer_function_param("n", Vec::new(), local_span).with_default(Expression::Literal {
@@ -1053,6 +1724,7 @@ fn add_sum3_call_equation(model: &mut flat::Model, source: &TestSource) {
                 name: Reference::new("sum3"),
                 args: Vec::new(),
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: call_span,
             }),
             span: equation_span,
@@ -1120,7 +1792,8 @@ fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
     let range_span = source.span("1:y", 0);
     let runtime_bound_span = source.span("y", 2);
     let update_span = source.span("y := y + k", 0);
-    let mut function = rumoca_core::Function::new("sumN", function_span);
+    let mut function =
+        rumoca_core::Function::new("sumN", rumoca_core::DefId::new(63_117), function_span);
     function.add_input(integer_function_param("n", Vec::new(), input_span));
     function.add_output(integer_function_param("y", Vec::new(), output_span));
     function.body = vec![
@@ -1182,6 +1855,7 @@ fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
                 span: source.span("3", 0),
             }],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: call_span,
         },
         call_span,
@@ -1224,7 +1898,8 @@ fn reachable_function_loop_over_a_proven_input_lowers_to_a_tensor_reduction() {
     let loop_span = source.span("for k in 1:n loop y := y + k; end for", 0);
     let range_span = source.span("1:n", 0);
     let update_span = source.span("y := y + k", 0);
-    let mut function = rumoca_core::Function::new("sumN", function_span);
+    let mut function =
+        rumoca_core::Function::new("sumN", rumoca_core::DefId::new(63_118), function_span);
     function.add_input(integer_function_param("n", Vec::new(), input_span));
     function.add_output(integer_function_param("y", Vec::new(), output_span));
     function.body = vec![
@@ -1293,6 +1968,7 @@ fn reachable_function_loop_over_a_proven_input_lowers_to_a_tensor_reduction() {
                     span: source.span("3", 0),
                 }],
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: call_span,
             }),
             span: equation_span,
@@ -1359,7 +2035,8 @@ fn external_random_model(
     let input_span = source.span("input Real p0", 0);
     let output_span = source.span("output Real y0", 0);
     let state_span = source.span("output Real q0", 0);
-    let mut function = rumoca_core::Function::new("f", function_span);
+    let mut function =
+        rumoca_core::Function::new("f", rumoca_core::DefId::new(63_119), function_span);
     let (pure, purity_declared) = match purity {
         DeclaredExternalPurity::Pure => (true, true),
         DeclaredExternalPurity::Impure => (false, true),
@@ -1401,6 +2078,7 @@ fn external_random_model(
                 span: source.span("2.5", 0),
             }],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: call_span,
         },
         call_span,
@@ -1601,6 +2279,7 @@ fn impure_external_function_keeps_its_declared_purity_in_an_initial_equation() {
                 span: source.span("2.5", 0),
             }],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: call_span,
         },
         call_span,
@@ -1720,6 +2399,7 @@ fn automatic_function_vectorization_constructs_one_compact_domain() {
             span: call_span,
         }],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: call_span,
     });
 

@@ -1,3 +1,8 @@
+//! A collected Flat function exposes exactly one source declaration, which it
+//! carries as its exposure identity. This module writes its model directly
+//! rather than resolving a class tree, so the `63_4xx` band names the one
+//! function declaration it writes.
+
 use rumoca_core::{Reference, TypeId};
 
 use super::super::*;
@@ -377,6 +382,7 @@ fn variable_identity_pass_preserves_order_forward_and_function_attributes() {
                 name: Reference::new("f"),
                 args: Vec::new(),
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: source.span("f()", 0),
             },
         ),
@@ -398,7 +404,8 @@ fn variable_identity_pass_preserves_order_forward_and_function_attributes() {
     let function_span = source.span("function f", 0);
     let output_span = source.span("output Real y", 0);
     let assignment_span = source.span("y := 4", 0);
-    let mut function = rumoca_core::Function::new("f", function_span);
+    let mut function =
+        rumoca_core::Function::new("f", rumoca_core::DefId::new(63_401), function_span);
     function.add_output(real_function_param("y", Vec::new(), output_span));
     function.body = vec![rumoca_core::Statement::Assignment {
         comp: test_component_reference("y", assignment_span),

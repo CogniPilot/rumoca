@@ -1,3 +1,9 @@
+//! A collected Flat function exposes exactly one source declaration, which it
+//! carries as its exposure identity. The function whose result label this
+//! module inspects takes the declaration identity that fixture already names;
+//! the `63_9xx` band names the remaining declaration, which two tests rebuild
+//! unchanged and therefore share.
+
 use rumoca_core::{
     ComponentRefPart, ComponentReference, DefId, EffectiveType, Expression, FunctionParam,
     OpBinary, Reference, SourceMap, Span, Subscript, TypeId, VarName,
@@ -139,13 +145,20 @@ fn add_record_layout(
         owner,
         flat::RecordType {
             name: name.to_string(),
-            fields: vec![flat::RecordField {
-                name: field_name.to_string(),
-                def_id: field,
-                dims: dims.to_vec(),
-            }],
+            fields: vec![record_field(field_name, field, dims)],
         },
     );
+}
+
+fn record_field(name: &str, def_id: DefId, dims: &[i64]) -> flat::RecordField {
+    let value_type = TypeId::new(1);
+    flat::RecordField {
+        name: name.to_string(),
+        def_id,
+        type_def_id: DefId::new(1),
+        effective_type: EffectiveType::new(value_type, value_type, dims.to_vec()).unwrap(),
+        dims: dims.to_vec(),
+    }
 }
 
 #[test]
@@ -159,16 +172,8 @@ fn inherited_field_projection_accepts_distinct_sibling_layouts() {
         flat::RecordType {
             name: "First".to_string(),
             fields: vec![
-                flat::RecordField {
-                    name: "marker".to_string(),
-                    def_id: inherited,
-                    dims: vec![0],
-                },
-                flat::RecordField {
-                    name: "a".to_string(),
-                    def_id: DefId::new(23),
-                    dims: vec![4],
-                },
+                record_field("marker", inherited, &[0]),
+                record_field("a", DefId::new(23), &[4]),
             ],
         },
     );
@@ -177,16 +182,8 @@ fn inherited_field_projection_accepts_distinct_sibling_layouts() {
         flat::RecordType {
             name: "Second".to_string(),
             fields: vec![
-                flat::RecordField {
-                    name: "marker".to_string(),
-                    def_id: inherited,
-                    dims: vec![0],
-                },
-                flat::RecordField {
-                    name: "b".to_string(),
-                    def_id: DefId::new(24),
-                    dims: vec![3],
-                },
+                record_field("marker", inherited, &[0]),
+                record_field("b", DefId::new(24), &[3]),
             ],
         },
     );
@@ -677,7 +674,7 @@ fn function_specialization_reads_symbolic_record_member_projection_shape() {
         &[("v", potential)],
         span,
     );
-    let mut identity = rumoca_core::Function::new("identity", span);
+    let mut identity = rumoca_core::Function::new("identity", DefId::new(63_901), span);
     identity.add_input(
         FunctionParam::new(
             "u",
@@ -699,6 +696,7 @@ fn function_specialization_reads_symbolic_record_member_projection_shape() {
             name: Reference::new("identity"),
             args: vec![projection],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -786,7 +784,7 @@ fn function_specialization_reads_declared_shape_of_structural_record_field() {
         &plans,
     )
     .expect("validation accepts only the occurrence-scoped structural certificate");
-    let mut identity = rumoca_core::Function::new("identity", span);
+    let mut identity = rumoca_core::Function::new("identity", DefId::new(63_901), span);
     identity.add_input(
         FunctionParam::new(
             "u",
@@ -808,6 +806,7 @@ fn function_specialization_reads_declared_shape_of_structural_record_field() {
             name: Reference::new("identity"),
             args: vec![field],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -832,7 +831,7 @@ fn a_function_result_label_is_not_misclassified_as_a_record_field() {
     let function_id = DefId::new(145);
     let result_id = DefId::new(146);
     let real = TypeId::new(1);
-    let mut function = rumoca_core::Function::new("make", span);
+    let mut function = rumoca_core::Function::new("make", function_id, span);
     function.def_id = Some(function_id);
     function.add_output(
         FunctionParam::new(
@@ -850,6 +849,7 @@ fn a_function_result_label_is_not_misclassified_as_a_record_field() {
             name: Reference::new("make"),
             args: Vec::new(),
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         }),
         field: "R".to_string(),

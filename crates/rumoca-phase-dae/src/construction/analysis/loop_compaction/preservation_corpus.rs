@@ -10,6 +10,10 @@
 //! `1:N` ranges stay inside the array extent, and literal coordinates in the
 //! same range are ever written, so no generated program depends on the
 //! interpreter's out-of-range refusal.
+//!
+//! A collected Flat function exposes exactly one source declaration, which it
+//! carries as its exposure identity. The harness declaration is written here
+//! rather than resolved from a class tree, so `64_101` names it.
 
 use super::preservation_values::{Environment, Value};
 use super::*;
@@ -80,7 +84,7 @@ fn real_array(name: &str) -> rumoca_core::FunctionParam {
 
 /// The one function declaration every generated body is placed into.
 pub(super) fn harness_function(body: Vec<rumoca_core::Statement>) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("preservation_probe", span());
+    let mut function = rumoca_core::Function::new("preservation_probe", DefId::new(64_101), span());
     function.inputs = REAL_INPUTS
         .iter()
         .map(|name| real_scalar(name))

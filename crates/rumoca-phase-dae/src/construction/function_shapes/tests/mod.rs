@@ -1,3 +1,8 @@
+//! A collected Flat function exposes exactly one source declaration, which it
+//! carries as its exposure identity. The record constructor takes the record
+//! declaration it constructs; the remaining declarations are written directly
+//! rather than resolved from a class tree, so the `63_5xx` band names them.
+
 mod missing_provenance;
 mod value_proven_shapes;
 
@@ -13,6 +18,127 @@ fn literal(value: f64, span: Span) -> Expression {
         value: Literal::Real(value),
         span,
     }
+}
+
+#[test]
+fn function_shape_uses_explicit_partial_application_identity() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("partial_identity.mo", "function f(x = 1)");
+    let span = Span::from_offsets(source, 0, 17);
+    let named = Expression::FunctionCall {
+        name: Reference::generated(format!("{}x", rumoca_core::NAMED_FUNCTION_ARG_PREFIX)),
+        args: vec![literal(1.0, span)],
+        is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
+        span,
+    };
+    let call = |call_kind| Expression::FunctionCall {
+        name: Reference::new("f"),
+        args: vec![named.clone()],
+        is_constructor: false,
+        call_kind,
+        span,
+    };
+    let model = flat::Model::new();
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+        .expect("the empty model has a valid shape environment");
+
+    let partial = analysis
+        .expression_shape(
+            &call(rumoca_core::FunctionCallKind::PartialApplication),
+            analysis.model_values(),
+        )
+        .expect_err("a function value has no scalar DAE shape");
+    assert!(partial.to_string().contains("function partial application"));
+
+    let invocation = analysis
+        .expression_shape(
+            &call(rumoca_core::FunctionCallKind::Invocation),
+            analysis.model_values(),
+        )
+        .expect_err("the forged invocation has no call certificate");
+    assert!(
+        !invocation
+            .to_string()
+            .contains("function partial application"),
+        "named argument wrappers do not define partial-application identity: {invocation}"
+    );
+}
+
+#[test]
+fn named_argument_shape_requires_generated_exact_marker_identity() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("named_marker_identity.mo", "named marker identity");
+    let span = Span::from_offsets(source, 0, 21);
+    let enum_declaration = DefId::new(83);
+    let enum_type = TypeId::new(93);
+    let mut model = flat::Model::new();
+    model.type_ids_by_def_id.insert(enum_declaration, enum_type);
+    model.enumeration_type_roots.insert(enum_type);
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+        .expect("the marker fixture has a valid shape environment");
+    let marker_name = format!("{}x", rumoca_core::NAMED_FUNCTION_ARG_PREFIX);
+
+    let source_owned = Expression::FunctionCall {
+        name: Reference::new(&marker_name),
+        args: vec![literal(1.0, span)],
+        is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
+        span,
+    };
+    let error = analysis
+        .expression_shape(&source_owned, analysis.model_values())
+        .expect_err("reserved spelling without generated identity is an ordinary constructor");
+    assert!(
+        error.to_string().contains("record constructor"),
+        "source-owned constructor identity must not be erased to its argument: {error}"
+    );
+
+    let malformed = Expression::FunctionCall {
+        name: Reference::generated(marker_name),
+        args: Vec::new(),
+        is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
+        span,
+    };
+    let error = analysis
+        .expression_shape(&malformed, analysis.model_values())
+        .expect_err("malformed generated marker is invalid semantic IR");
+    assert!(error.to_string().contains("generated named argument"));
+
+    let component_ref = rumoca_core::ComponentReference::construct(
+        false,
+        span,
+        vec![
+            rumoca_core::ComponentRefPart {
+                ident: "__rumoca_named_arg__".to_string(),
+                span,
+                subs: Vec::new(),
+                def_id: DefId::new(84),
+            },
+            rumoca_core::ComponentRefPart {
+                ident: "x".to_string(),
+                span,
+                subs: Vec::new(),
+                def_id: enum_declaration,
+            },
+        ],
+    )
+    .expect("fixture marker reference has an exact target identity");
+    let generated_with_enum_identity = Expression::FunctionCall {
+        name: Reference::generated_component_reference(component_ref),
+        args: vec![array(2, span)],
+        is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
+        span,
+    };
+    let error = analysis
+        .expression_shape(&generated_with_enum_identity, analysis.model_values())
+        .expect_err("DAE shape proof rejects wrappers left behind by Flat canonicalization");
+    assert!(
+        error.to_string().contains("eliminated before DAE"),
+        "marker classification must precede the unrelated enum identity: {error}"
+    );
 }
 
 fn array(extent: usize, span: Span) -> Expression {
@@ -166,13 +292,16 @@ fn pair_constructor_model(span: Span) -> (flat::Model, FunctionInstanceId, DefId
     let record = DefId::new(40);
     let left = DefId::new(41);
     let right = DefId::new(42);
-    let mut constructor = rumoca_core::Function::new("Pair", span);
+    let real = DefId::new(1);
+    let mut constructor = rumoca_core::Function::new("Pair", record, span);
     constructor.def_id = Some(record);
     constructor.is_constructor = true;
     let mut left_parameter = real_param("left", Vec::new(), span);
     left_parameter.def_id = Some(left);
+    left_parameter.type_def_id = Some(real);
     let mut right_parameter = real_param("right", Vec::new(), span);
     right_parameter.def_id = Some(right);
+    right_parameter.type_def_id = Some(real);
     constructor.add_input(left_parameter);
     constructor.add_input(right_parameter);
 
@@ -185,11 +314,15 @@ fn pair_constructor_model(span: Span) -> (flat::Model, FunctionInstanceId, DefId
                 flat::RecordField {
                     name: "left".to_string(),
                     def_id: left,
+                    type_def_id: real,
+                    effective_type: EffectiveType::new(TypeId::new(1), TypeId::new(1), []).unwrap(),
                     dims: Vec::new(),
                 },
                 flat::RecordField {
                     name: "right".to_string(),
                     def_id: right,
+                    type_def_id: real,
+                    effective_type: EffectiveType::new(TypeId::new(1), TypeId::new(1), []).unwrap(),
                     dims: Vec::new(),
                 },
             ],
@@ -207,12 +340,13 @@ fn pair_call(instance_id: FunctionInstanceId, span: Span) -> Expression {
         name: exact_function_reference("Pair", instance_id),
         args: vec![literal(1.0, span), literal(2.0, span)],
         is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span,
     }
 }
 
 fn add_scalar_read(model: &mut flat::Model, span: Span) -> FunctionInstanceId {
-    let mut read = rumoca_core::Function::new("read", span);
+    let mut read = rumoca_core::Function::new("read", DefId::new(63_501), span);
     read.add_input(real_param("value", Vec::new(), span));
     read.add_output(real_param("result", Vec::new(), span));
     model.add_function(read);
@@ -233,7 +367,7 @@ fn assert_constructor_identity_error(error: ToDaeError, expected: String, span: 
 }
 
 fn identity_function(span: Span, result_has_shape_equality: bool) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("identity", span);
+    let mut function = rumoca_core::Function::new("identity", DefId::new(63_502), span);
     function
         .add_input(real_param("u", vec![0], span).with_shape_expr(vec![Subscript::colon(span)]));
     let mut output = real_param("y", vec![0], span);
@@ -324,6 +458,7 @@ fn call(extent: usize, span: Span) -> flat::Equation {
             name: Reference::new("identity"),
             args: vec![array(extent, span)],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -338,7 +473,7 @@ fn record_constructor_arity_remains_strict() {
     let mut sources = SourceMap::new();
     let source = sources.add("record_arity.mo", "Pair(1.0);");
     let span = Span::from_offsets(source, 0, 9);
-    let mut constructor = rumoca_core::Function::new("Pair", span);
+    let mut constructor = rumoca_core::Function::new("Pair", DefId::new(63_503), span);
     constructor.is_constructor = true;
     constructor.add_input(real_param("left", Vec::new(), span));
     constructor.add_input(real_param("right", Vec::new(), span));
@@ -353,6 +488,7 @@ fn record_constructor_arity_remains_strict() {
             name: exact_function_reference("Pair", constructor),
             args: vec![literal(1.0, span)],
             is_constructor: true,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -411,7 +547,7 @@ fn nested_structural_constructor_proves_a_field_inside_a_regular_call() {
     let source = sources.add("nested_constructor.mo", "read(Pair(1.0, 2.0).left + 0.0);");
     let span = Span::from_offsets(source, 0, 32);
     let (mut model, constructor, left) = pair_constructor_model(span);
-    let mut read = rumoca_core::Function::new("read", span);
+    let mut read = rumoca_core::Function::new("read", DefId::new(63_504), span);
     read.add_input(real_param("value", Vec::new(), span));
     read.add_output(real_param("result", Vec::new(), span));
     model.add_function(read);
@@ -435,6 +571,7 @@ fn nested_structural_constructor_proves_a_field_inside_a_regular_call() {
             name: exact_function_reference("read", read_instance),
             args: vec![argument],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -458,7 +595,7 @@ fn nested_fix_does_not_fabricate_a_result_for_a_regular_empty_function() {
     let mut sources = SourceMap::new();
     let source = sources.add("empty_function.mo", "empty(1.0);");
     let span = Span::from_offsets(source, 0, 11);
-    let mut empty = rumoca_core::Function::new("empty", span);
+    let mut empty = rumoca_core::Function::new("empty", DefId::new(63_505), span);
     empty.add_input(real_param("value", Vec::new(), span));
     let mut model = flat::Model::new();
     model.add_function(empty);
@@ -470,6 +607,7 @@ fn nested_fix_does_not_fabricate_a_result_for_a_regular_empty_function() {
             name: exact_function_reference("empty", instance),
             args: vec![literal(1.0, span)],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -506,6 +644,7 @@ fn post_analysis_rejects_a_forged_constructor_occurrence() {
         name: exact_function_reference("Pair", regular_instance),
         args: vec![literal(1.0, span), literal(2.0, span)],
         is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span,
     };
 
@@ -534,6 +673,7 @@ fn post_analysis_rejects_an_unresolved_constructor_marker() {
         name: Reference::new("Pair"),
         args: vec![literal(1.0, span), literal(2.0, span)],
         is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span,
     };
 
@@ -559,6 +699,7 @@ fn discovery_rejects_a_constructor_name_with_a_regular_exact_instance() {
             name: exact_function_reference("Pair", regular_instance),
             args: vec![literal(1.0, span), literal(2.0, span)],
             is_constructor: true,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -638,7 +779,7 @@ fn unresolved_result_axis_is_rejected_at_analysis() {
 }
 
 fn scalar_identity(span: Span) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("scalar_identity", span);
+    let mut function = rumoca_core::Function::new("scalar_identity", DefId::new(63_506), span);
     function.transitively_non_replaceable = true;
     function.add_input(real_param("r", Vec::new(), span));
     function.add_output(real_param("result", Vec::new(), span));
@@ -665,6 +806,7 @@ fn exact_call(
             name: exact_function_reference(name, instance),
             args: arguments,
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -718,7 +860,7 @@ fn array_formal_vectorization_preserves_trailing_element_shape() {
     let mut sources = SourceMap::new();
     let source = sources.add("vectorized_array.mo", "f(A);");
     let span = Span::from_offsets(source, 0, 4);
-    let mut function = rumoca_core::Function::new("f", span);
+    let mut function = rumoca_core::Function::new("f", DefId::new(63_507), span);
     function.transitively_non_replaceable = true;
     function.add_input(real_param("r", vec![3], span));
     function.add_output(real_param("result", vec![3], span));
@@ -826,6 +968,7 @@ fn vectorization_requires_an_exact_non_replaceable_owner() {
             name: Reference::new("f"),
             args: vec![array(2, span)],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -890,6 +1033,7 @@ fn vectorization_rejects_an_exact_instance_without_an_occurrence_proof() {
             }),
             args: vec![array(2, span)],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -915,7 +1059,7 @@ fn vectorized_element_shape_must_equal_the_declared_shape() {
     let mut sources = SourceMap::new();
     let source = sources.add("vectorized_element_mismatch.mo", "f(A);");
     let span = Span::from_offsets(source, 0, 4);
-    let mut function = rumoca_core::Function::new("f", span);
+    let mut function = rumoca_core::Function::new("f", DefId::new(63_508), span);
     function.transitively_non_replaceable = true;
     function.add_input(real_param("r", vec![3], span));
     function.add_output(real_param("result", Vec::new(), span));

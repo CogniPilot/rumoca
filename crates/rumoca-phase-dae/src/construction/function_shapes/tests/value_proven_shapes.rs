@@ -5,6 +5,11 @@
 //! every dimension to a scalar evaluable Integer/enumeration/Boolean
 //! expression. These tests fix both sides of that rule: which value-dependent
 //! dimensions the phase now proves, and which stay typed rejections.
+//!
+//! A collected Flat function exposes exactly one source declaration, which it
+//! carries as its exposure identity. These functions are written directly
+//! rather than resolved from a class tree, so the `63_6xx` band names the
+//! declarations this module writes, one value per declaration.
 
 use rumoca_core::{EffectiveType, FunctionParam, Literal, Reference, SourceMap, Subscript, TypeId};
 
@@ -46,7 +51,7 @@ fn param(
 
 /// `function f input Integer n; output Real y[n]; end f;`
 fn value_shaped_function(span: Span) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("f", span);
+    let mut function = rumoca_core::Function::new("f", rumoca_core::DefId::new(63_601), span);
     function.add_input(param("n", "Integer", integer_type(), Vec::new(), span));
     function.add_output(
         param("y", "Real", real_type(), vec![0], span)
@@ -56,7 +61,8 @@ fn value_shaped_function(span: Span) -> rumoca_core::Function {
 }
 
 fn identity_body_function(span: Span) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("identity_body", span);
+    let mut function =
+        rumoca_core::Function::new("identity_body", rumoca_core::DefId::new(63_602), span);
     function.add_input(param("n", "Integer", integer_type(), Vec::new(), span));
     function.add_output(
         param("y", "Integer", integer_type(), vec![0, 0], span).with_shape_expr(vec![
@@ -77,7 +83,8 @@ fn identity_body_function(span: Span) -> rumoca_core::Function {
 }
 
 fn cross_body_function(span: Span) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("cross_body", span);
+    let mut function =
+        rumoca_core::Function::new("cross_body", rumoca_core::DefId::new(63_603), span);
     function.add_input(param("x", "Real", real_type(), vec![3], span));
     function.add_input(param("y", "Real", real_type(), vec![3], span));
     function.add_output(param("z", "Real", real_type(), vec![3], span));
@@ -94,7 +101,8 @@ fn cross_body_function(span: Span) -> rumoca_core::Function {
 }
 
 fn skew_body_function(span: Span) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("skew_body", span);
+    let mut function =
+        rumoca_core::Function::new("skew_body", rumoca_core::DefId::new(63_604), span);
     function.add_input(param("x", "Real", real_type(), vec![3], span));
     function.add_output(param("S", "Real", real_type(), vec![3, 3], span));
     function.body.push(rumoca_core::Statement::Assignment {
@@ -110,7 +118,8 @@ fn skew_body_function(span: Span) -> rumoca_core::Function {
 }
 
 fn vector_body_function(span: Span) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("vector_body", span);
+    let mut function =
+        rumoca_core::Function::new("vector_body", rumoca_core::DefId::new(63_605), span);
     function.add_input(param("x", "Real", real_type(), vec![1, 3, 1], span));
     function.add_output(param("y", "Real", real_type(), vec![3], span));
     function.body.push(rumoca_core::Statement::Assignment {
@@ -128,7 +137,8 @@ fn vector_body_function(span: Span) -> rumoca_core::Function {
 /// MSL `Frames.TransformationMatrices.planarRotation` assigns a 3x3 result
 /// from `outerProduct(e, e)` where `e` is a 3-vector.
 fn planar_rotation_outer_product_function(span: Span) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("planarRotation", span);
+    let mut function =
+        rumoca_core::Function::new("planarRotation", rumoca_core::DefId::new(63_606), span);
     function.add_input(param("e", "Real", real_type(), vec![3], span));
     function.add_output(param("T", "Real", real_type(), vec![3, 3], span));
     function.body.push(rumoca_core::Statement::Assignment {
@@ -146,7 +156,8 @@ fn planar_rotation_outer_product_function(span: Span) -> rumoca_core::Function {
 /// MSL rigid-body inertia construction assigns a 3x3 matrix from a three-axis
 /// vector through `diagonal(axisInertia)`.
 fn inertia_diagonal_function(span: Span) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("inertiaTensor", span);
+    let mut function =
+        rumoca_core::Function::new("inertiaTensor", rumoca_core::DefId::new(63_607), span);
     function.add_input(param("axisInertia", "Real", real_type(), vec![3], span));
     function.add_output(param("I", "Real", real_type(), vec![3, 3], span));
     function.body.push(rumoca_core::Statement::Assignment {
@@ -174,6 +185,7 @@ fn call(argument: Expression, span: Span) -> flat::Equation {
             name: Reference::new("f"),
             args: vec![argument],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -227,6 +239,7 @@ fn identity_body_proves_the_exact_square_result_shape() {
             name: Reference::new("identity_body"),
             args: vec![integer_literal(3, span)],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -254,6 +267,7 @@ fn cross_body_proves_one_common_three_vector_shape() {
             name: Reference::new("cross_body"),
             args: vec![array_argument(3, span), array_argument(3, span)],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -281,6 +295,7 @@ fn skew_body_proves_one_compact_three_by_three_matrix_shape() {
             name: Reference::new("skew_body"),
             args: vec![array_argument(3, span)],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -322,6 +337,7 @@ fn vector_body_proves_the_checked_product_as_one_extent() {
             name: Reference::new("vector_body"),
             args: vec![tensor],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -353,6 +369,7 @@ fn msl_planar_rotation_outer_product_proves_a_compact_matrix_shape() {
             name: Reference::new("planarRotation"),
             args: vec![array_argument(3, span)],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -381,6 +398,7 @@ fn msl_inertia_diagonal_proves_a_compact_square_shape() {
             name: Reference::new("inertiaTensor"),
             args: vec![array_argument(3, span)],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -656,7 +674,7 @@ fn a_real_value_does_not_name_an_extent() {
 /// `function g input Real x[:]; output Real y[2]; protected Integer m = size(x, 1);
 ///  Real phi[m]; end g;`
 fn local_shaped_function(span: Span) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("g", span);
+    let mut function = rumoca_core::Function::new("g", rumoca_core::DefId::new(63_608), span);
     function.add_input(
         param("x", "Real", real_type(), vec![0], span)
             .with_shape_expr(vec![Subscript::colon(span)]),
@@ -719,6 +737,7 @@ fn an_unassigned_local_declaration_value_proves_a_later_local_extent() {
             name: Reference::new("g"),
             args: vec![array_argument(3, span)],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -754,6 +773,7 @@ fn an_assigned_local_does_not_prove_a_later_extent() {
             name: Reference::new("g"),
             args: vec![array_argument(3, span)],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -795,6 +815,7 @@ fn value_recursion_without_a_fixed_point_is_bounded() {
                 span,
             }],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -826,7 +847,7 @@ fn value_recursion_without_a_fixed_point_is_bounded() {
 ///
 /// The result is a scalar, so no declared dimension reads `n`.
 fn scalar_recursive_function(span: Span) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("f", span);
+    let mut function = rumoca_core::Function::new("f", rumoca_core::DefId::new(63_609), span);
     function.add_input(param("n", "Integer", integer_type(), Vec::new(), span));
     function.add_output(param("y", "Real", real_type(), Vec::new(), span));
     function.body.push(rumoca_core::Statement::Assignment {
@@ -846,6 +867,7 @@ fn scalar_recursive_function(span: Span) -> rumoca_core::Function {
                     span,
                 }],
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span,
             }),
             span,
@@ -885,7 +907,7 @@ fn converging_value_keyed_recursion_terminates() {
     let span = Span::from_offsets(source, 0, 5);
     let mut model = model_with_predefined_types();
     // `function q input Integer m; output Real y[m]; algorithm y[1] := q(integer(m/2))[1];`
-    let mut function = rumoca_core::Function::new("q", span);
+    let mut function = rumoca_core::Function::new("q", rumoca_core::DefId::new(63_610), span);
     function.add_input(param("m", "Integer", integer_type(), Vec::new(), span));
     function.add_output(
         param("y", "Real", real_type(), vec![0], span)
@@ -907,6 +929,7 @@ fn converging_value_keyed_recursion_terminates() {
             name: Reference::new("q"),
             args: vec![halved],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -917,6 +940,7 @@ fn converging_value_keyed_recursion_terminates() {
             name: Reference::new("q"),
             args: vec![integer_literal(8, span)],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
         span,
@@ -954,7 +978,7 @@ fn a_value_no_dimension_reads_does_not_split_specializations() {
     let span = Span::from_offsets(source, 0, 15);
     let mut model = model_with_predefined_types();
     // `function g input Integer n; input Real u; output Real y; algorithm y := u;`
-    let mut function = rumoca_core::Function::new("g", span);
+    let mut function = rumoca_core::Function::new("g", rumoca_core::DefId::new(63_611), span);
     function.add_input(param("n", "Integer", integer_type(), Vec::new(), span));
     function.add_input(param("u", "Real", real_type(), Vec::new(), span));
     function.add_output(param("y", "Real", real_type(), Vec::new(), span));
@@ -974,6 +998,7 @@ fn a_value_no_dimension_reads_does_not_split_specializations() {
                 name: Reference::new("g"),
                 args: vec![integer_literal(ordinal, span), var_ref("u", span)],
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span,
             },
             span,

@@ -3,6 +3,11 @@
 //!
 //! Every case goes through the public `construct` entry so it asserts the
 //! constructed DAE (or the exact rejection), not an internal planner state.
+//!
+//! A collected Flat function exposes exactly one source declaration, which it
+//! carries as its exposure identity. These models are written directly rather
+//! than resolved from a class tree, so the `63_2xx` band names the function
+//! declarations this module writes.
 
 use super::super::*;
 use super::support::*;
@@ -23,7 +28,7 @@ fn constructed_function<'dae>(view: dae::DaeView<'dae>, name: &str) -> dae::Func
 /// that gives a multi-result call statement something to assign.
 fn two_result_function(source: &TestSource) -> rumoca_core::Function {
     let span = source.span("function two", 0);
-    let mut function = rumoca_core::Function::new("two", span);
+    let mut function = rumoca_core::Function::new("two", rumoca_core::DefId::new(63_201), span);
     function.add_input(real_function_param(
         "x",
         Vec::new(),
@@ -87,7 +92,7 @@ fn caller_function(
     locals: &[&str],
 ) -> rumoca_core::Function {
     let span = source.span("function caller", 0);
-    let mut function = rumoca_core::Function::new("caller", span);
+    let mut function = rumoca_core::Function::new("caller", rumoca_core::DefId::new(63_202), span);
     function.add_input(real_function_param(
         "u",
         Vec::new(),
@@ -182,6 +187,7 @@ fn add_caller_equation(model: &mut flat::Model, source: &TestSource) {
                 span: source.span("1.0", 0),
             }],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: call_span,
         },
         call_span,
@@ -395,6 +401,7 @@ fn initial_multi_result_equation_owns_each_receiving_parameter() {
                     span: source.span("1.0", 0),
                 }],
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: call_span,
             }),
             span: equation_span,
@@ -419,7 +426,7 @@ const MATRIX_TEXT: &str = "function rank2 input Real M[:, :]; output Real s; alg
 
 fn rank2_function(source: &TestSource) -> rumoca_core::Function {
     let span = source.span("function rank2", 0);
-    let mut function = rumoca_core::Function::new("rank2", span);
+    let mut function = rumoca_core::Function::new("rank2", rumoca_core::DefId::new(63_203), span);
     // `Real M[:, :]`: two symbolic extents the call site settles.
     let declaration = source.span("input Real M[:, :]", 0);
     function.add_input(
@@ -462,6 +469,7 @@ fn rank2_call_model(source: &TestSource, argument: Expression) -> flat::Model {
             name: Reference::new("rank2"),
             args: vec![argument],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: call_span,
         },
         call_span,
@@ -516,20 +524,22 @@ fn array_constructor_of_scalars_still_reports_the_rank_mismatch() {
 /// is named as the unimplemented construct it is rather than reported as the
 /// arity mismatch of a full call.
 #[test]
-fn function_partial_application_is_rejected_by_name() {
+fn function_partial_application_is_rejected_by_explicit_identity() {
     let source = TestSource::new(MATRIX_TEXT);
-    // A call to `rank2` supplying one named association for its two formals is
-    // the shape flatten leaves a partial application in.
+    // Flat preserves the source partial-application identity independently of
+    // the named association used to bind one formal.
     let argument_span = source.span("[0, 1, 1, 0, 0]", 0);
     let named = Expression::FunctionCall {
-        name: Reference::new(format!("{}M", rumoca_core::NAMED_FUNCTION_ARG_PREFIX)),
+        name: Reference::generated(format!("{}M", rumoca_core::NAMED_FUNCTION_ARG_PREFIX)),
         args: vec![scalar(&source, "0", 0)],
         is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: argument_span,
     };
     let mut model = test_model();
     let mut rank2 = rank2_function(&source);
-    // Give the callee a second formal so one supplied argument is partial.
+    // Give the callee a second formal so the diagnostic can report one binding
+    // out of two; the explicit call kind, not this count, proves partiality.
     rank2.add_input(real_function_param(
         "eps",
         Vec::new(),
@@ -543,6 +553,7 @@ fn function_partial_application_is_rejected_by_name() {
             name: Reference::new("rank2"),
             args: vec![named],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::PartialApplication,
             span: call_span,
         },
         call_span,

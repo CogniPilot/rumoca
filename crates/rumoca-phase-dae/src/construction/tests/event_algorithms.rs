@@ -1,3 +1,10 @@
+//! Event and model-algorithm construction fixtures.
+//!
+//! A collected Flat function exposes exactly one source declaration, which it
+//! carries as its exposure identity. These models are written directly rather
+//! than resolved from a class tree, so the `63_3xx` band names the function
+//! declarations this module writes.
+
 use rumoca_core::{Reference, TypeId};
 
 use super::super::*;
@@ -478,7 +485,11 @@ fn identity_boolean_function(
     source: &TestSource,
     boolean: rumoca_core::TypeId,
 ) -> rumoca_core::Function {
-    let mut function = rumoca_core::Function::new("f", source.span("function f", 0));
+    let mut function = rumoca_core::Function::new(
+        "f",
+        rumoca_core::DefId::new(63_301),
+        source.span("function f", 0),
+    );
     function.add_input(function_param(
         "u",
         "Boolean",
@@ -542,6 +553,7 @@ fn function_call_loop_algorithm(source: &TestSource) -> flat::Algorithm {
             span: source.span("source[i]", 0),
         }],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: call_span,
     };
     let range_span = source.span("1:3", 0);
@@ -1034,7 +1046,11 @@ fn event_tensor_loop_rejects_cross_element_dependency() {
 }
 
 fn sampled_step_function(source: &TestSource, model: &flat::Model) -> rumoca_core::Function {
-    let mut step = rumoca_core::Function::new("step", source.span("function step", 0));
+    let mut step = rumoca_core::Function::new(
+        "step",
+        rumoca_core::DefId::new(63_302),
+        source.span("function step", 0),
+    );
     step.add_input(real_function_param(
         "u",
         Vec::new(),
