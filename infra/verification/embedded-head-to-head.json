@@ -1,0 +1,88 @@
+{
+  "schema_version": 9,
+  "ratchet_policy": "ECM-003 remains pending until the shipped eFMU Production C whole-scope artifact, oracle receipt, and accepted baseline are authenticated from raw bytes; pending evidence cannot expose a delta or outcome.",
+  "suite_implementation_history": {
+    "initial_sha256": "51c0da8e81a06867ce29eb085fae05c359920233cdf7195dd99dc54cb3bd44ea",
+    "replacements": []
+  },
+  "measured_tools": {
+    "arm_gcc_sha256": "67b954ba6377782329e5bb873af42bf1bff4b2ec1461e9edc7345a6729c656e8",
+    "arm_nm_sha256": "314d5a8f9b6c3ec43616b151c1a37b890a7bb28b8a1bc1083063288a08708d49",
+    "qemu_sha256": "012d3e7dc68207d44cd2c1420284e6c013f634062cada48e02d93ed784f8c1a8",
+    "python_sha256": "89891d176252aba3e2d76eed73b717601974dae96a7728fdb5035295e7b4ecec",
+    "prlimit_sha256": "a75c15841c5fa129d4f3142f70fd81853dd8a923527fe24bdd2a7698dda70674",
+    "prlimit_version": "prlimit from util-linux 2.42",
+    "git_sha256": "856930b25e9d875001f880ae7bfe40049f6af11ebc59357bcfdd98326e96d58f",
+    "git_version": "git version 2.54.0",
+    "cargo_sha256": "74c2f4774c4fec2b0345086472e6f3d34d61126e29f2be2220033d7a223de25e",
+    "cargo_version": "cargo 1.95.0-nightly (f298b8c82 2026-02-24)",
+    "rustc_sha256": "346d0b0c81324068e01b917dd096217635afcc94d5afbf6c0455a311624d3a13",
+    "rustc_version": "rustc 1.95.0-nightly (6a979b3e3 2026-02-26)",
+    "compiler_dependencies_sha256": "877b8eaad97eedde2646d6daa970683c6bdead8920d2ee1303322b14a98efc38",
+    "execution_tool_closure_sha256": "e6b8b28676284647c1be84846576a1e7466104866ea863aa73fee9fabc5e975f",
+    "arm_size_sha256": null
+  },
+  "comparator_outputs": {
+    "casadi_c_sha256": "0ab807637ce56ac735013e84b595068d8c42df406299a3c540d5afbcf9f6d52e",
+    "casadi_h_sha256": "95bca9cd164f3fc992f3e2aaf7d379c60f079db36208d825c7135156de9949c0"
+  },
+  "entries": [
+    {
+      "id": "exp-mixed-efmu-production-c-casadi-3-7-2-cortex-m7",
+      "fixture": "infra/verification/embedded-head-to-head/exp-mixed/ExpMixedStep.mo",
+      "fixture_sha256": "1fdbc228f306d1e8db906f9c3c908506e1d8d306768076ebd7b1fe46fc6f7023",
+      "model": "ExpMixedStep",
+      "target": "efmu",
+      "rumoca_profile": "efmu-first-product-retain-calls",
+      "comparator": "casadi372-full-f32",
+      "comparator_generator": "infra/verification/embedded-head-to-head/exp-mixed/casadi/gen_exp_mixed.py",
+      "comparator_generator_sha256": "e99aea137a916c2c131061463493a5459af31d5ccab1f0fcb94bf6290addd092",
+      "comparator_wrapper": "infra/verification/embedded-head-to-head/exp-mixed/casadi/float_libm_wrapper.c",
+      "comparator_wrapper_sha256": "be48e3064059c085db37971675092dc43045c410d09cc9401469d278a9f02157",
+      "cross_profile": "gcc15-cortex-m7-o3-lto-no-fp-contract-hot-auto700-single700-exact-v3",
+      "normalized_profile_sha256": "c3c1982f4de7d9ea820a1d3dbd4f0d4ce2d034c825e62ee84edb62d802b1dea0",
+      "input_header": "infra/verification/embedded-head-to-head/exp-mixed/harness/inputs.h",
+      "input_sha256": "f5262b10dba5ed23c32847ae82a3efdd3e92e84bd5d75728d09e508a5e1125df",
+      "harness_sha256": "71ea60bebafe5feee39c9f8089b8485a0ab0fe27a2885b680b76ca491a176739",
+      "correctness_cases": [
+        {
+          "id": "current-closed-closed",
+          "expected_output_bits": [
+            "413e72bb", "c19f4fd2", "420b24f4", "c0daecdb", "c0c96aa2",
+            "c0e2df47", "3f232dd5", "3eba7896", "bf2b5861", "3dd33232"
+          ]
+        },
+        {
+          "id": "tiny-all-series",
+          "expected_output_bits": [
+            "412fbabb", "c0eee9ac", "4220aeb8", "c08ddc84", "c0f1633b",
+            "c07f121a", "3f4e0320", "3e9f69d4", "beef1f24", "3e3f4eb5"
+          ]
+        },
+        {
+          "id": "middle-coefficient-series",
+          "expected_output_bits": [
+            "413a7611", "c0cee086", "4220a934", "c0877f8c", "c0f3b32d",
+            "c0748e04", "3f4cf4e5", "3ea01546", "beeee3a8", "3e4fac4b"
+          ]
+        },
+        {
+          "id": "different-dense-coupling",
+          "expected_output_bits": [
+            "c08db72e", "41353bcf", "be2c1a98", "c043ac02", "40b811d1",
+            "bf82931a", "3f1ca774", "3e1d9e91", "3f24d319", "3ecaaf16"
+          ]
+        }
+      ],
+      "metric": "guest-instructions",
+      "evidence_state": {
+        "state": "pending-whole-scope-evidence"
+      },
+      "max_delta": null,
+      "match_or_beat_target_delta": 0,
+      "measured": null,
+      "why": "The lawful shipped eFMU Production C comparison remains pending until its capability profile covers the complete exp_mixed workload and authenticates a fresh whole-scope artifact, oracle receipt, and baseline from raw bytes.",
+      "rumoca_artifact_history": []
+    }
+  ]
+}

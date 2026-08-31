@@ -4,8 +4,8 @@
 ACCEPTED
 
 ## Summary
-Development MUST follow governing specs, fix the first divergent layer, and
-verify focused behavior before broad gates.
+Development MUST follow specs, fix first divergence, and bind claims to closed
+evidence.
 
 ## Specification
 
@@ -38,6 +38,21 @@ verify focused behavior before broad gates.
 | Semantic identity MUST be proven from compiler-owned data | names/symbols | Strings are not semantics |
 | Namespace aliases and component instances MUST stay distinct unless spec-backed | resolver/flattening | Prevents false symbol merges |
 | Before/after artifacts MUST prove producer changes for non-trivial semantic fixes | IR/DAE/trace outputs | Verifies root-cause ownership |
+| Covered artifact timestamps and identities MUST be pure functions of one explicit artifact-session input containing a canonical generation instant and identity seed. The artifact path MUST NOT read an ambient clock, RNG, or environment fallback; an interactive entry layer supplies fresh explicit inputs, while reproducible evidence pins them and exercises the identical session path | artifact construction and evidence harnesses | Production and reproducible builds share one byte-identical construction path, so an authenticated package can be regenerated rather than normalized after emission |
+
+One invocation constructs exactly one private, non-cloneable artifact session
+after the checked target identity and complete logical file-ID catalog exist;
+renderers and package/checksum assembly borrow that session and cannot replace
+it. The explicit generation instant has exactly the UTC-second spelling
+`YYYY-MM-DDTHH:MM:SSZ`; the identity seed has exactly the lowercase hyphenated
+UUID spelling. Each artifact UUID is UUIDv5 under that seed. Its name is the
+concatenation of four frames, each encoded as an unsigned 64-bit big-endian
+byte length followed by the exact bytes: fixed algorithm tag
+`rumoca-artifact-identity-v1`, target-scope kind, target-scope value, and the
+manifest-issued local file ID. Built-ins use scope kind
+`builtin-registry-key` and their unique registry key; directory targets use
+scope kind `canonical-manifest-blake3` and the digest of checked canonical
+manifest facts. Display names and raw TOML formatting never enter identity.
 
 ### 4. Compatibility And Strictness
 
@@ -46,10 +61,12 @@ verify focused behavior before broad gates.
 | Default behavior MUST remain strict and spec-aligned | compiler/tooling | Avoids silent drift |
 | Compiler-owned IRs, wire formats, and phase APIs MUST support only their current representation | compiler | Old internal contracts must not constrain correct architecture |
 | A compiler representation cutover MUST remove the superseded reader, writer, adapter, alias, feature flag, fixture, and fallback branch in the same change | compiler | Prevents obsolete paths from bypassing current invariants |
+| Language constructs that the Modelica Language Specification itself deprecates remain current user-facing source semantics when SPEC_0022 requires them; they MUST NOT be classified as internal legacy or compatibility code | compiler front end | Supporting a required language construct neither excuses compiler cruft nor permits an internal compatibility path |
 | Unsupported compiler-owned wire versions MUST fail immediately | IR deserialization | Invalid input must not enter the pipeline |
 | Source-language compatibility deviations MUST be explicit and opt-in | config/tooling | Users choose non-standard Modelica behavior |
 | Source-language compatibility docs MUST name the requiring library/model and default | deviation docs | Makes exceptions reviewable |
 | Validators/checkers MUST NOT be weakened just to pass failing models | validation layers | Hides producer bugs |
+| Hand-written compiler code MUST NOT suppress the Rust `dead_code` lint; unreachable items MUST be deleted and reintroduced only with their first real consumer. Generated parser output with explicit generator provenance is the sole carve-out | compiler crates and architecture gate | A lint allowance can preserve abandoned APIs, speculative helpers, and marker methods outside the current construction chain |
 | Temporary debug probes MUST be removed before finalization | all changes | Keeps tree clean |
 
 ### 5. MSL-Backed Work
@@ -138,33 +155,31 @@ Failure classifications:
 | Parity numbers MUST NOT be quoted from a partial, single-shard, focused, or stale run | any claim | Partial snapshots are not cohort evidence |
 | A Tier 1 canary delta MUST NOT be reported as a cohort parity number | review evidence, PR text | Tier 1 is a tripwire, not a metric |
 
-```bash
-# Tier 1 — fixed 20-model canary; the harness marks this snapshot partial.
-CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo xtask verify msl-parity \
-  --sim-targets-file infra/verification/msl-canary-20.json
-
-# Tier 2 — full cohort; CI shards it as `--shard m/n` plus `--merge-shards DIR`.
-CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo xtask verify msl-parity
-```
+[Canonical commands](SPEC_0050_TRACE_EVIDENCE_CATALOG.md#3-canonical-tier-commands)
+duplicate this cadence.
 
 #### Tier 2 parity-number acceptance contract
 
-All rows are mandatory; otherwise the gate reports `parity unmeasured`.
+[SPEC_0050 acceptance rows](SPEC_0050_TRACE_EVIDENCE_CATALOG.md#2-tier-2-parity-number-acceptance-rows)
+are mandatory; omission reports `parity unmeasured`.
 
-| Requirement | Enforced by |
-|---|---|
-| Comparator ran, or shard bands were merged | `MslParityStageOutcome` |
-| Reference exists and names `omc_version` | `MslParityMeasurement::measured` |
-| Trace comparison exists and is non-empty | `check_comparator_evidence` |
-| `models_compared > 0` | `MslParityMeasurement::measured` |
-| Every `sim_ok` is compared or has a typed boundary | `quantify_trace_differences` |
-| Band table has one row per target and binds its comparator output | `band_table::ensure_comparable` |
-| Table counts and digest match its rows | `band_table::ensure_comparable` |
-| Table bands equal the reference bands | `band_table_disagreement` |
-| Full cohort can identify every baseline-certified strict-high model | `certified_cohort_regression_reasons` |
-| No baseline-certified strict-high model departed or changed band | `certified_model_regression` |
-| Reference `total_models` equals `sim_target_models` | `load_current_msl_parity_gate_input_required` |
-| Reference has no OMC assertion failures | `load_current_msl_parity_gate_input_required` |
+### 6b. Authenticated Embedded-C Competitor Matrix
+
+[SPEC_0052 rows](SPEC_0052_EMBEDDED_C_COMPETITOR_MATRIX_CATALOG.md) govern
+embedded-C claims.
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Rows bind source/digest, relation, competitor/version/backend, settings, scope, oracle, threshold, and closed evidence state; omission/unknown rejects | manifest | Prevent drift |
+| Correctness precedes measurement; equality is tie; missing/`PENDING`/skipped/failed/unmeasured/unauthenticated is never a win | harness/reporter | Reject false wins |
+| Results are `Incomplete`, `Rejected`, or `ExactPin { delta, outcome }`; only exact pins expose delta/outcome | harness | Invalid combinations are unrepresentable |
+| Row identity is immutable; different comparisons need new rows | manifest | Scope results |
+| Ratchets pin exact Rumoca measurements; every change needs fall-only promotion; predecessor non-relaxation rejects old counts | harness/reviewer | Audit promotion |
+| Immutable protocol and append-only runner history are separate; runner changes cannot authorize semantics | reviewer | Keep maintenance operable |
+| Bootstrap requires complete history, global strict-ancestor absence, and exact HEAD bytes at first introduction | harness | Prevent baseline shopping |
+| Broad claims require every scoped row `IMPLEMENTED`, oracle-correct, authenticated, and match-or-beat | reviewer | Bound claims |
+| Schema 9 is the one-shot authority to delete retired ECM-001 and replace it with pending ECM-003; schema 8 has no compatibility reader or fallback | manifest/harness | Retired products cannot remain evidence |
+| ECM-003 MUST expose no baseline, delta, outcome, or artifact history until its shipped eFMU Production C and oracle receipt are re-authenticated from raw bytes | manifest/harness | Prior-row receipts cannot authorize replacement bytes |
 
 ## References
 
@@ -174,3 +189,5 @@ All rows are mandatory; otherwise the gate reports `parity unmeasured`.
 - [SPEC_0029](SPEC_0029_CRATE_BOUNDARIES.md) — crate boundary ownership.
 - [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) — normative trace-evidence
   catalog bound by §6a.
+- [SPEC_0052](SPEC_0052_EMBEDDED_C_COMPETITOR_MATRIX_CATALOG.md) — normative
+  embedded-C competitor catalog bound by §6b.
