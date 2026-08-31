@@ -4,10 +4,12 @@
 
 use rumoca_core::StructuredIndexDomain;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::{SolvePureCallDirectionalSite, SolvePureCallSite, SolveValueType};
+use crate::{
+    SolvePureCallDirectionalSite, SolvePureCallSite, SolveValueType, deserialize_required_option,
+};
 
 /// Register index in a lowered op sequence.
 pub type Reg = u32;
@@ -73,6 +75,7 @@ pub enum TargetAssignmentShape {
     Affine {
         target_y_index: usize,
         offset_reg: Reg,
+        #[serde(deserialize_with = "deserialize_required_option")]
         coefficient_reg: Option<Reg>,
         offset_scale: f64,
         coefficient_scale: f64,
@@ -283,6 +286,7 @@ pub enum TensorUpdateSubscript {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FoldTensorUpdate {
     pub subscripts: Box<[TensorSubscript]>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub condition: Option<Reg>,
     pub value_start: Reg,
     pub value_stride: usize,
@@ -317,13 +321,78 @@ pub enum FoldInitialSource {
 /// `LoadFoldIndex`, reads lexically enclosing loop values through
 /// `LoadFoldCapture`, and stores exactly `carried_count` next values. Execution
 /// owns domain traversal; no compiler phase enumerates the points.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Invariant-bearing fields cannot be assembled outside the checked
+/// constructor:
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::{FunctionFoldProgram, LinearOp};
+///
+/// fn never<T>() -> T { loop {} }
+///
+/// let _ = FunctionFoldProgram {
+///     domain: never(),
+///     domain_scalar_count: never(),
+///     carried_count: never(),
+///     capture_count: never(),
+///     register_count: never(),
+///     update: never::<Vec<LinearOp>>(),
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FunctionFoldProgram {
-    pub domain: StructuredIndexDomain,
-    pub carried_count: usize,
-    pub capture_count: usize,
-    pub register_count: usize,
-    pub update: Vec<LinearOp>,
+    domain: StructuredIndexDomain,
+    domain_scalar_count: usize,
+    carried_count: usize,
+    capture_count: usize,
+    register_count: usize,
+    update: Vec<LinearOp>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FunctionFoldProgramWire {
+    domain: StructuredIndexDomain,
+    domain_scalar_count: usize,
+    carried_count: usize,
+    capture_count: usize,
+    register_count: usize,
+    update: Vec<LinearOp>,
+}
+
+impl<'de> Deserialize<'de> for FunctionFoldProgram {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = FunctionFoldProgramWire::deserialize(deserializer)?;
+        let stored_register_count = wire.register_count;
+        let stored_domain_scalar_count = wire.domain_scalar_count;
+        let program = Self::checked(
+            wire.domain,
+            wire.carried_count,
+            wire.capture_count,
+            wire.update,
+        )
+        .map_err(serde::de::Error::custom)?;
+        if program.register_count != stored_register_count {
+            return Err(serde::de::Error::custom(
+                ScalarProgramRegisterError::InvalidFunctionFold {
+                    op_index: 0,
+                    reason: "stored update register count does not match its body",
+                },
+            ));
+        }
+        if program.domain_scalar_count != stored_domain_scalar_count {
+            return Err(serde::de::Error::custom(
+                ScalarProgramRegisterError::InvalidFunctionFold {
+                    op_index: 0,
+                    reason: "stored domain cardinality does not match its structured domain",
+                },
+            ));
+        }
+        Ok(program)
+    }
 }
 
 impl FunctionFoldProgram {
@@ -333,9 +402,11 @@ impl FunctionFoldProgram {
         capture_count: usize,
         update: Vec<LinearOp>,
     ) -> Result<Self, ScalarProgramRegisterError> {
+        let domain_scalar_count = validate_function_fold_domain(&domain)?;
         let register_count = ScalarProgramRegisterFlow::derive_inner(
             &update,
             Some((carried_count, domain.binders.len(), capture_count)),
+            Some(&domain),
             None,
         )?
         .register_count();
@@ -348,6 +419,7 @@ impl FunctionFoldProgram {
         }
         Ok(Self {
             domain,
+            domain_scalar_count,
             carried_count,
             capture_count,
             register_count,
@@ -355,51 +427,237 @@ impl FunctionFoldProgram {
         })
     }
 
-    pub fn register_flow(&self) -> Result<ScalarProgramRegisterFlow, ScalarProgramRegisterError> {
-        let flow = ScalarProgramRegisterFlow::derive_inner(
-            &self.update,
-            Some((
-                self.carried_count,
-                self.domain.binders.len(),
-                self.capture_count,
-            )),
-            None,
-        )?;
-        if flow.register_count() != self.register_count {
-            return Err(ScalarProgramRegisterError::InvalidFunctionFold {
-                op_index: 0,
-                reason: "stored update register count does not match its body",
-            });
-        }
-        Ok(flow)
+    #[must_use]
+    pub const fn domain(&self) -> &StructuredIndexDomain {
+        &self.domain
+    }
+
+    /// Number of points the checked structured domain traverses.
+    ///
+    /// The cardinality is issued by [`FunctionFoldProgram::checked`] from the
+    /// same domain validation that admits the program, so a consumer reads a
+    /// proved count instead of recomputing a fallible one.
+    #[must_use]
+    pub const fn domain_scalar_count(&self) -> usize {
+        self.domain_scalar_count
+    }
+
+    #[must_use]
+    pub const fn carried_count(&self) -> usize {
+        self.carried_count
+    }
+
+    #[must_use]
+    pub const fn capture_count(&self) -> usize {
+        self.capture_count
+    }
+
+    #[must_use]
+    pub const fn register_count(&self) -> usize {
+        self.register_count
+    }
+
+    #[must_use]
+    pub fn update(&self) -> &[LinearOp] {
+        &self.update
     }
 }
 
+fn validate_function_fold_domain(
+    domain: &StructuredIndexDomain,
+) -> Result<usize, ScalarProgramRegisterError> {
+    domain
+        .validate()
+        .map_err(|_| ScalarProgramRegisterError::InvalidFunctionFold {
+            op_index: 0,
+            reason: "function fold has an invalid structured domain",
+        })
+}
+
 /// One checked condition and its lazily selected correlated result region.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Arm register capacities and bodies are issued only by the enclosing
+/// [`FunctionConditionalProgram`] constructor:
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::{FunctionConditionalArmProgram, LinearOp};
+///
+/// fn never<T>() -> T { loop {} }
+///
+/// let _ = FunctionConditionalArmProgram {
+///     condition_register_count: never(),
+///     result_register_count: never(),
+///     condition: never::<Vec<LinearOp>>(),
+///     result: never::<Vec<LinearOp>>(),
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FunctionConditionalArmProgram {
-    pub condition_register_count: usize,
-    pub result_register_count: usize,
-    pub condition: Vec<LinearOp>,
-    pub result: Vec<LinearOp>,
+    condition_register_count: usize,
+    result_register_count: usize,
+    condition: Vec<LinearOp>,
+    result: Vec<LinearOp>,
+}
+
+impl FunctionConditionalArmProgram {
+    #[must_use]
+    pub const fn condition_register_count(&self) -> usize {
+        self.condition_register_count
+    }
+
+    #[must_use]
+    pub const fn result_register_count(&self) -> usize {
+        self.result_register_count
+    }
+
+    #[must_use]
+    pub fn condition(&self) -> &[LinearOp] {
+        &self.condition
+    }
+
+    #[must_use]
+    pub fn result(&self) -> &[LinearOp] {
+        &self.result
+    }
 }
 
 /// Compact execution owner for one DAE multi-target function conditional.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// The complete ordered branch correlation cannot be forged fieldwise:
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::{FunctionConditionalArmProgram, FunctionConditionalProgram, LinearOp};
+///
+/// fn never<T>() -> T { loop {} }
+///
+/// let _ = FunctionConditionalProgram {
+///     owner: never(),
+///     capture_count: never(),
+///     target_widths: never::<Box<[usize]>>(),
+///     result_count: never(),
+///     arms: never::<Box<[FunctionConditionalArmProgram]>>(),
+///     fallback_register_count: never(),
+///     fallback: never::<Vec<LinearOp>>(),
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FunctionConditionalProgram {
-    pub owner: Option<FunctionConditionalOwnerId>,
-    pub capture_count: usize,
-    pub target_widths: Box<[usize]>,
-    pub result_count: usize,
-    pub arms: Box<[FunctionConditionalArmProgram]>,
-    pub fallback_register_count: usize,
-    pub fallback: Vec<LinearOp>,
+    owner: Option<FunctionConditionalOwnerId>,
+    capture_count: usize,
+    target_widths: Box<[usize]>,
+    result_count: usize,
+    arms: Box<[FunctionConditionalArmProgram]>,
+    fallback_register_count: usize,
+    fallback: Vec<LinearOp>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FunctionConditionalArmProgramWire {
+    condition_register_count: usize,
+    result_register_count: usize,
+    condition: Vec<LinearOp>,
+    result: Vec<LinearOp>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FunctionConditionalProgramWire {
+    #[serde(deserialize_with = "deserialize_required_option")]
+    owner: Option<FunctionConditionalOwnerId>,
+    capture_count: usize,
+    target_widths: Box<[usize]>,
+    result_count: usize,
+    arms: Box<[FunctionConditionalArmProgramWire]>,
+    fallback_register_count: usize,
+    fallback: Vec<LinearOp>,
+}
+
+impl<'de> Deserialize<'de> for FunctionConditionalProgram {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = FunctionConditionalProgramWire::deserialize(deserializer)?;
+        let stored_result_count = wire.result_count;
+        let stored_fallback_register_count = wire.fallback_register_count;
+        let stored_arm_register_counts = wire
+            .arms
+            .iter()
+            .map(|arm| (arm.condition_register_count, arm.result_register_count))
+            .collect::<Box<[_]>>();
+        let arms = wire
+            .arms
+            .into_vec()
+            .into_iter()
+            .map(|arm| (arm.condition, arm.result));
+        let program = Self::checked_with_owner(
+            wire.owner,
+            wire.capture_count,
+            wire.target_widths,
+            arms,
+            wire.fallback,
+        )
+        .map_err(serde::de::Error::custom)?;
+        if program.result_count != stored_result_count {
+            return Err(serde::de::Error::custom(
+                ScalarProgramRegisterError::InvalidFunctionConditional {
+                    op_index: 0,
+                    reason: "stored result width does not match the target tuple",
+                },
+            ));
+        }
+        if program.fallback_register_count != stored_fallback_register_count
+            || program
+                .arms
+                .iter()
+                .zip(stored_arm_register_counts)
+                .any(|(arm, stored)| {
+                    (arm.condition_register_count, arm.result_register_count) != stored
+                })
+        {
+            return Err(serde::de::Error::custom(
+                ScalarProgramRegisterError::InvalidFunctionConditional {
+                    op_index: 0,
+                    reason: "stored region register capacity does not match its body",
+                },
+            ));
+        }
+        Ok(program)
+    }
 }
 
 /// Block-local identity issued only for an exact reusable function call frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// Zero is not an identity. The wire mirror is the bare `u64` payload, and every
+/// decoded value is routed through [`FunctionConditionalOwnerId::checked`], so a
+/// private zero cannot reach conditional construction through an owned wire.
+///
+/// The payload is equally unreachable positionally:
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::FunctionConditionalOwnerId;
+///
+/// let _ = FunctionConditionalOwnerId(0);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct FunctionConditionalOwnerId(u64);
+
+impl<'de> Deserialize<'de> for FunctionConditionalOwnerId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = u64::deserialize(deserializer)?;
+        Self::checked(raw).ok_or_else(|| {
+            serde::de::Error::custom(ScalarProgramRegisterError::InvalidFunctionConditional {
+                op_index: 0,
+                reason: "owner identity is zero",
+            })
+        })
+    }
+}
 
 impl FunctionConditionalOwnerId {
     pub const fn checked(raw: u64) -> Option<Self> {
@@ -438,7 +696,6 @@ impl FunctionConditionalProgram {
         arms: impl IntoIterator<Item = (Vec<LinearOp>, Vec<LinearOp>)>,
         fallback: Vec<LinearOp>,
     ) -> Result<Self, ScalarProgramRegisterError> {
-        let mut validation = ScalarProgramValidationCache::default();
         let target_widths = target_widths.into();
         if target_widths.is_empty() || target_widths.contains(&0) {
             return Err(ScalarProgramRegisterError::InvalidFunctionConditional {
@@ -457,19 +714,19 @@ impl FunctionConditionalProgram {
         let arms = arms
             .into_iter()
             .map(|(condition, result)| {
-                let condition_register_count = ScalarProgramRegisterFlow::derive_inner_with_cache(
+                let condition_register_count = ScalarProgramRegisterFlow::derive_inner(
                     &condition,
                     None,
+                    None,
                     Some(capture_count),
-                    &mut validation,
                 )?
                 .register_count();
                 require_conditional_output_count(&condition, 1, "condition")?;
-                let result_register_count = ScalarProgramRegisterFlow::derive_inner_with_cache(
+                let result_register_count = ScalarProgramRegisterFlow::derive_inner(
                     &result,
                     None,
+                    None,
                     Some(capture_count),
-                    &mut validation,
                 )?
                 .register_count();
                 require_conditional_output_count(&result, result_count, "branch result")?;
@@ -488,13 +745,9 @@ impl FunctionConditionalProgram {
                 reason: "ordered condition list is empty",
             });
         }
-        let fallback_register_count = ScalarProgramRegisterFlow::derive_inner_with_cache(
-            &fallback,
-            None,
-            Some(capture_count),
-            &mut validation,
-        )?
-        .register_count();
+        let fallback_register_count =
+            ScalarProgramRegisterFlow::derive_inner(&fallback, None, None, Some(capture_count))?
+                .register_count();
         require_conditional_output_count(&fallback, result_count, "fallback result")?;
         Ok(Self {
             owner,
@@ -507,84 +760,39 @@ impl FunctionConditionalProgram {
         })
     }
 
-    pub fn validate(&self) -> Result<(), ScalarProgramRegisterError> {
-        self.validate_with_cache(&mut ScalarProgramValidationCache::default())
+    #[must_use]
+    pub const fn owner(&self) -> Option<FunctionConditionalOwnerId> {
+        self.owner
     }
 
-    fn validate_with_cache(
-        &self,
-        validation: &mut ScalarProgramValidationCache,
-    ) -> Result<(), ScalarProgramRegisterError> {
-        if !validation.begin_conditional(self) {
-            return Ok(());
-        }
-        if self.target_widths.is_empty() || self.target_widths.contains(&0) {
-            return Err(ScalarProgramRegisterError::InvalidFunctionConditional {
-                op_index: 0,
-                reason: "target tuple is empty or contains an empty value",
-            });
-        }
-        let result_count = self.target_widths.iter().try_fold(0usize, |count, width| {
-            count.checked_add(*width).ok_or(
-                ScalarProgramRegisterError::InvalidFunctionConditional {
-                    op_index: 0,
-                    reason: "target tuple width overflows",
-                },
-            )
-        })?;
-        if result_count != self.result_count {
-            return Err(ScalarProgramRegisterError::InvalidFunctionConditional {
-                op_index: 0,
-                reason: "stored result width does not match the target tuple",
-            });
-        }
-        if self.arms.is_empty() {
-            return Err(ScalarProgramRegisterError::InvalidFunctionConditional {
-                op_index: 0,
-                reason: "ordered condition list is empty",
-            });
-        }
-        for arm in &self.arms {
-            let condition_register_count = ScalarProgramRegisterFlow::derive_inner_with_cache(
-                &arm.condition,
-                None,
-                Some(self.capture_count),
-                validation,
-            )?
-            .register_count();
-            require_conditional_output_count(&arm.condition, 1, "condition")?;
-            let result_register_count = ScalarProgramRegisterFlow::derive_inner_with_cache(
-                &arm.result,
-                None,
-                Some(self.capture_count),
-                validation,
-            )?
-            .register_count();
-            require_conditional_output_count(&arm.result, self.result_count, "branch result")?;
-            if condition_register_count != arm.condition_register_count
-                || result_register_count != arm.result_register_count
-            {
-                return Err(ScalarProgramRegisterError::InvalidFunctionConditional {
-                    op_index: 0,
-                    reason: "stored branch register capacity does not match its region",
-                });
-            }
-        }
-        let fallback_register_count = ScalarProgramRegisterFlow::derive_inner_with_cache(
-            &self.fallback,
-            None,
-            Some(self.capture_count),
-            validation,
-        )?
-        .register_count();
-        require_conditional_output_count(&self.fallback, self.result_count, "fallback result")?;
-        if fallback_register_count != self.fallback_register_count {
-            return Err(ScalarProgramRegisterError::InvalidFunctionConditional {
-                op_index: 0,
-                reason: "stored fallback register capacity does not match its region",
-            });
-        }
-        Ok(())
+    #[must_use]
+    pub const fn capture_count(&self) -> usize {
+        self.capture_count
+    }
+
+    #[must_use]
+    pub fn target_widths(&self) -> &[usize] {
+        &self.target_widths
+    }
+
+    #[must_use]
+    pub const fn result_count(&self) -> usize {
+        self.result_count
+    }
+
+    #[must_use]
+    pub fn arms(&self) -> &[FunctionConditionalArmProgram] {
+        &self.arms
+    }
+
+    #[must_use]
+    pub const fn fallback_register_count(&self) -> usize {
+        self.fallback_register_count
+    }
+
+    #[must_use]
+    pub fn fallback(&self) -> &[LinearOp] {
+        &self.fallback
     }
 }
 
@@ -676,20 +884,6 @@ pub enum LinearOp {
         dst: Reg,
         index: usize,
     },
-    /// Runtime-indexed parameter load: `p[base + clamp(round(index), 0, count-1)]`.
-    ///
-    /// Lowering emits this in place of an N-deep `(idx==k ? p[slot_k] : prev)`
-    /// select chain when a dynamic array subscript resolves to a contiguous,
-    /// row-major run of parameter slots (`base..base+count`). `index` is a
-    /// register holding the 0-based flat offset; it is rounded and clamped at
-    /// evaluation so an in-range model index is exact and out-of-range is
-    /// saturated rather than silently zero.
-    LoadIndexedP {
-        dst: Reg,
-        base: usize,
-        count: usize,
-        index: Reg,
-    },
     /// Project one scalar from a packed tensor register range.
     ///
     /// The tensor remains one compact owner: `dimensions` and `indices` carry
@@ -753,17 +947,6 @@ pub enum LinearOp {
         dst_start: Reg,
         index_start: usize,
         count: usize,
-    },
-    /// Runtime-indexed AD seed load: `seed[base + clamp(round(index), 0, count-1)]`.
-    ///
-    /// Forward-mode dual of [`LinearOp::LoadIndexedP`] under parameter-seed AD
-    /// (`SeedMode::SolverYAndP`): the loaded parameter's tangent is the seed at
-    /// the same runtime offset, shifted into the seed region.
-    LoadIndexedSeed {
-        dst: Reg,
-        base: usize,
-        count: usize,
-        index: Reg,
     },
     /// Copy a register value. This keeps packed register ranges explicit
     /// without introducing expression-level aliases into solver IR.
@@ -874,6 +1057,7 @@ pub enum LinearOp {
         input: TensorInputKind,
         input_start: usize,
         count: usize,
+        #[serde(deserialize_with = "deserialize_required_option")]
         seed_start: Option<usize>,
         lanes: usize,
     },
@@ -1038,6 +1222,7 @@ pub enum LinearOp {
         program: Arc<FunctionFoldProgram>,
         result_base: usize,
         count: usize,
+        #[serde(deserialize_with = "deserialize_required_option")]
         condition: Option<Reg>,
         nested_when_true: bool,
     },
@@ -1057,27 +1242,6 @@ pub enum LinearOp {
     },
 }
 
-/// Resolve a runtime flat offset register value to an absolute slot in a
-/// contiguous `[base, base+count)` run, with the round-then-clamp semantics
-/// shared by [`LinearOp::LoadIndexedP`] / [`LinearOp::LoadIndexedSeed`] across
-/// the interpreter, JIT, and every codegen backend. `count == 0` is degenerate
-/// and saturates to `base`.
-#[must_use]
-pub fn resolve_indexed_slot(index_value: f64, base: usize, count: usize) -> usize {
-    if count == 0 {
-        return base;
-    }
-    let rounded = index_value.round();
-    let clamped = if rounded < 0.0 {
-        0
-    } else if rounded as usize >= count {
-        count - 1
-    } else {
-        rounded as usize
-    };
-    base + clamped
-}
-
 impl LinearOp {
     #[must_use]
     pub fn kind_name(&self) -> &'static str {
@@ -1086,12 +1250,10 @@ impl LinearOp {
             Self::LoadTime { .. } => "LoadTime",
             Self::LoadY { .. } => "LoadY",
             Self::LoadP { .. } => "LoadP",
-            Self::LoadIndexedP { .. } => "LoadIndexedP",
             Self::LoadIndexedRegister { .. } => "LoadIndexedRegister",
             Self::LoadIndexedFoldCarried { .. } => "LoadIndexedFoldCarried",
             Self::LoadIndexedFoldCapture { .. } => "LoadIndexedFoldCapture",
             Self::LoadSeed { .. } => "LoadSeed",
-            Self::LoadIndexedSeed { .. } => "LoadIndexedSeed",
             Self::LoadFoldCarried { .. } => "LoadFoldCarried",
             Self::LoadFoldIndex { .. } => "LoadFoldIndex",
             Self::LoadFoldCapture { .. } => "LoadFoldCapture",
@@ -1143,12 +1305,10 @@ impl LinearOp {
             | Self::LoadTime { dst }
             | Self::LoadY { dst, .. }
             | Self::LoadP { dst, .. }
-            | Self::LoadIndexedP { dst, .. }
             | Self::LoadIndexedRegister { dst, .. }
             | Self::LoadIndexedFoldCarried { dst, .. }
             | Self::LoadIndexedFoldCapture { dst, .. }
             | Self::LoadSeed { dst, .. }
-            | Self::LoadIndexedSeed { dst, .. }
             | Self::LoadFoldCarried { dst, .. }
             | Self::LoadFoldIndex { dst, .. }
             | Self::LoadFoldCapture { dst, .. }
@@ -1255,81 +1415,19 @@ pub struct ScalarProgramRegisterFlow {
     register_count: usize,
 }
 
-/// Construction-local proof context for immutable conditional program owners.
-///
-/// Pointer identity is sufficient here: lowering shares exact owners through
-/// `Arc`, and checked wire replay reconstructs and validates each stored body.
-/// Semantic owner-id uniqueness is proved separately by the enclosing block.
-#[derive(Default)]
-pub(crate) struct ScalarProgramValidationCache {
-    conditional_programs: HashSet<ConditionalValidationKey>,
-    use_owner_ids: bool,
-}
-
-impl ScalarProgramValidationCache {
-    pub(crate) fn for_checked_owner_table() -> Self {
-        Self {
-            conditional_programs: HashSet::new(),
-            use_owner_ids: true,
-        }
-    }
-
-    fn begin_conditional(&mut self, program: &FunctionConditionalProgram) -> bool {
-        let key = if self.use_owner_ids {
-            program.owner.map_or_else(
-                || ConditionalValidationKey::Pointer(std::ptr::from_ref(program) as usize),
-                ConditionalValidationKey::Owner,
-            )
-        } else {
-            ConditionalValidationKey::Pointer(std::ptr::from_ref(program) as usize)
-        };
-        self.conditional_programs.insert(key)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum ConditionalValidationKey {
-    Owner(FunctionConditionalOwnerId),
-    Pointer(usize),
-}
-
 impl ScalarProgramRegisterFlow {
     pub fn derive(program: &[LinearOp]) -> Result<Self, ScalarProgramRegisterError> {
-        Self::derive_inner_with_cache(
-            program,
-            None,
-            None,
-            &mut ScalarProgramValidationCache::default(),
-        )
+        Self::derive_inner(program, None, None, None)
     }
 
     fn derive_inner(
         program: &[LinearOp],
         fold_context: Option<(usize, usize, usize)>,
+        fold_domain: Option<&StructuredIndexDomain>,
         conditional_capture_count: Option<usize>,
-    ) -> Result<Self, ScalarProgramRegisterError> {
-        Self::derive_inner_with_cache(
-            program,
-            fold_context,
-            conditional_capture_count,
-            &mut ScalarProgramValidationCache::default(),
-        )
-    }
-
-    pub(crate) fn derive_with_cache(
-        program: &[LinearOp],
-        validation: &mut ScalarProgramValidationCache,
-    ) -> Result<Self, ScalarProgramRegisterError> {
-        Self::derive_inner_with_cache(program, None, None, validation)
-    }
-
-    fn derive_inner_with_cache(
-        program: &[LinearOp],
-        fold_context: Option<(usize, usize, usize)>,
-        conditional_capture_count: Option<usize>,
-        validation: &mut ScalarProgramValidationCache,
     ) -> Result<Self, ScalarProgramRegisterError> {
         let mut initialized = Vec::new();
+        let mut index_evidence = Vec::new();
         let mut max_register = None;
         for (op_index, op) in program.iter().enumerate() {
             if let Some(register) = validate_op_sources(
@@ -1338,14 +1436,28 @@ impl ScalarProgramRegisterFlow {
                 &initialized,
                 fold_context,
                 conditional_capture_count,
-                validation,
             )? {
                 max_register = Some(max_register.map_or(register, |max: Reg| max.max(register)));
             }
+            validate_runtime_index_evidence(op, op_index, &index_evidence)?;
             let dst_count = op.dst_register_count();
             if let Some(dst) = op.dst_register() {
                 let last = register_range_last(op_index, op.kind_name(), dst, dst_count)?;
+                require_register_range_uninitialized(
+                    op_index,
+                    op.kind_name(),
+                    dst,
+                    dst_count,
+                    &initialized,
+                )?;
+                let exact_integer = (dst_count == 1).then(|| {
+                    derive_exact_integer_evidence(op, op_index, &index_evidence, fold_domain)
+                });
                 mark_register_range_initialized(&mut initialized, dst, dst_count);
+                mark_exact_integer_evidence_unknown(&mut index_evidence, dst, dst_count);
+                if let Some(exact_integer) = exact_integer {
+                    index_evidence[dst as usize] = exact_integer;
+                }
                 max_register = Some(max_register.map_or(last, |max: Reg| max.max(last)));
             }
         }
@@ -1376,6 +1488,11 @@ pub enum ScalarProgramRegisterError {
         start: Reg,
         len: usize,
     },
+    DestinationRegisterAlreadyDefined {
+        op_index: usize,
+        operation: &'static str,
+        register: Reg,
+    },
     InvalidProjection {
         op_index: usize,
         operation: &'static str,
@@ -1403,6 +1520,458 @@ pub enum ScalarProgramRegisterError {
     },
 }
 
+/// Closed interval of exactly representable integer values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExactIntegerInterval {
+    lower: i64,
+    upper: i64,
+}
+
+impl ExactIntegerInterval {
+    const MAX_EXACT_F64_INTEGER: i64 = 1_i64 << 53;
+
+    fn exact(value: f64) -> Option<Self> {
+        let integer = value as i64;
+        (value.is_finite()
+            && value.fract() == 0.0
+            && value.abs() <= Self::MAX_EXACT_F64_INTEGER as f64
+            && integer as f64 == value)
+            .then_some(Self {
+                lower: integer,
+                upper: integer,
+            })
+    }
+
+    fn checked(lower: i64, upper: i64) -> Option<Self> {
+        (lower <= upper
+            && lower >= -Self::MAX_EXACT_F64_INTEGER
+            && upper <= Self::MAX_EXACT_F64_INTEGER)
+            .then_some(Self { lower, upper })
+    }
+
+    fn join(self, other: Self) -> Option<Self> {
+        Self::checked(self.lower.min(other.lower), self.upper.max(other.upper))
+    }
+
+    fn neg(self) -> Option<Self> {
+        Self::checked(self.upper.checked_neg()?, self.lower.checked_neg()?)
+    }
+
+    fn abs(self) -> Option<Self> {
+        let upper = self.lower.unsigned_abs().max(self.upper.unsigned_abs());
+        let upper = i64::try_from(upper).ok()?;
+        Self::checked(
+            if self.lower <= 0 && self.upper >= 0 {
+                0
+            } else {
+                self.lower.abs().min(self.upper.abs())
+            },
+            upper,
+        )
+    }
+
+    fn add(self, other: Self) -> Option<Self> {
+        Self::checked(
+            self.lower.checked_add(other.lower)?,
+            self.upper.checked_add(other.upper)?,
+        )
+    }
+
+    fn sub(self, other: Self) -> Option<Self> {
+        Self::checked(
+            self.lower.checked_sub(other.upper)?,
+            self.upper.checked_sub(other.lower)?,
+        )
+    }
+
+    fn mul(self, other: Self) -> Option<Self> {
+        let products = [
+            self.lower.checked_mul(other.lower)?,
+            self.lower.checked_mul(other.upper)?,
+            self.upper.checked_mul(other.lower)?,
+            self.upper.checked_mul(other.upper)?,
+        ];
+        Self::checked(*products.iter().min()?, *products.iter().max()?)
+    }
+}
+
+/// Identity of the operation that most recently produced one register.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RegisterProducer {
+    operation: usize,
+    register: Reg,
+}
+
+/// Persistent construction-local citation chain for exact-integer evidence.
+///
+/// Each derived node retains the exact producer nodes it consumed. Since only
+/// this module constructs a node, checking its direct parents proves the full
+/// chain inductively without rescanning it for every indexed operation.
+#[derive(Clone, Debug)]
+struct ExactIntegerProvenance {
+    producer: RegisterProducer,
+    origin: ExactIntegerOrigin,
+}
+
+#[derive(Clone, Debug)]
+enum ExactIntegerOrigin {
+    ExactConstant,
+    CheckedFoldBinder,
+    IntegerPreserving {
+        sources: Box<[Rc<ExactIntegerProvenance>]>,
+    },
+}
+
+impl ExactIntegerProvenance {
+    fn exact_constant(producer: RegisterProducer) -> Rc<Self> {
+        Rc::new(Self {
+            producer,
+            origin: ExactIntegerOrigin::ExactConstant,
+        })
+    }
+
+    fn checked_fold_binder(producer: RegisterProducer) -> Rc<Self> {
+        Rc::new(Self {
+            producer,
+            origin: ExactIntegerOrigin::CheckedFoldBinder,
+        })
+    }
+
+    fn derived(
+        producer: RegisterProducer,
+        sources: impl IntoIterator<Item = Rc<Self>>,
+    ) -> Option<Rc<Self>> {
+        let sources = sources.into_iter().collect::<Box<[_]>>();
+        if sources.is_empty()
+            || sources
+                .iter()
+                .any(|source| source.producer.operation >= producer.operation)
+        {
+            return None;
+        }
+        Some(Rc::new(Self {
+            producer,
+            origin: ExactIntegerOrigin::IntegerPreserving { sources },
+        }))
+    }
+
+    fn cites(&self, producer: RegisterProducer) -> bool {
+        if self.producer != producer {
+            return false;
+        }
+        match &self.origin {
+            ExactIntegerOrigin::ExactConstant | ExactIntegerOrigin::CheckedFoldBinder => true,
+            ExactIntegerOrigin::IntegerPreserving { sources } => !sources.is_empty(),
+        }
+    }
+}
+
+/// Construction-local proof that one register is always an exactly
+/// representable integer in one closed interval, citing its current producer
+/// and the complete persistent producer chain.
+#[derive(Clone, Debug)]
+struct ExactIntegerEvidence {
+    interval: ExactIntegerInterval,
+    provenance: Rc<ExactIntegerProvenance>,
+}
+
+impl ExactIntegerEvidence {
+    fn exact_constant(interval: ExactIntegerInterval, producer: RegisterProducer) -> Self {
+        Self {
+            interval,
+            provenance: ExactIntegerProvenance::exact_constant(producer),
+        }
+    }
+
+    fn checked_fold_binder(interval: ExactIntegerInterval, producer: RegisterProducer) -> Self {
+        Self {
+            interval,
+            provenance: ExactIntegerProvenance::checked_fold_binder(producer),
+        }
+    }
+
+    fn derived(
+        interval: ExactIntegerInterval,
+        producer: RegisterProducer,
+        sources: impl IntoIterator<Item = ExactIntegerEvidence>,
+    ) -> Option<Self> {
+        let provenance = ExactIntegerProvenance::derived(
+            producer,
+            sources.into_iter().map(|source| source.provenance),
+        )?;
+        Some(Self {
+            interval,
+            provenance,
+        })
+    }
+
+    fn cited_for(&self, register: Reg) -> bool {
+        self.provenance.cites(RegisterProducer {
+            operation: self.provenance.producer.operation,
+            register,
+        })
+    }
+}
+
+/// Branded evidence for a one-based Modelica tensor coordinate.
+struct OneBasedTensorCoordinateEvidence;
+
+impl OneBasedTensorCoordinateEvidence {
+    fn issue(evidence: ExactIntegerEvidence, register: Reg, extent: u32) -> Option<Self> {
+        (evidence.cited_for(register)
+            && evidence.interval.lower >= 1
+            && evidence.interval.upper <= i64::from(extent))
+        .then_some(Self)
+    }
+}
+
+fn mark_exact_integer_evidence_unknown(
+    evidence: &mut Vec<Option<ExactIntegerEvidence>>,
+    start: Reg,
+    count: usize,
+) {
+    let end = start as usize + count;
+    if evidence.len() < end {
+        evidence.resize(end, None);
+    }
+    evidence[start as usize..end].fill(None);
+}
+
+fn derive_exact_integer_evidence(
+    op: &LinearOp,
+    op_index: usize,
+    evidence: &[Option<ExactIntegerEvidence>],
+    fold_domain: Option<&StructuredIndexDomain>,
+) -> Option<ExactIntegerEvidence> {
+    let dst = op.dst_register()?;
+    let producer = RegisterProducer {
+        operation: op_index,
+        register: dst,
+    };
+    let source = |register: Reg| {
+        evidence
+            .get(register as usize)
+            .cloned()
+            .flatten()
+            .filter(|source| source.cited_for(register))
+    };
+    match *op {
+        LinearOp::Const { value, .. } => Some(ExactIntegerEvidence::exact_constant(
+            ExactIntegerInterval::exact(value)?,
+            producer,
+        )),
+        LinearOp::LoadFoldIndex { dimension, .. } => {
+            let binder = fold_domain?.binders.get(dimension)?;
+            Some(ExactIntegerEvidence::checked_fold_binder(
+                ExactIntegerInterval::checked(
+                    binder.lower.min(binder.upper),
+                    binder.lower.max(binder.upper),
+                )?,
+                producer,
+            ))
+        }
+        LinearOp::Move { src, .. } => {
+            let source = source(src)?;
+            ExactIntegerEvidence::derived(source.interval, producer, [source])
+        }
+        LinearOp::Unary { op, arg, .. } => match op {
+            UnaryOp::Neg => {
+                let source = source(arg)?;
+                ExactIntegerEvidence::derived(source.interval.neg()?, producer, [source])
+            }
+            UnaryOp::Not => None,
+            UnaryOp::Abs => {
+                let source = source(arg)?;
+                ExactIntegerEvidence::derived(source.interval.abs()?, producer, [source])
+            }
+            UnaryOp::Sign => {
+                let source = source(arg)?;
+                ExactIntegerEvidence::derived(
+                    ExactIntegerInterval::checked(-1, 1)?,
+                    producer,
+                    [source],
+                )
+            }
+            UnaryOp::Floor | UnaryOp::Ceil | UnaryOp::Trunc => {
+                let source = source(arg)?;
+                ExactIntegerEvidence::derived(source.interval, producer, [source])
+            }
+            UnaryOp::Sqrt
+            | UnaryOp::Sin
+            | UnaryOp::Cos
+            | UnaryOp::Tan
+            | UnaryOp::Asin
+            | UnaryOp::Acos
+            | UnaryOp::Atan
+            | UnaryOp::Sinh
+            | UnaryOp::Cosh
+            | UnaryOp::Tanh
+            | UnaryOp::Exp
+            | UnaryOp::Log
+            | UnaryOp::Log10 => None,
+        },
+        LinearOp::Binary { op, lhs, rhs, .. } => match op {
+            BinaryOp::Add => {
+                let lhs = source(lhs)?;
+                let rhs = source(rhs)?;
+                ExactIntegerEvidence::derived(lhs.interval.add(rhs.interval)?, producer, [lhs, rhs])
+            }
+            BinaryOp::Sub => {
+                let lhs = source(lhs)?;
+                let rhs = source(rhs)?;
+                ExactIntegerEvidence::derived(lhs.interval.sub(rhs.interval)?, producer, [lhs, rhs])
+            }
+            BinaryOp::Mul => {
+                let lhs = source(lhs)?;
+                let rhs = source(rhs)?;
+                ExactIntegerEvidence::derived(lhs.interval.mul(rhs.interval)?, producer, [lhs, rhs])
+            }
+            BinaryOp::And | BinaryOp::Or => None,
+            BinaryOp::Min => {
+                let lhs = source(lhs)?;
+                let rhs = source(rhs)?;
+                let interval = ExactIntegerInterval::checked(
+                    lhs.interval.lower.min(rhs.interval.lower),
+                    lhs.interval.upper.min(rhs.interval.upper),
+                )?;
+                ExactIntegerEvidence::derived(interval, producer, [lhs, rhs])
+            }
+            BinaryOp::Max => {
+                let lhs = source(lhs)?;
+                let rhs = source(rhs)?;
+                let interval = ExactIntegerInterval::checked(
+                    lhs.interval.lower.max(rhs.interval.lower),
+                    lhs.interval.upper.max(rhs.interval.upper),
+                )?;
+                ExactIntegerEvidence::derived(interval, producer, [lhs, rhs])
+            }
+            BinaryOp::Div | BinaryOp::Pow | BinaryOp::Atan2 => None,
+        },
+        LinearOp::Compare { .. } => None,
+        LinearOp::Select {
+            if_true, if_false, ..
+        } => {
+            let if_true = source(if_true)?;
+            let if_false = source(if_false)?;
+            ExactIntegerEvidence::derived(
+                if_true.interval.join(if_false.interval)?,
+                producer,
+                [if_true, if_false],
+            )
+        }
+        _ => None,
+    }
+}
+
+fn validate_runtime_index_evidence(
+    op: &LinearOp,
+    op_index: usize,
+    evidence: &[Option<ExactIntegerEvidence>],
+) -> Result<(), ScalarProgramRegisterError> {
+    let validate = |index: TensorIndex, extent: u32| match index {
+        TensorIndex::Constant(_) => Ok(()),
+        TensorIndex::Runtime(register) => {
+            let exact_integer = evidence.get(register as usize).cloned().flatten().ok_or(
+                ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "runtime tensor index lacks a construction-issued exact integer domain",
+                },
+            )?;
+            OneBasedTensorCoordinateEvidence::issue(exact_integer, register, extent).ok_or(
+                ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "runtime tensor index domain escapes its selected axis",
+                },
+            )?;
+            Ok(())
+        }
+    };
+    let validate_projection = |dimensions: &[u32], indices: &[TensorIndex]| {
+        for (&extent, &index) in dimensions.iter().zip(indices) {
+            validate(index, extent)?;
+        }
+        Ok(())
+    };
+    match op {
+        LinearOp::LoadIndexedRegister {
+            dimensions,
+            indices,
+            ..
+        }
+        | LinearOp::LoadIndexedFoldCarried {
+            dimensions,
+            indices,
+            ..
+        }
+        | LinearOp::LoadIndexedFoldCapture {
+            dimensions,
+            indices,
+            ..
+        } => validate_projection(dimensions, indices),
+        LinearOp::TensorUpdate {
+            dimensions,
+            subscripts,
+            ..
+        } => validate_tensor_update_index_domains(op_index, dimensions, subscripts, validate),
+        LinearOp::StoreOutputFoldTensorUpdate {
+            dimensions,
+            updates,
+            ..
+        } => {
+            for update in updates.iter() {
+                for (&extent, subscript) in dimensions.iter().zip(update.subscripts.iter()) {
+                    if let TensorSubscript::Index(index) = *subscript {
+                        validate(index, extent)?;
+                    }
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_tensor_update_index_domains(
+    op_index: usize,
+    dimensions: &[u32],
+    subscripts: &[TensorUpdateSubscript],
+    validate: impl Fn(TensorIndex, u32) -> Result<(), ScalarProgramRegisterError>,
+) -> Result<(), ScalarProgramRegisterError> {
+    for (&extent, subscript) in dimensions.iter().zip(subscripts) {
+        match subscript {
+            TensorUpdateSubscript::Whole => {}
+            TensorUpdateSubscript::Index(index) => validate(*index, extent)?,
+            TensorUpdateSubscript::Slice { start, dimensions } => {
+                let count = dimensions
+                    .iter()
+                    .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize));
+                let Some(count) = count else {
+                    return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                        op_index,
+                        reason: "tensor update slice coordinate count overflows",
+                    });
+                };
+                for offset in 0..count {
+                    let offset = Reg::try_from(offset).map_err(|_| {
+                        ScalarProgramRegisterError::InvalidTensorProjection {
+                            op_index,
+                            reason: "tensor update slice register range exceeds register identity",
+                        }
+                    })?;
+                    let register = start.checked_add(offset).ok_or(
+                        ScalarProgramRegisterError::InvalidTensorProjection {
+                            op_index,
+                            reason: "tensor update slice register range overflows",
+                        },
+                    )?;
+                    validate(TensorIndex::Runtime(register), extent)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl std::fmt::Display for ScalarProgramRegisterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1426,6 +1995,14 @@ impl std::fmt::Display for ScalarProgramRegisterError {
             } => write!(
                 f,
                 "{operation} op {op_index} register range r{start}..+{len} overflows"
+            ),
+            Self::DestinationRegisterAlreadyDefined {
+                op_index,
+                operation,
+                register,
+            } => write!(
+                f,
+                "{operation} op {op_index} redefines destination register r{register}"
             ),
             Self::InvalidProjection {
                 op_index,
@@ -1468,6 +2045,32 @@ fn mark_register_range_initialized(initialized: &mut Vec<bool>, dst: Reg, count:
     for offset in 0..count {
         mark_register_initialized(initialized, dst + offset as Reg);
     }
+}
+
+/// Prove that one operation issues fresh SSA definitions for its entire
+/// destination range. The range end was already checked by
+/// [`register_range_last`], so this reports the first overlapping definition
+/// rather than manufacturing a second value for the same register identity.
+fn require_register_range_uninitialized(
+    op_index: usize,
+    operation: &'static str,
+    dst: Reg,
+    count: usize,
+    initialized: &[bool],
+) -> Result<(), ScalarProgramRegisterError> {
+    for offset in 0..count {
+        let register = dst + offset as Reg;
+        if initialized.get(register as usize).copied().unwrap_or(false) {
+            return Err(
+                ScalarProgramRegisterError::DestinationRegisterAlreadyDefined {
+                    op_index,
+                    operation,
+                    register,
+                },
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Read-only context for one operation's source-register proof.
@@ -1593,7 +2196,6 @@ fn validate_op_sources(
     initialized: &[bool],
     fold_context: Option<(usize, usize, usize)>,
     conditional_capture_count: Option<usize>,
-    validation: &mut ScalarProgramValidationCache,
 ) -> Result<Option<Reg>, ScalarProgramRegisterError> {
     let cx = OpSources { op, op_index, initialized, fold_context, conditional_capture_count };
     match *op {
@@ -1606,7 +2208,6 @@ fn validate_op_sources(
         LinearOp::LoadFunctionConditionalCaptureRange { index_start, count, .. } =>
             conditional_capture_range(cx, index_start, count),
         LinearOp::Move { src, .. } | LinearOp::Unary { arg: src, .. }
-        | LinearOp::LoadIndexedP { index: src, .. } | LinearOp::LoadIndexedSeed { index: src, .. }
         | LinearOp::StoreOutput { src } => single_source(cx, src),
         LinearOp::StoreOutputRange { start, count, stride } =>
             output_range(cx, start, count, stride),
@@ -1627,7 +2228,7 @@ fn validate_op_sources(
             ref initial, capture_start, ref program, result_base, count, condition, ..
         } => nested_fold(cx, initial, capture_start, program, result_base, count, condition),
         LinearOp::FunctionConditional { capture_start, ref program, .. } =>
-            conditional_program(cx, capture_start, program, validation),
+            conditional_program(cx, capture_start, program),
         LinearOp::PureCall { ref input_starts, ref site, .. } => pure_call(cx, input_starts, site),
         LinearOp::PureCallDirectional { ref input_starts, ref site, .. } =>
             directional_call(cx, input_starts, site),
@@ -1897,7 +2498,7 @@ fn fold_tensor_source(
     let Some((carried_count, _, _)) = cx.fold_context else {
         return Err(cx.fold_error("aggregate output escaped its function-fold update body"));
     };
-    if dimensions.is_empty() || updates.is_empty() {
+    if dimensions.is_empty() || dimensions.contains(&0) || updates.is_empty() {
         return Err(cx.tensor_error("tensor update has no checked rank or patches"));
     }
     if lanes == 0 || source_stride != lanes {
@@ -2123,16 +2724,7 @@ fn conditional_program(
     cx: OpSources<'_>,
     capture_start: Reg,
     program: &FunctionConditionalProgram,
-    validation: &mut ScalarProgramValidationCache,
 ) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    program
-        .validate_with_cache(validation)
-        .map_err(|error| match error {
-            ScalarProgramRegisterError::InvalidFunctionConditional { reason, .. } => {
-                cx.conditional_error(reason)
-            }
-            other => other,
-        })?;
     if program.capture_count == 0 {
         return Ok(None);
     }
@@ -2822,7 +3414,41 @@ fn checked_register_count(max_register: Option<Reg>) -> Result<usize, ScalarProg
 
 #[cfg(test)]
 mod tests {
-    use super::{BinaryOp, CompareOp, LinearOp, UnaryOp};
+    use super::{
+        BinaryOp, CompareOp, FoldInitialSource, FoldTensorUpdate, FunctionConditionalProgram,
+        FunctionFoldProgram, LinearOp, TargetAssignmentShape, TensorInputKind, TensorSubscript,
+        UnaryOp,
+    };
+    use rumoca_core::StructuredIndexDomain;
+    use serde::de::DeserializeOwned;
+    use std::sync::Arc;
+
+    fn assert_missing_option_key_rejected<T>(
+        mut value: serde_json::Value,
+        object_pointer: &str,
+        field: &str,
+    ) where
+        T: DeserializeOwned + std::fmt::Debug,
+    {
+        assert!(
+            value
+                .pointer_mut(object_pointer)
+                .expect("current wire fixture object")
+                .as_object_mut()
+                .expect("current wire fixture is an object")
+                .remove(field)
+                .is_some(),
+            "fixture must carry `{field}`"
+        );
+        let error = serde_json::from_value::<T>(value)
+            .expect_err("deleting a current optional key must fail");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field `{field}`")),
+            "unexpected omission error for {field}: {error}"
+        );
+    }
 
     #[test]
     fn compare_op_equality_is_exact_not_epsilon_based() {
@@ -2858,5 +3484,90 @@ mod tests {
     #[test]
     fn compare_op_kind_name_reports_stable_variant_name() {
         assert_eq!(CompareOp::Ne.kind_name(), "Ne");
+    }
+
+    #[test]
+    fn linear_option_wire_keys_require_explicit_null() {
+        let assignment = TargetAssignmentShape::Affine {
+            target_y_index: 0,
+            offset_reg: 1,
+            coefficient_reg: None,
+            offset_scale: 1.0,
+            coefficient_scale: 1.0,
+            expr_eval_len: 2,
+        };
+        assert_missing_option_key_rejected::<TargetAssignmentShape>(
+            serde_json::to_value(assignment).expect("serialize affine assignment"),
+            "/Affine",
+            "coefficient_reg",
+        );
+
+        let update = FoldTensorUpdate {
+            subscripts: vec![TensorSubscript::Whole].into(),
+            condition: None,
+            value_start: 0,
+            value_stride: 1,
+        };
+        assert_missing_option_key_rejected::<FoldTensorUpdate>(
+            serde_json::to_value(update).expect("serialize fold update"),
+            "",
+            "condition",
+        );
+
+        let region = || {
+            vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]
+        };
+        let conditional =
+            FunctionConditionalProgram::checked(0, [1], [(region(), region())], region())
+                .expect("the conditional wire fixture must satisfy its checked body contract");
+        assert_missing_option_key_rejected::<FunctionConditionalProgram>(
+            serde_json::to_value(conditional).expect("serialize conditional program"),
+            "",
+            "owner",
+        );
+
+        let tensor_load = LinearOp::TensorLoad {
+            dst_start: 0,
+            input: TensorInputKind::Y,
+            input_start: 0,
+            count: 1,
+            seed_start: None,
+            lanes: 1,
+        };
+        assert_missing_option_key_rejected::<LinearOp>(
+            serde_json::to_value(tensor_load).expect("serialize tensor load"),
+            "/TensorLoad",
+            "seed_start",
+        );
+
+        let fold = FunctionFoldProgram::checked(
+            StructuredIndexDomain {
+                binders: Vec::new(),
+            },
+            1,
+            0,
+            vec![
+                LinearOp::LoadFoldCarried { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        )
+        .expect("the fold fixture must satisfy the checked carried-output contract");
+        let nested_fold = LinearOp::StoreOutputFunctionFold {
+            initial: vec![FoldInitialSource::Registers { start: 0, count: 1 }].into(),
+            capture_start: 0,
+            program: Arc::new(fold),
+            result_base: 0,
+            count: 1,
+            condition: None,
+            nested_when_true: false,
+        };
+        assert_missing_option_key_rejected::<LinearOp>(
+            serde_json::to_value(nested_fold).expect("serialize nested fold"),
+            "/StoreOutputFunctionFold",
+            "condition",
+        );
     }
 }

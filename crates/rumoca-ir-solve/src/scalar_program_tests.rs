@@ -144,6 +144,115 @@ fn scalar_program_construction_rejects_store_from_undefined_register() {
 }
 
 #[test]
+fn scalar_program_construction_rejects_a_second_definition() {
+    let span = source_span("DuplicateDefinition.mo", 17, 29);
+    let program = vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::Const { dst: 0, value: 2.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+
+    let error = ScalarProgramBlock::with_program_spans(vec![program], vec![span])
+        .expect_err("a second destination write must not mint a checked program");
+
+    assert_eq!(error.source_span(), Some(span));
+    assert!(matches!(
+        error,
+        SolveProblemShapeContractError::ScalarProgramRegisterFlow {
+            program_index: 0,
+            error: ScalarProgramRegisterError::DestinationRegisterAlreadyDefined {
+                op_index: 1,
+                operation: "Const",
+                register: 0,
+            },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn scalar_program_construction_rejects_a_partially_overlapping_destination_range() {
+    let span = source_span("OverlappingDefinitionRange.mo", 8, 31);
+    let program = vec![
+        LinearOp::Const { dst: 1, value: 1.0 },
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: TensorInputKind::Y,
+            input_start: 0,
+            count: 3,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+
+    let error = ScalarProgramBlock::with_program_spans(vec![program], vec![span])
+        .expect_err("an overlapping destination range must not mint a checked program");
+
+    assert_eq!(error.source_span(), Some(span));
+    assert!(matches!(
+        error,
+        SolveProblemShapeContractError::ScalarProgramRegisterFlow {
+            program_index: 0,
+            error: ScalarProgramRegisterError::DestinationRegisterAlreadyDefined {
+                op_index: 1,
+                operation: "TensorLoad",
+                register: 1,
+            },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn scalar_program_construction_accepts_disjoint_destination_ranges() {
+    let span = source_span("DisjointDefinitionRanges.mo", 2, 24);
+    let program = vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::TensorLoad {
+            dst_start: 1,
+            input: TensorInputKind::Y,
+            input_start: 0,
+            count: 2,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+
+    let block = ScalarProgramBlock::with_program_spans(vec![program], vec![span])
+        .expect("disjoint destination ranges have one definition per register");
+
+    assert_eq!(block.program_register_count(0), Some(3));
+}
+
+#[test]
+fn scalar_program_wire_rejects_a_second_destination_definition() {
+    let span = source_span("DuplicateDefinitionWire.mo", 3, 18);
+    let block = ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::Const { dst: 1, value: 2.0 },
+            LinearOp::StoreOutput { src: 1 },
+        ]],
+        vec![span],
+    )
+    .expect("construct an SSA scalar-program wire fixture");
+    let mut wire = serde_json::to_value(block).expect("serialize the SSA fixture");
+    wire["programs"][0][1]["Const"]["dst"] = serde_json::json!(0);
+
+    let error = serde_json::from_value::<ScalarProgramBlock>(wire)
+        .expect_err("wire replay must not issue a block for a second destination definition");
+
+    assert!(
+        error
+            .to_string()
+            .contains("Const op 1 redefines destination register r0"),
+        "unexpected duplicate-definition wire error: {error}"
+    );
+}
+
+#[test]
 fn scalar_program_construction_rejects_dummy_provenance() {
     let error = ScalarProgramBlock::with_program_spans(
         vec![vec![
@@ -191,7 +300,7 @@ fn guarded_function_fold_construction_requires_defined_activation() {
     let fold = FunctionFoldProgram::checked(
         StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
-                id: 0,
+                id: rumoca_core::StructuredIndexBinderId::new(0),
                 display_name: "i".to_string(),
                 lower: 1,
                 upper: 1,
@@ -301,6 +410,440 @@ fn runtime_tensor_projection_is_one_rank_sized_checked_operation() {
             .iter()
             .any(|op| matches!(op, LinearOp::Select { .. }))
     );
+}
+
+#[test]
+fn runtime_tensor_projection_rejects_unproved_or_out_of_domain_indices() {
+    for (index, reason) in [
+        (
+            f64::NAN,
+            "runtime tensor index lacks a construction-issued exact integer domain",
+        ),
+        (
+            1.5,
+            "runtime tensor index lacks a construction-issued exact integer domain",
+        ),
+        (0.0, "runtime tensor index domain escapes its selected axis"),
+        (3.0, "runtime tensor index domain escapes its selected axis"),
+    ] {
+        let program = [
+            LinearOp::Const { dst: 0, value: 7.0 },
+            LinearOp::Const { dst: 1, value: 8.0 },
+            LinearOp::Const {
+                dst: 2,
+                value: index,
+            },
+            LinearOp::LoadIndexedRegister {
+                dst: 3,
+                base: 0,
+                stride: 1,
+                dimensions: Box::new([2]),
+                indices: Box::new([TensorIndex::Runtime(2)]),
+            },
+            LinearOp::StoreOutput { src: 3 },
+        ];
+
+        let error = ScalarProgramRegisterFlow::derive(&program)
+            .expect_err("an invalid runtime index must fail program construction");
+        assert!(matches!(
+            error,
+            ScalarProgramRegisterError::InvalidTensorProjection {
+                op_index: 3,
+                reason: actual,
+            } if actual == reason
+        ));
+    }
+}
+
+#[test]
+fn runtime_tensor_projection_accepts_both_proved_boundaries() {
+    for index in [1.0, 2.0] {
+        let program = [
+            LinearOp::Const { dst: 0, value: 7.0 },
+            LinearOp::Const { dst: 1, value: 8.0 },
+            LinearOp::Const {
+                dst: 2,
+                value: index,
+            },
+            LinearOp::LoadIndexedRegister {
+                dst: 3,
+                base: 0,
+                stride: 1,
+                dimensions: Box::new([2]),
+                indices: Box::new([TensorIndex::Runtime(2)]),
+            },
+            LinearOp::StoreOutput { src: 3 },
+        ];
+
+        ScalarProgramRegisterFlow::derive(&program)
+            .expect("a proved one-based boundary index constructs");
+    }
+}
+
+#[test]
+fn runtime_tensor_projection_rejects_an_unproved_dynamic_input() {
+    let program = [
+        LinearOp::Const { dst: 0, value: 7.0 },
+        LinearOp::Const { dst: 1, value: 8.0 },
+        LinearOp::LoadY { dst: 2, index: 0 },
+        LinearOp::LoadIndexedRegister {
+            dst: 3,
+            base: 0,
+            stride: 1,
+            dimensions: Box::new([2]),
+            indices: Box::new([TensorIndex::Runtime(2)]),
+        },
+        LinearOp::StoreOutput { src: 3 },
+    ];
+
+    let error = ScalarProgramRegisterFlow::derive(&program)
+        .expect_err("input-driven tensor indexing has no static domain proof");
+    assert!(matches!(
+        error,
+        ScalarProgramRegisterError::InvalidTensorProjection {
+            op_index: 3,
+            reason: "runtime tensor index lacks a construction-issued exact integer domain",
+        }
+    ));
+}
+
+#[test]
+fn comparison_cannot_reset_unproved_input_into_runtime_index_evidence() {
+    let program = [
+        LinearOp::Const { dst: 0, value: 7.0 },
+        LinearOp::Const { dst: 1, value: 8.0 },
+        LinearOp::LoadY { dst: 2, index: 0 },
+        LinearOp::Const { dst: 3, value: 0.0 },
+        LinearOp::Compare {
+            dst: 4,
+            op: CompareOp::Eq,
+            lhs: 2,
+            rhs: 3,
+        },
+        LinearOp::Const { dst: 5, value: 1.0 },
+        LinearOp::Binary {
+            dst: 6,
+            op: BinaryOp::Add,
+            lhs: 4,
+            rhs: 5,
+        },
+        LinearOp::LoadIndexedRegister {
+            dst: 7,
+            base: 0,
+            stride: 1,
+            dimensions: Box::new([2]),
+            indices: Box::new([TensorIndex::Runtime(6)]),
+        },
+        LinearOp::StoreOutput { src: 7 },
+    ];
+
+    let error = ScalarProgramRegisterFlow::derive(&program)
+        .expect_err("comparison output must not manufacture exact-integer evidence");
+    assert!(matches!(
+        error,
+        ScalarProgramRegisterError::InvalidTensorProjection {
+            op_index: 7,
+            reason: "runtime tensor index lacks a construction-issued exact integer domain",
+        }
+    ));
+}
+
+#[test]
+fn deleted_indexed_input_wire_variants_are_unknown() {
+    for suffix in ["P", "Seed"] {
+        let kind = ["Load", "Indexed", suffix].concat();
+        let mut tagged = serde_json::Map::new();
+        tagged.insert(
+            kind.clone(),
+            serde_json::json!({
+                "dst": 0,
+                "base": 0,
+                "count": 1,
+                "index": 0
+            }),
+        );
+        let error = serde_json::from_value::<LinearOp>(serde_json::Value::Object(tagged))
+            .expect_err("deleted scalar indexed-input wire tags must not compat-decode");
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown variant") && message.contains(&kind),
+            "unexpected deleted-tag rejection: {message}"
+        );
+    }
+}
+
+#[test]
+fn function_fold_binder_domain_proves_affine_runtime_indexing() {
+    let domain = StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            id: rumoca_core::StructuredIndexBinderId::new(0),
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 2,
+            step: 1,
+        }],
+    };
+    let program = FunctionFoldProgram::checked(
+        domain,
+        5,
+        5,
+        vec![
+            LinearOp::LoadFoldIndex {
+                dst: 0,
+                dimension: 0,
+            },
+            LinearOp::Const { dst: 1, value: 3.0 },
+            LinearOp::Binary {
+                dst: 2,
+                op: BinaryOp::Add,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::LoadIndexedFoldCarried {
+                dst: 3,
+                base: 0,
+                stride: 1,
+                dimensions: Box::new([5]),
+                indices: Box::new([TensorIndex::Runtime(2)]),
+            },
+            LinearOp::LoadIndexedFoldCapture {
+                dst: 4,
+                base: 0,
+                stride: 1,
+                dimensions: Box::new([5]),
+                indices: Box::new([TensorIndex::Runtime(2)]),
+            },
+            LinearOp::StoreOutput { src: 3 },
+            LinearOp::StoreOutput { src: 4 },
+            LinearOp::StoreOutput { src: 3 },
+            LinearOp::StoreOutput { src: 3 },
+            LinearOp::StoreOutput { src: 3 },
+        ],
+    )
+    .expect("the fold domain proves every affine index is in 4..=5");
+
+    assert_eq!(program.register_count(), 5);
+}
+
+#[test]
+fn function_fold_rejects_a_binder_domain_outside_the_tensor_axis() {
+    let domain = StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            id: rumoca_core::StructuredIndexBinderId::new(0),
+            display_name: "i".to_string(),
+            lower: 0,
+            upper: 1,
+            step: 1,
+        }],
+    };
+    let error = FunctionFoldProgram::checked(
+        domain,
+        2,
+        0,
+        vec![
+            LinearOp::LoadFoldIndex {
+                dst: 0,
+                dimension: 0,
+            },
+            LinearOp::LoadIndexedFoldCarried {
+                dst: 1,
+                base: 0,
+                stride: 1,
+                dimensions: Box::new([2]),
+                indices: Box::new([TensorIndex::Runtime(0)]),
+            },
+            LinearOp::StoreOutput { src: 1 },
+            LinearOp::StoreOutput { src: 1 },
+        ],
+    )
+    .expect_err("a fold binder whose domain includes zero cannot authorize indexing");
+
+    assert!(matches!(
+        error,
+        ScalarProgramRegisterError::InvalidTensorProjection {
+            op_index: 1,
+            reason: "runtime tensor index domain escapes its selected axis",
+        }
+    ));
+}
+
+#[test]
+fn function_fold_rejects_an_invalid_domain_before_minting_an_index_proof() {
+    let error = FunctionFoldProgram::checked(
+        StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: rumoca_core::StructuredIndexBinderId::new(0),
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 2,
+                step: 0,
+            }],
+        },
+        1,
+        0,
+        vec![
+            LinearOp::LoadFoldIndex {
+                dst: 0,
+                dimension: 0,
+            },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+    )
+    .expect_err("an unchecked fold domain cannot authorize a runtime coordinate");
+
+    assert!(matches!(
+        error,
+        ScalarProgramRegisterError::InvalidFunctionFold {
+            op_index: 0,
+            reason: "function fold has an invalid structured domain",
+        }
+    ));
+}
+
+#[test]
+fn function_fold_wire_reissues_runtime_index_evidence() {
+    let program = FunctionFoldProgram::checked(
+        StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: rumoca_core::StructuredIndexBinderId::new(0),
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 2,
+                step: 1,
+            }],
+        },
+        2,
+        0,
+        vec![
+            LinearOp::LoadFoldIndex {
+                dst: 0,
+                dimension: 0,
+            },
+            LinearOp::LoadIndexedFoldCarried {
+                dst: 1,
+                base: 0,
+                stride: 1,
+                dimensions: Box::new([2]),
+                indices: Box::new([TensorIndex::Runtime(0)]),
+            },
+            LinearOp::StoreOutput { src: 1 },
+            LinearOp::StoreOutput { src: 1 },
+        ],
+    )
+    .expect("construct a fold with issued runtime-index evidence");
+    let mut wire = serde_json::to_value(program).expect("serialize checked fold");
+    wire["domain"]["binders"][0]["lower"] = serde_json::json!(0);
+
+    let error = serde_json::from_value::<FunctionFoldProgram>(wire)
+        .expect_err("wire replay must reissue the binder-domain index proof");
+
+    assert!(
+        error
+            .to_string()
+            .contains("runtime tensor index domain escapes its selected axis"),
+        "unexpected forged fold rejection: {error}"
+    );
+}
+
+#[test]
+fn tensor_update_and_slice_require_proved_coordinate_domains() {
+    let update = [
+        LinearOp::Const { dst: 0, value: 7.0 },
+        LinearOp::Const { dst: 1, value: 8.0 },
+        LinearOp::Const { dst: 2, value: 9.0 },
+        LinearOp::Const { dst: 3, value: 0.0 },
+        LinearOp::TensorUpdate {
+            dst_start: 4,
+            base_start: 0,
+            value_start: 2,
+            dimensions: Box::new([2]),
+            subscripts: Box::new([TensorUpdateSubscript::Index(TensorIndex::Runtime(3))]),
+            lanes: 1,
+        },
+        LinearOp::StoreOutputRange {
+            start: 4,
+            count: 2,
+            stride: 1,
+        },
+    ];
+    let error = ScalarProgramRegisterFlow::derive(&update)
+        .expect_err("an invalid update index cannot silently leave its base unchanged");
+    assert!(matches!(
+        error,
+        ScalarProgramRegisterError::InvalidTensorProjection {
+            op_index: 4,
+            reason: "runtime tensor index domain escapes its selected axis",
+        }
+    ));
+
+    let slice = [
+        LinearOp::Const { dst: 0, value: 7.0 },
+        LinearOp::Const { dst: 1, value: 8.0 },
+        LinearOp::Const { dst: 2, value: 9.0 },
+        LinearOp::Const {
+            dst: 3,
+            value: 10.0,
+        },
+        LinearOp::Const { dst: 4, value: 1.0 },
+        LinearOp::Const { dst: 5, value: 3.0 },
+        LinearOp::TensorUpdate {
+            dst_start: 6,
+            base_start: 0,
+            value_start: 2,
+            dimensions: Box::new([2]),
+            subscripts: Box::new([TensorUpdateSubscript::Slice {
+                start: 4,
+                dimensions: Box::new([2]),
+            }]),
+            lanes: 1,
+        },
+        LinearOp::StoreOutputRange {
+            start: 6,
+            count: 2,
+            stride: 1,
+        },
+    ];
+    let error = ScalarProgramRegisterFlow::derive(&slice)
+        .expect_err("every compact slice coordinate requires the base-axis proof");
+    assert!(matches!(
+        error,
+        ScalarProgramRegisterError::InvalidTensorProjection {
+            op_index: 6,
+            reason: "runtime tensor index domain escapes its selected axis",
+        }
+    ));
+}
+
+#[test]
+fn fold_tensor_update_rejects_an_empty_axis_without_panicking() {
+    let error = FunctionFoldProgram::checked(
+        StructuredIndexDomain { binders: vec![] },
+        1,
+        0,
+        vec![LinearOp::StoreOutputFoldTensorUpdate {
+            source_base: 0,
+            source_stride: 1,
+            dimensions: Box::new([0]),
+            updates: Box::new([crate::FoldTensorUpdate {
+                subscripts: Box::new([crate::TensorSubscript::Whole]),
+                condition: None,
+                value_start: 0,
+                value_stride: 1,
+            }]),
+            nodes: Box::new([crate::FoldTensorNode::Update { base: 0, update: 0 }]),
+            result: 1,
+            lanes: 1,
+        }],
+    )
+    .expect_err("a zero tensor axis must be rejected before extent arithmetic");
+
+    assert!(matches!(
+        error,
+        ScalarProgramRegisterError::InvalidTensorProjection {
+            op_index: 0,
+            reason: "tensor update has no checked rank or patches",
+        }
+    ));
 }
 
 #[test]
@@ -500,11 +1043,11 @@ fn function_conditional_construction_accepts_one_compact_capture_range() {
     )
     .expect("one checked capture range preserves the aggregate ABI");
 
-    assert_eq!(program.capture_count, 3);
-    assert_eq!(program.arms[0].result_register_count, 3);
-    assert_eq!(program.fallback_register_count, 3);
+    assert_eq!(program.capture_count(), 3);
+    assert_eq!(program.arms()[0].result_register_count(), 3);
+    assert_eq!(program.fallback_register_count(), 3);
     assert!(matches!(
-        program.arms[0].result[0],
+        program.arms()[0].result()[0],
         LinearOp::LoadFunctionConditionalCaptureRange {
             dst_start: 0,
             index_start: 0,
@@ -568,6 +1111,191 @@ fn function_conditional_construction_preserves_one_correlated_result_tuple() {
     let block = ScalarProgramBlock::with_program_spans(vec![row], vec![span])
         .expect("the correlated tuple dominates both projections");
     assert_eq!(block.programs()[0][0].dst_register_count(), 2);
+}
+
+#[test]
+fn function_conditional_wire_rederives_result_and_region_capacities() {
+    let program = FunctionConditionalProgram::checked(
+        0,
+        [1],
+        [(
+            conditional_test_region(&[1.0]),
+            conditional_test_region(&[2.0]),
+        )],
+        conditional_test_region(&[3.0]),
+    )
+    .expect("construct a complete conditional wire fixture");
+
+    for (pointer, reason) in [
+        (
+            "/result_count",
+            "stored result width does not match the target tuple",
+        ),
+        (
+            "/arms/0/condition_register_count",
+            "stored region register capacity does not match its body",
+        ),
+        (
+            "/arms/0/result_register_count",
+            "stored region register capacity does not match its body",
+        ),
+        (
+            "/fallback_register_count",
+            "stored region register capacity does not match its body",
+        ),
+    ] {
+        let mut wire = serde_json::to_value(&program).expect("serialize checked conditional");
+        *wire
+            .pointer_mut(pointer)
+            .expect("current conditional wire field") = serde_json::json!(2);
+        let error = serde_json::from_value::<FunctionConditionalProgram>(wire)
+            .expect_err("wire replay must rederive every stored conditional capacity");
+        assert_eq!(
+            error.to_string(),
+            format!("FunctionConditional op 0 is invalid: {reason}"),
+            "unexpected rejection for {pointer}"
+        );
+    }
+}
+
+#[test]
+fn function_conditional_owner_wire_refuses_a_private_zero_identity() {
+    let owner = FunctionConditionalOwnerId::checked(7).expect("nonzero fixture owner");
+    let program = FunctionConditionalProgram::checked_owned(
+        owner,
+        0,
+        [1],
+        [(
+            conditional_test_region(&[1.0]),
+            conditional_test_region(&[2.0]),
+        )],
+        conditional_test_region(&[3.0]),
+    )
+    .expect("construct an owned conditional wire fixture");
+    let issued = serde_json::to_value(&program).expect("serialize the owned conditional");
+
+    assert_eq!(
+        serde_json::from_value::<FunctionConditionalProgram>(issued.clone())
+            .expect("an issued owner identity replays unchanged"),
+        program
+    );
+
+    let mut forged = issued;
+    forged["owner"] = serde_json::json!(0);
+    let error = serde_json::from_value::<FunctionConditionalProgram>(forged)
+        .expect_err("a private zero cannot decode into an issued owner identity");
+
+    assert_eq!(
+        error.to_string(),
+        "FunctionConditional op 0 is invalid: owner identity is zero"
+    );
+    assert!(FunctionConditionalOwnerId::checked(0).is_none());
+}
+
+#[test]
+fn function_conditional_wire_refuses_forged_capture_and_arm_counts() {
+    let program = FunctionConditionalProgram::checked(
+        3,
+        [3],
+        [(
+            vec![
+                LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            conditional_capture_range_region(0, 3),
+        )],
+        conditional_capture_range_region(0, 3),
+    )
+    .expect("construct a capture-bearing conditional wire fixture");
+    let issued = serde_json::to_value(&program).expect("serialize the capture-bearing conditional");
+
+    let mut narrowed = issued.clone();
+    narrowed["capture_count"] = serde_json::json!(2);
+    let error = serde_json::from_value::<FunctionConditionalProgram>(narrowed)
+        .expect_err("a narrowed capture ABI cannot admit its own capture reads");
+    assert_eq!(
+        error.to_string(),
+        "FunctionConditional op 0 is invalid: capture range load is empty, overflows, or exceeds the capture ABI"
+    );
+
+    let mut emptied = issued;
+    emptied["arms"] = serde_json::json!([]);
+    let error = serde_json::from_value::<FunctionConditionalProgram>(emptied)
+        .expect_err("a conditional without an ordered condition cannot decode");
+    assert_eq!(
+        error.to_string(),
+        "FunctionConditional op 0 is invalid: ordered condition list is empty"
+    );
+}
+
+#[test]
+fn function_fold_wire_refuses_forged_carried_capture_and_domain_counts() {
+    let program = FunctionFoldProgram::checked(
+        StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: rumoca_core::StructuredIndexBinderId::new(0),
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 3,
+                step: 1,
+            }],
+        },
+        1,
+        1,
+        vec![
+            LinearOp::LoadFoldCarried { dst: 0, index: 0 },
+            LinearOp::LoadFoldCapture { dst: 1, index: 0 },
+            LinearOp::Binary {
+                dst: 2,
+                op: BinaryOp::Add,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ],
+    )
+    .expect("construct a complete fold wire fixture");
+    assert_eq!(program.domain_scalar_count(), 3);
+    let issued = serde_json::to_value(&program).expect("serialize the checked fold");
+
+    assert_eq!(
+        serde_json::from_value::<FunctionFoldProgram>(issued.clone())
+            .expect("an issued fold replays unchanged"),
+        program
+    );
+
+    for (field, forged, message) in [
+        (
+            "carried_count",
+            2,
+            "FunctionFold op 0 is invalid: update output count does not match carried tuple",
+        ),
+        (
+            "capture_count",
+            0,
+            "LoadFoldCapture op 1 projects element 0 from range length 0",
+        ),
+        (
+            "register_count",
+            9,
+            "FunctionFold op 0 is invalid: stored update register count does not match its body",
+        ),
+        (
+            "domain_scalar_count",
+            9,
+            "FunctionFold op 0 is invalid: stored domain cardinality does not match its structured domain",
+        ),
+    ] {
+        let mut wire = issued.clone();
+        wire[field] = serde_json::json!(forged);
+        let error = serde_json::from_value::<FunctionFoldProgram>(wire)
+            .expect_err("wire replay must rederive every stored fold count");
+        assert_eq!(
+            error.to_string(),
+            message,
+            "unexpected rejection for {field}"
+        );
+    }
 }
 
 #[test]
@@ -806,5 +1534,39 @@ fn scalar_program_wire_rejects_non_current_fields() {
             .to_string()
             .contains("unknown field `removed_programs`"),
         "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn scalar_program_wire_cannot_forge_a_runtime_tensor_index_domain() {
+    let span = source_span("RuntimeIndexWire.mo", 4, 19);
+    let block = ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 7.0 },
+            LinearOp::Const { dst: 1, value: 8.0 },
+            LinearOp::Const { dst: 2, value: 1.0 },
+            LinearOp::LoadIndexedRegister {
+                dst: 3,
+                base: 0,
+                stride: 1,
+                dimensions: Box::new([2]),
+                indices: Box::new([TensorIndex::Runtime(2)]),
+            },
+            LinearOp::StoreOutput { src: 3 },
+        ]],
+        vec![span],
+    )
+    .expect("construct a proved runtime-index wire fixture");
+    let mut value = serde_json::to_value(block).expect("serialize runtime-index fixture");
+    value["programs"][0][2]["Const"]["value"] = serde_json::json!(0.0);
+
+    let error = serde_json::from_value::<ScalarProgramBlock>(value)
+        .expect_err("wire replay must reissue rather than trust the erased index proof");
+
+    assert!(
+        error
+            .to_string()
+            .contains("runtime tensor index domain escapes its selected axis"),
+        "unexpected wire rejection: {error}"
     );
 }

@@ -1615,16 +1615,12 @@ fn apply_dependency_op(
             walk.load_conditional_capture(*dst, *index)?,
         LinearOp::LoadFunctionConditionalCaptureRange { dst_start, index_start, count } =>
             walk.load_conditional_capture_range(*dst_start, *index_start, *count)?,
-        LinearOp::LoadIndexedP { dst, base, count, index } =>
-            walk.load_indexed_p(*dst, *base, *count, *index)?,
         LinearOp::LoadIndexedRegister { dst, base, stride, dimensions, indices } =>
             walk.load_indexed_register(*dst, *base, *stride, dimensions, indices)?,
         LinearOp::LoadIndexedFoldCarried { dst, base, stride, dimensions, indices } =>
             walk.load_indexed_fold_carried(*dst, *base, *stride, dimensions, indices)?,
         LinearOp::LoadIndexedFoldCapture { dst, base, stride, dimensions, indices } =>
             walk.load_indexed_fold_capture(*dst, *base, *stride, dimensions, indices)?,
-        LinearOp::LoadIndexedSeed { dst, base, count, index } =>
-            walk.load_indexed_seed(*dst, *base, *count, *index)?,
         LinearOp::Move { dst, src } | LinearOp::Unary { dst, arg: src, .. } => walk.copy(*dst, *src)?,
         LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } =>
             walk.union(*dst, [*lhs, *rhs])?,
@@ -1819,22 +1815,6 @@ impl DependencyWalk<'_> {
         }
     }
 
-    fn load_indexed_p(
-        &mut self,
-        dst: Reg,
-        base: usize,
-        count: usize,
-        index: Reg,
-    ) -> Result<(), StructuralPatternError> {
-        let mut dependencies = self.get(index)?;
-        if matches!(self.source, DependencySource::SolverP) {
-            let end = checked_indexed_seed_end(base, count, self.span)?;
-            dependencies = dependencies.union(DependencyState::Known((base..end).collect()));
-        }
-        self.set(dst, dependencies);
-        Ok(())
-    }
-
     fn load_context_value(
         &mut self,
         dst: Reg,
@@ -1984,22 +1964,6 @@ impl DependencyWalk<'_> {
             dependencies = dependencies.union(dependency.clone());
         }
         let dependencies = self.union_runtime_indices(dependencies, indices)?;
-        self.set(dst, dependencies);
-        Ok(())
-    }
-
-    fn load_indexed_seed(
-        &mut self,
-        dst: Reg,
-        base: usize,
-        count: usize,
-        index: Reg,
-    ) -> Result<(), StructuralPatternError> {
-        let mut dependencies = self.get(index)?;
-        if matches!(self.source, DependencySource::Seed) {
-            let end = checked_indexed_seed_end(base, count, self.span)?;
-            dependencies = dependencies.union(DependencyState::Known((base..end).collect()));
-        }
         self.set(dst, dependencies);
         Ok(())
     }
@@ -2349,8 +2313,8 @@ impl DependencyWalk<'_> {
         capture_start: Reg,
         program: &crate::FunctionFoldProgram,
     ) -> Result<(), StructuralPatternError> {
-        let carried = self.register_tuple(initial_start, program.carried_count)?;
-        let captures = self.register_tuple(capture_start, program.capture_count)?;
+        let carried = self.register_tuple(initial_start, program.carried_count())?;
+        let captures = self.register_tuple(capture_start, program.capture_count())?;
         let carried =
             function_fold_dependencies(program, carried, &captures, self.span, self.source)?;
         for (offset, dependency) in carried.into_iter().enumerate() {
@@ -2368,8 +2332,8 @@ impl DependencyWalk<'_> {
         program: &crate::FunctionFoldProgram,
     ) -> Result<(), StructuralPatternError> {
         let activation = self.get(activation)?;
-        let carried = self.register_tuple(initial_start, program.carried_count)?;
-        let captures = self.register_tuple(capture_start, program.capture_count)?;
+        let carried = self.register_tuple(initial_start, program.carried_count())?;
+        let captures = self.register_tuple(capture_start, program.capture_count())?;
         let carried =
             function_fold_dependencies(program, carried, &captures, self.span, self.source)?;
         for (offset, dependency) in carried.into_iter().enumerate() {
@@ -2404,21 +2368,19 @@ impl DependencyWalk<'_> {
         capture_start: Reg,
         program: &crate::FunctionConditionalProgram,
     ) -> Result<(), StructuralPatternError> {
-        let captures = self.register_tuple(capture_start, program.capture_count)?;
+        let captures = self.register_tuple(capture_start, program.capture_count())?;
         let mut condition_dependency = DependencyState::empty();
-        let mut result = vec![DependencyState::empty(); program.result_count];
-        for arm in &program.arms {
-            let condition = self.nested_program(&arm.condition, &captures)?;
-            let condition = condition
-                .first()
-                .cloned()
-                .ok_or_else(|| dependency_error("missing conditional condition", self.span))?;
-            condition_dependency = condition_dependency.union(condition);
-            let branch = self.nested_program(&arm.result, &captures)?;
-            union_conditional_results(&mut result, branch, self.span)?;
+        let mut result = vec![DependencyState::empty(); program.result_count()];
+        for arm in program.arms() {
+            let condition = self.nested_program(arm.condition(), &captures)?;
+            condition_dependency = condition
+                .into_iter()
+                .fold(condition_dependency, DependencyState::union);
+            let branch = self.nested_program(arm.result(), &captures)?;
+            union_conditional_results(&mut result, branch);
         }
-        let fallback = self.nested_program(&program.fallback, &captures)?;
-        union_conditional_results(&mut result, fallback, self.span)?;
+        let fallback = self.nested_program(program.fallback(), &captures)?;
+        union_conditional_results(&mut result, fallback);
         for (offset, dependency) in result.into_iter().enumerate() {
             let dependency = dependency.union(condition_dependency.clone());
             self.set(dst_start + offset as Reg, dependency);
@@ -2570,11 +2532,11 @@ impl DependencyWalk<'_> {
                 self.span,
             )
         })?;
-        let mut carried = Vec::with_capacity(program.carried_count);
+        let mut carried = Vec::with_capacity(program.carried_count());
         for source in initial {
             self.push_nested_fold_initial(&mut carried, parent, source)?;
         }
-        let captures = self.register_tuple(capture_start, program.capture_count)?;
+        let captures = self.register_tuple(capture_start, program.capture_count())?;
         let carried =
             function_fold_dependencies(program, carried, &captures, self.span, self.source)?;
         let end = result_base
@@ -2678,21 +2640,15 @@ fn tensor_load_seed(seed_start: Option<usize>, element: usize) -> DependencyStat
     })
 }
 
-fn union_conditional_results(
-    accumulated: &mut [DependencyState],
-    branch: Vec<DependencyState>,
-    span: Option<Span>,
-) -> Result<(), StructuralPatternError> {
-    if accumulated.len() != branch.len() {
-        return Err(dependency_error(
-            "function-conditional result dependency count mismatch",
-            span,
-        ));
-    }
+/// Accumulate one branch region over the correlated result tuple.
+///
+/// [`crate::FunctionConditionalProgram`] issues every arm result and the
+/// fallback with exactly `result_count` outputs, so the two sequences are known
+/// to be correlated positionally.
+fn union_conditional_results(accumulated: &mut [DependencyState], branch: Vec<DependencyState>) {
     for (accumulated, branch) in accumulated.iter_mut().zip(branch) {
         *accumulated = accumulated.clone().union(branch);
     }
-    Ok(())
 }
 
 fn function_fold_dependencies(
@@ -2702,35 +2658,18 @@ fn function_fold_dependencies(
     span: Option<Span>,
     source: DependencySource,
 ) -> Result<Vec<DependencyState>, StructuralPatternError> {
-    if carried.len() != program.carried_count {
-        return Err(dependency_error(
-            "function-fold initial dependency count mismatch",
-            span,
-        ));
-    }
-    if program
-        .domain
-        .scalar_count()
-        .map_err(|error| dependency_error(format!("invalid function-fold domain: {error}"), span))?
-        == 0
-    {
+    if program.domain_scalar_count() == 0 {
         return Ok(carried);
     }
     loop {
         let updates = program_output_dependencies_with_fold(
-            &program.update,
+            program.update(),
             span,
             Some(&carried),
             Some(captures),
             None,
             source,
         )?;
-        if updates.len() != carried.len() {
-            return Err(dependency_error(
-                "function-fold update output count mismatch",
-                span,
-            ));
-        }
         let next = carried
             .iter()
             .cloned()
@@ -2921,20 +2860,6 @@ fn union_registers<const N: usize>(
         .try_fold(DependencyState::empty(), |dependencies, register_id| {
             Ok(dependencies.union(register(registers, register_id, span)?))
         })
-}
-
-fn checked_indexed_seed_end(
-    base: usize,
-    count: usize,
-    span: Option<Span>,
-) -> Result<usize, StructuralPatternError> {
-    let width = count.max(1);
-    base.checked_add(width).ok_or_else(|| {
-        dependency_error(
-            format!("indexed seed range base {base} plus count {count} overflows"),
-            span,
-        )
-    })
 }
 
 fn checked_reg_offset(
