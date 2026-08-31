@@ -312,8 +312,6 @@ pub(crate) fn max_sampler_error(
         let step = MeStepProposal::bind(request, candidate, 1)?;
         let width = step.accepted().time() - step.previous().time();
         for tenth in 1..10 {
-            // SPEC_0021: Exception - conversion bounds are established by the adjacent invariant.
-            #[allow(clippy::cast_precision_loss)]
             let theta = f64::from(tenth) / 10.0;
             let coordinate = step.previous().time() + theta * width;
             // Deliberately outside the window: SPEC_0044 §6's ruling makes the

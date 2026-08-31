@@ -410,14 +410,10 @@ impl ScanGrid {
         if !requested.is_finite() || !(1.0..=EXACT_INTEGER_LIMIT).contains(&requested) {
             return Err(unrepresentable());
         }
-        // SPEC_0021: Exception - conversion bounds are established by the adjacent invariant.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let steps = (requested as u64).max(1);
         // Every adjacent sampled interval must actually be representable at the
         // promised width; if the local ULP swallows it, that is a typed
         // resource failure, never a coarser scan.
-        // SPEC_0021: Exception - conversion bounds are established by the adjacent invariant.
-        #[allow(clippy::cast_precision_loss)]
         let sub_width = width / (steps as f64);
         if sub_width <= 0.0
             || sub_width > resolution + accepted_step_roundoff(start, sub_width)
@@ -444,8 +440,6 @@ impl ScanGrid {
         if step >= self.steps {
             return Ok(self.end);
         }
-        // SPEC_0021: Exception - conversion bounds are established by the adjacent invariant.
-        #[allow(clippy::cast_precision_loss)]
         let fraction = (step as f64) / (self.steps as f64);
         let coordinate = self.start + (self.end - self.start) * fraction;
         // The adjacent width is compared under the same solver-neutral roundoff

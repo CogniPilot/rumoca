@@ -93,13 +93,16 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
         return Ok(None);
     }
 
+    let block = TornBlock {
+        model,
+        p,
+        t,
+        tearing,
+    };
     for _ in 0..TORN_OUTER_MAX_ITERS {
         match advance_torn_newton(
-            model,
+            &block,
             y,
-            p,
-            t,
-            tearing,
             &residual,
             &variable_scales,
             tol,
@@ -127,6 +130,29 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
     Ok(None)
 }
 
+/// The block under solve: the model, the parameter vector and time it is
+/// evaluated at, and the tearing plan that says which rows are residuals and
+/// which unknowns are back-substituted.
+///
+/// Every reduced-Newton primitive evaluates this same block, so they carry it
+/// as one borrowed value instead of threading the four parts separately. The
+/// working point `y` stays a separate argument because it is written.
+struct TornBlock<'a, M: ImplicitProjectionModel + ?Sized> {
+    model: &'a M,
+    p: &'a [f64],
+    t: f64,
+    tearing: &'a solve::BlockTearing,
+}
+
+impl<M: ImplicitProjectionModel + ?Sized> TornBlock<'_, M> {
+    /// One sweep of the block at `y`: back-substitution followed by the reduced
+    /// residual rows, written into `residual_out`.
+    fn sweep(&self, y: &mut [f64], residual_out: &mut Vec<f64>) -> Result<bool, RuntimeSolveError> {
+        self.model
+            .torn_block_sweep(self.tearing, y, self.p, self.t, residual_out)
+    }
+}
+
 /// Outcome of one reduced Newton iteration over the tear variables.
 enum TornStep {
     /// The reduced residual meets tolerance; the block is solved.
@@ -141,14 +167,9 @@ enum TornStep {
 ///
 /// On `Advanced` `y` holds the accepted point; on `Settled` it holds the
 /// converged point; on `Decline` it is restored to the point held on entry.
-// SPEC_0021: Exception - one reduced Newton iteration threads model, storage, tearing, residual, scales, and tolerance together.
-#[allow(clippy::too_many_arguments)]
 fn advance_torn_newton<M: ImplicitProjectionModel>(
-    model: &M,
+    block: &TornBlock<'_, M>,
     y: &mut [f64],
-    p: &[f64],
-    t: f64,
-    tearing: &solve::BlockTearing,
     residual: &[f64],
     variable_scales: &[f64],
     tol: f64,
@@ -169,9 +190,7 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
         return Ok(TornStep::Settled);
     }
     let base = y.to_vec();
-    let Some(jacobian) =
-        reduced_jacobian(model, y, p, t, tearing, residual, variable_scales, &base)?
-    else {
+    let Some(jacobian) = reduced_jacobian(block, y, residual, variable_scales, &base)? else {
         return Ok(TornStep::Decline);
     };
     let row_scales = jacobian_row_scales(&jacobian, variable_scales, variable_scales, None);
@@ -196,18 +215,14 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
         return Ok(TornStep::Settled);
     }
     let before = scaled_residual_norm(residual, &row_scales);
-    match line_search(
-        model,
-        y,
-        p,
-        t,
-        tearing,
-        &base,
-        delta.as_slice(),
-        &row_scales,
+    let search = ReducedLineSearch {
+        base: &base,
+        delta: delta.as_slice(),
+        row_scales: &row_scales,
         before,
         tol,
-    )? {
+    };
+    match line_search(block, y, &search)? {
         Some(next) => Ok(TornStep::Advanced(next)),
         None => Ok(TornStep::Decline),
     }
@@ -284,27 +299,22 @@ fn all_finite(values: &[f64]) -> bool {
 /// Total finite-difference Jacobian of the reduced residual with respect to the
 /// tear variables, back-substituting through each perturbation so the causal
 /// unknowns track their tear dependence. `base` holds `y` at the current point.
-// SPEC_0021: Exception - a total FD Jacobian needs model, storage, tearing, the base residual, scales, and the base point together.
-#[allow(clippy::too_many_arguments)]
 fn reduced_jacobian<M: ImplicitProjectionModel>(
-    model: &M,
+    block: &TornBlock<'_, M>,
     y: &mut [f64],
-    p: &[f64],
-    t: f64,
-    tearing: &solve::BlockTearing,
     residual: &[f64],
     variable_scales: &[f64],
     base: &[f64],
 ) -> Result<Option<DMatrix<f64>>, RuntimeSolveError> {
-    let rows = tearing.residual_rows.len();
-    let columns = tearing.tear_y_indices.len();
+    let rows = block.tearing.residual_rows.len();
+    let columns = block.tearing.tear_y_indices.len();
     let mut jacobian = DMatrix::zeros(rows, columns);
     let mut perturbed = Vec::with_capacity(rows);
-    for (column, &tear_index) in tearing.tear_y_indices.iter().enumerate() {
+    for (column, &tear_index) in block.tearing.tear_y_indices.iter().enumerate() {
         y.copy_from_slice(base);
         let h = perturbation(base[tear_index], variable_scales[column]);
         y[tear_index] = base[tear_index] + h;
-        if !model.torn_block_sweep(tearing, y, p, t, &mut perturbed)? || !all_finite(&perturbed) {
+        if !block.sweep(y, &mut perturbed)? || !all_finite(&perturbed) {
             y.copy_from_slice(base);
             return Ok(None);
         }
@@ -323,48 +333,31 @@ fn reduced_jacobian<M: ImplicitProjectionModel>(
 /// Backtracking line search along the reduced Newton direction. Accepts the
 /// first step that reaches tolerance or strictly reduces the scaled residual
 /// norm, returning the residual at the accepted point.
-// SPEC_0021: Exception - a backtracking search threads model, storage, tearing, the base point, step, row scales, and tolerance together.
-#[allow(clippy::too_many_arguments)]
 fn line_search<M: ImplicitProjectionModel>(
-    model: &M,
+    block: &TornBlock<'_, M>,
     y: &mut [f64],
-    p: &[f64],
-    t: f64,
-    tearing: &solve::BlockTearing,
-    base: &[f64],
-    delta: &[f64],
-    row_scales: &[f64],
-    before: f64,
-    tol: f64,
+    search: &ReducedLineSearch<'_>,
 ) -> Result<Option<Vec<f64>>, RuntimeSolveError> {
     let mut alpha = 1.0;
     for _ in 0..TORN_BACKTRACK_STEPS {
-        let step = LineSearchStep {
-            base,
-            delta,
-            row_scales,
-            before,
-            tol,
-            alpha,
-        };
-        if let Some(residual) = line_search_step(model, y, p, t, tearing, &step)? {
+        if let Some(residual) = line_search_step(block, y, search, alpha)? {
             return Ok(Some(residual));
         }
         alpha *= 0.5;
     }
-    y.copy_from_slice(base);
+    y.copy_from_slice(search.base);
     Ok(None)
 }
 
-/// One backtracking candidate: the base point, Newton direction, acceptance
-/// scales, and the step fraction under trial.
-struct LineSearchStep<'a> {
+/// The fixed data of one backtracking search: the base point, the Newton
+/// direction, and the scales and norms the acceptance test reads. The step
+/// fraction under trial varies per candidate and is passed separately.
+struct ReducedLineSearch<'a> {
     base: &'a [f64],
     delta: &'a [f64],
     row_scales: &'a [f64],
     before: f64,
     tol: f64,
-    alpha: f64,
 }
 
 /// Evaluate one backtracking candidate, returning its residual when accepted.
@@ -372,28 +365,27 @@ struct LineSearchStep<'a> {
 /// written) trial point otherwise; the caller resets it from `base` before
 /// the next trial or on exhaustion.
 fn line_search_step<M: ImplicitProjectionModel>(
-    model: &M,
+    block: &TornBlock<'_, M>,
     y: &mut [f64],
-    p: &[f64],
-    t: f64,
-    tearing: &solve::BlockTearing,
-    step: &LineSearchStep<'_>,
+    search: &ReducedLineSearch<'_>,
+    alpha: f64,
 ) -> Result<Option<Vec<f64>>, RuntimeSolveError> {
-    y.copy_from_slice(step.base);
-    for (&tear_index, &direction) in tearing.tear_y_indices.iter().zip(step.delta.iter()) {
-        let candidate = step.base[tear_index] + step.alpha * direction;
+    y.copy_from_slice(search.base);
+    for (&tear_index, &direction) in block.tearing.tear_y_indices.iter().zip(search.delta.iter()) {
+        let candidate = search.base[tear_index] + alpha * direction;
         if !candidate.is_finite() {
             return Ok(None);
         }
         y[tear_index] = candidate;
     }
-    let mut residual = Vec::with_capacity(tearing.residual_rows.len());
-    if !model.torn_block_sweep(tearing, y, p, t, &mut residual)? || !all_finite(&residual) {
+    let mut residual = Vec::with_capacity(block.tearing.residual_rows.len());
+    if !block.sweep(y, &mut residual)? || !all_finite(&residual) {
         return Ok(None);
     }
-    let norm = scaled_residual_norm(&residual, step.row_scales);
+    let norm = scaled_residual_norm(&residual, search.row_scales);
     let accepted = norm.is_finite()
-        && (scaled_residual_converged(&residual, step.row_scales, step.tol) || norm < step.before);
+        && (scaled_residual_converged(&residual, search.row_scales, search.tol)
+            || norm < search.before);
     Ok(accepted.then_some(residual))
 }
 

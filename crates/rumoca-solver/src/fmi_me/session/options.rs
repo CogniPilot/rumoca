@@ -251,8 +251,6 @@ pub(super) fn trace_capacity(options: &MeSessionOptions) -> usize {
     if !estimate.is_finite() || estimate < 0.0 {
         return 0;
     }
-    // SPEC_0021: Exception - conversion bounds are established by the adjacent invariant.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     (estimate as usize).saturating_add(1).min(1 << 22)
 }
 

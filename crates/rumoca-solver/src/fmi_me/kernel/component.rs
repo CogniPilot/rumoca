@@ -171,8 +171,10 @@ impl SolveMeKernel {
                         &self.states,
                         params,
                         guess,
-                        ALGEBRAIC_REFRESH_TOL,
-                        UPDATE_MAX_ITERS,
+                        AlgebraicSettle {
+                            tol: ALGEBRAIC_REFRESH_TOL,
+                            max_iters: UPDATE_MAX_ITERS,
+                        },
                         indicators,
                     )
                     .map_err(MeError::from)?;
@@ -486,7 +488,11 @@ impl SolveMeKernel {
         source: MeModelSource<'_>,
         config: &MeInstanceConfig,
     ) -> Result<Self, MeError> {
-        Self::instantiate_with_execution_backend(source, config, None)
+        Self::instantiate_with_execution(
+            source,
+            config,
+            crate::fmi_me::MeExecutionSelection::Interpreter,
+        )
     }
 
     /// Instantiate with a host-supplied compiled-code execution backend.
@@ -494,27 +500,25 @@ impl SolveMeKernel {
     /// The backend arrives as the opaque [`crate::fmi_me::MeExecutionBackend`]
     /// handle so an integrator host never names a runtime object (SPEC_0038
     /// §Internal Solver Boundary); it is unwrapped here, inside the contract.
-    pub fn instantiate_with_execution_backend(
+    pub fn instantiate_with_execution(
         source: MeModelSource<'_>,
         config: &MeInstanceConfig,
-        execution_backend: Option<crate::fmi_me::MeExecutionBackend>,
+        execution: crate::fmi_me::MeExecutionSelection,
     ) -> Result<Self, MeError> {
-        let execution_backend =
-            execution_backend.map(crate::fmi_me::MeExecutionBackend::into_runtime_backend);
-        Self::instantiate_inner(source, config, execution_backend)
+        Self::instantiate_inner(source, config, execution)
             .map_err(|failure| failure.at_stage(MeStage::Instantiate))
     }
 
     pub(super) fn instantiate_inner(
         source: MeModelSource<'_>,
         config: &MeInstanceConfig,
-        execution_backend: Option<Rc<dyn crate::SolveExecutionBackend>>,
+        execution: crate::fmi_me::MeExecutionSelection,
     ) -> Result<Self, MeError> {
         let (model, event_indicator_sources, max_step_duration_value_reference, configuration) =
             source
                 .into_parts()
                 .map_err(|error| contract(error.to_string()))?;
-        let delay_bearing = !model.problem.events.delays.delay_time_rhs.is_empty();
+        let delay_bearing = !model.problem.events().delays.delay_time_rhs.is_empty();
         if max_step_duration_value_reference.is_some() != delay_bearing {
             return Err(contract(if delay_bearing {
                 "a delay-bearing component has no maximum-step-duration Float64 variable"
@@ -531,17 +535,20 @@ impl SolveMeKernel {
                     "periodic schedule cannot be anchored at FMI startTime: {error}"
                 ))
             })?;
-        let runtime = Rc::new(SolveRuntime::new_with_execution_backend(
-            &model,
-            execution_backend,
-        )?);
+        let runtime = Rc::new(match execution {
+            crate::fmi_me::MeExecutionSelection::Native(backend) => {
+                let backend = backend.into_runtime_backend();
+                SolveRuntime::new_native(&model, backend.as_ref())?
+            }
+            crate::fmi_me::MeExecutionSelection::Interpreter => SolveRuntime::new(&model)?,
+        });
         let state_count = runtime.state_count;
         let states = runtime.model.initial_y[..state_count].to_vec();
         let params = runtime.model.parameters.clone();
         let stop_schedule =
             SolveStopSchedule::new(&runtime.model.problem, config.start_time, config.stop_time);
-        let output_meta = convert_variable_meta(&runtime.model.variable_meta);
-        let events = &runtime.model.problem.events;
+        let output_meta = convert_variable_meta(&runtime.model.variable_meta());
+        let events = &runtime.model.problem.events();
         let indicator_plan = FmiIndicatorPlan::derive(
             &event_indicator_sources,
             IndicatorPlanInputs {
@@ -727,8 +734,7 @@ impl SolveMeKernel {
                     &self.states,
                     parameters,
                     guess,
-                    settle.tol,
-                    settle.max_iters,
+                    settle,
                     derivatives,
                 )
                 .map_err(MeError::from);
@@ -820,7 +826,7 @@ impl SolveMeKernel {
             .runtime
             .model
             .problem
-            .discrete
+            .discrete()
             .observation_refresh_reads_y
         {
             return Ok((solver_y, parameters));
@@ -1469,7 +1475,7 @@ impl SolveMeKernel {
             .runtime
             .model
             .problem
-            .events
+            .events()
             .scheduled_root_conditions
             .iter()
             .map(|root| root.root_index)
@@ -1503,7 +1509,12 @@ impl SolveMeKernel {
 
     pub(super) fn scheduled_root_indices_at_time(&self, event_time: f64) -> Vec<usize> {
         timeline::scheduled_root_indices_at_time(
-            &self.runtime.model.problem.events.scheduled_root_conditions,
+            &self
+                .runtime
+                .model
+                .problem
+                .events()
+                .scheduled_root_conditions,
             event_time,
         )
     }

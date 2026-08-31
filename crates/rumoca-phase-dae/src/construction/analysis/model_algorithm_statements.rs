@@ -11,10 +11,12 @@ pub(super) fn validate_model_algorithm(
     require_span(algorithm.span, "model algorithm")?;
     validate_algorithm_statements(
         &algorithm.statements,
-        roles,
-        states,
-        model_values,
-        constants,
+        ModelAlgorithmScope {
+            roles,
+            states,
+            model_values,
+            constants,
+        },
         sample_lattices,
     )?;
     reject_unrepresented_sequential_reads(
@@ -245,205 +247,263 @@ fn reject_reads_of_written(
     ))
 }
 
-// SPEC_0021 exception: exhaustive statement-grammar validation keeps each
-// accepted form and its provenance checks visible at one boundary.
-// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
-#[allow(clippy::too_many_lines)]
+/// The facts a model algorithm statement is validated against: the planned
+/// role of every model coordinate, the state set, the shape environment, and
+/// the constant evaluation context.
+///
+/// A `for` statement validates its body under an extended role map, so the
+/// scope is a copyable view that can be rebound for one nested body rather
+/// than four arguments threaded through every statement form.
+#[derive(Clone, Copy)]
+struct ModelAlgorithmScope<'a> {
+    roles: &'a HashMap<VarName, PlannedRole>,
+    states: &'a HashSet<VarName>,
+    model_values: &'a ShapeEnvironment,
+    constants: &'a EvalContext,
+}
+
 fn validate_algorithm_statements(
     statements: &[rumoca_core::Statement],
-    roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    model_values: &ShapeEnvironment,
-    constants: &EvalContext,
+    scope: ModelAlgorithmScope<'_>,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
     for statement in statements {
-        match statement {
-            rumoca_core::Statement::Assignment { comp, value, span } => {
-                require_span(*span, "algorithm assignment")?;
-                if comp.parts().is_empty() {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        "empty assignment target",
-                        *span,
-                    ));
-                }
-                let target = rumoca_core::component_ref_to_base_reference(comp)
-                    .var_name()
-                    .clone();
-                let target_role = roles.get(&target);
-                for part in comp.parts() {
-                    validate_subscripts_scoped(&part.subs, roles, states, &HashSet::new())?;
-                }
-                if matches!(
-                    target_role,
-                    Some(
-                        PlannedRole::Algebraic
-                            | PlannedRole::Output
-                            | PlannedRole::DiscreteReal
-                            | PlannedRole::DiscreteValue
-                    )
-                ) || (matches!(target_role, Some(PlannedRole::Aggregate))
-                    && is_direct_record_call_assignment(comp, value))
-                {
-                    validate_expression(value, roles, states)?;
-                } else if structured_assignment_pairs(&target, value, roles).is_none() {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        format!(
-                            "algorithm assignment target `{target}` is not a whole writable \
-                             coordinate (resolved role: {target_role:?})"
-                        ),
-                        *span,
-                    ));
-                }
-            }
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                span,
-            } => {
-                require_span(*span, "algorithm if statement")?;
-                for block in cond_blocks {
-                    validate_algorithm_condition(
-                        &block.cond,
-                        roles,
-                        states,
-                        constants,
-                        sample_lattices,
-                    )?;
-                    validate_algorithm_statements(
-                        &block.stmts,
-                        roles,
-                        states,
-                        model_values,
-                        constants,
-                        sample_lattices,
-                    )?;
-                }
-                if let Some(statements) = else_block {
-                    validate_algorithm_statements(
-                        statements,
-                        roles,
-                        states,
-                        model_values,
-                        constants,
-                        sample_lattices,
-                    )?;
-                }
-            }
-            rumoca_core::Statement::For {
-                indices,
-                equations,
-                span,
-            } => {
-                require_span(*span, "algorithm for statement")?;
-                if indices.is_empty() {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        "for statement must declare at least one index",
-                        *span,
-                    ));
-                }
-                let mut loop_roles = roles.clone();
-                for index in indices {
-                    validate_model_algorithm_range(
-                        &index.range,
-                        &loop_roles,
-                        states,
-                        model_values,
-                    )?;
-                    loop_roles.insert(VarName::new(&index.ident), PlannedRole::Parameter);
-                }
-                validate_algorithm_statements(
-                    equations,
-                    &loop_roles,
-                    states,
-                    model_values,
-                    constants,
-                    sample_lattices,
-                )?;
-            }
-            rumoca_core::Statement::When { blocks, span } => {
-                require_span(*span, "algorithm when statement")?;
-                if blocks.is_empty() {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        "when statement must contain at least one guarded block",
-                        *span,
-                    ));
-                }
-                for block in blocks {
-                    validate_algorithm_condition(
-                        &block.cond,
-                        roles,
-                        states,
-                        constants,
-                        sample_lattices,
-                    )?;
-                    validate_algorithm_statements(
-                        &block.stmts,
-                        roles,
-                        states,
-                        model_values,
-                        constants,
-                        sample_lattices,
-                    )?;
-                }
-            }
-            rumoca_core::Statement::FunctionCall {
-                comp,
-                args,
-                outputs,
-                span,
-            } => {
-                require_span(*span, "algorithm function-call assignment")?;
-                if comp.parts().is_empty() || comp.parts().iter().any(|part| !part.subs.is_empty())
-                {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        "function-call assignment requires one resolved, unsubscripted function",
-                        *span,
-                    ));
-                }
-                if outputs.is_empty() || outputs.iter().all(Option::is_none) {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        "function-call assignment must retain at least one output",
-                        *span,
-                    ));
-                }
-                for argument in args {
-                    validate_expression(argument, roles, states)?;
-                }
-                for output in outputs.iter().flatten() {
-                    validate_function_call_output(output, roles)?;
-                }
-            }
-            rumoca_core::Statement::Assert {
-                condition,
-                message,
-                level,
-                span,
-            } => {
-                require_span(*span, "algorithm assertion")?;
-                validate_expression(condition, roles, states)?;
-                validate_expression(message, roles, states)?;
-                if let Some(level) = level {
-                    validate_expression(level, roles, states)?;
-                }
-            }
-            _ => {
-                let span =
-                    required_statement_span(statement, "unsupported model algorithm statement")?;
-                return Err(ToDaeError::unsupported_algorithm(
-                    "model",
-                    "statement must be an assignment, assertion, function-call assignment, or \
-                     conditional discrete update",
-                    span,
-                ));
-            }
+        validate_algorithm_statement(statement, scope, sample_lattices)?;
+    }
+    Ok(())
+}
+
+/// The accepted model algorithm statement grammar. Every form the DAE
+/// construction admits has one arm here and one validator below; anything else
+/// is refused with its own span.
+fn validate_algorithm_statement(
+    statement: &rumoca_core::Statement,
+    scope: ModelAlgorithmScope<'_>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
+) -> Result<(), ToDaeError> {
+    match statement {
+        rumoca_core::Statement::Assignment { comp, value, span } => {
+            validate_algorithm_assignment(comp, value, *span, scope)
         }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            span,
+        } => validate_algorithm_if(
+            cond_blocks,
+            else_block.as_deref(),
+            *span,
+            scope,
+            sample_lattices,
+        ),
+        rumoca_core::Statement::For {
+            indices,
+            equations,
+            span,
+        } => validate_algorithm_for(indices, equations, *span, scope, sample_lattices),
+        rumoca_core::Statement::When { blocks, span } => {
+            validate_algorithm_when(blocks, *span, scope, sample_lattices)
+        }
+        rumoca_core::Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+            span,
+        } => validate_algorithm_function_call(comp, args, outputs, *span, scope),
+        rumoca_core::Statement::Assert {
+            condition,
+            message,
+            level,
+            span,
+        } => validate_algorithm_assert(condition, message, level.as_deref(), *span, scope),
+        _ => {
+            let span = required_statement_span(statement, "unsupported model algorithm statement")?;
+            Err(ToDaeError::unsupported_algorithm(
+                "model",
+                "statement must be an assignment, assertion, function-call assignment, or \
+                 conditional discrete update",
+                span,
+            ))
+        }
+    }
+}
+
+/// An assignment must name a whole writable coordinate, or decompose into
+/// structured discrete leaves that are each writable.
+fn validate_algorithm_assignment(
+    comp: &rumoca_core::ComponentReference,
+    value: &Expression,
+    span: Span,
+    scope: ModelAlgorithmScope<'_>,
+) -> Result<(), ToDaeError> {
+    require_span(span, "algorithm assignment")?;
+    if comp.parts().is_empty() {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "empty assignment target",
+            span,
+        ));
+    }
+    let target = rumoca_core::component_ref_to_base_reference(comp)
+        .var_name()
+        .clone();
+    let target_role = scope.roles.get(&target);
+    for part in comp.parts() {
+        validate_subscripts_scoped(&part.subs, scope.roles, scope.states, &HashSet::new())?;
+    }
+    if matches!(
+        target_role,
+        Some(
+            PlannedRole::Algebraic
+                | PlannedRole::Output
+                | PlannedRole::DiscreteReal
+                | PlannedRole::DiscreteValue
+        )
+    ) || (matches!(target_role, Some(PlannedRole::Aggregate))
+        && is_direct_record_call_assignment(comp, value))
+    {
+        validate_expression(value, scope.roles, scope.states)?;
+    } else if structured_assignment_pairs(&target, value, scope.roles).is_none() {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            format!(
+                "algorithm assignment target `{target}` is not a whole writable \
+                 coordinate (resolved role: {target_role:?})"
+            ),
+            span,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_algorithm_if(
+    cond_blocks: &[rumoca_core::StatementBlock],
+    else_block: Option<&[rumoca_core::Statement]>,
+    span: Span,
+    scope: ModelAlgorithmScope<'_>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
+) -> Result<(), ToDaeError> {
+    require_span(span, "algorithm if statement")?;
+    for block in cond_blocks {
+        validate_algorithm_condition(
+            &block.cond,
+            scope.roles,
+            scope.states,
+            scope.constants,
+            sample_lattices,
+        )?;
+        validate_algorithm_statements(&block.stmts, scope, sample_lattices)?;
+    }
+    if let Some(statements) = else_block {
+        validate_algorithm_statements(statements, scope, sample_lattices)?;
+    }
+    Ok(())
+}
+
+/// The body of a `for` is validated with its loop indices bound as parameters,
+/// so the extended role map is the only part of the scope that changes.
+fn validate_algorithm_for(
+    indices: &[rumoca_core::ForIndex],
+    equations: &[rumoca_core::Statement],
+    span: Span,
+    scope: ModelAlgorithmScope<'_>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
+) -> Result<(), ToDaeError> {
+    require_span(span, "algorithm for statement")?;
+    if indices.is_empty() {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "for statement must declare at least one index",
+            span,
+        ));
+    }
+    let mut loop_roles = scope.roles.clone();
+    for index in indices {
+        validate_model_algorithm_range(
+            &index.range,
+            &loop_roles,
+            scope.states,
+            scope.model_values,
+        )?;
+        loop_roles.insert(VarName::new(&index.ident), PlannedRole::Parameter);
+    }
+    let loop_scope = ModelAlgorithmScope {
+        roles: &loop_roles,
+        ..scope
+    };
+    validate_algorithm_statements(equations, loop_scope, sample_lattices)
+}
+
+fn validate_algorithm_when(
+    blocks: &[rumoca_core::StatementBlock],
+    span: Span,
+    scope: ModelAlgorithmScope<'_>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
+) -> Result<(), ToDaeError> {
+    require_span(span, "algorithm when statement")?;
+    if blocks.is_empty() {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "when statement must contain at least one guarded block",
+            span,
+        ));
+    }
+    for block in blocks {
+        validate_algorithm_condition(
+            &block.cond,
+            scope.roles,
+            scope.states,
+            scope.constants,
+            sample_lattices,
+        )?;
+        validate_algorithm_statements(&block.stmts, scope, sample_lattices)?;
+    }
+    Ok(())
+}
+
+fn validate_algorithm_function_call(
+    comp: &rumoca_core::Reference,
+    args: &[Expression],
+    outputs: &[Option<rumoca_core::ComponentReference>],
+    span: Span,
+    scope: ModelAlgorithmScope<'_>,
+) -> Result<(), ToDaeError> {
+    require_span(span, "algorithm function-call assignment")?;
+    if comp.parts().is_empty() || comp.parts().iter().any(|part| !part.subs.is_empty()) {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "function-call assignment requires one resolved, unsubscripted function",
+            span,
+        ));
+    }
+    if outputs.is_empty() || outputs.iter().all(Option::is_none) {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "function-call assignment must retain at least one output",
+            span,
+        ));
+    }
+    for argument in args {
+        validate_expression(argument, scope.roles, scope.states)?;
+    }
+    for output in outputs.iter().flatten() {
+        validate_function_call_output(output, scope.roles)?;
+    }
+    Ok(())
+}
+
+fn validate_algorithm_assert(
+    condition: &Expression,
+    message: &Expression,
+    level: Option<&Expression>,
+    span: Span,
+    scope: ModelAlgorithmScope<'_>,
+) -> Result<(), ToDaeError> {
+    require_span(span, "algorithm assertion")?;
+    validate_expression(condition, scope.roles, scope.states)?;
+    validate_expression(message, scope.roles, scope.states)?;
+    if let Some(level) = level {
+        validate_expression(level, scope.roles, scope.states)?;
     }
     Ok(())
 }
@@ -457,6 +517,7 @@ fn is_direct_record_call_assignment(
             value,
             Expression::FunctionCall {
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 ..
             }
         )

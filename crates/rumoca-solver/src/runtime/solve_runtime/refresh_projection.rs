@@ -18,24 +18,81 @@ impl Clone for TornSweepCache {
     }
 }
 
-/// One torn block's prepared batched sweep and, when the execution backend
-/// accepts the composite, its compiled form.
-pub(super) struct PreparedTornSweepEntry {
-    sweep: PreparedTornSweep,
-    compiled: Option<CompiledTornSweep>,
+pub(super) fn prepare_refresh_plan(
+    plan: solve::RefreshPlan,
+    structural: &solve::ContinuousStructuralArtifacts,
+    program_catalog: &PreparedRefreshProgramCatalog<'_>,
+) -> Result<PreparedRefreshPlan, RuntimeSolveError> {
+    let program_rows = plan
+        .rows
+        .iter()
+        .map(|row| program_catalog.bind(row.source()))
+        .collect::<Result<Box<[_]>, RuntimeSolveError>>()?;
+    let execution = if plan.causal_solution_certified {
+        PreparedRefreshExecution::CertifiedCausal
+    } else {
+        match prepared_refresh_stages(&plan) {
+            Some(stages) if refresh_stage_schedule_is_certified(&plan, structural) => {
+                PreparedRefreshExecution::CertifiedStages(stages)
+            }
+            Some(_) | None => PreparedRefreshExecution::FullProjection,
+        }
+    };
+    Ok(PreparedRefreshPlan {
+        plan,
+        program_rows,
+        execution,
+    })
 }
 
-/// Compiled composite of one torn sweep: the causal chain as one assignment
-/// schedule (later rows observe earlier writes, exactly as back-substitution
-/// does) and the reduced residual rows as one expression block.
-struct CompiledTornSweep {
-    schedule: Rc<dyn CompiledSolveAssignmentSchedule>,
-    residual_block: Rc<dyn CompiledSolveExpression>,
-    /// Flat output index of each residual row in the block's output order;
-    /// `None` marks a row with no scalar view.
-    residual_outputs: Box<[Option<usize>]>,
-    /// Total outputs of `residual_block`, sizing its dense output buffer.
-    residual_len: usize,
+fn refresh_stage_schedule_is_certified(
+    plan: &solve::RefreshPlan,
+    structural: &solve::ContinuousStructuralArtifacts,
+) -> bool {
+    let algebraic = structural.algebraic_projection();
+    !plan.value_stages.is_empty()
+        && plan.simultaneous_block_indices.len() == plan.simultaneous_plan.blocks.len()
+        && plan
+            .simultaneous_block_indices
+            .iter()
+            .all(|&index| algebraic.get(index).is_some())
+        && plan
+            .simultaneous_block_indices
+            .iter()
+            .skip(1)
+            .all(|&index| structural.algebraic_invalidates_earlier(index) == Some(false))
+}
+
+fn prepared_refresh_stages(plan: &solve::RefreshPlan) -> Option<Box<[PreparedRefreshStage]>> {
+    let mut stages = Vec::with_capacity(plan.value_stages.len());
+    for stage in &plan.value_stages {
+        match stage {
+            solve::RefreshStage::CausalSeedSweep { .. } => return None,
+            solve::RefreshStage::ExactAssignments {
+                static_sequence,
+                dynamic_sequence,
+                static_rows,
+                dynamic_rows,
+            } => stages.push(PreparedRefreshStage::ExactAssignments {
+                static_sequence: *static_sequence,
+                dynamic_sequence: *dynamic_sequence,
+                static_rows: static_rows.clone(),
+                dynamic_rows: dynamic_rows.clone(),
+            }),
+            solve::RefreshStage::ProjectionBlock {
+                block_index, plan, ..
+            } => stages.push(PreparedRefreshStage::ProjectionBlock {
+                block_index: *block_index,
+                plan: plan.clone(),
+            }),
+        }
+    }
+    Some(stages.into_boxed_slice())
+}
+
+/// One torn block's prepared interpreter batch.
+pub(super) struct PreparedTornSweepEntry {
+    sweep: PreparedTornSweep,
 }
 
 pub(super) struct RefreshSlotArgs<'a> {
@@ -45,11 +102,6 @@ pub(super) struct RefreshSlotArgs<'a> {
     pub(super) tol: f64,
     pub(super) max_iters: usize,
     pub(super) certify_coordinates: bool,
-}
-
-struct ProjectionStageSeed<'a> {
-    sequence: solve::RefreshSequenceId,
-    rows: solve::RefreshRows<'a>,
 }
 
 #[derive(Clone, Default)]
@@ -177,7 +229,7 @@ pub(super) fn trace_reverse_projection_coverage(
     let mut unsupported_kinds = BTreeSet::new();
     for row in model
         .problem
-        .continuous
+        .continuous()
         .algebraic_projection_plan
         .blocks
         .iter()
@@ -227,7 +279,17 @@ impl ManifoldProjectionModel for RuntimeManifoldProjection<'_> {
     ) -> Result<(), RuntimeSolveError> {
         self.runtime
             .manifold_residual
-            .eval_with_context(y, p, t, self.runtime.row_eval_context(), out)
+            .eval_with_context(
+                y,
+                p,
+                t,
+                self.runtime
+                    .execution_plan
+                    .interpreter
+                    .manifold_residual
+                    .row_eval_context(self.runtime),
+                out,
+            )
             .map_err(Into::into)
     }
 
@@ -245,10 +307,11 @@ impl ManifoldProjectionModel for RuntimeManifoldProjection<'_> {
                 y,
                 p,
                 t,
-                RowEvalContext {
-                    seed: Some(v),
-                    ..self.runtime.row_eval_context()
-                },
+                self.runtime
+                    .execution_plan
+                    .interpreter
+                    .manifold_jacobian
+                    .seeded_row_eval_context(self.runtime, v),
                 out,
             )
             .map_err(Into::into)
@@ -263,7 +326,7 @@ impl ManifoldProjectionModel for RuntimeManifoldProjection<'_> {
             .runtime
             .model
             .problem
-            .continuous
+            .continuous()
             .manifold_projection_plan
     }
 
@@ -325,19 +388,18 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self.runtime.compiled_implicit_rhs.as_ref()
-            && compiled
+        match &self.runtime.execution_plan.implicit_rhs {
+            ExecutionArm::Native(compiled) => compiled
                 .call(y, p, t, self.runtime.model.external_tables.as_slice(), out)
-                .is_ok()
-        {
-            self.runtime
-                .report_nonfinite_implicit_residual_inputs(t, y, out);
-            return Ok(());
+                .map_err(|reason| {
+                    RuntimeSolveError::native_call(NativeExecutionOwner::ImplicitResidual, reason)
+                })?,
+            ExecutionArm::Interpreter(selected_arm) => self
+                .runtime
+                .implicit_rhs
+                .eval_with_context(y, p, t, selected_arm.row_eval_context(self.runtime), out)
+                .map_err(RuntimeSolveError::from)?,
         }
-        self.runtime
-            .implicit_rhs
-            .eval_with_context(y, p, t, self.runtime.row_eval_context(), out)
-            .map_err(RuntimeSolveError::from)?;
         self.runtime
             .report_nonfinite_implicit_residual_inputs(t, y, out);
         Ok(())
@@ -351,41 +413,66 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let compiled = match self.jacobian_v {
-            ProjectionJacobian::SolverY { .. } => self
-                .runtime
-                .compiled_implicit_projection_jacobian_v
-                .as_ref(),
-            ProjectionJacobian::SolverYAndParameters(_) => {
-                self.runtime.compiled_implicit_full_jacobian_v.as_ref()
+        match self.jacobian_v {
+            ProjectionJacobian::SolverY { .. } => {
+                match &self.runtime.execution_plan.implicit_projection_jacobian {
+                    ExecutionArm::Native(compiled) => compiled
+                        .call(
+                            y,
+                            p,
+                            t,
+                            v,
+                            self.runtime.model.external_tables.as_slice(),
+                            out,
+                        )
+                        .map_err(|reason| {
+                            RuntimeSolveError::native_call(
+                                NativeExecutionOwner::ImplicitProjectionJacobian,
+                                reason,
+                            )
+                        }),
+                    ExecutionArm::Interpreter(selected_arm) => self
+                        .jacobian_v
+                        .eval(
+                            y,
+                            p,
+                            t,
+                            selected_arm.seeded_row_eval_context(self.runtime, v),
+                            out,
+                        )
+                        .map_err(Into::into),
+                }
             }
-        };
-        if let Some(compiled) = compiled
-            && compiled
-                .call(
-                    y,
-                    p,
-                    t,
-                    v,
-                    self.runtime.model.external_tables.as_slice(),
-                    out,
-                )
-                .is_ok()
-        {
-            return Ok(());
+            ProjectionJacobian::SolverYAndParameters(_) => {
+                match &self.runtime.execution_plan.implicit_full_jacobian {
+                    ExecutionArm::Native(compiled) => compiled
+                        .call(
+                            y,
+                            p,
+                            t,
+                            v,
+                            self.runtime.model.external_tables.as_slice(),
+                            out,
+                        )
+                        .map_err(|reason| {
+                            RuntimeSolveError::native_call(
+                                NativeExecutionOwner::ImplicitFullJacobian,
+                                reason,
+                            )
+                        }),
+                    ExecutionArm::Interpreter(selected_arm) => self
+                        .jacobian_v
+                        .eval(
+                            y,
+                            p,
+                            t,
+                            selected_arm.seeded_row_eval_context(self.runtime, v),
+                            out,
+                        )
+                        .map_err(Into::into),
+                }
+            }
         }
-        self.jacobian_v
-            .eval(
-                y,
-                p,
-                t,
-                RowEvalContext {
-                    seed: Some(v),
-                    ..self.runtime.row_eval_context()
-                },
-                out,
-            )
-            .map_err(Into::into)
     }
 
     fn eval_implicit_residual_row(
@@ -411,7 +498,11 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 y,
                 p,
                 t,
-                self.runtime.row_eval_context(),
+                self.runtime
+                    .execution_plan
+                    .interpreter
+                    .refresh_projection_rows
+                    .row_eval_context(self.runtime),
             )
             .map_err(RuntimeSolveError::from)?;
         self.runtime
@@ -457,10 +548,11 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 y,
                 p,
                 t,
-                RowEvalContext {
-                    seed: Some(v),
-                    ..self.runtime.row_eval_context()
-                },
+                self.runtime
+                    .execution_plan
+                    .interpreter
+                    .refresh_projection_rows
+                    .seeded_row_eval_context(self.runtime, v),
             )
             .map(Some)
             .map_err(Into::into)
@@ -503,7 +595,12 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                     y,
                     p,
                     t,
-                    context: self.runtime.row_eval_context(),
+                    context: self
+                        .runtime
+                        .execution_plan
+                        .interpreter
+                        .refresh_projection_rows
+                        .row_eval_context(self.runtime),
                 },
                 gradient,
                 &mut self.runtime.reverse_scratch.borrow_mut(),
@@ -604,7 +701,12 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                     y,
                     p,
                     t,
-                    context: self.runtime.row_eval_context(),
+                    context: self
+                        .runtime
+                        .execution_plan
+                        .interpreter
+                        .refresh_projection_rows
+                        .row_eval_context(self.runtime),
                 },
             )
             .map_err(Into::into)
@@ -625,13 +727,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             })
     }
 
-    /// Batched torn sweep: the compiled composite (one assignment-schedule
-    /// call plus one residual-block call) when the backend accepts it, and
-    /// otherwise one prepared-block call per sweep, instead of one model call
-    /// per causal step and residual row. Every form is built from the same
-    /// certified isolators and program outputs the per-row path resolves on
-    /// every call, so all paths produce bit-identical values and decline
-    /// decisions; the debug agreement check below enforces that.
+    /// Batched interpreter torn sweep, prepared from the certified isolators.
     fn torn_block_sweep(
         &self,
         tearing: &solve::BlockTearing,
@@ -646,24 +742,22 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         #[cfg(debug_assertions)]
         let entry_y = y.to_vec();
         let mut raw = Vec::with_capacity(tearing.residual_rows.len());
-        let compiled_status = entry.compiled.as_ref().and_then(|compiled| {
-            self.eval_compiled_torn_sweep(compiled, tearing, y, p, t, &mut raw)
-        });
-        let status = match compiled_status {
-            Some(status) => status,
-            None => self
-                .runtime
-                .implicit_scalar_rhs
-                .eval_torn_sweep_unchecked_with_context(
-                    &entry.sweep,
-                    y,
-                    p,
-                    t,
-                    self.runtime.row_eval_context(),
-                    &mut raw,
-                )
-                .map_err(RuntimeSolveError::from)?,
-        };
+        let status = self
+            .runtime
+            .implicit_scalar_rhs
+            .eval_torn_sweep_unchecked_with_context(
+                &entry.sweep,
+                y,
+                p,
+                t,
+                self.runtime
+                    .execution_plan
+                    .interpreter
+                    .torn_sweeps
+                    .row_eval_context(self.runtime),
+                &mut raw,
+            )
+            .map_err(RuntimeSolveError::from)?;
         let completed = status == TornSweepStatus::Completed;
         if completed {
             residual_out.clear();
@@ -672,7 +766,17 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             }
         }
         #[cfg(debug_assertions)]
-        self.debug_assert_torn_sweep_agrees(tearing, &entry_y, p, t, completed, y, residual_out)?;
+        self.debug_assert_torn_sweep_agrees(
+            tearing,
+            &entry_y,
+            p,
+            t,
+            BatchedSweepOutcome {
+                completed,
+                y,
+                residual: residual_out,
+            },
+        )?;
         Ok(completed)
     }
 
@@ -680,7 +784,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         self.runtime
             .model
             .problem
-            .continuous
+            .continuous()
             .implicit_row_targets
             .get(row_idx)
             .copied()
@@ -700,7 +804,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         self.runtime
             .model
             .problem
-            .continuous
+            .continuous()
             .implicit_row_targets
             .get(row_idx)
             .copied()
@@ -713,7 +817,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 self.runtime
                     .model
                     .problem
-                    .solve_layout
+                    .solve_layout()
                     .solver_maps
                     .names
                     .get(index)
@@ -726,23 +830,30 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
     }
 }
 
+/// What the batched sweep produced for one torn block: whether it completed,
+/// and the unknowns and residual values it left behind. The debug-only
+/// agreement guard compares this whole outcome against the reference sweep, so
+/// it travels as one value rather than as three parallel arguments.
+#[cfg(debug_assertions)]
+struct BatchedSweepOutcome<'a> {
+    completed: bool,
+    y: &'a [f64],
+    residual: &'a [f64],
+}
+
 impl RefreshProjectionModel<'_> {
     /// Debug-only strict-refinement guard: replay the sweep through the
     /// per-row reference path from the same entry point and require the same
     /// decline decision and, on completion, bit-identical unknowns and
     /// residual values (NaN compared by bit pattern).
     #[cfg(debug_assertions)]
-    // SPEC_0021: Exception - the agreement check compares every input and output of one sweep.
-    #[allow(clippy::too_many_arguments)]
     fn debug_assert_torn_sweep_agrees(
         &self,
         tearing: &solve::BlockTearing,
         entry_y: &[f64],
         p: &[f64],
         t: f64,
-        batched_completed: bool,
-        batched_y: &[f64],
-        batched_residual: &[f64],
+        batched: BatchedSweepOutcome<'_>,
     ) -> Result<(), RuntimeSolveError> {
         let mut reference_y = entry_y.to_vec();
         let mut reference_residual = Vec::new();
@@ -755,10 +866,10 @@ impl RefreshProjectionModel<'_> {
             &mut reference_residual,
         )?;
         debug_assert_eq!(
-            reference_completed, batched_completed,
+            reference_completed, batched.completed,
             "batched torn sweep disagrees with the per-row sweep on declining"
         );
-        if reference_completed && batched_completed {
+        if reference_completed && batched.completed {
             let bits_equal = |reference: &[f64], batched: &[f64]| {
                 reference.len() == batched.len()
                     && reference
@@ -767,51 +878,15 @@ impl RefreshProjectionModel<'_> {
                         .all(|(a, b)| a.to_bits() == b.to_bits())
             };
             debug_assert!(
-                bits_equal(&reference_y, batched_y),
+                bits_equal(&reference_y, batched.y),
                 "batched torn sweep diverged from the per-row sweep in solver values"
             );
             debug_assert!(
-                bits_equal(&reference_residual, batched_residual),
+                bits_equal(&reference_residual, batched.residual),
                 "batched torn sweep diverged from the per-row sweep in residual values"
             );
         }
         Ok(())
-    }
-
-    /// Run one compiled torn sweep, or `None` to fall back to the interpreted
-    /// batch. A failed compiled call may leave causal targets partially
-    /// written; that needs no restore, because the fallback rewrites every
-    /// causal target in order from the untouched tear values before anything
-    /// reads them.
-    fn eval_compiled_torn_sweep(
-        &self,
-        compiled: &CompiledTornSweep,
-        tearing: &solve::BlockTearing,
-        y: &mut [f64],
-        p: &[f64],
-        t: f64,
-        raw: &mut Vec<Option<f64>>,
-    ) -> Option<TornSweepStatus> {
-        let tables = self.runtime.model.external_tables.as_slice();
-        compiled.schedule.call(y, p, t, tables).ok()?;
-        // Mirror the per-row decline decision in causal order: the isolator
-        // programs poison a singular step to a non-finite value, so the first
-        // non-finite target is exactly where the per-row path declines.
-        for step in &tearing.causal_steps {
-            if !y.get(step.y_index).copied().unwrap_or(f64::NAN).is_finite() {
-                return Some(TornSweepStatus::Declined);
-            }
-        }
-        let mut out = vec![0.0; compiled.residual_len];
-        compiled
-            .residual_block
-            .call(y, p, t, tables, &mut out)
-            .ok()?;
-        raw.clear();
-        for position in compiled.residual_outputs.iter() {
-            raw.push(position.and_then(|index| out.get(index).copied()));
-        }
-        Some(TornSweepStatus::Completed)
     }
 
     /// One residual row's sweep value under the per-row policy: report the
@@ -837,10 +912,7 @@ impl RefreshProjectionModel<'_> {
 
 impl SolveRuntime {
     /// Prepared batched sweep for one torn block, resolved once from the same
-    /// certified isolators the per-row path re-resolves on every call, with
-    /// its compiled composite when the execution backend accepts it. `None`
-    /// is cached too, so an unbatchable block keeps the per-row path without
-    /// repeating the resolution.
+    /// certified isolators the per-row path re-resolves on every call.
     pub(super) fn prepared_torn_sweep(
         &self,
         tearing: &solve::BlockTearing,
@@ -869,187 +941,74 @@ impl SolveRuntime {
         let sweep = self
             .implicit_scalar_rhs
             .prepare_torn_sweep(&causal_steps, &tearing.residual_rows)?;
-        let compiled = self.execution_backend.as_ref().and_then(|backend| {
-            let composite = self.implicit_scalar_rhs.torn_sweep_composite(&sweep)?;
-            let schedule = optional_compiled(
-                "torn_assignment_schedule",
-                backend.compile_torn_assignment_rows(
-                    &composite.assignment_rows,
-                    &composite.assignment_targets,
-                ),
-            )?;
-            let residual_block = optional_compiled(
-                "torn_residual_block",
-                backend.compile_expression(&composite.residual_block),
-            )?;
-            Some(CompiledTornSweep {
-                schedule,
-                residual_block,
-                residual_len: composite.residual_block.stored_output_count(),
-                residual_outputs: composite.residual_outputs.into_boxed_slice(),
-            })
-        });
-        Some(PreparedTornSweepEntry { sweep, compiled })
-    }
-
-    pub(super) fn value_stage_schedule_is_certified(&self, plan: &solve::RefreshPlan) -> bool {
-        let structural = self.continuous_structural.algebraic_projection();
-        plan.simultaneous_block_indices.len() == plan.simultaneous_plan.blocks.len()
-            && !plan.value_stages.is_empty()
-            && value_stage_seed_coverage_is_complete(plan)
-            && plan
-                .simultaneous_block_indices
-                .iter()
-                .all(|&index| structural.get(index).is_some())
-            && plan
-                .simultaneous_block_indices
-                .iter()
-                .skip(1)
-                .all(|&index| {
-                    self.continuous_structural
-                        .algebraic_invalidates_earlier(index)
-                        == Some(false)
-                })
+        Some(PreparedTornSweepEntry { sweep })
     }
 
     pub(super) fn refresh_slots_with_stages(
         &self,
-        plan: &solve::RefreshPlan,
+        plan: &PreparedRefreshPlan,
+        stages: &[PreparedRefreshStage],
         args: &mut RefreshSlotArgs<'_>,
-        incoming: &[f64],
     ) -> Result<(), RuntimeSolveError> {
         self.prepare_static_refresh_cache(args.params, args.solver_y.len());
-        for stage in &plan.value_stages {
-            if !self.execute_refresh_stage(stage, plan, args, incoming)? {
-                return Ok(());
-            }
+        for stage in stages {
+            self.execute_refresh_stage(stage, plan, args)?;
         }
         Ok(())
     }
 
     fn execute_refresh_stage(
         &self,
-        stage: &solve::RefreshStage,
-        complete_plan: &solve::RefreshPlan,
+        stage: &PreparedRefreshStage,
+        complete_plan: &PreparedRefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
-        incoming: &[f64],
-    ) -> Result<bool, RuntimeSolveError> {
+    ) -> Result<(), RuntimeSolveError> {
         match stage {
-            solve::RefreshStage::CausalSeedSweep {
+            PreparedRefreshStage::ExactAssignments {
                 static_sequence,
                 dynamic_sequence,
                 static_rows,
                 dynamic_rows,
             } => {
-                let seeded = self.refresh_stage_seed_sweep(
+                self.refresh_stage_seed_sweep(
                     *static_sequence,
                     *dynamic_sequence,
                     complete_plan.selected_rows(static_rows),
                     complete_plan.selected_rows(dynamic_rows),
                     args,
-                    incoming,
                 )?;
-                self.continue_or_project_complete(seeded, complete_plan, args)
+                Ok(())
             }
-            solve::RefreshStage::ExactAssignments {
-                static_sequence,
-                dynamic_sequence,
-                static_rows,
-                dynamic_rows,
-            } => {
-                let assigned = self.refresh_stage_seed_sweep(
-                    *static_sequence,
-                    *dynamic_sequence,
-                    complete_plan.selected_rows(static_rows),
-                    complete_plan.selected_rows(dynamic_rows),
-                    args,
-                    incoming,
-                )?;
-                self.continue_or_project_complete(assigned, complete_plan, args)
+            PreparedRefreshStage::ProjectionBlock { block_index, plan } => {
+                self.project_refresh_stage(*block_index, plan, args)
             }
-            solve::RefreshStage::ProjectionBlock {
-                seed_sequence,
-                block_index,
-                plan,
-                seed_rows,
-            } => self.refresh_projection_stage_with_seed(
-                ProjectionStageSeed {
-                    sequence: *seed_sequence,
-                    rows: complete_plan.selected_rows(seed_rows),
-                },
-                *block_index,
-                plan,
-                complete_plan,
-                args,
-                incoming,
-            ),
         }
-    }
-
-    fn continue_or_project_complete(
-        &self,
-        seeded: bool,
-        complete_plan: &solve::RefreshPlan,
-        args: &mut RefreshSlotArgs<'_>,
-    ) -> Result<bool, RuntimeSolveError> {
-        if seeded {
-            return Ok(true);
-        }
-        self.project_refresh_slots(complete_plan, args, true)?;
-        Ok(false)
-    }
-
-    fn refresh_projection_stage_with_seed(
-        &self,
-        seed: ProjectionStageSeed<'_>,
-        block_index: usize,
-        plan: &solve::AlgebraicProjectionPlan,
-        complete_plan: &solve::RefreshPlan,
-        args: &mut RefreshSlotArgs<'_>,
-        incoming: &[f64],
-    ) -> Result<bool, RuntimeSolveError> {
-        let result =
-            self.refresh_slots_once(seed.rows, seed.sequence, args.t, args.solver_y, args.params);
-        if let Err(error) = result {
-            restore_after_causal_seed_error(error, args.solver_y, incoming)?;
-            self.project_refresh_slots(complete_plan, args, true)?;
-            return Ok(false);
-        }
-        self.project_refresh_stage(block_index, plan, args)?;
-        Ok(true)
     }
 
     fn refresh_stage_seed_sweep(
         &self,
         static_sequence: solve::RefreshSequenceId,
         dynamic_sequence: solve::RefreshSequenceId,
-        static_rows: solve::RefreshRows<'_>,
-        dynamic_rows: solve::RefreshRows<'_>,
+        static_rows: PreparedRefreshRows<'_>,
+        dynamic_rows: PreparedRefreshRows<'_>,
         args: &mut RefreshSlotArgs<'_>,
-        incoming: &[f64],
-    ) -> Result<bool, RuntimeSolveError> {
-        let result = self
-            .refresh_prepared_static_rows(
-                static_rows,
-                static_sequence,
+    ) -> Result<(), RuntimeSolveError> {
+        self.refresh_prepared_static_rows(
+            static_rows,
+            static_sequence,
+            args.t,
+            args.solver_y,
+            args.params,
+        )
+        .and_then(|()| {
+            self.refresh_slots_once(
+                dynamic_rows,
+                dynamic_sequence,
                 args.t,
                 args.solver_y,
                 args.params,
             )
-            .and_then(|()| {
-                self.refresh_slots_once(
-                    dynamic_rows,
-                    dynamic_sequence,
-                    args.t,
-                    args.solver_y,
-                    args.params,
-                )
-            });
-        if let Err(error) = result {
-            restore_after_causal_seed_error(error, args.solver_y, incoming)?;
-            return Ok(false);
-        }
-        Ok(true)
+        })
     }
 
     fn project_refresh_stage(
@@ -1092,30 +1051,4 @@ impl SolveRuntime {
             )
         }
     }
-}
-
-pub(super) fn value_stage_seed_coverage_is_complete(plan: &solve::RefreshPlan) -> bool {
-    plan.value_stages.iter().all(|stage| match stage {
-        solve::RefreshStage::ProjectionBlock {
-            plan: projection,
-            seed_rows,
-            ..
-        } => projection.blocks.iter().all(|block| {
-            block.y_indices.iter().all(|target| {
-                plan.selected_rows(seed_rows)
-                    .iter()
-                    .any(|row| row.target_index() == *target)
-            })
-        }),
-        _ => true,
-    })
-}
-
-pub(super) fn seed_error_allows_projection(error: &RuntimeSolveError) -> bool {
-    matches!(
-        error,
-        RuntimeSolveError::NonFiniteValue { .. }
-            | RuntimeSolveError::RefreshTargetUnassignable { .. }
-            | RuntimeSolveError::RefreshTargetSingular { .. }
-    )
 }

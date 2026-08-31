@@ -18,7 +18,7 @@ use rumoca_eval_solve::{
 };
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, FoldTensorUpdateStore, LinearOp, MatrixProductShape, ScalarProgramBlock,
-    UnaryOp, resolve_indexed_slot,
+    UnaryOp,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -553,7 +553,7 @@ fn compile_residual_functions(
     if rows.iter().flatten().any(|operation| {
         matches!(
             operation,
-            LinearOp::FunctionConditional { program, .. } if program.owner.is_some()
+            LinearOp::FunctionConditional { program, .. } if program.owner().is_some()
         )
     }) {
         let output_count = plans.iter().map(RowPlan::output_count).sum();
@@ -658,16 +658,16 @@ fn residual_program_cost(program: &[LinearOp]) -> usize {
             LinearOp::FunctionFold { program, .. }
             | LinearOp::GuardedFunctionFold { program, .. }
             | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                1usize.saturating_add(residual_program_cost(&program.update))
+                1usize.saturating_add(residual_program_cost(program.update()))
             }
             LinearOp::FunctionConditional { program, .. } => {
-                let arm_cost = program.arms.iter().fold(0usize, |cost, arm| {
-                    cost.saturating_add(residual_program_cost(&arm.condition))
-                        .saturating_add(residual_program_cost(&arm.result))
+                let arm_cost = program.arms().iter().fold(0usize, |cost, arm| {
+                    cost.saturating_add(residual_program_cost(arm.condition()))
+                        .saturating_add(residual_program_cost(arm.result()))
                 });
                 1usize
                     .saturating_add(arm_cost)
-                    .saturating_add(residual_program_cost(&program.fallback))
+                    .saturating_add(residual_program_cost(program.fallback()))
             }
             _ => 1,
         })
@@ -1095,11 +1095,11 @@ impl CraneliftEmitter {
         program: &rumoca_ir_solve::FunctionConditionalProgram,
         kind: RowKind,
     ) -> Result<(), CompileError> {
-        for arm in &program.arms {
-            self.ensure_fold_programs(&arm.condition, kind)?;
-            self.ensure_fold_programs(&arm.result, kind)?;
+        for arm in program.arms() {
+            self.ensure_fold_programs(arm.condition(), kind)?;
+            self.ensure_fold_programs(arm.result(), kind)?;
         }
-        self.ensure_fold_programs(&program.fallback, kind)
+        self.ensure_fold_programs(program.fallback(), kind)
     }
 
     fn ensure_conditional_programs(
@@ -1112,7 +1112,7 @@ impl CraneliftEmitter {
                 LinearOp::FunctionFold { program, .. }
                 | LinearOp::GuardedFunctionFold { program, .. }
                 | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                    self.ensure_conditional_programs(&program.update, kind)?;
+                    self.ensure_conditional_programs(program.update(), kind)?;
                 }
                 LinearOp::FunctionConditional { program, .. } => {
                     self.ensure_nested_conditional_program(program, kind)?;
@@ -1128,15 +1128,15 @@ impl CraneliftEmitter {
         program: &Arc<rumoca_ir_solve::FunctionConditionalProgram>,
         kind: RowKind,
     ) -> Result<(), CompileError> {
-        if program.owner.is_some() {
+        if program.owner().is_some() {
             self.ensure_conditional_program(program.clone(), kind)?;
             return Ok(());
         }
-        for arm in &program.arms {
-            self.ensure_conditional_programs(&arm.condition, kind)?;
-            self.ensure_conditional_programs(&arm.result, kind)?;
+        for arm in program.arms() {
+            self.ensure_conditional_programs(arm.condition(), kind)?;
+            self.ensure_conditional_programs(arm.result(), kind)?;
         }
-        self.ensure_conditional_programs(&program.fallback, kind)
+        self.ensure_conditional_programs(program.fallback(), kind)
     }
 
     fn ensure_conditional_program(
@@ -1144,7 +1144,7 @@ impl CraneliftEmitter {
         program: Arc<rumoca_ir_solve::FunctionConditionalProgram>,
         kind: RowKind,
     ) -> Result<FuncId, CompileError> {
-        let owner = program.owner.ok_or_else(|| {
+        let owner = program.owner().ok_or_else(|| {
             CompileError::Backend(
                 "unowned function conditional cannot define a native helper".to_string(),
             )
@@ -1172,14 +1172,14 @@ impl CraneliftEmitter {
             .map_err(to_backend_err)?;
         self.conditional_functions.insert(owner, function);
 
-        for arm in &program.arms {
-            self.ensure_fold_programs(&arm.condition, kind)?;
-            self.ensure_fold_programs(&arm.result, kind)?;
-            self.ensure_conditional_programs(&arm.condition, kind)?;
-            self.ensure_conditional_programs(&arm.result, kind)?;
+        for arm in program.arms() {
+            self.ensure_fold_programs(arm.condition(), kind)?;
+            self.ensure_fold_programs(arm.result(), kind)?;
+            self.ensure_conditional_programs(arm.condition(), kind)?;
+            self.ensure_conditional_programs(arm.result(), kind)?;
         }
-        self.ensure_fold_programs(&program.fallback, kind)?;
-        self.ensure_conditional_programs(&program.fallback, kind)?;
+        self.ensure_fold_programs(program.fallback(), kind)?;
+        self.ensure_conditional_programs(program.fallback(), kind)?;
 
         let mut context = self.module.make_context();
         context.func.signature = signature;
@@ -1230,7 +1230,7 @@ impl CraneliftEmitter {
                 known_constants: HashMap::new(),
             };
             let result = lower.lower_function_conditional_inline(0, &program)?;
-            lower.copy_stack_to_pointer(result, results_ptr, program.result_count)?;
+            lower.copy_stack_to_pointer(result, results_ptr, program.result_count())?;
             lower.fb.ins().return_(&[]);
             drop(lower);
             fb.finalize();
@@ -1267,8 +1267,8 @@ impl CraneliftEmitter {
         self.fold_functions.insert(key, function);
         self.canonical_fold_functions
             .push((program.clone(), function));
-        self.ensure_fold_programs(&program.update, kind)?;
-        self.ensure_conditional_programs(&program.update, kind)?;
+        self.ensure_fold_programs(program.update(), kind)?;
+        self.ensure_conditional_programs(program.update(), kind)?;
 
         let mut context = self.module.make_context();
         context.func.signature = signature;
@@ -1290,9 +1290,10 @@ impl CraneliftEmitter {
             };
             let mut regs = HashMap::new();
             let flags = MemFlags::new();
-            let captures = load_fold_captures(&mut fb, flags, captures_ptr, program.capture_count)?;
+            let captures =
+                load_fold_captures(&mut fb, flags, captures_ptr, program.capture_count())?;
             let bytes = program
-                .carried_count
+                .carried_count()
                 .checked_mul(std::mem::size_of::<f64>())
                 .and_then(|bytes| u32::try_from(bytes).ok())
                 .ok_or_else(|| {
@@ -1304,7 +1305,7 @@ impl CraneliftEmitter {
                 3,
             ));
             let backing_regs_ptr =
-                create_fold_register_tape(&mut fb, pointer_type, &program.update)?;
+                create_fold_register_tape(&mut fb, pointer_type, program.update())?;
             let mut lower = RowLowerCtx {
                 fb: &mut fb,
                 module: &mut self.module,
@@ -1334,9 +1335,9 @@ impl CraneliftEmitter {
                 fold_carried_versions: Vec::new(),
                 known_constants: HashMap::new(),
             };
-            lower.copy_pointer_to_stack(carried_ptr, carried, program.carried_count)?;
+            lower.copy_pointer_to_stack(carried_ptr, carried, program.carried_count())?;
             lower.lower_function_fold_on_stack(carried, &captures, Some(captures_ptr), &program)?;
-            lower.copy_stack_to_pointer(carried, carried_ptr, program.carried_count)?;
+            lower.copy_stack_to_pointer(carried, carried_ptr, program.carried_count())?;
             lower.fb.ins().return_(&[]);
             drop(lower);
             fb.finalize();
@@ -2202,12 +2203,6 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             LinearOp::LoadTime { dst } => self.insert(dst, self.t_value),
             LinearOp::LoadY { dst, index } => self.lower_loaded_y_reg(dst, index),
             LinearOp::LoadP { dst, index } => self.lower_loaded_p_reg(dst, index),
-            LinearOp::LoadIndexedP {
-                dst,
-                base,
-                count,
-                index,
-            } => self.lower_indexed_loaded_reg(dst, self.p_ptr, base, count, index),
             LinearOp::LoadIndexedRegister {
                 dst,
                 base,
@@ -2216,17 +2211,6 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 indices,
             } => self.lower_indexed_register(dst, base, stride, &dimensions, &indices),
             LinearOp::LoadSeed { dst, index } => self.lower_seed_reg(dst, index),
-            LinearOp::LoadIndexedSeed {
-                dst,
-                base,
-                count,
-                index,
-            } => {
-                let base_ptr = self.v_ptr.ok_or_else(|| {
-                    CompileError::Backend("LoadIndexedSeed in row without seed input".to_string())
-                })?;
-                self.lower_indexed_loaded_reg(dst, base_ptr, base, count, index)
-            }
             LinearOp::LoadFoldCarried { dst, index } => {
                 let carried = self.fold_carried.ok_or_else(|| {
                     CompileError::Backend("invalid function-fold carried load".to_string())
@@ -2578,13 +2562,13 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         capture_start: u32,
         program: &Arc<rumoca_ir_solve::FunctionFoldProgram>,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        let carried = (0..program.carried_count)
+        let carried = (0..program.carried_count())
             .map(|offset| {
                 checked_reg_offset(initial_start, offset, "function fold initial")
                     .and_then(|register| self.lookup(register))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let captures = (0..program.capture_count)
+        let captures = (0..program.capture_count())
             .map(|offset| {
                 checked_reg_offset(capture_start, offset, "function fold capture")
                     .and_then(|register| self.lookup(register))
@@ -2610,7 +2594,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             cached
         } else {
             let carried_bytes = program
-                .carried_count
+                .carried_count()
                 .checked_mul(std::mem::size_of::<f64>())
                 .and_then(|bytes| u32::try_from(bytes).ok())
                 .ok_or_else(|| {
@@ -2632,7 +2616,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             self.nested_fold_results.insert(call_key, carried_slot);
             carried_slot
         };
-        for offset in 0..program.carried_count {
+        for offset in 0..program.carried_count() {
             let value = self.fb.ins().stack_load(
                 types::F64,
                 carried_slot,
@@ -2816,13 +2800,13 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         capture_start: u32,
         program: &Arc<rumoca_ir_solve::FunctionConditionalProgram>,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        if let Some(owner) = program.owner
+        if let Some(owner) = program.owner()
             && let Some(result_slot) = self.conditional_results.get(&owner).copied()
         {
-            self.load_function_conditional_results(dst_start, result_slot, program.result_count)?;
+            self.load_function_conditional_results(dst_start, result_slot, program.result_count())?;
             return Ok(None);
         }
-        let result_slot = if let Some(owner) = program.owner {
+        let result_slot = if let Some(owner) = program.owner() {
             let function = self
                 .conditional_functions
                 .get(&owner)
@@ -2837,10 +2821,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         } else {
             self.lower_function_conditional_inline(capture_start, program)?
         };
-        if let Some(owner) = program.owner {
+        if let Some(owner) = program.owner() {
             self.conditional_results.insert(owner, result_slot);
         }
-        self.load_function_conditional_results(dst_start, result_slot, program.result_count)?;
+        self.load_function_conditional_results(dst_start, result_slot, program.result_count())?;
         Ok(None)
     }
 
@@ -2850,7 +2834,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         program: &rumoca_ir_solve::FunctionConditionalProgram,
     ) -> Result<StackSlot, CompileError> {
         let result_bytes = program
-            .result_count
+            .result_count()
             .checked_mul(std::mem::size_of::<f64>())
             .and_then(|bytes| u32::try_from(bytes).ok())
             .ok_or_else(|| {
@@ -2864,11 +2848,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             3,
         ));
         let continuation = self.fb.create_block();
-        for arm in &program.arms {
+        for arm in program.arms() {
             let condition = self.lower_function_conditional_condition(
-                &arm.condition,
+                arm.condition(),
                 capture_start,
-                program.capture_count,
+                program.capture_count(),
             )?;
             let selected = self.fb.create_block();
             let next = self.fb.create_block();
@@ -2879,22 +2863,22 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             self.fb.switch_to_block(selected);
             self.fb.seal_block(selected);
             let values = self.lower_function_conditional_region(
-                &arm.result,
+                arm.result(),
                 capture_start,
-                program.capture_count,
+                program.capture_count(),
             )?;
-            self.store_function_conditional_results(result_slot, &values, program.result_count)?;
+            self.store_function_conditional_results(result_slot, &values, program.result_count())?;
             self.fb.ins().jump(continuation, &[]);
 
             self.fb.switch_to_block(next);
             self.fb.seal_block(next);
         }
         let fallback = self.lower_function_conditional_region(
-            &program.fallback,
+            program.fallback(),
             capture_start,
-            program.capture_count,
+            program.capture_count(),
         )?;
-        self.store_function_conditional_results(result_slot, &fallback, program.result_count)?;
+        self.store_function_conditional_results(result_slot, &fallback, program.result_count())?;
         self.fb.ins().jump(continuation, &[]);
 
         self.fb.switch_to_block(continuation);
@@ -2913,7 +2897,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             self.fb.ins().iadd_imm(registers, offset)
         } else {
             let capture_bytes = program
-                .capture_count
+                .capture_count()
                 .max(1)
                 .checked_mul(std::mem::size_of::<f64>())
                 .and_then(|bytes| u32::try_from(bytes).ok())
@@ -2927,7 +2911,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 capture_bytes,
                 3,
             ));
-            for offset in 0..program.capture_count {
+            for offset in 0..program.capture_count() {
                 let value = self.lookup(checked_reg_offset(
                     capture_start,
                     offset,
@@ -2942,7 +2926,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             self.fb.ins().stack_addr(types::I64, captures, 0)
         };
         let result_bytes = program
-            .result_count
+            .result_count()
             .checked_mul(std::mem::size_of::<f64>())
             .and_then(|bytes| u32::try_from(bytes).ok())
             .ok_or_else(|| {
@@ -3266,13 +3250,13 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         activation: u32,
         program: &Arc<rumoca_ir_solve::FunctionFoldProgram>,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        let carried = (0..program.carried_count)
+        let carried = (0..program.carried_count())
             .map(|offset| {
                 checked_reg_offset(initial_start, offset, "guarded function fold initial")
                     .and_then(|register| self.lookup(register))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let captures = (0..program.capture_count)
+        let captures = (0..program.capture_count())
             .map(|offset| {
                 checked_reg_offset(capture_start, offset, "guarded function fold capture")
                     .and_then(|register| self.lookup(register))
@@ -3280,7 +3264,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .collect::<Result<Vec<_>, _>>()?;
         let activation = self.lookup(activation)?;
         let carried_bytes = program
-            .carried_count
+            .carried_count()
             .checked_mul(std::mem::size_of::<f64>())
             .and_then(|bytes| u32::try_from(bytes).ok())
             .ok_or_else(|| {
@@ -3318,7 +3302,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
         self.fb.switch_to_block(continuation);
         self.fb.seal_block(continuation);
-        for offset in 0..program.carried_count {
+        for offset in 0..program.carried_count() {
             let value = self.fb.ins().stack_load(
                 types::F64,
                 carried_slot,
@@ -3339,13 +3323,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         captures_ptr: Option<cranelift_codegen::ir::Value>,
         program: &rumoca_ir_solve::FunctionFoldProgram,
     ) -> Result<(), CompileError> {
-        let count = program.domain.scalar_count().map_err(|error| {
+        let count = program.domain_scalar_count();
+        let extents = program.domain().extents().map_err(|error| {
             CompileError::Backend(format!("invalid function-fold domain: {error}"))
         })?;
-        let extents = program.domain.extents().map_err(|error| {
-            CompileError::Backend(format!("invalid function-fold domain: {error}"))
-        })?;
-        let strides = program.domain.ordinal_strides().map_err(|error| {
+        let strides = program.domain().ordinal_strides().map_err(|error| {
             CompileError::Backend(format!("invalid function-fold domain: {error}"))
         })?;
         // Shape is still compact in Solve IR; this is the final native-code
@@ -3353,9 +3335,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         // code even when runtime indexing requires a register tape: the tape
         // remains addressable, while we eliminate loop control and integer
         // div/rem from every estimator matrix reduction.
-        if count <= INLINE_FIXED_FOLD_POINT_LIMIT && program.update.len() <= 128 {
+        if count <= INLINE_FIXED_FOLD_POINT_LIMIT && program.update().len() <= 128 {
             for ordinal in 0..count {
-                let constants = fold_index_constants(&program.domain, &extents, &strides, ordinal);
+                let constants = fold_index_constants(program.domain(), &extents, &strides, ordinal);
                 let indices = constants
                     .iter()
                     .map(|&coordinate| self.fb.ins().f64const(coordinate))
@@ -3391,8 +3373,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
         self.fb.switch_to_block(body);
         self.fb.seal_block(body);
-        let mut indices = Vec::with_capacity(program.domain.binders.len());
-        for ((binder, extent), stride) in program.domain.binders.iter().zip(extents).zip(strides) {
+        let mut indices = Vec::with_capacity(program.domain().binders.len());
+        for ((binder, extent), stride) in program.domain().binders.iter().zip(extents).zip(strides)
+        {
             let position = if stride == 1 {
                 ordinal
             } else {
@@ -3460,10 +3443,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             pure_call_results: HashMap::new(),
             nested_fold_results: HashMap::new(),
             conditional_results: HashMap::new(),
-            fold_carried_versions: vec![0; program.carried_count],
+            fold_carried_versions: vec![0; program.carried_count()],
             known_constants: HashMap::new(),
         };
-        let output_ops = update.lower_fold_update_body(&program.update)?;
+        let output_ops = update.lower_fold_update_body(program.update())?;
         let mut output_cursor = 0usize;
         for operation in output_ops {
             let output_start = output_cursor;
@@ -3473,7 +3456,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             }
         }
         drop(update);
-        if output_cursor != program.carried_count {
+        if output_cursor != program.carried_count() {
             return Err(CompileError::Backend(
                 "function-fold update output count mismatch".to_string(),
             ));
@@ -3637,7 +3620,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             nested_when_true,
         } = request;
         let initial_key = self.nested_fold_initial_key(initial)?;
-        let captures = (0..program.capture_count)
+        let captures = (0..program.capture_count())
             .map(|offset| {
                 checked_reg_offset(capture_start, offset, "nested function fold capture")
                     .and_then(|register| self.lookup(register))
@@ -3764,7 +3747,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             return Ok(cached);
         }
         let carried_bytes = checked_f64_stack_bytes(
-            program.carried_count,
+            program.carried_count(),
             "nested function-fold storage size overflow",
         )?;
         let nested_carried = self.fb.create_sized_stack_slot(StackSlotData::new(
@@ -3774,7 +3757,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         ));
         let count =
             self.initialize_nested_fold_carried(parent_carried, nested_carried, &call_key.initial)?;
-        if count != program.carried_count {
+        if count != program.carried_count() {
             return Err(CompileError::Backend(
                 "nested function-fold initial count mismatch".into(),
             ));
@@ -3840,12 +3823,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         carried: StackSlot,
         captures: &[cranelift_codegen::ir::Value],
     ) -> Result<(), CompileError> {
-        let point_count = program.domain.scalar_count().map_err(|error| {
-            CompileError::Backend(format!("invalid nested function-fold domain: {error}"))
-        })?;
+        let point_count = program.domain_scalar_count();
         let inline = point_count <= INLINE_FIXED_FOLD_POINT_LIMIT
-            && program.carried_count <= 2
-            && program.update.len() <= 24
+            && program.carried_count() <= 2
+            && program.update().len() <= 24
             && self.backing_regs_ptr.is_none();
         if !inline {
             return self.call_fold_kernel(program, carried, captures);
@@ -4838,7 +4819,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                             let matches = self.fb.ins().fcmp(FloatCC::Equal, selected, coordinate);
                             valid = self.fb.ins().band(valid, matches);
                         }
-                        rumoca_ir_solve::TensorUpdateSubscript::Slice { .. } => unreachable!(),
+                        rumoca_ir_solve::TensorUpdateSubscript::Slice { .. } => {
+                            return Err(CompileError::Backend(
+                                "compact tensor-update slices require register-tape lowering"
+                                    .to_string(),
+                            ));
+                        }
                     }
                 }
                 for lane in 0..lanes {
@@ -4910,22 +4896,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                         }
                         rumoca_ir_solve::TensorIndex::Runtime(register) => {
                             let value = self.lookup(register)?;
-                            let rounded = self.fb.ins().nearest(value);
-                            let one = self.fb.ins().f64const(1.0);
-                            let upper = self.fb.ins().f64const(f64::from(extent));
-                            let integral = self.fb.ins().fcmp(FloatCC::Equal, value, rounded);
-                            let above =
-                                self.fb
-                                    .ins()
-                                    .fcmp(FloatCC::GreaterThanOrEqual, rounded, one);
-                            let below =
-                                self.fb.ins().fcmp(FloatCC::LessThanOrEqual, rounded, upper);
-                            valid = self.fb.ins().band(valid, integral);
-                            valid = self.fb.ins().band(valid, above);
-                            valid = self.fb.ins().band(valid, below);
-                            let clamped = self.fb.ins().fmax(rounded, one);
-                            let clamped = self.fb.ins().fmin(clamped, upper);
-                            let selected = self.fb.ins().fcvt_to_sint(types::I64, clamped);
+                            let selected = self.fb.ins().fcvt_to_sint(types::I64, value);
                             self.fb.ins().iadd_imm(selected, -1)
                         }
                     };
@@ -5336,43 +5307,6 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         load_f64(self.fb, self.flags, seed_ptr, seed_start + element)
     }
 
-    /// Lower `mem[base_ptr + 8*(base + clamp(round(index_reg), 0, count-1))]`,
-    /// matching [`rumoca_ir_solve::resolve_indexed_slot`]: round the runtime
-    /// f64 index to nearest, clamp into `[0, count-1]`, convert to an integer
-    /// byte offset, then add the run-relative `base` and dereference.
-    fn lower_indexed_loaded_reg(
-        &mut self,
-        dst: u32,
-        base_ptr: cranelift_codegen::ir::Value,
-        base: usize,
-        count: usize,
-        index: u32,
-    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        let idx = self.lookup(index)?;
-        let rounded = self.fb.ins().nearest(idx);
-        let zero = self.fb.ins().f64const(0.0);
-        let lo = self.fb.ins().fmax(rounded, zero);
-        let last_index = if count == 0 { 0 } else { count - 1 };
-        let last = self.fb.ins().f64const(last_index as f64);
-        let clamped = self.fb.ins().fmin(lo, last);
-        let idx_i = self.fb.ins().fcvt_to_sint(types::I64, clamped);
-        let byte_off = self
-            .fb
-            .ins()
-            .imul_imm(idx_i, std::mem::size_of::<f64>() as i64);
-        let base_bytes = base
-            .checked_mul(std::mem::size_of::<f64>())
-            .ok_or_else(|| {
-                CompileError::Backend("indexed load base byte offset overflow".to_string())
-            })?;
-        let base_bytes = i64::try_from(base_bytes)
-            .map_err(|_| CompileError::Backend("indexed load base exceeds i64".to_string()))?;
-        let abs_off = self.fb.ins().iadd_imm(byte_off, base_bytes);
-        let addr = self.fb.ins().iadd(base_ptr, abs_off);
-        let value = self.fb.ins().load(types::F64, self.flags, addr, 0);
-        self.insert(dst, value)
-    }
-
     fn lower_indexed_register(
         &mut self,
         dst: u32,
@@ -5387,15 +5321,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             ));
         }
         if let Some(offset) = self.constant_tensor_offset(dimensions, indices) {
-            let value = match offset {
-                Some(offset) => self.lookup(checked_strided_register(
-                    base,
-                    offset,
-                    stride,
-                    "constant tensor projection source",
-                )?)?,
-                None => self.fb.ins().f64const(f64::NAN),
-            };
+            let value = self.lookup(checked_strided_register(
+                base,
+                offset,
+                stride,
+                "constant tensor projection source",
+            )?)?;
             return self.insert(dst, value);
         }
         let count = dimensions
@@ -5427,16 +5358,14 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             self.fb.ins().stack_store(value, slot, byte_offset);
         }
 
-        let (flat, valid) = self.lower_tensor_offset(dimensions, indices)?;
+        let flat = self.lower_tensor_offset(dimensions, indices)?;
         let byte_offset = self
             .fb
             .ins()
             .imul_imm(flat, std::mem::size_of::<f64>() as i64);
         let stack = self.fb.ins().stack_addr(types::I64, slot, 0);
         let address = self.fb.ins().iadd(stack, byte_offset);
-        let projected = self.fb.ins().load(types::F64, self.flags, address, 0);
-        let out_of_range = self.fb.ins().f64const(f64::NAN);
-        let value = self.fb.ins().select(valid, projected, out_of_range);
+        let value = self.fb.ins().load(types::F64, self.flags, address, 0);
         self.insert(dst, value)
     }
 
@@ -5460,7 +5389,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             let value = self.constant_fold_carried_value(carried, base, stride, offset)?;
             return self.insert(dst, value);
         }
-        let (flat, valid) = self.lower_tensor_offset(dimensions, indices)?;
+        let flat = self.lower_tensor_offset(dimensions, indices)?;
         let stride = i64::try_from(stride).map_err(|_| {
             CompileError::Backend("function-fold tensor stride exceeds i64".to_string())
         })?;
@@ -5475,9 +5404,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .imul_imm(element_offset, std::mem::size_of::<f64>() as i64);
         let stack = self.fb.ins().stack_addr(types::I64, carried, 0);
         let address = self.fb.ins().iadd(stack, byte_offset);
-        let projected = self.fb.ins().load(types::F64, self.flags, address, 0);
-        let out_of_range = self.fb.ins().f64const(f64::NAN);
-        let value = self.fb.ins().select(valid, projected, out_of_range);
+        let value = self.fb.ins().load(types::F64, self.flags, address, 0);
         self.insert(dst, value)
     }
 
@@ -5486,11 +5413,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         carried: StackSlot,
         base: usize,
         stride: usize,
-        offset: Option<usize>,
+        offset: usize,
     ) -> Result<cranelift_codegen::ir::Value, CompileError> {
-        let Some(offset) = offset else {
-            return Ok(self.fb.ins().f64const(f64::NAN));
-        };
         let offset = offset
             .checked_mul(stride)
             .ok_or_else(|| CompileError::Backend("function-fold tensor offset overflow".into()))?;
@@ -5518,18 +5442,15 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             ));
         }
         if let Some(offset) = self.constant_tensor_offset(dimensions, indices) {
-            let value = match offset {
-                Some(offset) => self
-                    .fold_captures
-                    .and_then(|captures| captures.get(base + offset * stride))
-                    .copied()
-                    .ok_or_else(|| {
-                        CompileError::Backend(
-                            "constant function-fold capture projection is out of range".to_string(),
-                        )
-                    })?,
-                None => self.fb.ins().f64const(f64::NAN),
-            };
+            let value = self
+                .fold_captures
+                .and_then(|captures| captures.get(base + offset * stride))
+                .copied()
+                .ok_or_else(|| {
+                    CompileError::Backend(
+                        "constant function-fold capture projection is out of range".to_string(),
+                    )
+                })?;
             return self.insert(dst, value);
         }
         let captures_ptr = self.fold_captures_ptr.ok_or_else(|| {
@@ -5537,7 +5458,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 "indexed function-fold capture has no addressable capture tuple".to_string(),
             )
         })?;
-        let (flat, valid) = self.lower_tensor_offset(dimensions, indices)?;
+        let flat = self.lower_tensor_offset(dimensions, indices)?;
         let element = self.fb.ins().imul_imm(
             flat,
             i64::try_from(stride).map_err(|_| {
@@ -5552,48 +5473,32 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         );
         let byte_offset = self.fb.ins().imul_imm(element, 8);
         let address = self.fb.ins().iadd(captures_ptr, byte_offset);
-        let projected = self.fb.ins().load(types::F64, self.flags, address, 0);
-        let out_of_range = self.fb.ins().f64const(f64::NAN);
-        let value = self.fb.ins().select(valid, projected, out_of_range);
+        let value = self.fb.ins().load(types::F64, self.flags, address, 0);
         self.insert(dst, value)
     }
 
     /// Resolve binder-derived tensor projections while a tiny fixed fold is
-    /// unrolled at final machine-code emission. `Some(None)` is a statically
-    /// invalid Modelica index; `None` means at least one coordinate is dynamic.
+    /// unrolled at final machine-code emission. `None` means at least one
+    /// coordinate remains dynamic.
     fn constant_tensor_offset(
         &self,
         dimensions: &[u32],
         indices: &[rumoca_ir_solve::TensorIndex],
-    ) -> Option<Option<usize>> {
+    ) -> Option<usize> {
         let mut flat = 0usize;
         for (&extent, index) in dimensions.iter().zip(indices) {
-            let Some(coordinate) = self.constant_tensor_coordinate(extent, *index)? else {
-                return Some(None);
-            };
-            if coordinate >= extent as usize {
-                return Some(None);
-            }
+            let coordinate = self.constant_tensor_coordinate(*index)?;
             flat = flat.checked_mul(extent as usize)?.checked_add(coordinate)?;
         }
-        Some(Some(flat))
+        Some(flat)
     }
 
-    fn constant_tensor_coordinate(
-        &self,
-        extent: u32,
-        index: rumoca_ir_solve::TensorIndex,
-    ) -> Option<Option<usize>> {
+    fn constant_tensor_coordinate(&self, index: rumoca_ir_solve::TensorIndex) -> Option<usize> {
         match index {
-            rumoca_ir_solve::TensorIndex::Constant(coordinate) => Some(Some(coordinate as usize)),
+            rumoca_ir_solve::TensorIndex::Constant(coordinate) => Some(coordinate as usize),
             rumoca_ir_solve::TensorIndex::Runtime(register) => {
                 let value = self.known_constants.get(&register).copied()?;
-                let rounded = value.round_ties_even();
-                let valid = value.is_finite()
-                    && value == rounded
-                    && rounded >= 1.0
-                    && rounded <= f64::from(extent);
-                Some(valid.then(|| rounded as usize - 1))
+                Some(value as usize - 1)
             }
         }
     }
@@ -5602,14 +5507,13 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         &mut self,
         dimensions: &[u32],
         indices: &[rumoca_ir_solve::TensorIndex],
-    ) -> Result<(cranelift_codegen::ir::Value, cranelift_codegen::ir::Value), CompileError> {
+    ) -> Result<cranelift_codegen::ir::Value, CompileError> {
         if dimensions.len() != indices.len() {
             return Err(CompileError::Backend(
                 "runtime tensor projection rank mismatch".to_string(),
             ));
         }
         let mut flat = self.fb.ins().iconst(types::I64, 0);
-        let mut valid = self.fb.ins().iconst(types::I8, 1);
         for (&extent, index) in dimensions.iter().zip(indices) {
             let coordinate = match *index {
                 rumoca_ir_solve::TensorIndex::Constant(coordinate) => {
@@ -5617,28 +5521,14 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 }
                 rumoca_ir_solve::TensorIndex::Runtime(register) => {
                     let value = self.lookup(register)?;
-                    let rounded = self.fb.ins().nearest(value);
-                    let one = self.fb.ins().f64const(1.0);
-                    let upper = self.fb.ins().f64const(f64::from(extent));
-                    let integral = self.fb.ins().fcmp(FloatCC::Equal, value, rounded);
-                    let above_lower = self
-                        .fb
-                        .ins()
-                        .fcmp(FloatCC::GreaterThanOrEqual, rounded, one);
-                    let below_upper = self.fb.ins().fcmp(FloatCC::LessThanOrEqual, rounded, upper);
-                    let axis_valid = self.fb.ins().band(integral, above_lower);
-                    let axis_valid = self.fb.ins().band(axis_valid, below_upper);
-                    valid = self.fb.ins().band(valid, axis_valid);
-                    let clamped = self.fb.ins().fmax(rounded, one);
-                    let clamped = self.fb.ins().fmin(clamped, upper);
-                    let one_based = self.fb.ins().fcvt_to_sint(types::I64, clamped);
+                    let one_based = self.fb.ins().fcvt_to_sint(types::I64, value);
                     self.fb.ins().iadd_imm(one_based, -1)
                 }
             };
             flat = self.fb.ins().imul_imm(flat, i64::from(extent));
             flat = self.fb.ins().iadd(flat, coordinate);
         }
-        Ok((flat, valid))
+        Ok(flat)
     }
 
     // SPEC_0021: exhaustive dispatch over checked fold tensor-update nodes.
@@ -5803,22 +5693,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                             }
                             rumoca_ir_solve::TensorIndex::Runtime(register) => {
                                 let value = self.lookup(register)?;
-                                let rounded = self.fb.ins().nearest(value);
-                                let one = self.fb.ins().f64const(1.0);
-                                let upper = self.fb.ins().f64const(f64::from(extent));
-                                let integral = self.fb.ins().fcmp(FloatCC::Equal, value, rounded);
-                                let above =
-                                    self.fb
-                                        .ins()
-                                        .fcmp(FloatCC::GreaterThanOrEqual, rounded, one);
-                                let below =
-                                    self.fb.ins().fcmp(FloatCC::LessThanOrEqual, rounded, upper);
-                                valid = self.fb.ins().band(valid, integral);
-                                valid = self.fb.ins().band(valid, above);
-                                valid = self.fb.ins().band(valid, below);
-                                let clamped = self.fb.ins().fmax(rounded, one);
-                                let clamped = self.fb.ins().fmin(clamped, upper);
-                                let selected = self.fb.ins().fcvt_to_sint(types::I64, clamped);
+                                let selected = self.fb.ins().fcvt_to_sint(types::I64, value);
                                 self.fb.ins().iadd_imm(selected, -1)
                             }
                         };
@@ -5958,7 +5833,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             return Ok(false);
         };
 
-        let (element, address_valid) = self.lower_tensor_offset(dimensions, &indices)?;
+        let element = self.lower_tensor_offset(dimensions, &indices)?;
         let carried_base = self.fb.ins().stack_addr(types::I64, carried, 0);
         let source_element = self.fb.ins().imul_imm(
             element,
@@ -5983,13 +5858,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             let mut node_values = Vec::with_capacity(nodes.len() + 1);
             node_values.push(source);
             for node in nodes {
-                let value = self.lower_scalar_fold_tensor_node(
-                    node,
-                    updates,
-                    &node_values,
-                    address_valid,
-                    lane,
-                )?;
+                let value =
+                    self.lower_scalar_fold_tensor_node(node, updates, &node_values, lane)?;
                 node_values.push(value);
             }
             self.fb
@@ -6004,19 +5874,18 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         node: &rumoca_ir_solve::FoldTensorNode,
         updates: &[rumoca_ir_solve::FoldTensorUpdate],
         values: &[cranelift_codegen::ir::Value],
-        address_valid: cranelift_codegen::ir::Value,
         lane: usize,
     ) -> Result<cranelift_codegen::ir::Value, CompileError> {
         match *node {
             rumoca_ir_solve::FoldTensorNode::Update { base, update } => {
                 let update = &updates[update as usize];
-                let mut enabled = address_valid;
-                if let Some(condition) = update.condition {
+                let enabled = if let Some(condition) = update.condition {
                     let condition = self.lookup(condition)?;
                     let zero = self.fb.ins().f64const(0.0);
-                    let condition = self.fb.ins().fcmp(FloatCC::NotEqual, condition, zero);
-                    enabled = self.fb.ins().band(enabled, condition);
-                }
+                    self.fb.ins().fcmp(FloatCC::NotEqual, condition, zero)
+                } else {
+                    self.fb.ins().iconst(types::I8, 1)
+                };
                 let lane = u32::try_from(lane).map_err(|_| {
                     CompileError::Backend(
                         "function-fold scalar update lane exceeds register identity".into(),
@@ -6756,8 +6625,8 @@ fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
         if let Some(dst) = dst_reg(op.clone()) {
             let count = match op {
                 LinearOp::FunctionFold { program, .. }
-                | LinearOp::GuardedFunctionFold { program, .. } => program.carried_count,
-                LinearOp::FunctionConditional { program, .. } => program.result_count,
+                | LinearOp::GuardedFunctionFold { program, .. } => program.carried_count(),
+                LinearOp::FunctionConditional { program, .. } => program.result_count(),
                 LinearOp::PureCall { site, .. } => site.output_scalar_count().ok_or_else(|| {
                     CompileError::Backend("typed pure-call output width overflows".to_string())
                 })?,
@@ -6885,11 +6754,9 @@ fn is_simple_linear_op(op: LinearOp) -> bool {
     !matches!(
         op,
         LinearOp::LoadSeed { .. }
-            | LinearOp::LoadIndexedP { .. }
             | LinearOp::LoadIndexedRegister { .. }
             | LinearOp::LoadIndexedFoldCarried { .. }
             | LinearOp::LoadIndexedFoldCapture { .. }
-            | LinearOp::LoadIndexedSeed { .. }
             | LinearOp::LoadFoldCarried { .. }
             | LinearOp::LoadFoldIndex { .. }
             | LinearOp::LoadFoldCapture { .. }
@@ -6956,11 +6823,9 @@ fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
             if_false,
         }),
         LinearOp::LoadSeed { .. }
-        | LinearOp::LoadIndexedP { .. }
         | LinearOp::LoadIndexedRegister { .. }
         | LinearOp::LoadIndexedFoldCarried { .. }
         | LinearOp::LoadIndexedFoldCapture { .. }
-        | LinearOp::LoadIndexedSeed { .. }
         | LinearOp::LoadFoldCarried { .. }
         | LinearOp::LoadFoldIndex { .. }
         | LinearOp::LoadFoldCapture { .. }
@@ -7050,8 +6915,6 @@ fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
             count,
             "function conditional capture range destination",
         )? as usize)),
-        LinearOp::LoadIndexedP { dst, index, .. }
-        | LinearOp::LoadIndexedSeed { dst, index, .. } => Ok(Some(dst.max(index) as usize)),
         LinearOp::LoadIndexedRegister {
             dst,
             base,
@@ -7407,17 +7270,17 @@ fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
             program,
         } => {
             let output =
-                checked_range_last_reg(dst_start, program.carried_count, "function fold output")?;
+                checked_range_last_reg(dst_start, program.carried_count(), "function fold output")?;
             let initial = checked_range_last_reg(
                 initial_start,
-                program.carried_count,
+                program.carried_count(),
                 "function fold initial",
             )?;
             let mut last = output.max(initial);
-            if program.capture_count != 0 {
+            if program.capture_count() != 0 {
                 last = last.max(checked_range_last_reg(
                     capture_start,
-                    program.capture_count,
+                    program.capture_count(),
                     "function fold capture",
                 )?);
             }
@@ -7432,19 +7295,19 @@ fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
         } => {
             let output = checked_range_last_reg(
                 dst_start,
-                program.carried_count,
+                program.carried_count(),
                 "guarded function fold output",
             )?;
             let initial = checked_range_last_reg(
                 initial_start,
-                program.carried_count,
+                program.carried_count(),
                 "guarded function fold initial",
             )?;
             let mut last = output.max(initial).max(activation);
-            if program.capture_count != 0 {
+            if program.capture_count() != 0 {
                 last = last.max(checked_range_last_reg(
                     capture_start,
-                    program.capture_count,
+                    program.capture_count(),
                     "guarded function fold capture",
                 )?);
             }
@@ -7457,13 +7320,13 @@ fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
         } => {
             let mut last = checked_range_last_reg(
                 dst_start,
-                program.result_count,
+                program.result_count(),
                 "function conditional output",
             )?;
-            if program.capture_count != 0 {
+            if program.capture_count() != 0 {
                 last = last.max(checked_range_last_reg(
                     capture_start,
-                    program.capture_count,
+                    program.capture_count(),
                     "function conditional capture",
                 )?);
             }
@@ -7542,10 +7405,10 @@ fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
                     )?);
                 }
             }
-            if program.capture_count != 0 {
+            if program.capture_count() != 0 {
                 last = last.max(checked_range_last_reg(
                     capture_start,
-                    program.capture_count,
+                    program.capture_count(),
                     "nested function fold capture",
                 )?);
             }
@@ -7646,11 +7509,9 @@ fn dst_reg(op: LinearOp) -> Option<usize> {
         | LinearOp::Unary { dst, .. }
         | LinearOp::Binary { dst, .. }
         | LinearOp::Compare { dst, .. }
-        | LinearOp::LoadIndexedP { dst, .. }
         | LinearOp::LoadIndexedRegister { dst, .. }
         | LinearOp::LoadIndexedFoldCarried { dst, .. }
         | LinearOp::LoadIndexedFoldCapture { dst, .. }
-        | LinearOp::LoadIndexedSeed { dst, .. }
         | LinearOp::Select { dst, .. } => Some(dst as usize),
         LinearOp::LoadFunctionConditionalCaptureRange { dst_start, .. } => Some(dst_start as usize),
         LinearOp::FunctionFold { dst_start, .. }
@@ -7707,9 +7568,6 @@ fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileErr
                 validate_reg_range_defined(defined, *start, value_type.scalar_count() as usize)?;
             }
             Ok(())
-        }
-        LinearOp::LoadIndexedP { index, .. } | LinearOp::LoadIndexedSeed { index, .. } => {
-            validate_reg_defined(defined, index)
         }
         LinearOp::LoadIndexedRegister {
             base,
@@ -8058,8 +7916,8 @@ fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileErr
             program,
             ..
         } => {
-            validate_reg_range_defined(defined, initial_start, program.carried_count)?;
-            validate_reg_range_defined(defined, capture_start, program.capture_count)
+            validate_reg_range_defined(defined, initial_start, program.carried_count())?;
+            validate_reg_range_defined(defined, capture_start, program.capture_count())
         }
         LinearOp::GuardedFunctionFold {
             initial_start,
@@ -8069,14 +7927,14 @@ fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileErr
             ..
         } => {
             validate_reg_defined(defined, activation)?;
-            validate_reg_range_defined(defined, initial_start, program.carried_count)?;
-            validate_reg_range_defined(defined, capture_start, program.capture_count)
+            validate_reg_range_defined(defined, initial_start, program.carried_count())?;
+            validate_reg_range_defined(defined, capture_start, program.capture_count())
         }
         LinearOp::FunctionConditional {
             capture_start,
             program,
             ..
-        } => validate_reg_range_defined(defined, capture_start, program.capture_count),
+        } => validate_reg_range_defined(defined, capture_start, program.capture_count()),
         LinearOp::StoreOutputFunctionFold {
             initial,
             capture_start,
@@ -8089,7 +7947,7 @@ fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileErr
                     validate_reg_range_defined(defined, start, count)?;
                 }
             }
-            validate_reg_range_defined(defined, capture_start, program.capture_count)?;
+            validate_reg_range_defined(defined, capture_start, program.capture_count())?;
             if let Some(condition) = condition {
                 validate_reg_defined(defined, condition)?;
             }
@@ -8147,12 +8005,13 @@ fn to_backend_err<E: std::fmt::Display>(err: E) -> CompileError {
     CompileError::Backend(err.to_string())
 }
 
-// The closure returns cranelift-module's `ModuleError`, whose size this crate
-// does not control; boxing it here would only move the allocation.
-#[allow(clippy::result_large_err)]
+/// Cranelift's `ModuleError` is larger than the error this crate returns, so
+/// the conversion happens inside the guarded closure: the oversized foreign
+/// error never becomes the closure's own result type.
 pub(super) fn finalize_jit_module(module: &mut JITModule) -> Result<(), CompileError> {
-    catch_cranelift_unwind("finalization", || module.finalize_definitions())?
-        .map_err(to_backend_err)
+    catch_cranelift_unwind("finalization", || {
+        module.finalize_definitions().map_err(to_backend_err)
+    })?
 }
 
 fn catch_cranelift_unwind<T>(

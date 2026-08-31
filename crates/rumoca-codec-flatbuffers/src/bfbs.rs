@@ -146,8 +146,6 @@ impl SchemaSet {
     ///
     /// Field type indices from the .bfbs are remapped from the local schema's
     /// object array to the merged SchemaSet's object array.
-    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
-    #[allow(clippy::excessive_nesting)]
     pub fn load_bfbs(&mut self, path: &Path) -> anyhow::Result<()> {
         let data = std::fs::read(path)?;
         let schema = parse_bfbs(&data)?;
@@ -171,15 +169,7 @@ impl SchemaSet {
         // Second pass: remap field type indices ONLY for newly added objects.
         // Existing objects already have correct global indices from their original load.
         for &global_idx in &newly_added {
-            let obj = &mut self.objects[global_idx];
-            for field in &mut obj.fields {
-                if field.field_type.base_type == BaseType::Obj && field.field_type.index >= 0 {
-                    let local_idx = field.field_type.index as usize;
-                    if local_idx < local_to_global.len() {
-                        field.field_type.index = local_to_global[local_idx] as i32;
-                    }
-                }
-            }
+            remap_object_field_indices(&mut self.objects[global_idx], &local_to_global);
         }
 
         Ok(())
@@ -187,6 +177,23 @@ impl SchemaSet {
 
     pub fn object_by_name(&self, name: &str) -> Option<&Object> {
         self.name_to_idx.get(name).map(|&i| &self.objects[i])
+    }
+}
+
+/// Rewrite one object's field type indices from the loaded schema's local
+/// object array into the merged set's global array.
+///
+/// A field that does not reference an object, or whose local index falls
+/// outside the map the load built, keeps the index it arrived with.
+fn remap_object_field_indices(object: &mut Object, local_to_global: &[usize]) {
+    for field in &mut object.fields {
+        if field.field_type.base_type != BaseType::Obj || field.field_type.index < 0 {
+            continue;
+        }
+        let local_idx = field.field_type.index as usize;
+        if local_idx < local_to_global.len() {
+            field.field_type.index = local_to_global[local_idx] as i32;
+        }
     }
 }
 
