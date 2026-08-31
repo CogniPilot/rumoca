@@ -20,6 +20,7 @@ pub(crate) struct ComponentInstanceProcess<'a, 'tree> {
     pub(crate) scope_index: &'a OverlayScopeIndex<'a>,
     pub(crate) component_members: &'a component_member_scope::ComponentMemberScopes,
     pub(crate) function_types: functions::FunctionTypeCatalog<'a>,
+    pub(crate) semantic_catalogs: &'a rumoca_ir_ast::SemanticCatalogProjection,
 }
 
 /// Class-body occurrence that scopes the references in a modifier binding
@@ -75,9 +76,15 @@ pub(crate) fn process_component_instance(
         return Ok(());
     }
 
+    let is_external_object =
+        exact_external_object_instance(request.instance_data, request.semantic_catalogs);
+
     // Record fields are Flat variables; retain only their container's resolved
     // identity so downstream record equations can expand without name recovery.
-    if !request.instance_data.is_primitive {
+    // An ExternalObject is not a predefined scalar primitive, but its exact
+    // lifecycle proof makes the opaque handle occurrence a Flat value rather
+    // than a structural container.
+    if !request.instance_data.is_primitive && !is_external_object {
         if let Some(record) = variables::create_record_instance(
             request.instance_data,
             request.tree,
@@ -155,6 +162,7 @@ pub(crate) fn process_component_instance(
         &override_functions,
         &receiver_scope,
         request.component_members,
+        request.semantic_catalogs,
     )?;
     request.flat.variable_type_names.insert(
         var_name.clone(),
@@ -173,4 +181,14 @@ pub(crate) fn process_component_instance(
     request.flat.add_variable(var_name, flat_var);
 
     Ok(())
+}
+
+fn exact_external_object_instance(
+    instance: &rumoca_ir_ast::InstanceData,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
+) -> bool {
+    let Some(type_def_id) = instance.type_def_id else {
+        return false;
+    };
+    semantic_catalogs.external_object(type_def_id).is_some()
 }

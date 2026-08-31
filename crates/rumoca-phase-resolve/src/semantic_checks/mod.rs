@@ -210,24 +210,44 @@ fn semantic_error(
 }
 
 /// Run all semantic check batches with a single active source-map setup.
-pub fn check_all_semantics(def: &StoredDefinition, _source_map: &SourceMap) -> Vec<Diagnostic> {
+pub(crate) fn check_all_semantics(
+    def: &StoredDefinition,
+    _source_map: &SourceMap,
+    connection_operators: &ast::ConnectionOperatorCatalog,
+) -> Vec<Diagnostic> {
     let _context = activate_semantic_context(def);
     let mut diags = run_semantic_checks(def);
     diags.extend(run_chained_relational_checks(def));
     diags.extend(run_clock_expression_semantic_checks(def));
     diags.extend(run_der_in_function_checks(def));
-    diags.extend(run_builtin_call_semantic_checks(def));
+    diags.extend(run_builtin_call_semantic_checks(def, connection_operators));
     diags.extend(run_stream_builtin_semantic_checks(def));
     diags.extend(run_state_machine_semantic_checks(def));
-    diags.extend(run_restriction_semantic_checks(def));
+    diags.extend(run_restriction_semantic_checks(def, connection_operators));
     diags
 }
 
 /// Run checks that require the resolved scope tree and declaration identities.
 pub fn check_resolved_semantics(tree: &ast::ClassTree) -> Vec<Diagnostic> {
-    let mut diagnostics = run_external_object_checks(tree);
+    check_resolved_semantics_with_catalog(tree).diagnostics
+}
+
+pub(crate) struct ResolvedSemanticCheckOutcome {
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) external_object_lifecycles: ast::ExternalObjectLifecycleCatalog,
+}
+
+pub(crate) fn check_resolved_semantics_with_catalog(
+    tree: &ast::ClassTree,
+) -> ResolvedSemanticCheckOutcome {
+    let external_objects = run_external_object_checks(tree);
+    let mut diagnostics = external_objects.diagnostics;
     diagnostics.extend(run_enclosing_reference_checks(tree));
-    diagnostics
+    diagnostics.extend(run_resolved_equality_constraint_checks(tree));
+    ResolvedSemanticCheckOutcome {
+        diagnostics,
+        external_object_lifecycles: external_objects.lifecycles,
+    }
 }
 
 fn run_semantic_checks(def: &StoredDefinition) -> Vec<Diagnostic> {
@@ -238,7 +258,7 @@ fn run_semantic_checks(def: &StoredDefinition) -> Vec<Diagnostic> {
         ctx: &mut ctx,
         diags: &mut diags,
     };
-    let _ = visitor.visit_stored_definition(def);
+    let _visit_outcome = visitor.visit_stored_definition(def);
     diags
 }
 
@@ -1357,19 +1377,19 @@ fn collect_component_refs(
         refs,
         skip_if_branches,
     };
-    let _ = collector.visit_expression(expr);
+    let _visit_outcome = collector.visit_expression(expr);
 }
 
 /// Check equations for context-sensitive issues.
 fn check_equation(eq: &Equation, ctx: &mut CheckContext, diags: &mut Vec<Diagnostic>) {
     let mut visitor = ContextSensitiveVisitor { ctx, diags };
-    let _ = visitor.visit_equation(eq);
+    let _visit_outcome = visitor.visit_equation(eq);
 }
 
 /// Check statements for context-sensitive issues.
 fn check_statement(stmt: &Statement, ctx: &mut CheckContext, diags: &mut Vec<Diagnostic>) {
     let mut visitor = ContextSensitiveVisitor { ctx, diags };
-    let _ = visitor.visit_statement(stmt);
+    let _visit_outcome = visitor.visit_statement(stmt);
 }
 
 struct ContextSensitiveVisitor<'a> {
@@ -1689,13 +1709,13 @@ fn check_statement_semantics(visitor: &mut ContextSensitiveVisitor<'_>, stmt: &S
 /// Check initial equations for when-clause presence (EQN-006, EQN-037).
 fn check_initial_equation(eq: &Equation, diags: &mut Vec<Diagnostic>) {
     let mut visitor = InitialEquationVisitor { diags };
-    let _ = visitor.visit_equation(eq);
+    let _visit_outcome = visitor.visit_equation(eq);
 }
 
 /// Check initial algorithm statements for when-clause presence (EQN-037).
 fn check_initial_statement(stmt: &Statement, diags: &mut Vec<Diagnostic>) {
     let mut visitor = InitialStatementVisitor { diags };
-    let _ = visitor.visit_statement(stmt);
+    let _visit_outcome = visitor.visit_statement(stmt);
 }
 
 struct InitialEquationVisitor<'a> {

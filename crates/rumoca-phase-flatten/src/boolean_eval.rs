@@ -14,9 +14,111 @@ use crate::equations::build_qualified_name;
 struct FlattenScalarAdapter<'a> {
     ctx: Option<&'a Context>,
     structural_only: bool,
+    vcg_queries: VcgQueryMode<'a>,
+}
+
+enum VcgQueryMode<'a> {
+    Disabled,
+    Checked {
+        operators: &'a ast::ConnectionOperatorCatalog,
+        missing: std::cell::RefCell<Option<MissingVcgProof>>,
+    },
+}
+
+#[derive(Debug)]
+struct MissingVcgProof {
+    query: VcgBooleanQuery,
+    path: Option<String>,
+    reason: &'static str,
+    span: rumoca_core::Span,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum VcgBooleanQuery {
+    IsRoot,
+    Rooted,
+}
+
+impl VcgBooleanQuery {
+    fn function_name(self) -> &'static str {
+        match self {
+            Self::IsRoot => "Connections.isRoot",
+            Self::Rooted => "Connections.rooted",
+        }
+    }
 }
 
 impl FlattenScalarAdapter<'_> {
+    fn without_vcg_queries(
+        ctx: Option<&Context>,
+        structural_only: bool,
+    ) -> FlattenScalarAdapter<'_> {
+        FlattenScalarAdapter {
+            ctx,
+            structural_only,
+            vcg_queries: VcgQueryMode::Disabled,
+        }
+    }
+
+    fn with_checked_vcg_queries<'a>(
+        ctx: Option<&'a Context>,
+        structural_only: bool,
+        operators: &'a ast::ConnectionOperatorCatalog,
+    ) -> FlattenScalarAdapter<'a> {
+        FlattenScalarAdapter {
+            ctx,
+            structural_only,
+            vcg_queries: VcgQueryMode::Checked {
+                operators,
+                missing: std::cell::RefCell::new(None),
+            },
+        }
+    }
+
+    fn finish_boolean(&self, value: Option<bool>) -> Result<Option<bool>, crate::FlattenError> {
+        let VcgQueryMode::Checked { missing, .. } = &self.vcg_queries else {
+            return Ok(value);
+        };
+        let Some(missing) = missing.borrow_mut().take() else {
+            return Ok(value);
+        };
+        let target = missing
+            .path
+            .as_deref()
+            .map_or_else(|| "<invalid argument>".to_string(), str::to_string);
+        Err(crate::FlattenError::invalid_connection_evidence(
+            format!(
+                "{}({target}) has no exact finalized VCG proof: {}",
+                missing.query.function_name(),
+                missing.reason
+            ),
+            missing.span,
+        ))
+    }
+
+    fn lookup_vcg_boolean(
+        &self,
+        query: VcgBooleanQuery,
+        args: &[ast::Expression],
+        prefix: &ast::QualifiedName,
+        span: rumoca_core::Span,
+    ) -> Option<bool> {
+        let VcgQueryMode::Checked {
+            missing: failure, ..
+        } = &self.vcg_queries
+        else {
+            return None;
+        };
+        let result = lookup_vcg_boolean(self.ctx, query, args, prefix, span);
+        match result {
+            Ok(value) => Some(value),
+            Err(missing) => {
+                *failure.borrow_mut() = Some(missing);
+                None
+            }
+        }
+    }
+
     /// True when any operand names a parameter this fold must not read.
     fn refuses_non_structural(
         &self,
@@ -90,13 +192,28 @@ impl rumoca_eval_ast::ast_scalar::AstScalarContext for FlattenScalarAdapter<'_> 
         args: &[ast::Expression],
         scope: &str,
         _depth: usize,
-        _span: rumoca_core::Span,
+        span: rumoca_core::Span,
     ) -> Option<bool> {
         let prefix = ast::QualifiedName::from_dotted(scope);
-        match function.to_string().as_str() {
-            "Connections.isRoot" => lookup_vcg_is_root(self.ctx, args, &prefix),
-            "Connections.rooted" => lookup_vcg_rooted(self.ctx, args, &prefix),
-            _ => None,
+        let VcgQueryMode::Checked { operators, .. } = &self.vcg_queries else {
+            return None;
+        };
+        match function
+            .target_def_id()
+            .and_then(|declaration| operators.role(declaration))
+        {
+            Some(rumoca_core::ConnectionGraphOperatorRole::IsRoot) => {
+                self.lookup_vcg_boolean(VcgBooleanQuery::IsRoot, args, &prefix, span)
+            }
+            Some(rumoca_core::ConnectionGraphOperatorRole::Rooted) => {
+                self.lookup_vcg_boolean(VcgBooleanQuery::Rooted, args, &prefix, span)
+            }
+            Some(
+                rumoca_core::ConnectionGraphOperatorRole::Branch
+                | rumoca_core::ConnectionGraphOperatorRole::Root
+                | rumoca_core::ConnectionGraphOperatorRole::PotentialRoot,
+            )
+            | None => None,
         }
     }
 
@@ -155,10 +272,7 @@ pub(crate) fn try_eval_integer_with_scope(
 ) -> Option<i64> {
     rumoca_eval_ast::ast_scalar::eval_integer(
         expr,
-        &FlattenScalarAdapter {
-            ctx: Some(ctx),
-            structural_only: false,
-        },
+        &FlattenScalarAdapter::without_vcg_queries(Some(ctx), false),
         scope,
         0,
     )
@@ -171,10 +285,7 @@ pub(crate) fn try_eval_real_with_scope(
 ) -> Option<f64> {
     rumoca_eval_ast::ast_scalar::eval_real(
         expr,
-        &FlattenScalarAdapter {
-            ctx: Some(ctx),
-            structural_only: false,
-        },
+        &FlattenScalarAdapter::without_vcg_queries(Some(ctx), false),
         scope,
         0,
     )
@@ -187,10 +298,7 @@ pub(crate) fn try_eval_boolean_with_scope(
 ) -> Option<bool> {
     rumoca_eval_ast::ast_scalar::eval_boolean(
         expr,
-        &FlattenScalarAdapter {
-            ctx: Some(ctx),
-            structural_only: false,
-        },
+        &FlattenScalarAdapter::without_vcg_queries(Some(ctx), false),
         scope,
         0,
     )
@@ -214,6 +322,7 @@ pub(crate) fn is_structural_expression(
     ctx: &Context,
     expr: &ast::Expression,
     prefix: &ast::QualifiedName,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> bool {
     match expr {
         // Literals are always safe
@@ -262,24 +371,24 @@ pub(crate) fn is_structural_expression(
         }
 
         // Recursively check sub-expressions
-        ast::Expression::Unary { rhs, .. } => is_structural_expression(ctx, rhs, prefix),
+        ast::Expression::Unary { rhs, .. } => is_structural_expression(ctx, rhs, prefix, operators),
 
         ast::Expression::Parenthesized { inner, .. } => {
-            is_structural_expression(ctx, inner, prefix)
+            is_structural_expression(ctx, inner, prefix, operators)
         }
 
         ast::Expression::Binary { lhs, rhs, .. } => {
-            is_structural_expression(ctx, lhs, prefix) && is_structural_expression(ctx, rhs, prefix)
+            is_structural_expression(ctx, lhs, prefix, operators)
+                && is_structural_expression(ctx, rhs, prefix, operators)
         }
 
         // Connection graph functions and cardinality are structural (MLS §9.4, §3.7.2.3)
         // They determine connectivity which is known at compile time
         ast::Expression::FunctionCall { comp, .. } => {
-            let func_name = comp.to_string();
-            matches!(
-                func_name.as_str(),
-                "Connections.branch" | "Connections.isRoot" | "Connections.rooted" | "cardinality"
-            )
+            comp.target_def_id()
+                .and_then(|declaration| operators.role(declaration))
+                .is_some()
+                || comp.to_string() == "cardinality"
         }
 
         // Other expressions are not safe (other function calls, arrays, etc.)
@@ -305,16 +414,12 @@ pub(crate) fn try_eval_structural_boolean(
     ctx: &Context,
     expr: &ast::Expression,
     prefix: &ast::QualifiedName,
-) -> Option<bool> {
-    rumoca_eval_ast::ast_scalar::eval_boolean(
-        expr,
-        &FlattenScalarAdapter {
-            ctx: Some(ctx),
-            structural_only: true,
-        },
-        &prefix.to_flat_string(),
-        0,
-    )
+    operators: &ast::ConnectionOperatorCatalog,
+) -> Result<Option<bool>, crate::FlattenError> {
+    let adapter = FlattenScalarAdapter::with_checked_vcg_queries(Some(ctx), true, operators);
+    let value =
+        rumoca_eval_ast::ast_scalar::eval_boolean(expr, &adapter, &prefix.to_flat_string(), 0);
+    adapter.finish_boolean(value)
 }
 
 /// Inner implementation for boolean evaluation.
@@ -322,16 +427,12 @@ pub(crate) fn try_eval_boolean_with_ctx_inner(
     expr: &ast::Expression,
     ctx: Option<&Context>,
     prefix: &ast::QualifiedName,
-) -> Option<bool> {
-    rumoca_eval_ast::ast_scalar::eval_boolean(
-        expr,
-        &FlattenScalarAdapter {
-            ctx,
-            structural_only: false,
-        },
-        &prefix.to_flat_string(),
-        0,
-    )
+    operators: &ast::ConnectionOperatorCatalog,
+) -> Result<Option<bool>, crate::FlattenError> {
+    let adapter = FlattenScalarAdapter::with_checked_vcg_queries(ctx, false, operators);
+    let value =
+        rumoca_eval_ast::ast_scalar::eval_boolean(expr, &adapter, &prefix.to_flat_string(), 0);
+    adapter.finish_boolean(value)
 }
 
 /// Try to resolve an expression to an enumeration value string.
@@ -429,10 +530,7 @@ pub(crate) fn try_eval_integer_for_comparison(
 ) -> Option<i64> {
     rumoca_eval_ast::ast_scalar::eval_integer(
         expr,
-        &FlattenScalarAdapter {
-            ctx,
-            structural_only: false,
-        },
+        &FlattenScalarAdapter::without_vcg_queries(ctx, false),
         &prefix.to_flat_string(),
         0,
     )
@@ -535,40 +633,40 @@ fn set_contains_exact_or_unindexed(set: &std::collections::HashSet<String>, key:
         .any(|candidate| set.contains(candidate))
 }
 
-/// Look up `Connections.isRoot(R)` in the VCG map (MLS §9.4).
-///
-/// Qualifies the argument using the current prefix and looks up the result
-/// in `ctx.vcg_is_root`. Falls back to `Some(true)` when no VCG data exists
-/// (preserves previous behavior for models without overconstrained connectors).
-fn lookup_vcg_is_root(
+/// Look up one graph query in the exact finalized VCG maps (MLS §9.4).
+fn lookup_vcg_boolean(
     ctx: Option<&Context>,
+    query: VcgBooleanQuery,
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
-) -> Option<bool> {
-    let ctx = ctx?;
-    let path = extract_vcg_arg_path(args, prefix)?;
-    match ctx.vcg_is_root.get(&path) {
-        Some(&val) => Some(val),
-        None => Some(true), // Fallback for models without VCG data
-    }
-}
-
-/// Look up `Connections.rooted(R)` in the VCG map (MLS §9.4).
-///
-/// Qualifies the argument using the current prefix and looks up the result
-/// in `ctx.vcg_rooted`. Falls back to `Some(false)` when no VCG data exists
-/// (preserves previous behavior for models without overconstrained connectors).
-fn lookup_vcg_rooted(
-    ctx: Option<&Context>,
-    args: &[ast::Expression],
-    prefix: &ast::QualifiedName,
-) -> Option<bool> {
-    let ctx = ctx?;
-    let path = extract_vcg_arg_path(args, prefix)?;
-    match ctx.vcg_rooted.get(&path) {
-        Some(&val) => Some(val),
-        None => Some(false), // Fallback for models without VCG data
-    }
+    span: rumoca_core::Span,
+) -> Result<bool, MissingVcgProof> {
+    let Some(ctx) = ctx else {
+        return Err(MissingVcgProof {
+            query,
+            path: None,
+            reason: "the flatten context is absent",
+            span,
+        });
+    };
+    let Some(path) = extract_vcg_arg_path(args, prefix) else {
+        return Err(MissingVcgProof {
+            query,
+            path: None,
+            reason: "the graph query argument is not a component reference",
+            span,
+        });
+    };
+    let map = match query {
+        VcgBooleanQuery::IsRoot => &ctx.vcg_is_root,
+        VcgBooleanQuery::Rooted => &ctx.vcg_rooted,
+    };
+    map.get(&path).copied().ok_or(MissingVcgProof {
+        query,
+        path: Some(path),
+        reason: "the graph query target is absent from the finalized VCG catalog",
+        span,
+    })
 }
 
 /// Extract the qualified path from the first argument of a VCG function call.
@@ -690,6 +788,74 @@ mod tests {
         }
     }
 
+    fn vcg_query_with_target(
+        function: &str,
+        target: rumoca_core::DefId,
+        argument: ast::Expression,
+    ) -> ast::Expression {
+        let mut comp = comp_ref(function);
+        comp.parts
+            .last_mut()
+            .expect("fixture function reference is nonempty")
+            .def_id = Some(target);
+        ast::Expression::FunctionCall {
+            comp,
+            args: vec![argument],
+            is_partial_application: false,
+            span: rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name("missing_vcg_query.mo"),
+                12,
+                35,
+            ),
+        }
+    }
+
+    #[test]
+    fn missing_is_root_catalog_entry_is_a_typed_refusal() {
+        let ctx = Context::new();
+        let operators = crate::test_support::connection_operators();
+        let expression = vcg_query_with_target(
+            "Connections.isRoot",
+            operators.declaration(rumoca_core::ConnectionGraphOperatorRole::IsRoot),
+            cref_expr("frame.R"),
+        );
+
+        let error = try_eval_boolean_with_ctx_inner(
+            &expression,
+            Some(&ctx),
+            &ast::QualifiedName::new(),
+            &operators,
+        )
+        .expect_err("a graph query cannot invent a result for an absent VCG node");
+
+        let crate::FlattenError::InvalidConnectionEvidence { description, .. } = error else {
+            panic!("expected typed missing-VCG evidence, got {error:?}");
+        };
+        assert!(description.contains("Connections.isRoot(frame.R)"));
+        assert!(description.contains("absent from the finalized VCG catalog"));
+    }
+
+    #[test]
+    fn rooted_query_requires_a_component_reference_argument() {
+        let ctx = Context::new();
+        let operators = crate::test_support::connection_operators();
+        let expression = vcg_query_with_target(
+            "Connections.rooted",
+            operators.declaration(rumoca_core::ConnectionGraphOperatorRole::Rooted),
+            bool_expr(true),
+        );
+
+        let error =
+            try_eval_structural_boolean(&ctx, &expression, &ast::QualifiedName::new(), &operators)
+                .expect_err("a graph query without an exact component path must be refused");
+
+        let crate::FlattenError::InvalidConnectionEvidence { description, .. } = error else {
+            panic!("expected typed invalid-VCG-argument evidence, got {error:?}");
+        };
+        assert!(description.contains("Connections.rooted(<invalid argument>)"));
+        assert!(description.contains("not a component reference"));
+    }
+
     #[test]
     fn integer_comparison_uses_unindexed_integral_real_scope() {
         let mut ctx = Context::new();
@@ -698,7 +864,13 @@ mod tests {
 
         let prefix = ast::QualifiedName::from_dotted("adaptor.filter[1].transferFunction[1]");
         let expr = eq_expr(cref_expr("nx"), int_expr(0));
-        let value = try_eval_boolean_with_ctx_inner(&expr, Some(&ctx), &prefix);
+        let value = try_eval_boolean_with_ctx_inner(
+            &expr,
+            Some(&ctx),
+            &prefix,
+            &crate::test_support::connection_operators(),
+        )
+        .expect("fixture contains no VCG query");
         assert_eq!(value, Some(false));
     }
 
@@ -714,7 +886,13 @@ mod tests {
             cref_expr("controllerType"),
             cref_expr("SimpleController.PI"),
         );
-        let value = try_eval_boolean_with_ctx_inner(&expr, Some(&ctx), &ast::QualifiedName::new());
+        let value = try_eval_boolean_with_ctx_inner(
+            &expr,
+            Some(&ctx),
+            &ast::QualifiedName::new(),
+            &crate::test_support::connection_operators(),
+        )
+        .expect("fixture contains no VCG query");
         assert_eq!(value, Some(true));
     }
 
@@ -730,7 +908,13 @@ mod tests {
             cref_expr("frameResolve"),
             cref_expr("Modelica.Mechanics.MultiBody.Types.ResolveInFrameA.frame_resolve"),
         );
-        let value = try_eval_boolean_with_ctx_inner(&expr, Some(&ctx), &ast::QualifiedName::new());
+        let value = try_eval_boolean_with_ctx_inner(
+            &expr,
+            Some(&ctx),
+            &ast::QualifiedName::new(),
+            &crate::test_support::connection_operators(),
+        )
+        .expect("fixture contains no VCG query");
         assert_eq!(value, Some(true));
     }
 
@@ -746,7 +930,13 @@ mod tests {
             cref_expr("mode"),
             cref_expr("Modelica.Blocks.Types.SimpleController.PI"),
         );
-        let value = try_eval_boolean_with_ctx_inner(&expr, Some(&ctx), &ast::QualifiedName::new());
+        let value = try_eval_boolean_with_ctx_inner(
+            &expr,
+            Some(&ctx),
+            &ast::QualifiedName::new(),
+            &crate::test_support::connection_operators(),
+        )
+        .expect("fixture contains no VCG query");
         assert_eq!(value, Some(false));
     }
 
@@ -758,11 +948,22 @@ mod tests {
 
         let expr = cref_expr("cp");
         assert!(
-            !is_structural_expression(&ctx, &expr, &ast::QualifiedName::new()),
+            !is_structural_expression(
+                &ctx,
+                &expr,
+                &ast::QualifiedName::new(),
+                &crate::test_support::connection_operators(),
+            ),
             "plain known boolean parameter must not be treated as structural"
         );
         assert_eq!(
-            try_eval_structural_boolean(&ctx, &expr, &ast::QualifiedName::new()),
+            try_eval_structural_boolean(
+                &ctx,
+                &expr,
+                &ast::QualifiedName::new(),
+                &crate::test_support::connection_operators(),
+            )
+            .expect("fixture contains no VCG query"),
             None
         );
     }
@@ -784,7 +985,9 @@ mod tests {
                 &ctx,
                 &and(bool_expr(false), cref_expr("p")),
                 &ast::QualifiedName::new(),
-            ),
+                &crate::test_support::connection_operators(),
+            )
+            .expect("fixture contains no VCG query"),
             Some(false),
         );
         assert_eq!(
@@ -792,7 +995,9 @@ mod tests {
                 &ctx,
                 &and(bool_expr(true), cref_expr("p")),
                 &ast::QualifiedName::new(),
-            ),
+                &crate::test_support::connection_operators(),
+            )
+            .expect("fixture contains no VCG query"),
             None,
         );
     }
@@ -807,10 +1012,17 @@ mod tests {
         assert!(is_structural_expression(
             &ctx,
             &expr,
-            &ast::QualifiedName::new()
+            &ast::QualifiedName::new(),
+            &crate::test_support::connection_operators(),
         ));
         assert_eq!(
-            try_eval_structural_boolean(&ctx, &expr, &ast::QualifiedName::new()),
+            try_eval_structural_boolean(
+                &ctx,
+                &expr,
+                &ast::QualifiedName::new(),
+                &crate::test_support::connection_operators(),
+            )
+            .expect("fixture contains no VCG query"),
             Some(false)
         );
     }
@@ -825,10 +1037,17 @@ mod tests {
         assert!(is_structural_expression(
             &ctx,
             &expr,
-            &ast::QualifiedName::new()
+            &ast::QualifiedName::new(),
+            &crate::test_support::connection_operators(),
         ));
         assert_eq!(
-            try_eval_structural_boolean(&ctx, &expr, &ast::QualifiedName::new()),
+            try_eval_structural_boolean(
+                &ctx,
+                &expr,
+                &ast::QualifiedName::new(),
+                &crate::test_support::connection_operators(),
+            )
+            .expect("fixture contains no VCG query"),
             Some(false)
         );
     }

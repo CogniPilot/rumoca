@@ -37,6 +37,7 @@ use std::path::PathBuf;
 // IR vocabulary and foundation primitives (DefId, Span, Expression, ...).
 // Previously lived in `rumoca-ir-core`; merged here per SPEC_0029 §3a.
 mod clock_lattice;
+mod connection_graph;
 include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
 
 /// The identity of the source state this crate was built from.
@@ -58,31 +59,39 @@ mod effective_type;
 mod expression_rewriter;
 mod expression_visitor;
 mod ir_primitives;
+mod matrix_multiply;
 mod modelica_builtins;
+mod operation_contract;
 mod source_map;
 mod statement_rewriter;
 mod structured_domain;
 mod subscript;
+mod target_invocation_brand;
 pub mod text_position;
 pub mod tool_config;
 pub use clock_lattice::{
     ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockPhaseAnchor, ClockRational,
     PeriodicClockSchedule,
 };
+pub use connection_graph::{CONNECTIONS_NAMESPACE, ConnectionGraphOperatorRole};
 pub use dependency_graph::{DependencyGraphError, DependencyScc, dependency_first_sccs};
 pub use effective_type::{EffectiveType, EffectiveTypeError};
 pub use expression_rewriter::{ExpressionRewriter, FallibleExpressionRewriter};
 pub use expression_visitor::{ExpressionScope, ExpressionVisitor, FallibleExpressionVisitor};
 pub use ir_primitives::*;
+pub use matrix_multiply::RealMatrixMultiplySemantics;
 pub use modelica_builtins::*;
+pub use operation_contract::OperationContractKey;
 pub use source_map::{SourceMap, placeholder_source_name, source_id_for_name};
 pub use statement_rewriter::{FallibleStatementRewriter, StatementRewriter};
 pub use structured_domain::{
     AffineForm, ArrayAccess, ComprehensionScalarView, ComprehensionTemplate, RegularForFamily,
-    StructuredIndexBinder, StructuredIndexDomain, StructuredIndexDomainError, checked_product,
-    flatten_coordinates, row_major_coordinates, row_major_strides,
+    StructuredIndexBinder, StructuredIndexBinderId, StructuredIndexDomain,
+    StructuredIndexDomainError, checked_product, flatten_coordinates, row_major_coordinates,
+    row_major_strides,
 };
 pub use subscript::Subscript;
+pub use target_invocation_brand::{TargetInvocationBrand, with_target_invocation_brand};
 
 /// Relative tolerance used by the scheduler and lowered clock-tick predicates.
 ///
@@ -714,7 +723,7 @@ pub const PURITY_WRAPPER: &str = "pure";
 ///
 /// `Connections` is a built-in namespace used by overconstrained connector
 /// operators (MLS §9.4), e.g. `Connections.root(...)`.
-pub const BUILTIN_VARIABLES: &[&str] = &["time", "Connections"];
+pub const BUILTIN_VARIABLES: &[&str] = &["time", CONNECTIONS_NAMESPACE];
 
 /// Check if a type name is a built-in primitive type.
 pub fn is_builtin_type(name: &str) -> bool {

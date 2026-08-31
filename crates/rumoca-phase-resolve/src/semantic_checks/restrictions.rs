@@ -6,6 +6,8 @@ mod decl;
 
 use super::*;
 use decl::*;
+use rumoca_eval_ast::ast_scalar::{self, AstScalarContext};
+use std::cell::RefCell;
 
 pub(super) const ER083_CONNECT_EVALUABLE_CONTEXT: &str = "ER083";
 pub(super) const ER084_WHEN_EVALUABLE_CONTEXT: &str = "ER084";
@@ -39,7 +41,6 @@ pub(super) const ER116_EVENT_ITERATOR_EVALUABLE: &str = "ER116";
 pub(super) const ER117_EQUALITY_CONSTRAINT_PROTOTYPE: &str = "ER117";
 pub(super) const ER118_OVERDETERMINED_FLOW_MEMBER: &str = "ER118";
 pub(super) const ER120_DERIVATIVE_ANNOTATION: &str = "ER120";
-pub(super) const ER121_WHOLE_ARRAY_IN_FOR: &str = "ER121";
 pub(super) const WR001_EXTERNAL_PURITY_UNDECLARED: &str = "WR001";
 pub(super) const WR003_ANNOTATION_CONTEXT: &str = "WR003";
 pub(super) const WR004_TESTCASE_USAGE: &str = "WR004";
@@ -48,18 +49,72 @@ pub(super) const ER123_CLASS_EXTENDS_NON_REPLACEABLE: &str = "ER123";
 pub(super) const WR005_EVALUATE_NOT_EVALUABLE: &str = "WR005";
 pub(super) const ER124_NONEVAL_NESTED_FOR_RANGE: &str = "ER124";
 pub(super) const ER125_OPERATOR_CONSTRUCTOR_PAIR: &str = "ER125";
+pub(super) const ER129_IMPLICIT_FOR_RANGE_UNSUPPORTED: &str = "ER129";
 
-pub(super) fn run_restriction_semantic_checks(def: &StoredDefinition) -> Vec<Diagnostic> {
+pub(super) fn run_restriction_semantic_checks(
+    def: &StoredDefinition,
+    connection_operators: &ast::ConnectionOperatorCatalog,
+) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
+    let evaluability = ComponentEvaluabilityIndex::new(def);
+    check_unsupported_implicit_for_ranges(def, &mut diags);
     for (_, class) in &def.classes {
-        check_class_restrictions(class, def, &mut Vec::new(), &mut diags);
+        check_class_restrictions(
+            class,
+            def,
+            &evaluability,
+            connection_operators,
+            &mut Vec::new(),
+            &mut diags,
+        );
     }
     diags
+}
+
+/// CONN-024/CONN-025 checks require resolved declaration and predefined-type
+/// identities. A potentially legal extent that depends on an effective
+/// occurrence modifier remains provisional here and is completed by
+/// Instantiate; a settled invalid or provably non-constant extent is rejected.
+pub(super) fn run_resolved_equality_constraint_checks(tree: &ast::ClassTree) -> Vec<Diagnostic> {
+    let evaluability = ComponentEvaluabilityIndex::new(&tree.definitions);
+    let declarations = ast::EqualityConstraintDeclarationIndex::new(tree);
+    let mut diagnostics = Vec::new();
+    for class in tree.definitions.classes.values() {
+        check_resolved_equality_constraint_tree(
+            tree,
+            class,
+            &declarations,
+            &evaluability,
+            &mut diagnostics,
+        );
+    }
+    diagnostics
+}
+
+fn check_resolved_equality_constraint_tree(
+    tree: &ast::ClassTree,
+    class: &ClassDef,
+    declarations: &ast::EqualityConstraintDeclarationIndex,
+    evaluability: &ComponentEvaluabilityIndex<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    check_equality_constraint_prototype(tree, class, declarations, evaluability, diagnostics);
+    for nested in class.classes.values() {
+        check_resolved_equality_constraint_tree(
+            tree,
+            nested,
+            declarations,
+            evaluability,
+            diagnostics,
+        );
+    }
 }
 
 fn check_class_restrictions(
     class: &ClassDef,
     def: &StoredDefinition,
+    evaluability: &ComponentEvaluabilityIndex<'_>,
+    connection_operators: &ast::ConnectionOperatorCatalog,
     ancestors: &mut Vec<ClassContext>,
     diags: &mut Vec<Diagnostic>,
 ) {
@@ -80,6 +135,8 @@ fn check_class_restrictions(
         let mut scan = EquationScan {
             class,
             def,
+            evaluability,
+            connection_operators,
             diags,
             iterators: HashSet::new(),
         };
@@ -97,8 +154,6 @@ fn check_class_restrictions(
         check_event_generating_iterators(class, def, diags);
     }
     check_ambiguous_unqualified_imports(class, def, diags);
-    check_equality_constraint_prototype(class, diags);
-    check_whole_array_assignment_in_for(class, diags);
     check_annotation_advisories(class, def, diags);
     check_ambiguous_operator_overloads(class, diags);
     check_evaluate_annotations(class, diags);
@@ -111,7 +166,14 @@ fn check_class_restrictions(
         operator_record: class.operator_record,
     });
     for (_, nested) in &class.classes {
-        check_class_restrictions(nested, def, ancestors, diags);
+        check_class_restrictions(
+            nested,
+            def,
+            evaluability,
+            connection_operators,
+            ancestors,
+            diags,
+        );
     }
     ancestors.pop();
 }
@@ -138,6 +200,8 @@ struct EqContext {
 struct EquationScan<'a> {
     class: &'a ClassDef,
     def: &'a StoredDefinition,
+    evaluability: &'a ComponentEvaluabilityIndex<'a>,
+    connection_operators: &'a ast::ConnectionOperatorCatalog,
     diags: &'a mut Vec<Diagnostic>,
     iterators: HashSet<String>,
 }
@@ -161,8 +225,20 @@ impl EquationScan<'_> {
                 self.check_connect_protected(rhs);
             }
             Equation::FunctionCall { comp, args, .. } => {
-                if comp.parts.len() == 2 && comp.parts[0].ident.text.as_ref() == "Connections" {
-                    self.check_connect_context(comp, ctx);
+                match comp
+                    .target_def_id()
+                    .and_then(|declaration| self.connection_operators.role(declaration))
+                {
+                    Some(
+                        rumoca_core::ConnectionGraphOperatorRole::Branch
+                        | rumoca_core::ConnectionGraphOperatorRole::Root
+                        | rumoca_core::ConnectionGraphOperatorRole::PotentialRoot,
+                    ) => self.check_connect_context(comp, ctx),
+                    Some(
+                        rumoca_core::ConnectionGraphOperatorRole::IsRoot
+                        | rumoca_core::ConnectionGraphOperatorRole::Rooted,
+                    )
+                    | None => {}
                 }
                 if comp.parts.len() == 1 && comp.parts[0].ident.text.as_ref() == "assert" {
                     self.check_assert_level(args);
@@ -507,7 +583,7 @@ impl EquationScan<'_> {
             name: "cardinality",
             found: Vec::new(),
         };
-        let _ = collector.visit_expression(expr);
+        let _visit_outcome = collector.visit_expression(expr);
         for token in collector.found {
             self.diags.push(semantic_error(
                 ER099_CARDINALITY_CONTEXT,
@@ -563,7 +639,7 @@ impl EquationScan<'_> {
             def: self.def,
             found: Vec::new(),
         };
-        let _ = collector.visit_expression(expr);
+        let _visit_outcome = collector.visit_expression(expr);
         for (name, token) in collector.found {
             self.diags.push(semantic_error(
                 ER088_IMPURE_CALL_CONTEXT,
@@ -581,39 +657,565 @@ impl EquationScan<'_> {
         }
     }
 
-    /// Conservative translation-time evaluability: every unqualified component
-    /// reference must be a parameter/constant of this class or an active
-    /// for-iterator. Qualified or non-local names cannot be classified here
-    /// and are assumed evaluable to avoid false positives. `size()`/`ndims()`
-    /// of a declared array are structural, so their array argument does not
-    /// affect evaluability (MLS §3.7.2).
+    /// Translation-time evaluability follows the resolved declaration identity
+    /// of every component reference. Reference depth is only syntax: a
+    /// qualified continuous variable is no more structural than an unqualified
+    /// one. `size()`/`ndims()` of a declared array are structural, so their
+    /// array argument does not affect evaluability (MLS §3.7.2).
     fn is_evaluable_expression(&self, expr: &Expression) -> bool {
         let mut walker = EvaluableExprWalker {
             scan: self,
             evaluable: true,
         };
-        let _ = walker.visit_expression(expr);
+        let _visit_outcome = walker.visit_expression(expr);
         walker.evaluable
     }
 
     /// Evaluability of one component reference (see
     /// [`Self::is_evaluable_expression`] for the classification rules).
     fn is_evaluable_component_ref(&self, cref: &ComponentReference) -> bool {
-        match cref.parts.as_slice() {
-            [part] => {
-                let name = part.ident.text.as_ref();
-                // `time` is the builtin continuous-time variable.
-                name != "time"
-                    && (self.iterators.contains(name)
-                        || self.class.components.get(name).is_none_or(|component| {
-                            matches!(
-                                component.variability,
-                                Variability::Parameter(_) | Variability::Constant(_)
-                            )
-                        }))
+        if let [part] = cref.parts.as_slice() {
+            let name = part.ident.text.as_ref();
+            if name == "time" {
+                return false;
             }
+            if self.iterators.contains(name) {
+                return true;
+            }
+        }
+        if cref.parts.len() > 1 && cref.root_def_id() == cref.target_def_id() {
+            // Enumeration literals carry their owning enum type's DefId on
+            // both the root and literal segment; the literal has no separate
+            // component declaration (registration.rs).
+            return true;
+        }
+        let mut proof = EvaluationProof::Evaluable;
+        let mut saw_component = false;
+        for (index, part) in cref.parts.iter().enumerate() {
+            let Some(def_id) = part.def_id else {
+                continue;
+            };
+            let Some(part_proof) = self.evaluability.proof(def_id) else {
+                continue;
+            };
+            let is_target = index + 1 == cref.parts.len();
+            if !is_target && !self.evaluability.variability_propagates(def_id) {
+                // Ordinary model/block/record instances are namespace
+                // containers here. Their fields keep their own variability;
+                // only a parameter/constant aggregate propagates structural
+                // evaluability (and its exclusions) to the selected field.
+                continue;
+            }
+            saw_component = true;
+            proof = proof.and(part_proof);
+            if proof == EvaluationProof::NonEvaluable {
+                return false;
+            }
+        }
+        if saw_component {
+            return proof != EvaluationProof::NonEvaluable;
+        }
+        match cref.parts.as_slice() {
+            [part] => self
+                .class
+                .components
+                .get(part.ident.text.as_ref())
+                .is_none_or(|component| {
+                    component
+                        .def_id
+                        .and_then(|def_id| self.evaluability.proof(def_id))
+                        != Some(EvaluationProof::NonEvaluable)
+                }),
+            // A tail deferred across a replaceable/redeclared root has no
+            // target identity yet. That is unknown here, not proof of a
+            // continuous dependency; instantiation owns the fail-closed check
+            // after selecting the concrete type.
             _ => true,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EvaluationProof {
+    Evaluable,
+    Unknown,
+    NonEvaluable,
+}
+
+impl EvaluationProof {
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::NonEvaluable, _) | (_, Self::NonEvaluable) => Self::NonEvaluable,
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+            (Self::Evaluable, Self::Evaluable) => Self::Evaluable,
+        }
+    }
+}
+
+struct ComponentEvaluabilityIndex<'a> {
+    proofs: HashMap<DefId, EvaluationProof>,
+    components: HashMap<DefId, &'a ast::Component>,
+}
+
+impl<'a> ComponentEvaluabilityIndex<'a> {
+    fn new(def: &'a StoredDefinition) -> Self {
+        let mut components = HashMap::new();
+        let mut scalar_type_ids = HashSet::new();
+        let mut attribute_references = AttributeReferenceIndex::default();
+        for class in def.classes.values() {
+            collect_evaluability_declarations(
+                class,
+                &mut components,
+                &mut scalar_type_ids,
+                &mut attribute_references,
+            );
+        }
+        let mut proofs = HashMap::new();
+        for def_id in components.keys().copied().collect::<Vec<_>>() {
+            let mut visiting = HashSet::new();
+            compute_component_evaluability(
+                def_id,
+                &components,
+                &scalar_type_ids,
+                &attribute_references,
+                &mut proofs,
+                &mut visiting,
+            );
+        }
+        Self { proofs, components }
+    }
+
+    fn proof(&self, def_id: DefId) -> Option<EvaluationProof> {
+        self.proofs.get(&def_id).copied()
+    }
+
+    fn variability_propagates(&self, def_id: DefId) -> bool {
+        self.components.get(&def_id).is_some_and(|component| {
+            matches!(
+                component.variability,
+                Variability::Parameter(_) | Variability::Constant(_)
+            )
+        })
+    }
+
+    fn expression_is_definitively_nonevaluable(&self, expression: &Expression) -> bool {
+        ast::collect_component_refs(expression)
+            .iter()
+            .any(|reference| {
+                reference.parts.iter().any(|part| {
+                    part.def_id.and_then(|def_id| self.proof(def_id))
+                        == Some(EvaluationProof::NonEvaluable)
+                }) || reference.parts.len() == 1 && reference.parts[0].ident.text.as_ref() == "time"
+            })
+    }
+}
+
+fn collect_evaluability_declarations<'a>(
+    class: &'a ClassDef,
+    components: &mut HashMap<DefId, &'a ast::Component>,
+    scalar_type_ids: &mut HashSet<DefId>,
+    attribute_references: &mut AttributeReferenceIndex,
+) {
+    if class.class_type == ClassType::Type
+        && let Some(def_id) = class.def_id
+    {
+        scalar_type_ids.insert(def_id);
+    }
+    for component in class.components.values() {
+        if let Some(def_id) = component.def_id {
+            components.insert(def_id, component);
+            if let Some(owner) = class.def_id {
+                attribute_references
+                    .owner_by_component
+                    .insert(def_id, owner);
+                attribute_references
+                    .component_by_owner_name
+                    .insert((owner, component.name.clone()), def_id);
+            }
+        }
+    }
+    for nested in class.classes.values() {
+        collect_evaluability_declarations(
+            nested,
+            components,
+            scalar_type_ids,
+            attribute_references,
+        );
+    }
+}
+
+#[derive(Default)]
+struct AttributeReferenceIndex {
+    owner_by_component: HashMap<DefId, DefId>,
+    component_by_owner_name: HashMap<(DefId, String), DefId>,
+}
+
+fn compute_component_evaluability(
+    def_id: DefId,
+    components: &HashMap<DefId, &ast::Component>,
+    scalar_type_ids: &HashSet<DefId>,
+    attribute_references: &AttributeReferenceIndex,
+    proofs: &mut HashMap<DefId, EvaluationProof>,
+    visiting: &mut HashSet<DefId>,
+) -> EvaluationProof {
+    if let Some(proof) = proofs.get(&def_id) {
+        return *proof;
+    }
+    if !visiting.insert(def_id) {
+        return EvaluationProof::NonEvaluable;
+    }
+    let proof = components
+        .get(&def_id)
+        .map_or(EvaluationProof::Unknown, |component| {
+            component_declaration_evaluability(
+                component,
+                components,
+                scalar_type_ids,
+                attribute_references,
+                proofs,
+                visiting,
+            )
+        });
+    visiting.remove(&def_id);
+    proofs.insert(def_id, proof);
+    proof
+}
+
+fn component_declaration_evaluability(
+    component: &ast::Component,
+    components: &HashMap<DefId, &ast::Component>,
+    scalar_type_ids: &HashSet<DefId>,
+    attribute_references: &AttributeReferenceIndex,
+    proofs: &mut HashMap<DefId, EvaluationProof>,
+    visiting: &mut HashSet<DefId>,
+) -> EvaluationProof {
+    match component.variability {
+        Variability::Constant(_) => component.binding.as_ref().map_or_else(
+            || missing_structural_binding_proof(component, scalar_type_ids),
+            |binding| {
+                binding_evaluability(
+                    binding,
+                    components,
+                    scalar_type_ids,
+                    attribute_references,
+                    proofs,
+                    visiting,
+                )
+            },
+        ),
+        Variability::Parameter(_) => {
+            if parameter_is_explicitly_nonevaluable(component, components, attribute_references) {
+                return EvaluationProof::NonEvaluable;
+            }
+            component.binding.as_ref().map_or_else(
+                || missing_structural_binding_proof(component, scalar_type_ids),
+                |binding| {
+                    binding_evaluability(
+                        binding,
+                        components,
+                        scalar_type_ids,
+                        attribute_references,
+                        proofs,
+                        visiting,
+                    )
+                },
+            )
+        }
+        _ => EvaluationProof::NonEvaluable,
+    }
+}
+
+fn missing_structural_binding_proof(
+    component: &ast::Component,
+    scalar_type_ids: &HashSet<DefId>,
+) -> EvaluationProof {
+    let type_name = component.type_name.to_string();
+    let is_predefined_scalar = ["Real", "Integer", "Boolean", "String", "Clock"]
+        .iter()
+        .any(|builtin| rumoca_core::qualified_type_name_matches(&type_name, builtin));
+    let is_resolved_scalar = component
+        .type_def_id
+        .is_some_and(|def_id| scalar_type_ids.contains(&def_id));
+    if !is_predefined_scalar && !is_resolved_scalar {
+        // A structured aggregate may obtain a field value from the selected
+        // type's declaration or an occurrence modifier. Resolve deliberately
+        // leaves that instance-dependent proof to Instantiate.
+        EvaluationProof::Unknown
+    } else {
+        // A scalar parameter/constant without a declaration equation has no
+        // translation-time value. Treating it as merely unknown would permit
+        // it to select connection topology until a later phase guessed.
+        EvaluationProof::NonEvaluable
+    }
+}
+
+fn parameter_is_explicitly_nonevaluable(
+    component: &ast::Component,
+    components: &HashMap<DefId, &ast::Component>,
+    attribute_references: &AttributeReferenceIndex,
+) -> bool {
+    !ResolveAttributeContext::new(component, components, attribute_references)
+        .parameter_attributes_allow(component)
+}
+
+struct ResolveAttributeContext<'a> {
+    components: &'a HashMap<DefId, &'a ast::Component>,
+    references: &'a AttributeReferenceIndex,
+    component_scope: RefCell<Vec<DefId>>,
+    active_attributes: RefCell<HashSet<DefId>>,
+    active_values: RefCell<HashSet<DefId>>,
+}
+
+impl<'a> ResolveAttributeContext<'a> {
+    fn new(
+        component: &ast::Component,
+        components: &'a HashMap<DefId, &'a ast::Component>,
+        references: &'a AttributeReferenceIndex,
+    ) -> Self {
+        Self {
+            components,
+            references,
+            component_scope: RefCell::new(component.def_id.into_iter().collect()),
+            active_attributes: RefCell::new(HashSet::new()),
+            active_values: RefCell::new(HashSet::new()),
+        }
+    }
+
+    fn parameter_attributes_allow(&self, component: &ast::Component) -> bool {
+        let Some(def_id) = component.def_id else {
+            return false;
+        };
+        if !self.active_attributes.borrow_mut().insert(def_id) {
+            return false;
+        }
+        let allows = component
+            .modifications
+            .get("fixed")
+            .is_none_or(|expression| self.proves_true(expression))
+            && evaluate_annotation_expression(component)
+                .is_none_or(|expression| self.proves_true(expression));
+        self.active_attributes.borrow_mut().remove(&def_id);
+        allows
+    }
+
+    fn proves_true(&self, expression: &Expression) -> bool {
+        ast_scalar::eval_boolean(expression, self, "", 0) == Some(true)
+    }
+
+    fn referenced_component(&self, expression: &Expression) -> Option<(DefId, &ast::Component)> {
+        let Expression::ComponentReference(reference) = expression else {
+            return None;
+        };
+        let target_def_id = reference.target_def_id().or_else(|| {
+            let [part] = reference.parts.as_slice() else {
+                return None;
+            };
+            let current = self.component_scope.borrow().last().copied()?;
+            let owner = self.references.owner_by_component.get(&current)?;
+            self.references
+                .component_by_owner_name
+                .get(&(*owner, part.ident.text.to_string()))
+                .copied()
+        })?;
+        for (index, part) in reference.parts.iter().enumerate() {
+            let Some(def_id) = part.def_id else {
+                continue;
+            };
+            let Some(component) = self.components.get(&def_id).copied() else {
+                continue;
+            };
+            let is_target = index + 1 == reference.parts.len();
+            if !is_target
+                && !matches!(
+                    component.variability,
+                    Variability::Parameter(_) | Variability::Constant(_)
+                )
+            {
+                continue;
+            }
+            match component.variability {
+                Variability::Constant(_) => {}
+                Variability::Parameter(_) if self.parameter_attributes_allow(component) => {}
+                _ => return None,
+            }
+        }
+        self.components
+            .get(&target_def_id)
+            .copied()
+            .map(|component| (target_def_id, component))
+    }
+
+    fn evaluate_reference<T>(
+        &self,
+        expression: &Expression,
+        depth: usize,
+        eval: impl FnOnce(&Expression, &Self, usize) -> Option<T>,
+    ) -> Option<T> {
+        let (def_id, component) = self.referenced_component(expression)?;
+        match component.variability {
+            Variability::Constant(_) => {}
+            Variability::Parameter(_) if self.parameter_attributes_allow(component) => {}
+            _ => return None,
+        }
+        if !self.active_values.borrow_mut().insert(def_id) {
+            return None;
+        }
+        let result = component.binding.as_ref().and_then(|binding| {
+            self.component_scope.borrow_mut().push(def_id);
+            let result = eval(binding, self, depth);
+            self.component_scope.borrow_mut().pop();
+            result
+        });
+        self.active_values.borrow_mut().remove(&def_id);
+        result
+    }
+}
+
+impl AstScalarContext for ResolveAttributeContext<'_> {
+    fn expression_depth_limit(&self) -> Option<usize> {
+        Some(20)
+    }
+
+    fn lookup_integer(&self, expression: &Expression, _scope: &str, depth: usize) -> Option<i64> {
+        self.evaluate_reference(expression, depth, |binding, ctx, depth| {
+            ast_scalar::eval_integer(binding, ctx, "", depth)
+        })
+    }
+
+    fn lookup_real(&self, expression: &Expression, _scope: &str, depth: usize) -> Option<f64> {
+        self.evaluate_reference(expression, depth, |binding, ctx, depth| {
+            ast_scalar::eval_real(binding, ctx, "", depth)
+        })
+    }
+
+    fn lookup_boolean(&self, expression: &Expression, _scope: &str, depth: usize) -> Option<bool> {
+        self.evaluate_reference(expression, depth, |binding, ctx, depth| {
+            ast_scalar::eval_boolean(binding, ctx, "", depth)
+        })
+    }
+
+    fn call_integer(
+        &self,
+        _function: &ComponentReference,
+        _args: &[Expression],
+        _scope: &str,
+        _depth: usize,
+        _span: Span,
+    ) -> Option<i64> {
+        None
+    }
+
+    fn integer_binary(
+        &self,
+        op: &rumoca_core::OpBinary,
+        lhs: i64,
+        rhs: i64,
+        _span: Span,
+    ) -> Option<i64> {
+        rumoca_core::eval_ast_integer_binary(op, lhs, rhs)
+    }
+}
+
+fn evaluate_annotation_expression(component: &ast::Component) -> Option<&Expression> {
+    component.annotation.iter().find_map(|entry| match entry {
+        Expression::Modification { target, value, .. }
+            if reference_is_single_name(target, "Evaluate") =>
+        {
+            Some(value.as_ref())
+        }
+        Expression::NamedArgument { name, value, .. } if name.text.as_ref() == "Evaluate" => {
+            Some(value.as_ref())
+        }
+        _ => None,
+    })
+}
+
+fn reference_is_single_name(reference: &ComponentReference, expected: &str) -> bool {
+    reference.parts.len() == 1
+        && reference.parts[0].subs.is_none()
+        && reference.parts[0].ident.text.as_ref() == expected
+}
+
+fn binding_evaluability(
+    binding: &Expression,
+    components: &HashMap<DefId, &ast::Component>,
+    scalar_type_ids: &HashSet<DefId>,
+    attribute_references: &AttributeReferenceIndex,
+    proofs: &mut HashMap<DefId, EvaluationProof>,
+    visiting: &mut HashSet<DefId>,
+) -> EvaluationProof {
+    let mut proof = EvaluationProof::Evaluable;
+    let mut collector = BindingReferenceCollector::default();
+    let _visit_outcome = collector.visit_expression(binding);
+    for reference in collector.references {
+        if reference.parts.len() == 1 && reference.parts[0].ident.text.as_ref() == "time" {
+            return EvaluationProof::NonEvaluable;
+        }
+        if reference.parts.len() > 1 && reference.root_def_id() == reference.target_def_id() {
+            continue;
+        }
+        let mut saw_component = false;
+        for (index, part) in reference.parts.iter().enumerate() {
+            let Some(def_id) = part.def_id else {
+                continue;
+            };
+            let Some(component) = components.get(&def_id) else {
+                continue;
+            };
+            let is_target = index + 1 == reference.parts.len();
+            if !is_target
+                && !matches!(
+                    component.variability,
+                    Variability::Parameter(_) | Variability::Constant(_)
+                )
+            {
+                continue;
+            }
+            saw_component = true;
+            proof = proof.and(compute_component_evaluability(
+                def_id,
+                components,
+                scalar_type_ids,
+                attribute_references,
+                proofs,
+                visiting,
+            ));
+            if proof == EvaluationProof::NonEvaluable {
+                return proof;
+            }
+        }
+        if !saw_component && reference.target_def_id().is_none() {
+            proof = proof.and(EvaluationProof::Unknown);
+        }
+    }
+    proof
+}
+
+#[derive(Default)]
+struct BindingReferenceCollector {
+    references: Vec<ComponentReference>,
+}
+
+impl ast::Visitor for BindingReferenceCollector {
+    fn visit_expr_function_call(
+        &mut self,
+        comp: &ComponentReference,
+        args: &[Expression],
+    ) -> std::ops::ControlFlow<()> {
+        if matches!(builtin_name(comp), Some("size" | "ndims")) {
+            // The array value is irrelevant; only the optional dimension
+            // argument participates in translation-time evaluability.
+            return self.visit_each(args.get(1..).unwrap_or(&[]), Self::visit_expression);
+        }
+        self.visit_each(args, Self::visit_expression)
+    }
+
+    fn visit_component_reference(
+        &mut self,
+        reference: &ComponentReference,
+    ) -> std::ops::ControlFlow<()> {
+        self.references.push(reference.clone());
+        ast::visitor::walk_component_reference_default(self, reference)
     }
 }
 
@@ -744,17 +1346,11 @@ fn check_impure_bindings(class: &ClassDef, def: &StoredDefinition, diags: &mut V
         // sugar for having a parameter with fixed=false and the binding as an
         // initial equation", so a parameter binding is skipped by the rule.
         //
-        // A `constant` binding is *not* on that list and this compiler does not
-        // evaluate it at translation either — the call survives into the DAE as
-        // an ordinary binding — so skipping it is lenience beyond the MLS list,
-        // not a consequence of evaluating it early. It stays lenient because
-        // widening acceptance is the safe direction while the constant-folding
-        // owner is unsettled; OMC rejects the same model, so a model that
-        // relies on this is not portable.
-        if matches!(
-            comp.variability,
-            Variability::Parameter(_) | Variability::Constant(_)
-        ) {
+        // A `constant` binding is not on that list. Accepting it would let an
+        // impure effect enter a context whose value is required to be
+        // translation-time invariant, so only the explicitly admitted
+        // parameter form bypasses this rejection.
+        if matches!(comp.variability, Variability::Parameter(_)) {
             continue;
         }
         let Some(binding) = comp.binding.as_ref() else {
@@ -765,7 +1361,7 @@ fn check_impure_bindings(class: &ClassDef, def: &StoredDefinition, diags: &mut V
             def,
             found: Vec::new(),
         };
-        let _ = collector.visit_expression(binding);
+        let _visit_outcome = collector.visit_expression(binding);
         for (name, token) in collector.found {
             diags.push(semantic_error(
                 ER088_IMPURE_CALL_CONTEXT,

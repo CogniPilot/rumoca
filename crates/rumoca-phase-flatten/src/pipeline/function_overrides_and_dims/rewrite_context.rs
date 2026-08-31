@@ -7,6 +7,7 @@ pub(crate) struct FunctionOverrideRewriteContext<'a> {
     pub(super) class_index: &'a rumoca_ir_ast::ClassDefIndex<'a>,
     pub(super) override_packages: &'a [OverrideTarget],
     pub(super) override_functions: &'a OverrideFunctionMap,
+    semantic_catalogs: &'a rumoca_ir_ast::SemanticCatalogProjection,
     pub(super) component_members: Option<&'a component_member_scope::ComponentMemberScopes>,
     pub(super) active_scope: ComponentPath,
     pub(super) local_def_ids: FxHashSet<rumoca_core::DefId>,
@@ -23,12 +24,14 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
         class_index: &'a rumoca_ir_ast::ClassDefIndex<'a>,
         override_packages: &'a [OverrideTarget],
         override_functions: &'a OverrideFunctionMap,
+        semantic_catalogs: &'a rumoca_ir_ast::SemanticCatalogProjection,
     ) -> Self {
         Self {
             tree,
             class_index,
             override_packages,
             override_functions,
+            semantic_catalogs,
             component_members: None,
             active_scope: ComponentPath::root(),
             local_def_ids: FxHashSet::default(),
@@ -36,6 +39,32 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
             predefined_callables: PredefinedCallableIds::from_tree(tree),
             package_chain_cache: std::cell::RefCell::new(rustc_hash::FxHashMap::default()),
         }
+    }
+
+    /// Unit-only context for rewrite rules that do not inspect lifecycle
+    /// identity. Production construction always requires the Resolve-issued
+    /// semantic projection.
+    #[cfg(test)]
+    pub(super) fn new_test(
+        tree: &'a ClassTree,
+        class_index: &'a rumoca_ir_ast::ClassDefIndex<'a>,
+        override_packages: &'a [OverrideTarget],
+        override_functions: &'a OverrideFunctionMap,
+    ) -> Self {
+        Self::new(
+            tree,
+            class_index,
+            override_packages,
+            override_functions,
+            crate::test_support::semantic_catalog_projection_ref(),
+        )
+    }
+
+    pub(super) fn external_object(
+        &self,
+        owner: rumoca_core::DefId,
+    ) -> Option<rumoca_ir_ast::ExternalObjectLifecycleIdentity> {
+        self.semantic_catalogs.external_object(owner)
     }
 
     /// True when the call target is one of the predefined operators Resolve

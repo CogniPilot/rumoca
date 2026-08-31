@@ -58,7 +58,7 @@ pub(crate) fn collect_structural_refs_from_equations(
     }
 
     let mut collector = StructuralEquationRefCollector { refs };
-    let _ = collector.visit_each(
+    let _visit_outcome = collector.visit_each(
         equations,
         <StructuralEquationRefCollector<'_> as Visitor>::visit_equation,
     );
@@ -69,7 +69,7 @@ pub(crate) fn collect_structural_refs_from_equations(
 /// This is the main entry point for type checking.
 /// Takes a `ResolvedTree` and returns a `TypedTree` with all TypeIds populated.
 pub fn typecheck(resolved: ResolvedTree) -> Result<TypedTree, Diagnostics> {
-    let mut tree = resolved.into_inner();
+    let (mut tree, _semantic_catalogs) = resolved.into_parts();
     let mut checker = TypeChecker::new();
     checker.check(&mut tree);
 
@@ -101,12 +101,39 @@ pub fn typecheck(resolved: ResolvedTree) -> Result<TypedTree, Diagnostics> {
 /// Ok(()) if type checking succeeds, or diagnostics on error.
 /// The overlay is modified in place with evaluated dimensions.
 pub fn typecheck_instanced(
-    tree: &ClassTree,
+    resolved: &ResolvedTree,
     overlay: &mut InstanceOverlay,
     model_name: &str,
 ) -> Result<(), Diagnostics> {
     let mut checker = TypeChecker::new();
-    checker.check_instanced(tree, overlay, model_name);
+    checker.check_instanced(resolved, overlay, model_name);
+
+    if checker.has_errors() {
+        Err(checker.take_diagnostics())
+    } else {
+        Ok(())
+    }
+}
+
+/// Unit-fixture entry point for deliberately hand-built or mutated ClassTree
+/// values. Production code cannot call this path and therefore cannot bypass
+/// the Resolve-issued semantic-catalog proof.
+#[cfg(test)]
+pub(crate) fn typecheck_instanced_test_projection(
+    tree: &ClassTree,
+    overlay: &mut InstanceOverlay,
+    model_name: &str,
+) -> Result<(), Diagnostics> {
+    if matches!(
+        overlay.finalized_overconstrained(),
+        Err(rumoca_ir_ast::EqualityConstraintOccurrenceError::OwnerCatalogNotFinalized)
+    ) {
+        overlay
+            .finalize_overconstrained_record_owners()
+            .expect("test fixture must admit an exact overconstrained owner catalog");
+    }
+    let mut checker = TypeChecker::new();
+    checker.check_instanced_test_projection(tree, overlay, model_name);
 
     if checker.has_errors() {
         Err(checker.take_diagnostics())

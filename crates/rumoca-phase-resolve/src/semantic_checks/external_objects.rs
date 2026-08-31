@@ -72,28 +72,39 @@ impl PhaseError for ExternalObjectError {
     }
 }
 
-pub(super) fn run_external_object_checks(tree: &ast::ClassTree) -> Vec<Diagnostic> {
+pub(super) struct ExternalObjectCheckOutcome {
+    pub(super) diagnostics: Vec<Diagnostic>,
+    pub(super) lifecycles: ast::ExternalObjectLifecycleCatalog,
+}
+
+pub(super) fn run_external_object_checks(tree: &ast::ClassTree) -> ExternalObjectCheckOutcome {
     let index = ast::ClassDefIndex::from_tree(tree);
     let mut diagnostics = Vec::new();
     let mut lifecycle_roles = ast::AstIndexMap::default();
+    let mut lifecycles = ast::ExternalObjectLifecycleCatalog::begin_resolve_check();
     let mut missing_builtin_reported = false;
     for class in tree.definitions.classes.values() {
         check_class_tree(
             class,
             &index,
             &mut lifecycle_roles,
+            &mut lifecycles,
             &mut missing_builtin_reported,
             &mut diagnostics,
         );
     }
     reject_explicit_lifecycle_calls(tree, &lifecycle_roles, &mut diagnostics);
-    diagnostics
+    ExternalObjectCheckOutcome {
+        diagnostics,
+        lifecycles,
+    }
 }
 
 fn check_class_tree(
     class: &ClassDef,
     index: &ast::ClassDefIndex<'_>,
     lifecycle_roles: &mut ast::AstIndexMap<DefId, ast::ExternalObjectLifecycleRole>,
+    lifecycles: &mut ast::ExternalObjectLifecycleCatalog,
     missing_builtin_reported: &mut bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -101,6 +112,7 @@ fn check_class_tree(
         index,
         class,
         lifecycle_roles,
+        lifecycles,
         missing_builtin_reported,
         diagnostics,
     );
@@ -109,6 +121,7 @@ fn check_class_tree(
             nested,
             index,
             lifecycle_roles,
+            lifecycles,
             missing_builtin_reported,
             diagnostics,
         );
@@ -119,6 +132,7 @@ fn check_external_object_owner(
     index: &ast::ClassDefIndex<'_>,
     owner: &ClassDef,
     lifecycle_roles: &mut ast::AstIndexMap<DefId, ast::ExternalObjectLifecycleRole>,
+    lifecycles: &mut ast::ExternalObjectLifecycleCatalog,
     missing_builtin_reported: &mut bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -130,6 +144,25 @@ fn check_external_object_owner(
     };
     match index.external_object_lifecycle(owner_def_id) {
         Ok(Some(lifecycle)) => {
+            let identity = ast::ExternalObjectLifecycleIdentity::from_resolve_check(
+                lifecycle.owner_def_id(),
+                lifecycle.constructor_def_id(),
+                lifecycle.destructor_def_id(),
+            );
+            if let Err(duplicate_owner) = lifecycles.insert_from_resolve_check(identity) {
+                ExternalObjectError::shape(
+                    format!(
+                        "ExternalObject declaration '{}' repeats resolved owner identity {duplicate_owner:?}",
+                        owner.name.text
+                    ),
+                    label_from_token(
+                        &owner.name,
+                        "external_object/duplicate_owner_identity",
+                        "this ExternalObject owner identity was already issued",
+                    ),
+                )
+                .emit(diagnostics);
+            }
             lifecycle_roles.insert(
                 lifecycle.constructor_def_id(),
                 ast::ExternalObjectLifecycleRole::Constructor,
@@ -775,7 +808,7 @@ fn reject_explicit_lifecycle_calls(
         lifecycle_roles,
         diagnostics,
     };
-    let _ = visitor.visit_stored_definition(&tree.definitions);
+    let _visit_outcome = visitor.visit_stored_definition(&tree.definitions);
 }
 
 struct ExplicitLifecycleCallVisitor<'a> {

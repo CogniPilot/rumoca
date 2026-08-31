@@ -13,16 +13,23 @@ pub(super) fn extract_vcg_data_from_function_call(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
     prefix: &ast::QualifiedName,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<FlattenedEquations, FlattenError> {
     let mut result = FlattenedEquations::default();
-    if is_connections_root_call(comp)
-        && let Some(ref_arg) = args.first()
+    if has_role(
+        comp,
+        operators,
+        rumoca_core::ConnectionGraphOperatorRole::Root,
+    ) && let Some(ref_arg) = args.first()
         && let ast::Expression::ComponentReference(cr) = ref_arg
     {
         result.definite_roots.push(build_qualified_name(prefix, cr));
     }
-    if is_connections_branch_call(comp)
-        && args.len() >= 2
+    if has_role(
+        comp,
+        operators,
+        rumoca_core::ConnectionGraphOperatorRole::Branch,
+    ) && args.len() >= 2
         && let ast::Expression::ComponentReference(cr_a) = &args[0]
         && let ast::Expression::ComponentReference(cr_b) = &args[1]
     {
@@ -30,8 +37,11 @@ pub(super) fn extract_vcg_data_from_function_call(
         let path_b = build_qualified_name(prefix, cr_b);
         result.branches.push((path_a, path_b));
     }
-    if is_connections_potential_root_call(comp)
-        && let Some(ref_arg) = args.first()
+    if has_role(
+        comp,
+        operators,
+        rumoca_core::ConnectionGraphOperatorRole::PotentialRoot,
+    ) && let Some(ref_arg) = args.first()
         && let ast::Expression::ComponentReference(cr) = ref_arg
     {
         let priority = extract_potential_root_priority(args, comp.span)?;
@@ -56,7 +66,10 @@ pub(super) fn extract_vcg_data_from_function_call(
 /// - Connections.branch() - creates a required edge in the virtual connection graph
 /// - Connections.root() - defines a definite root node
 /// - Connections.potentialRoot() - defines a potential root with priority
-pub(super) fn is_side_effect_only_function(comp: &ast::ComponentReference) -> bool {
+pub(super) fn is_side_effect_only_function(
+    comp: &ast::ComponentReference,
+    operators: &ast::ConnectionOperatorCatalog,
+) -> bool {
     // Get the last part of the component reference (the actual function name).
     let func_name = comp
         .parts
@@ -69,7 +82,10 @@ pub(super) fn is_side_effect_only_function(comp: &ast::ComponentReference) -> bo
         func_name,
         "assert" | "terminate" | "print" | "close" | "readLine" | "error"
     ) || is_streams_utility_function(comp)
-        || is_connections_graph_function(comp)
+        || comp
+            .target_def_id()
+            .and_then(|declaration| operators.role(declaration))
+            .is_some()
 }
 
 /// Check if a function is from Modelica.Utilities.Streams (file I/O).
@@ -83,65 +99,14 @@ fn is_streams_utility_function(comp: &ast::ComponentReference) -> bool {
 /// Check if a function is a Connections.* graph function (MLS §9.4).
 /// These establish the virtual connection graph structure for overconstrained connectors
 /// but don't contribute equations to the DAE system.
-fn is_connections_graph_function(comp: &ast::ComponentReference) -> bool {
-    // Check if the path is Connections.branch, Connections.root, Connections.potentialRoot,
-    // Connections.isRoot, or Connections.rooted.
-    if comp.parts.len() >= 2 {
-        let parent = comp
-            .parts
-            .first()
-            .map(|p| p.ident.text.as_ref())
-            .unwrap_or("");
-        let func = comp
-            .parts
-            .last()
-            .map(|p| p.ident.text.as_ref())
-            .unwrap_or("");
-        parent == "Connections"
-            && matches!(
-                func,
-                "branch" | "root" | "potentialRoot" | "isRoot" | "rooted"
-            )
-    } else {
-        false
-    }
-}
-
-/// Check if a function call is Connections.root() (MLS §9.4.1).
-/// This declares the connector as a definite root for overconstrained types.
-fn is_connections_root_call(comp: &ast::ComponentReference) -> bool {
-    is_connections_call(comp, "root")
-}
-
-/// Check if a function call is Connections.branch(a, b) (MLS §9.4).
-/// This creates a required edge in the virtual connection graph.
-fn is_connections_branch_call(comp: &ast::ComponentReference) -> bool {
-    is_connections_call(comp, "branch")
-}
-
-/// Check if a function call is Connections.potentialRoot(a, priority) (MLS §9.4).
-/// This declares the connector as a potential root with a given priority.
-fn is_connections_potential_root_call(comp: &ast::ComponentReference) -> bool {
-    is_connections_call(comp, "potentialRoot")
-}
-
-/// Check if a function call is Connections.<func_name>().
-fn is_connections_call(comp: &ast::ComponentReference, func_name: &str) -> bool {
-    if comp.parts.len() >= 2 {
-        let parent = comp
-            .parts
-            .first()
-            .map(|p| p.ident.text.as_ref())
-            .unwrap_or("");
-        let func = comp
-            .parts
-            .last()
-            .map(|p| p.ident.text.as_ref())
-            .unwrap_or("");
-        parent == "Connections" && func == func_name
-    } else {
-        false
-    }
+fn has_role(
+    comp: &ast::ComponentReference,
+    operators: &ast::ConnectionOperatorCatalog,
+    role: rumoca_core::ConnectionGraphOperatorRole,
+) -> bool {
+    comp.target_def_id()
+        .and_then(|declaration| operators.role(declaration))
+        == Some(role)
 }
 
 #[cfg(test)]
@@ -172,6 +137,20 @@ mod tests {
         }
     }
 
+    fn operator_ref(
+        path: &str,
+        role: rumoca_core::ConnectionGraphOperatorRole,
+        operators: &ast::ConnectionOperatorCatalog,
+    ) -> ast::ComponentReference {
+        let mut reference = cref(path);
+        reference
+            .parts
+            .last_mut()
+            .expect("fixture operator reference is nonempty")
+            .def_id = Some(operators.declaration(role));
+        reference
+    }
+
     fn cref_expr(path: &str) -> ast::Expression {
         ast::Expression::ComponentReference(cref(path))
     }
@@ -191,30 +170,50 @@ mod tests {
 
     #[test]
     fn test_is_side_effect_only_function_handles_connections_streams_and_print() {
-        assert!(is_side_effect_only_function(&cref("Connections.root")));
-        assert!(is_side_effect_only_function(&cref(
-            "Modelica.Utilities.Streams.print"
-        )));
-        assert!(is_side_effect_only_function(&cref("print")));
-        assert!(!is_side_effect_only_function(&cref("sin")));
+        let operators = crate::test_support::connection_operators();
+        assert!(is_side_effect_only_function(
+            &operator_ref(
+                "Connections.root",
+                rumoca_core::ConnectionGraphOperatorRole::Root,
+                &operators,
+            ),
+            &operators,
+        ));
+        assert!(is_side_effect_only_function(
+            &cref("Modelica.Utilities.Streams.print"),
+            &operators,
+        ));
+        assert!(is_side_effect_only_function(&cref("print"), &operators));
+        assert!(!is_side_effect_only_function(&cref("sin"), &operators));
     }
 
     #[test]
     fn test_extract_vcg_data_from_connections_calls() {
         let prefix = ast::QualifiedName::new();
+        let operators = crate::test_support::connection_operators();
 
         let root = extract_vcg_data_from_function_call(
-            &cref("Connections.root"),
+            &operator_ref(
+                "Connections.root",
+                rumoca_core::ConnectionGraphOperatorRole::Root,
+                &operators,
+            ),
             &[cref_expr("a.p")],
             &prefix,
+            &operators,
         )
         .unwrap();
         assert_eq!(root.definite_roots, vec!["a.p".to_string()]);
 
         let branch = extract_vcg_data_from_function_call(
-            &cref("Connections.branch"),
+            &operator_ref(
+                "Connections.branch",
+                rumoca_core::ConnectionGraphOperatorRole::Branch,
+                &operators,
+            ),
             &[cref_expr("a.p"), cref_expr("b.n")],
             &prefix,
+            &operators,
         )
         .unwrap();
         assert_eq!(
@@ -223,9 +222,14 @@ mod tests {
         );
 
         let potential = extract_vcg_data_from_function_call(
-            &cref("Connections.potentialRoot"),
+            &operator_ref(
+                "Connections.potentialRoot",
+                rumoca_core::ConnectionGraphOperatorRole::PotentialRoot,
+                &operators,
+            ),
             &[cref_expr("a.p"), uint_expr(7)],
             &prefix,
+            &operators,
         )
         .unwrap();
         assert_eq!(potential.potential_roots, vec![("a.p".to_string(), 7)]);
@@ -234,12 +238,46 @@ mod tests {
     #[test]
     fn test_extract_vcg_data_default_priority_is_zero() {
         let prefix = ast::QualifiedName::new();
+        let operators = crate::test_support::connection_operators();
         let potential = extract_vcg_data_from_function_call(
-            &cref("Connections.potentialRoot"),
+            &operator_ref(
+                "Connections.potentialRoot",
+                rumoca_core::ConnectionGraphOperatorRole::PotentialRoot,
+                &operators,
+            ),
             &[cref_expr("a.p")],
             &prefix,
+            &operators,
         )
         .unwrap();
         assert_eq!(potential.potential_roots, vec![("a.p".to_string(), 0)]);
+    }
+
+    #[test]
+    fn connection_operator_classification_uses_exact_identity_not_spelling() {
+        let operators = crate::test_support::connection_operators();
+        let prefix = ast::QualifiedName::new();
+
+        let shadow = extract_vcg_data_from_function_call(
+            &cref("Connections.root"),
+            &[cref_expr("shadowed.p")],
+            &prefix,
+            &operators,
+        )
+        .expect("a user function with the same spelling is an ordinary call");
+        assert!(shadow.definite_roots.is_empty());
+
+        let alias = extract_vcg_data_from_function_call(
+            &operator_ref(
+                "Imported.chooseRoot",
+                rumoca_core::ConnectionGraphOperatorRole::Root,
+                &operators,
+            ),
+            &[cref_expr("aliased.p")],
+            &prefix,
+            &operators,
+        )
+        .expect("an alias retains the exact predefined declaration identity");
+        assert_eq!(alias.definite_roots, vec!["aliased.p".to_string()]);
     }
 }

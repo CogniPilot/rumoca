@@ -357,6 +357,31 @@ end WrongConstructorOutput;
 }
 
 #[test]
+fn er133_signature_failure_cannot_issue_resolved_semantic_catalogs() {
+    let source = r#"
+class WrongConstructorOutput
+  extends ExternalObject;
+  function constructor
+    output Real object;
+    external "C" object = create();
+  end constructor;
+  function destructor
+    input WrongConstructorOutput object;
+    external "C" release(object);
+  end destructor;
+end WrongConstructorOutput;
+"#;
+
+    match resolve_with_diagnostics(parsed_tree_from_source(source)) {
+        Err(failure) => {
+            let diagnostic = lifecycle_diagnostic(failure.diagnostics(), "ER133", "must have type");
+            assert_primary_source(source, diagnostic, "Real");
+        }
+        Ok(_) => panic!("ER133 must prevent the ResolvedTree catalog brand from being issued"),
+    }
+}
+
+#[test]
 fn func_037_external_object_destructor_has_one_owner_input_and_no_output() {
     let source = r#"
 class WrongDestructorSignature
@@ -504,5 +529,22 @@ class Handle
 end Handle;
 "#;
 
-    resolve_test_source(source).expect("well-formed ExternalObject lifecycle must resolve");
+    let resolved =
+        resolve_test_source(source).expect("well-formed ExternalObject lifecycle must resolve");
+    let owner = resolved
+        .get_def_id_by_name("Handle")
+        .expect("ExternalObject owner has exact identity");
+    let constructor = resolved
+        .get_def_id_by_name("Handle.constructor")
+        .expect("constructor has exact identity");
+    let destructor = resolved
+        .get_def_id_by_name("Handle.destructor")
+        .expect("destructor has exact identity");
+    let lifecycle = resolved
+        .semantic_catalogs()
+        .external_object(owner)
+        .expect("successful ER132/ER133 checking issues lifecycle identity");
+    assert_eq!(lifecycle.owner(), owner);
+    assert_eq!(lifecycle.constructor(), constructor);
+    assert_eq!(lifecycle.destructor(), destructor);
 }

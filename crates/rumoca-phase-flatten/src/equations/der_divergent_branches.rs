@@ -60,18 +60,19 @@ pub(super) fn try_select_parameter_branch(
     else_block: &Option<Vec<ast::Equation>>,
     ctx: &Context,
     prefix: &ast::QualifiedName,
-) -> Option<Vec<ast::Equation>> {
+    operators: &ast::ConnectionOperatorCatalog,
+) -> Result<Option<Vec<ast::Equation>>, crate::FlattenError> {
     for block in cond_blocks {
-        match try_eval_boolean_with_ctx_inner(&block.cond, Some(ctx), prefix) {
-            Some(true) => return Some(block.eqs.clone()),
+        match try_eval_boolean_with_ctx_inner(&block.cond, Some(ctx), prefix, operators)? {
+            Some(true) => return Ok(Some(block.eqs.clone())),
             Some(false) => continue,
-            None => return None,
+            None => return Ok(None),
         }
     }
-    Some(match else_block {
+    Ok(Some(match else_block {
         Some(equations) => equations.clone(),
         None => Vec::new(),
-    })
+    }))
 }
 
 /// Collect the rendered `der(...)` arguments reachable from `equations`.
@@ -99,7 +100,7 @@ fn der_targets_in_equations(equations: &[ast::Equation]) -> BTreeSet<String> {
 
     let mut targets = DerTargets(BTreeSet::new());
     for equation in equations {
-        let _ = ast::Visitor::visit_equation(&mut targets, equation);
+        let _visit_outcome = ast::Visitor::visit_equation(&mut targets, equation);
     }
     targets.0
 }

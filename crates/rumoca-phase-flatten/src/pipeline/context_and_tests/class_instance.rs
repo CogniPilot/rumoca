@@ -13,6 +13,7 @@ pub(crate) fn process_class_instance(
     component_override_map: &ComponentOverrideMap,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     let previous_class_scope = ctx.current_class_scope_path.clone();
     let previous_class_instance = ctx.current_class_instance_id;
@@ -25,6 +26,7 @@ pub(crate) fn process_class_instance(
         component_override_map,
         tree,
         class_index,
+        semantic_catalogs,
     );
     ctx.current_class_scope_path = previous_class_scope;
     ctx.current_class_instance_id = previous_class_instance;
@@ -40,7 +42,9 @@ fn process_class_instance_body(
     component_override_map: &ComponentOverrideMap,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
+    let operators = semantic_catalogs.connections();
     let prefix = &class_data.qualified_name;
     let def_map = Some(&tree.def_map);
     let class_scope = class_data.qualified_name.to_component_path();
@@ -73,7 +77,8 @@ fn process_class_instance_body(
             &override_functions,
         );
         // Handle when-equations separately (pass context for parameter evaluation).
-        let chain = when_equations::flatten_when_equation(ctx, &inst_eq, prefix, def_map)?;
+        let chain =
+            when_equations::flatten_when_equation(ctx, &inst_eq, prefix, def_map, operators)?;
         if let Some(mut chain) = chain {
             attach_when_chain_reference_scopes(&mut chain, class_data.instance_id)?;
             rewrite_function_overrides_in_when_chain(
@@ -82,13 +87,14 @@ fn process_class_instance_body(
                 class_index,
                 &override_packages,
                 &override_functions,
+                semantic_catalogs,
             )?;
             flat.when_chains.push(chain);
         }
 
         // Handle other equations (including for-loops that may contain when-equations).
         let mut flattened =
-            equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map)?;
+            equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map, operators)?;
         attach_equation_reference_scopes(&mut flattened, class_data.instance_id)?;
         rewrite_function_overrides_in_flattened(
             &mut flattened,
@@ -96,6 +102,7 @@ fn process_class_instance_body(
             class_index,
             &override_packages,
             &override_functions,
+            semantic_catalogs,
         )?;
         let equation_base = flat.equations.len();
         for eq in flattened.equations {
@@ -141,7 +148,7 @@ fn process_class_instance_body(
         }
 
         let mut flattened =
-            equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map)?;
+            equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map, operators)?;
         attach_equation_reference_scopes(&mut flattened, class_data.instance_id)?;
         rewrite_function_overrides_in_flattened(
             &mut flattened,
@@ -149,6 +156,7 @@ fn process_class_instance_body(
             class_index,
             &override_packages,
             &override_functions,
+            semantic_catalogs,
         )?;
         let equation_base = flat.initial_equations.len();
         for eq in flattened.equations {
@@ -213,6 +221,7 @@ fn process_class_instance_body(
                     class_index,
                     &override_packages,
                     &override_functions,
+                    semantic_catalogs,
                 )?;
                 lowered.push(flat_alg);
             }

@@ -51,8 +51,12 @@ use function_context::{
     function_initial_import_map, resolve_import_pairs,
 };
 pub(crate) use function_metadata::FunctionTypeCatalog;
-pub(crate) use function_metadata::lower_record_function_params;
+pub(crate) use function_metadata::materialize_complete_record_value_defaults;
 use function_metadata::*;
+pub(crate) use function_metadata::{
+    ComponentConstantKind, component_by_def_id, component_in_class_scope,
+    effective_component_constant_kind,
+};
 use function_output_validation::validate_function_outputs_assigned;
 use function_param_alias::function_param_type_alias_dims;
 use function_requests::{FunctionIdentitySet, same_function_request};
@@ -61,7 +65,7 @@ pub(crate) use function_requests::{FunctionRequest, FunctionRequests};
 use crate::algorithms;
 use crate::ast_lower;
 use crate::errors::FlattenError;
-use crate::function_lowering::rewrite_record_field_access_in_body;
+use crate::function_lowering::rewrite_all_record_field_access_bodies;
 use crate::path_utils;
 use crate::pipeline::{collect_package_chain, rewrite_function_extends_aliases_in_function};
 use crate::qualify;
@@ -102,9 +106,18 @@ pub(crate) fn record_type_fields(
                     field.span,
                 )
             })?;
+            let type_def_id = field.type_def_id.ok_or_else(|| {
+                FlattenError::missing_resolved_class_metadata(
+                    format!("{qualified_name}.{}", field.name),
+                    "record field type declaration identity",
+                    field.span,
+                )
+            })?;
             Ok(flat::RecordField {
                 name: field.name.clone(),
                 def_id,
+                type_def_id,
+                effective_type: field.effective_type.clone(),
                 dims: field.dimensions().to_vec(),
             })
         })
@@ -128,11 +141,12 @@ fn class_by_name_or_def_id<'a>(
 pub(crate) fn collect_functions(
     flat: &mut flat::Model,
     overlay: &ast::InstanceOverlay,
+    semantic_catalogs: &ast::SemanticCatalogProjection,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     caller_scope: Option<&str>,
 ) -> Result<(), FlattenError> {
-    let type_catalog = FunctionTypeCatalog::new(overlay);
+    let type_catalog = FunctionTypeCatalog::new(overlay, semantic_catalogs);
     let mut member_cache = qualify::MemberDefIdCache::default();
     let initial_calls = collect_function_call_requests(flat);
     let mut pending: Vec<(FunctionRequest, Option<String>)> = initial_calls
@@ -246,7 +260,8 @@ pub(crate) fn collect_functions(
     // Reconcile the complete retained function set at the phase boundary so
     // every constructor, independent of discovery route, contributes its
     // compact aggregate layout.
-    retain_discovered_constructor_types(flat)
+    retain_discovered_constructor_types(flat)?;
+    rewrite_all_record_field_access_bodies(flat)
 }
 
 fn retain_discovered_constructor_types(flat: &mut flat::Model) -> Result<(), FlattenError> {
@@ -294,9 +309,18 @@ fn retain_constructor_record_type(
                     field.span,
                 )
             })?;
+            let type_def_id = field.type_def_id.ok_or_else(|| {
+                FlattenError::missing_resolved_class_metadata(
+                    format!("{}.{}", function.name, field.name),
+                    "record field type declaration identity",
+                    field.span,
+                )
+            })?;
             Ok(flat::RecordField {
                 name: field.name.clone(),
                 def_id,
+                type_def_id,
+                effective_type: field.effective_type.clone(),
                 dims: field.dimensions().to_vec(),
             })
         })
@@ -955,11 +979,24 @@ fn convert_callable<'tree>(
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
     type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<Option<rumoca_core::Function>, FlattenError> {
+    let exposure_span = required_location_span(
+        source_map,
+        &class_def.location,
+        "callable exposure declaration",
+    )?;
+    let exposure_def_id = class_def.def_id.ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            qualified_name,
+            "callable exposure identity",
+            exposure_span,
+        )
+    })?;
     match &class_def.class_type {
         rumoca_core::ClassType::Function => convert_function(
             tree,
             class_index,
             class_def,
+            exposure_def_id,
             qualified_name,
             source_map,
             member_cache,
@@ -1025,24 +1062,21 @@ fn convert_external_object_callable<'tree>(
             owner_span,
         )
     })?;
-    let lifecycle = match class_index.external_object_lifecycle(owner_def_id) {
-        Ok(lifecycle) => lifecycle,
-        Err(error) => {
-            let (context, span) =
-                external_object_lifecycle_failure_context(source_map, owner_span, error)?;
-            return Err(FlattenError::missing_resolved_class_metadata(
-                exposed_name,
-                context,
-                span,
-            ));
-        }
-    };
-    lifecycle
+    type_catalog
+        .external_object(owner_def_id)
         .map(|lifecycle| {
+            let constructor = class_index.get(lifecycle.constructor()).ok_or_else(|| {
+                FlattenError::missing_resolved_class_metadata(
+                    exposed_name,
+                    "Resolve-issued ExternalObject constructor identity is absent from the class graph",
+                    owner_span,
+                )
+            })?;
             convert_external_object_constructor(
                 tree,
                 class_index,
-                lifecycle.constructor(),
+                constructor,
+                owner_def_id,
                 exposed_name,
                 source_map,
                 member_cache,
@@ -1056,6 +1090,7 @@ fn convert_external_object_constructor<'tree>(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'tree>,
     constructor: &'tree ast::ClassDef,
+    exposure_def_id: rumoca_core::DefId,
     exposed_name: &str,
     source_map: &rumoca_core::SourceMap,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
@@ -1065,6 +1100,7 @@ fn convert_external_object_constructor<'tree>(
         tree,
         class_index,
         constructor,
+        exposure_def_id,
         exposed_name,
         source_map,
         member_cache,
@@ -1072,32 +1108,19 @@ fn convert_external_object_constructor<'tree>(
     )
 }
 
-fn external_object_lifecycle_failure_context(
-    source_map: &rumoca_core::SourceMap,
-    fallback_span: rumoca_core::Span,
-    error: ast::ExternalObjectLifecycleError<'_>,
-) -> Result<(&'static str, rumoca_core::Span), FlattenError> {
-    let context = error.required_fact();
-    let span = error
-        .declaration_location()
-        .map_or(Ok(fallback_span), |location| {
-            required_location_span(source_map, location, context)
-        })?;
-    Ok((context, span))
-}
-
 /// Convert a ast::ClassDef (function) to a rumoca_core::Function.
 fn convert_function<'tree>(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'tree>,
     class_def: &'tree ast::ClassDef,
+    exposure_def_id: rumoca_core::DefId,
     qualified_name: &str,
     source_map: &rumoca_core::SourceMap,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
     type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<rumoca_core::Function, FlattenError> {
     let span = required_location_span(source_map, &class_def.location, "function definition")?;
-    let mut func = rumoca_core::Function::new(qualified_name, span);
+    let mut func = rumoca_core::Function::new(qualified_name, exposure_def_id, span);
     func.def_id = class_def.def_id;
     let mut context = collect_function_context(tree, class_index, class_def, member_cache);
     // MLS §7.3: a function body is converted from the class tree rather than
@@ -1163,13 +1186,6 @@ fn convert_function<'tree>(
 
     normalize_function_local_references(&mut func);
 
-    // MLS §4.9: Rewrite FieldAccess on record-typed function parameters
-    // to direct VarRef names (e.g., `c.re` → `c_re`). This allows backends
-    // to render them as simple variable names. The function signature is NOT
-    // changed here — that happens optionally in the codegen/DAE phase for
-    // backends that need it.
-    rewrite_record_field_access_in_body(&mut func);
-
     // MLS 3.7 §12.3 purity, carried as the two facts the declaration states:
     // the written prefix (`pure` unless `impure` was written) and whether a
     // prefix was written at all. Flat keeps both because they answer different
@@ -1196,9 +1212,13 @@ fn convert_function<'tree>(
     // the annotation expressions still exist.
     func.inline = extract_inline_annotation(&class_def.annotation);
 
-    rewrite_function_extends_aliases_in_function(&mut func, tree, class_index)?;
+    rewrite_function_extends_aliases_in_function(
+        &mut func,
+        tree,
+        class_index,
+        type_catalog.semantic_catalogs(),
+    )?;
     contextualize_record_param_type_names(tree, class_index, qualified_name, &mut func)?;
-    crate::function_lowering::coalesce_proven_record_output_assignments(&mut func);
     if !class_def.partial && is_executable_flat_function(&func) {
         validate_function_outputs_assigned(&func)?;
     }

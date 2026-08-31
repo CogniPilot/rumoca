@@ -15,6 +15,7 @@ pub(super) struct AssertEquationLowering<'a> {
     span: rumoca_core::Span,
     def_map: Option<&'a crate::ResolveDefMap>,
     origin: flat::EquationOrigin,
+    operators: &'a ast::ConnectionOperatorCatalog,
 }
 
 impl<'a> AssertEquationLowering<'a> {
@@ -24,6 +25,7 @@ impl<'a> AssertEquationLowering<'a> {
         span: rumoca_core::Span,
         def_map: Option<&'a crate::ResolveDefMap>,
         origin: flat::EquationOrigin,
+        operators: &'a ast::ConnectionOperatorCatalog,
     ) -> Self {
         Self {
             ctx,
@@ -31,6 +33,7 @@ impl<'a> AssertEquationLowering<'a> {
             span,
             def_map,
             origin,
+            operators,
         }
     }
 }
@@ -44,7 +47,13 @@ pub(super) fn flatten_assert_equation(
     // MLS §8.3.7: preserve assert-equations for runtime checks in flat output.
     // They do not contribute to the DAE residual equation system.
     let assert_eq = flat::AssertEquation::new(
-        qualify_assert_condition(lowering.ctx, condition, lowering.prefix, lowering.def_map)?,
+        qualify_assert_condition(
+            lowering.ctx,
+            condition,
+            lowering.prefix,
+            lowering.def_map,
+            lowering.operators,
+        )?,
         qualify_expression_imports_with_def_map_ctx(
             message,
             lowering.prefix,
@@ -194,8 +203,9 @@ fn qualify_assert_condition(
     condition: &ast::Expression,
     prefix: &ast::QualifiedName,
     def_map: Option<&crate::ResolveDefMap>,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<rumoca_core::Expression, FlattenError> {
-    if !contains_structural_assert_intrinsic(condition) {
+    if !contains_structural_assert_intrinsic(condition, operators) {
         return qualify_expression_imports_with_def_map_ctx(
             condition,
             prefix,
@@ -206,7 +216,7 @@ fn qualify_assert_condition(
         );
     }
     let rewritten = rewrite_structural_assert_condition(ctx, condition, prefix);
-    let condition = match try_eval_structural_boolean(ctx, &rewritten, prefix) {
+    let condition = match try_eval_structural_boolean(ctx, &rewritten, prefix, operators)? {
         Some(value) => ast_boolean_literal(value, condition.span()),
         None => rewritten,
     };
@@ -220,19 +230,29 @@ fn qualify_assert_condition(
     )
 }
 
-fn contains_structural_assert_intrinsic(expr: &ast::Expression) -> bool {
+fn contains_structural_assert_intrinsic(
+    expr: &ast::Expression,
+    operators: &ast::ConnectionOperatorCatalog,
+) -> bool {
     match expr {
         ast::Expression::FunctionCall { comp, args, .. } => {
-            is_structural_assert_intrinsic(comp)
-                || args.iter().any(contains_structural_assert_intrinsic)
+            is_structural_assert_intrinsic(comp, operators)
+                || args
+                    .iter()
+                    .any(|argument| contains_structural_assert_intrinsic(argument, operators))
         }
-        ast::Expression::Unary { rhs, .. } => contains_structural_assert_intrinsic(rhs),
+        ast::Expression::Unary { rhs, .. } => contains_structural_assert_intrinsic(rhs, operators),
         ast::Expression::Binary { lhs, rhs, .. } => {
-            contains_structural_assert_intrinsic(lhs) || contains_structural_assert_intrinsic(rhs)
+            contains_structural_assert_intrinsic(lhs, operators)
+                || contains_structural_assert_intrinsic(rhs, operators)
         }
-        ast::Expression::Parenthesized { inner, .. } => contains_structural_assert_intrinsic(inner),
+        ast::Expression::Parenthesized { inner, .. } => {
+            contains_structural_assert_intrinsic(inner, operators)
+        }
         ast::Expression::Array { elements, .. } | ast::Expression::Tuple { elements, .. } => {
-            elements.iter().any(contains_structural_assert_intrinsic)
+            elements
+                .iter()
+                .any(|element| contains_structural_assert_intrinsic(element, operators))
         }
         ast::Expression::If {
             branches,
@@ -240,67 +260,86 @@ fn contains_structural_assert_intrinsic(expr: &ast::Expression) -> bool {
             ..
         } => {
             branches.iter().any(|(cond, value)| {
-                contains_structural_assert_intrinsic(cond)
-                    || contains_structural_assert_intrinsic(value)
-            }) || contains_structural_assert_intrinsic(else_branch)
+                contains_structural_assert_intrinsic(cond, operators)
+                    || contains_structural_assert_intrinsic(value, operators)
+            }) || contains_structural_assert_intrinsic(else_branch, operators)
         }
         ast::Expression::Range {
             start, step, end, ..
         } => {
-            contains_structural_assert_intrinsic(start)
+            contains_structural_assert_intrinsic(start, operators)
                 || step
                     .as_ref()
-                    .is_some_and(|step| contains_structural_assert_intrinsic(step))
-                || contains_structural_assert_intrinsic(end)
+                    .is_some_and(|step| contains_structural_assert_intrinsic(step, operators))
+                || contains_structural_assert_intrinsic(end, operators)
         }
-        ast::Expression::NamedArgument { value, .. } => contains_structural_assert_intrinsic(value),
+        ast::Expression::NamedArgument { value, .. } => {
+            contains_structural_assert_intrinsic(value, operators)
+        }
         ast::Expression::ArrayComprehension {
             expr,
             indices,
             filter,
             ..
         } => {
-            contains_structural_assert_intrinsic(expr)
+            contains_structural_assert_intrinsic(expr, operators)
                 || indices
                     .iter()
-                    .any(|index| contains_structural_assert_intrinsic(&index.range))
+                    .any(|index| contains_structural_assert_intrinsic(&index.range, operators))
                 || filter
                     .as_ref()
-                    .is_some_and(|filter| contains_structural_assert_intrinsic(filter))
+                    .is_some_and(|filter| contains_structural_assert_intrinsic(filter, operators))
         }
         ast::Expression::ArrayIndex {
             base, subscripts, ..
         } => {
-            contains_structural_assert_intrinsic(base)
-                || subscripts
-                    .iter()
-                    .any(subscript_contains_structural_assert_intrinsic)
+            contains_structural_assert_intrinsic(base, operators)
+                || subscripts.iter().any(|subscript| {
+                    subscript_contains_structural_assert_intrinsic(subscript, operators)
+                })
         }
-        ast::Expression::FieldAccess { base, .. } => contains_structural_assert_intrinsic(base),
+        ast::Expression::FieldAccess { base, .. } => {
+            contains_structural_assert_intrinsic(base, operators)
+        }
         ast::Expression::ClassModification { modifications, .. } => modifications
             .iter()
-            .any(contains_structural_assert_intrinsic),
-        ast::Expression::Modification { value, .. } => contains_structural_assert_intrinsic(value),
+            .any(|modification| contains_structural_assert_intrinsic(modification, operators)),
+        ast::Expression::Modification { value, .. } => {
+            contains_structural_assert_intrinsic(value, operators)
+        }
         ast::Expression::ComponentReference(_)
         | ast::Expression::Empty { .. }
         | ast::Expression::Terminal { .. } => false,
     }
 }
 
-fn is_structural_assert_intrinsic(comp: &ast::ComponentReference) -> bool {
+fn is_structural_assert_intrinsic(
+    comp: &ast::ComponentReference,
+    operators: &ast::ConnectionOperatorCatalog,
+) -> bool {
     match comp.parts.as_slice() {
         [name] => name.ident.text.as_ref() == "cardinality",
-        [package, name] if package.ident.text.as_ref() == "Connections" => {
-            matches!(name.ident.text.as_ref(), "isRoot" | "rooted")
-        }
-        _ => false,
+        _ => matches!(
+            comp.target_def_id()
+                .and_then(|declaration| operators.role(declaration)),
+            Some(
+                rumoca_core::ConnectionGraphOperatorRole::IsRoot
+                    | rumoca_core::ConnectionGraphOperatorRole::Rooted
+            )
+        ),
     }
 }
 
-fn subscript_contains_structural_assert_intrinsic(subscript: &ast::Subscript) -> bool {
+fn subscript_contains_structural_assert_intrinsic(
+    subscript: &ast::Subscript,
+    operators: &ast::ConnectionOperatorCatalog,
+) -> bool {
     match subscript {
-        ast::Subscript::Expression(expr) => contains_structural_assert_intrinsic(expr),
-        ast::Subscript::Empty | ast::Subscript::Range { .. } => false,
+        ast::Subscript::Expression(expr) => contains_structural_assert_intrinsic(expr, operators),
+        ast::Subscript::Range { .. } => false,
+        ast::Subscript::Empty => {
+            unreachable!("flatten input validation rejects empty recovery subscripts")
+        }
     }
 }
 
@@ -570,7 +609,10 @@ fn rewrite_assert_subscript(
         ast::Subscript::Expression(expr) => {
             ast::Subscript::Expression(rewrite_structural_assert_condition(ctx, expr, prefix))
         }
-        ast::Subscript::Empty | ast::Subscript::Range { .. } => subscript.clone(),
+        ast::Subscript::Range { .. } => subscript.clone(),
+        ast::Subscript::Empty => {
+            unreachable!("flatten input validation rejects empty recovery subscripts")
+        }
     }
 }
 
@@ -668,6 +710,21 @@ mod tests {
         (ctx, ast::QualifiedName::from_ident("sg"))
     }
 
+    #[test]
+    fn structural_connections_queries_use_exact_identity_not_spelling() {
+        let operators = crate::test_support::connection_operators();
+        let shadow = component_ref(&["Connections", "isRoot"]);
+        assert!(!is_structural_assert_intrinsic(&shadow, &operators));
+
+        let mut alias = component_ref(&["Imported", "queryRoot"]);
+        alias
+            .parts
+            .last_mut()
+            .expect("alias has a callable leaf")
+            .def_id = Some(operators.declaration(rumoca_core::ConnectionGraphOperatorRole::IsRoot));
+        assert!(is_structural_assert_intrinsic(&alias, &operators));
+    }
+
     fn contains_cardinality_call(expr: &rumoca_core::Expression) -> bool {
         match expr {
             rumoca_core::Expression::FunctionCall { name, args, .. } => {
@@ -751,8 +808,14 @@ mod tests {
             int_expr(1),
         );
 
-        let qualified = qualify_assert_condition(&ctx, &condition, &prefix, None)
-            .expect("structural assertion condition should qualify");
+        let qualified = qualify_assert_condition(
+            &ctx,
+            &condition,
+            &prefix,
+            None,
+            &crate::test_support::connection_operators(),
+        )
+        .expect("structural assertion condition should qualify");
 
         assert!(matches!(
             qualified,
@@ -774,8 +837,14 @@ mod tests {
         let runtime_check = binary_expr(rumoca_core::OpBinary::Gt, var_expr(&["x"]), int_expr(0));
         let condition = binary_expr(rumoca_core::OpBinary::And, cardinality_check, runtime_check);
 
-        let qualified = qualify_assert_condition(&ctx, &condition, &prefix, None)
-            .expect("mixed assertion condition should qualify");
+        let qualified = qualify_assert_condition(
+            &ctx,
+            &condition,
+            &prefix,
+            None,
+            &crate::test_support::connection_operators(),
+        )
+        .expect("mixed assertion condition should qualify");
 
         assert!(
             !contains_cardinality_call(&qualified),
@@ -790,8 +859,14 @@ mod tests {
         let prefix = ast::QualifiedName::from_ident("m");
         let condition = binary_expr(rumoca_core::OpBinary::Gt, var_expr(&["k"]), int_expr(0));
 
-        let qualified = qualify_assert_condition(&ctx, &condition, &prefix, None)
-            .expect("runtime parameter assertion condition should qualify");
+        let qualified = qualify_assert_condition(
+            &ctx,
+            &condition,
+            &prefix,
+            None,
+            &crate::test_support::connection_operators(),
+        )
+        .expect("runtime parameter assertion condition should qualify");
 
         assert!(matches!(
             qualified,

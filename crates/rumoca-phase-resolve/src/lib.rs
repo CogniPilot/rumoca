@@ -37,8 +37,9 @@ pub use errors::{ResolveError, ResolveResult};
 pub use validation::{UnresolvedKind, UnresolvedSymbol, ValidationResult, validate_resolution};
 
 use rumoca_core::{
-    BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, ComponentPath, DefId, Diagnostic,
-    Diagnostics, PrimaryLabel, ScopeId, SourceMap, Span, maybe_elapsed_ms, maybe_start_timer,
+    BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, ComponentPath,
+    ConnectionGraphOperatorRole, DefId, Diagnostic, Diagnostics, PrimaryLabel, ScopeId, SourceMap,
+    Span, maybe_elapsed_ms, maybe_start_timer,
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -48,21 +49,6 @@ type Location = rumoca_core::Location;
 type ParsedTree = ast::ParsedTree;
 type ScopeTree = ast::ScopeTree;
 type StoredDefinition = ast::StoredDefinition;
-
-/// The built-in namespace that owns the connection-graph operators.
-///
-/// `rumoca_core::BUILTIN_VARIABLES` declares the namespace itself; this crate
-/// owns the declaration of the members inside it.
-const CONNECTIONS_NAMESPACE: &str = "Connections";
-
-/// Operators declared by the built-in `Connections` namespace (MLS §9.4).
-///
-/// `branch`, `root` and `potentialRoot` build the virtual connection graph;
-/// `isRoot` and `rooted` query it. Each is a predefined member of
-/// `Connections`, so a call such as `Connections.branch(a, b)` names an exact
-/// predeclared operator rather than an absent user-declared member.
-const CONNECTION_GRAPH_OPERATORS: &[&str] =
-    &["branch", "root", "potentialRoot", "isRoot", "rooted"];
 
 /// A class tree that has completed name resolution without errors.
 ///
@@ -85,19 +71,57 @@ const CONNECTION_GRAPH_OPERATORS: &[&str] =
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct ResolvedTree(ClassTree);
+pub struct ResolvedSemanticCatalogs(ast::SemanticCatalogProjection);
+
+impl ResolvedSemanticCatalogs {
+    /// Transfer a detached copy into Typecheck's atomic publication. This is
+    /// the only cross-crate erasure of the Resolve brand while AS-025 keeps
+    /// the semantic catalog in the InstanceOverlay storage root.
+    #[doc(hidden)]
+    pub fn clone_for_typecheck_publication(&self) -> ast::SemanticCatalogProjection {
+        self.0.clone()
+    }
+
+    pub fn connections(&self) -> &ast::ConnectionOperatorCatalog {
+        self.0.connections()
+    }
+
+    pub fn external_object(&self, owner: DefId) -> Option<ast::ExternalObjectLifecycleIdentity> {
+        self.0.external_object(owner)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedTree {
+    tree: ClassTree,
+    semantic_catalogs: ResolvedSemanticCatalogs,
+}
 
 impl ResolvedTree {
-    fn new(tree: ClassTree) -> Self {
-        Self(tree)
+    fn new(tree: ClassTree, semantic_catalogs: ast::SemanticCatalogProjection) -> Self {
+        Self {
+            tree,
+            semantic_catalogs: ResolvedSemanticCatalogs(semantic_catalogs),
+        }
     }
 
     pub fn inner(&self) -> &ClassTree {
-        &self.0
+        &self.tree
+    }
+
+    /// Exact semantic identities projected only after every Resolve check has
+    /// succeeded. The projection itself does not repeat MLS lifecycle-shape
+    /// validation; the unforgeable `ResolvedTree` is the proof of that check.
+    pub fn semantic_catalogs(&self) -> &ResolvedSemanticCatalogs {
+        &self.semantic_catalogs
     }
 
     pub fn into_inner(self) -> ClassTree {
-        self.0
+        self.tree
+    }
+
+    pub fn into_parts(self) -> (ClassTree, ResolvedSemanticCatalogs) {
+        (self.tree, self.semantic_catalogs)
     }
 }
 
@@ -381,6 +405,10 @@ fn write_resolve_timing_summary(summary: &ResolveTimingSummary) {
 impl Resolver {
     /// Create a new resolver with builtins pre-registered.
     pub fn new() -> Self {
+        Self::new_with_semantic_catalogs().0
+    }
+
+    fn new_with_semantic_catalogs() -> (Self, ast::ConnectionOperatorCatalog) {
         let mut resolver = Self {
             next_def_id: 1,
             scope_tree: ScopeTree::new(),
@@ -402,8 +430,8 @@ impl Resolver {
             stats: ResolutionStats::default(),
             last_core_timing: ResolveCoreTiming::default(),
         };
-        resolver.register_builtins();
-        resolver
+        let connections = resolver.register_builtins();
+        (resolver, connections)
     }
 
     /// Get the resolution statistics.
@@ -414,7 +442,7 @@ impl Resolver {
     /// Register all builtin types, functions, and variables in the global scope.
     /// Builtins get DefIds 1..N, allowing O(1) builtin checks while reserving
     /// `DefId(0)` for root/global scope per SPEC_0001.
-    fn register_builtins(&mut self) {
+    fn register_builtins(&mut self) -> ast::ConnectionOperatorCatalog {
         // Chain all builtins, deduplicating (types appear in both BUILTIN_TYPES and BUILTIN_FUNCTIONS)
         let all_builtins = BUILTIN_TYPES
             .iter()
@@ -442,16 +470,25 @@ impl Resolver {
         // predefined namespace, not of a user class, so their exact identity
         // has to be predeclared here; otherwise `Connections.branch` would
         // reach the qualified-name traversal as a missing static tail.
-        for &operator in CONNECTION_GRAPH_OPERATORS {
-            let operator_id = self.alloc_def_id(Some(CONNECTIONS_NAMESPACE), operator);
+        let connections = ast::ConnectionOperatorCatalog::from_resolve_registration(|role| {
+            let [namespace, operator] = match role {
+                ConnectionGraphOperatorRole::Branch => role.predefined_path(),
+                ConnectionGraphOperatorRole::Root => role.predefined_path(),
+                ConnectionGraphOperatorRole::PotentialRoot => role.predefined_path(),
+                ConnectionGraphOperatorRole::IsRoot => role.predefined_path(),
+                ConnectionGraphOperatorRole::Rooted => role.predefined_path(),
+            };
+            let operator_id = self.alloc_def_id(Some(namespace), operator);
             self.scope_tree.add_predefined_member(
-                ComponentPath::from_parts([CONNECTIONS_NAMESPACE, operator]),
+                ComponentPath::from_parts([namespace, operator]),
                 operator_id,
             );
-        }
+            operator_id
+        });
 
         // All DefIds allocated so far are builtins
         self.builtin_count = self.next_def_id;
+        connections
     }
 
     /// Check if a DefId is a builtin (O(1) comparison).
@@ -689,19 +726,26 @@ pub fn resolve_with_diagnostics(parsed: ParsedTree) -> Result<ResolveSuccess, Re
 struct ResolutionAttempt {
     tree: ClassTree,
     diagnostics: Diagnostics,
+    connection_operators: ast::ConnectionOperatorCatalog,
+    external_object_lifecycles: ast::ExternalObjectLifecycleCatalog,
 }
 
 fn resolve_attempt(parsed: ParsedTree) -> ResolutionAttempt {
     let total_start = maybe_start_timer();
     let mut tree = parsed.into_inner();
-    let mut resolver = Resolver::new();
+    let (mut resolver, connection_operators) = Resolver::new_with_semantic_catalogs();
     resolver.resolve(&mut tree);
 
     let semantic_checks_start = maybe_start_timer();
-    for diag in semantic_checks::check_all_semantics(&tree.definitions, &tree.source_map) {
+    for diag in semantic_checks::check_all_semantics(
+        &tree.definitions,
+        &tree.source_map,
+        &connection_operators,
+    ) {
         resolver.diagnostics.emit(diag);
     }
-    for diag in semantic_checks::check_resolved_semantics(&tree) {
+    let resolved_semantics = semantic_checks::check_resolved_semantics_with_catalog(&tree);
+    for diag in resolved_semantics.diagnostics {
         resolver.diagnostics.emit(diag);
     }
     let semantic_checks_ms = maybe_elapsed_ms(semantic_checks_start);
@@ -739,6 +783,8 @@ fn resolve_attempt(parsed: ParsedTree) -> ResolutionAttempt {
     ResolutionAttempt {
         tree,
         diagnostics: resolver.take_diagnostics(),
+        connection_operators,
+        external_object_lifecycles: resolved_semantics.external_object_lifecycles,
     }
 }
 
@@ -749,8 +795,12 @@ fn complete_resolution(attempt: ResolutionAttempt) -> Result<ResolveSuccess, Res
             diagnostics: Box::new(attempt.diagnostics),
         })
     } else {
+        let semantic_catalogs = ast::SemanticCatalogProjection::from_resolve_issued(
+            attempt.connection_operators,
+            attempt.external_object_lifecycles,
+        );
         Ok(ResolveSuccess {
-            tree: ResolvedTree::new(attempt.tree),
+            tree: ResolvedTree::new(attempt.tree, semantic_catalogs),
             diagnostics: attempt.diagnostics,
         })
     }

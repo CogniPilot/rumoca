@@ -74,6 +74,469 @@ end MixedSeverity;
 }
 
 #[test]
+fn user_connections_shadow_is_not_a_predefined_graph_operator_in_an_equation() {
+    let source = r#"
+model M
+  package Connections
+    function root
+      input Real value;
+    algorithm
+      assert(value >= 0, "nonnegative");
+    end root;
+  end Connections;
+  Boolean enabled;
+equation
+  if enabled then
+    Connections.root(1);
+  else
+    Connections.root(2);
+  end if;
+end M;
+"#;
+
+    resolve_test_source(source).expect(
+        "a user declaration named Connections.root must not inherit predefined graph restrictions",
+    );
+}
+
+#[test]
+fn predefined_connection_role_keeps_the_evaluable_context_restriction() {
+    let source = r#"
+model M
+  connector C
+    Real value;
+  end C;
+  Boolean enabled;
+  C a;
+equation
+  if enabled then
+    Connections.root(a);
+  end if;
+end M;
+"#;
+
+    let diagnostics = resolve_test_source(source)
+        .expect_err("the registered Connections.root role requires an evaluable condition");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ER083")),
+        "the exact registered role must retain EQN-038: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn user_connections_shadow_is_not_a_predefined_graph_operator_in_a_function() {
+    let source = r#"
+function F
+  package Connections
+    function root
+      input Real value;
+    algorithm
+      assert(value >= 0, "nonnegative");
+    end root;
+  end Connections;
+  input Real value;
+  output Real result;
+algorithm
+  Connections.root(value);
+  result := value;
+end F;
+"#;
+
+    resolve_test_source(source)
+        .expect("a user declaration named Connections.root must not inherit CONN-023");
+}
+
+#[test]
+fn qualified_continuous_guard_cannot_hide_a_conditional_connection() {
+    let source = r#"
+model Switch
+  Boolean enabled;
+end Switch;
+
+model M
+  connector C
+    Real e;
+    flow Real f;
+  end C;
+  Switch s;
+  C a;
+  C b;
+equation
+  if s.enabled then
+    connect(a, b);
+  end if;
+end M;
+"#;
+
+    let diagnostics = resolve_test_source(source)
+        .expect_err("a qualified continuous guard is not evaluable during translation");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ER083")),
+        "expected ER083 for s.enabled, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn enumeration_literals_remain_evaluable_connection_guards() {
+    let source = r#"
+type Mode = enumeration(Off, On);
+model M
+  connector C
+    Real e;
+    flow Real f;
+  end C;
+  parameter Mode mode = Mode.On;
+  C a;
+  C b;
+equation
+  if mode == Mode.On then
+    connect(a, b);
+  end if;
+end M;
+"#;
+
+    resolve_test_source(source).expect("a parameter compared with an enum literal is evaluable");
+}
+
+#[test]
+fn explicitly_nonevaluable_parameters_cannot_select_connections() {
+    for declaration in [
+        "parameter Boolean enabled(fixed=false) = true;",
+        "parameter Boolean enabled = true annotation(Evaluate=false);",
+    ] {
+        let source = format!(
+            r#"
+model M
+  connector C
+    Real e;
+    flow Real f;
+  end C;
+  {declaration}
+  C a;
+  C b;
+equation
+  if enabled then
+    connect(a, b);
+  end if;
+end M;
+"#
+        );
+        let diagnostics = resolve_test_source(&source)
+            .expect_err("a non-evaluable parameter cannot select connection topology");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_deref() == Some("ER083")),
+            "expected ER083 for `{declaration}`, got {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn semantic_true_attribute_expressions_preserve_structural_evaluability() {
+    for declarations in [
+        "parameter Boolean enabled(fixed=(not false)) = true;",
+        "constant Boolean yes = true; parameter Boolean enabled(fixed=yes) = true;",
+        "parameter Boolean enabled = true annotation(Evaluate=(not false));",
+        "constant Boolean yes = true; parameter Boolean enabled = true annotation(Evaluate=yes);",
+    ] {
+        let source = format!(
+            r#"
+model M
+  connector C
+    Real e;
+    flow Real f;
+  end C;
+  {declarations}
+  C a;
+  C b;
+equation
+  if enabled then
+    connect(a, b);
+  end if;
+end M;
+"#
+        );
+
+        resolve_test_source(&source).unwrap_or_else(|diagnostics| {
+            panic!("`{declarations}` must semantically prove true: {diagnostics:?}")
+        });
+    }
+}
+
+#[test]
+fn false_unknown_and_cyclic_attribute_expressions_block_structural_use() {
+    for declarations in [
+        "parameter Boolean enabled(fixed=(not true)) = true;",
+        "parameter Boolean enabled = true annotation(Evaluate=(not true));",
+        "parameter Boolean unknown; parameter Boolean enabled(fixed=unknown) = true;",
+        "parameter Boolean blocked(fixed=false) = true; parameter Boolean enabled(fixed=blocked) = true;",
+        "parameter Boolean unknown; parameter Boolean enabled = true annotation(Evaluate=unknown);",
+        "parameter Boolean left = right; parameter Boolean right = left; parameter Boolean enabled(fixed=left) = true;",
+    ] {
+        let source = format!(
+            r#"
+model M
+  connector C
+    Real e;
+    flow Real f;
+  end C;
+  {declarations}
+  C a;
+  C b;
+equation
+  if enabled then
+    connect(a, b);
+  end if;
+end M;
+"#
+        );
+
+        let diagnostics = resolve_test_source(&source)
+            .expect_err("an attribute that cannot prove true must block structural use");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_deref() == Some("ER083")),
+            "expected ER083 for `{declarations}`, got {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn scalar_parameter_without_a_binding_cannot_select_connections() {
+    for (type_declaration, guard_expression) in [
+        ("type Guard = Boolean;", "enabled"),
+        ("type Guard = enumeration(On, Off);", "enabled == Guard.On"),
+    ] {
+        let source = format!(
+            r#"
+{type_declaration}
+model M
+  connector C
+    Real e;
+    flow Real f;
+  end C;
+  parameter Guard enabled;
+  C a;
+  C b;
+equation
+  if {guard_expression} then
+    connect(a, b);
+  end if;
+end M;
+"#
+        );
+
+        let diagnostics = resolve_test_source(&source)
+            .expect_err("a scalar parameter without a declaration equation is not evaluable");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_deref() == Some("ER083")),
+            "expected ER083 for `{type_declaration}`, got {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn nonevaluable_parameter_dependencies_cannot_be_laundered_by_a_second_binding() {
+    for declarations in [
+        "parameter Boolean p(fixed=false) = true; parameter Boolean q = p;",
+        "Real x; parameter Boolean q = x > 0;",
+        "parameter Boolean q = q;",
+    ] {
+        let source = format!(
+            r#"
+model M
+  connector C
+    Real e;
+    flow Real f;
+  end C;
+  {declarations}
+  C a;
+  C b;
+equation
+  if q then
+    connect(a, b);
+  end if;
+end M;
+"#
+        );
+
+        let diagnostics = resolve_test_source(&source)
+            .expect_err("an unproven declaration equation cannot select connection topology");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_deref() == Some("ER083")),
+            "expected ER083 for `{declarations}`, got {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn transitively_evaluable_parameter_binding_can_select_connections() {
+    let source = r#"
+model M
+  connector C
+    Real e;
+    flow Real f;
+  end C;
+  parameter Boolean p = true;
+  parameter Boolean q = p;
+  C a;
+  C b;
+equation
+  if q then
+    connect(a, b);
+  end if;
+end M;
+"#;
+
+    resolve_test_source(source).expect("a transitive evaluable binding is structurally valid");
+}
+
+#[test]
+fn replaceable_parameter_tail_is_deferred_without_guessing_nonevaluable() {
+    let source = r#"
+model Settings
+  parameter Boolean enabled = true;
+end Settings;
+model M
+  connector C
+    Real e;
+    flow Real f;
+  end C;
+  replaceable Settings s constrainedby Settings;
+  C a;
+  C b;
+equation
+  if s.enabled then
+    connect(a, b);
+  end if;
+end M;
+"#;
+
+    resolve_test_source(source)
+        .expect("a deferred replaceable tail is unknown here, not proven continuous");
+}
+
+#[test]
+fn alg_004_forged_implicit_range_cannot_receive_resolved_proof() {
+    let mut parsed = parsed_tree_from_source(
+        r#"
+function F
+  input Real u;
+  output Real y;
+protected
+  Real a[3];
+  Real b[3];
+algorithm
+  for i in 1:3, j in 1:3 loop
+    a[i] := u;
+    b[i] := u + j;
+    b := fill(u, 3);
+  end for;
+  y := a[1] + b[1];
+end F;
+"#,
+    );
+
+    let class = parsed
+        .definitions
+        .classes
+        .get_mut("F")
+        .expect("function must exist");
+    let ast::Statement::For { indices, .. } = &mut class.algorithms[0][0] else {
+        panic!("expected the function algorithm to contain a for-statement");
+    };
+    let span = indices[0].range.span();
+    indices[0].range = ast::Expression::Empty { span };
+
+    let diagnostics = resolve(parsed).expect_err("unsupported implicit range must fail closed");
+    let er129 = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some("ER129"))
+        .collect::<Vec<_>>();
+    assert!(
+        matches!(er129.as_slice(), [diagnostic] if diagnostic.message.contains("iterator 'i'")),
+        "expected one ER129 for the forged implicit iterator, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn forged_equation_range_cannot_receive_resolved_proof() {
+    let mut parsed = parsed_tree_from_source(
+        r#"
+model M
+  Real a[3];
+equation
+  for i in 1:3 loop
+    a[i] = i;
+  end for;
+end M;
+"#,
+    );
+
+    let class = parsed
+        .definitions
+        .classes
+        .get_mut("M")
+        .expect("model must exist");
+    let ast::Equation::For { indices, .. } = &mut class.equations[0] else {
+        panic!("expected a for-equation");
+    };
+    let span = indices[0].range.span();
+    indices[0].range = ast::Expression::Empty { span };
+
+    let diagnostics = resolve(parsed).expect_err("forged equation range must fail closed");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ER129")),
+        "expected ER129, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn forged_comprehension_range_cannot_receive_resolved_proof() {
+    let mut parsed = parsed_tree_from_source(
+        r#"
+model M
+  parameter Real a[2] = {i for i in 1:2};
+end M;
+"#,
+    );
+
+    let component = parsed
+        .definitions
+        .classes
+        .get_mut("M")
+        .and_then(|class| class.components.get_mut("a"))
+        .expect("component must exist");
+    let binding = component.binding.as_mut().expect("binding must exist");
+    let ast::Expression::ArrayComprehension { indices, .. } = binding else {
+        panic!("expected an array comprehension binding");
+    };
+    let span = indices[0].range.span();
+    indices[0].range = ast::Expression::Empty { span };
+
+    let diagnostics = resolve(parsed).expect_err("forged comprehension range must fail closed");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ER129")),
+        "expected ER129, got: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn test_cardinality_allows_indexed_connector_array_element() {
     let source = r#"
 connector Port
@@ -637,4 +1100,160 @@ end P;
         panic!("x binding should remain a function call");
     };
     assert_eq!(comp.to_string(), "P.initialState");
+}
+
+fn equality_constraint_diagnostic(source: &str) -> Diagnostic {
+    resolve_test_source(source)
+        .expect_err("fixture must reject equalityConstraint")
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER117"))
+        .cloned()
+        .unwrap_or_else(|| panic!("expected ER117 for fixture:\n{source}"))
+}
+
+#[test]
+fn equality_constraint_absence_and_wrong_kind_are_not_correlated() {
+    resolve_test_source(
+        r#"
+record Absent
+  Real x;
+end Absent;
+model M
+  Absent r;
+end M;
+"#,
+    )
+    .expect("a record with no reserved slot has no exposure");
+
+    let diagnostic = equality_constraint_diagnostic(
+        r#"
+record Malformed
+  model equalityConstraint
+    Real x;
+  end equalityConstraint;
+end Malformed;
+"#,
+    );
+    assert!(diagnostic.message.contains("is not a function"));
+}
+
+#[test]
+fn equality_constraint_rejects_same_spelling_with_different_record_identity() {
+    let diagnostic = equality_constraint_diagnostic(
+        r#"
+package B
+  record R
+    Real x;
+  end R;
+end B;
+package A
+  record R
+    Real x;
+    function equalityConstraint
+      input B.R a;
+      input B.R b;
+      output Real residue[1];
+    end equalityConstraint;
+  end R;
+end A;
+"#,
+    );
+    assert!(diagnostic.message.contains("exact effective record type"));
+}
+
+#[test]
+fn equality_constraint_rejects_shadowed_real_identity() {
+    let diagnostic = equality_constraint_diagnostic(
+        r#"
+package P
+  type Real = Integer;
+  record R
+    P.Real x;
+    function equalityConstraint
+      input R a;
+      input R b;
+      output P.Real residue[1];
+    end equalityConstraint;
+  end R;
+end P;
+"#,
+    );
+    assert!(diagnostic.message.contains("predefined Real"));
+}
+
+#[test]
+fn equality_constraint_output_mutations_fail_closed() {
+    for (output, reason) in [
+        ("", "exactly one"),
+        ("output Real residue;", "rank-1"),
+        ("output Real residue[1, 1];", "rank-1"),
+        ("output Integer residue[1];", "predefined Real"),
+        (
+            "output Real residue1[1]; output Real residue2[1];",
+            "exactly one",
+        ),
+    ] {
+        let source = format!(
+            r#"
+record R
+  Real x;
+  function equalityConstraint
+    input R a;
+    input R b;
+    {output}
+  end equalityConstraint;
+end R;
+"#
+        );
+        let diagnostic = equality_constraint_diagnostic(&source);
+        assert!(
+            diagnostic.message.contains(reason),
+            "expected `{reason}` for `{output}`, got {diagnostic:?}"
+        );
+    }
+}
+
+#[test]
+fn equality_constraint_extent_accepts_zero_and_rejects_negative_or_nonevaluable() {
+    resolve_test_source(
+        r#"
+record R
+  Real x;
+  function equalityConstraint
+    input R a;
+    input R b;
+    output Real residue[0];
+  end equalityConstraint;
+end R;
+"#,
+    )
+    .expect("Real[0] is a valid vacuous result");
+
+    let negative = equality_constraint_diagnostic(
+        r#"
+record R
+  Real x;
+  function equalityConstraint
+    input R a;
+    input R b;
+    output Real residue[-1];
+  end equalityConstraint;
+end R;
+"#,
+    );
+    assert!(negative.message.contains("negative"));
+
+    let nonevaluable = equality_constraint_diagnostic(
+        r#"
+record R
+  Real n;
+  function equalityConstraint
+    input R a;
+    input R b;
+    output Real residue[n];
+  end equalityConstraint;
+end R;
+"#,
+    );
+    assert!(nonevaluable.message.contains("not a constant Integer"));
 }

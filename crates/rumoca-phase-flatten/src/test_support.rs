@@ -10,6 +10,11 @@ const PREDEFINED_INTEGER_DEF: rumoca_core::DefId = rumoca_core::DefId(0xfff0_000
 const PREDEFINED_BOOLEAN_DEF: rumoca_core::DefId = rumoca_core::DefId(0xfff0_0003);
 const PREDEFINED_STRING_DEF: rumoca_core::DefId = rumoca_core::DefId(0xfff0_0004);
 const PREDEFINED_CLOCK_DEF: rumoca_core::DefId = rumoca_core::DefId(0xfff0_0005);
+const CONNECTION_BRANCH_DEF: rumoca_core::DefId = rumoca_core::DefId(0xfff0_0010);
+const CONNECTION_ROOT_DEF: rumoca_core::DefId = rumoca_core::DefId(0xfff0_0011);
+const CONNECTION_POTENTIAL_ROOT_DEF: rumoca_core::DefId = rumoca_core::DefId(0xfff0_0012);
+const CONNECTION_IS_ROOT_DEF: rumoca_core::DefId = rumoca_core::DefId(0xfff0_0013);
+const CONNECTION_ROOTED_DEF: rumoca_core::DefId = rumoca_core::DefId(0xfff0_0014);
 
 pub(crate) fn real_param(name: &str, dimensions: Vec<i64>, span: Span) -> FunctionParam {
     param(name, "Real", REAL_TYPE, REAL_TYPE, dimensions, span)
@@ -71,6 +76,41 @@ pub(crate) fn install_predefined_type_identities(tree: &mut ast::ClassTree) {
     }
 }
 
+pub(crate) fn predefined_type_def_id(tree: &ast::ClassTree, name: &str) -> rumoca_core::DefId {
+    tree.scope_tree
+        .predefined_member(&rumoca_core::ComponentPath::from_flat_path(name))
+        .unwrap_or_else(|| panic!("fixture is missing predefined `{name}` identity"))
+}
+
+/// Construct the same closed semantic catalog Typecheck publishes, using a
+/// complete exact predefined vocabulary owned by the fixture. Tests must still
+/// put the corresponding exact DefId on any `Connections.*` reference they
+/// expect Flatten to classify as predefined.
+pub(crate) fn semantic_catalog_projection() -> ast::SemanticCatalogProjection {
+    ast::SemanticCatalogProjection::from_resolve_issued(
+        ast::ConnectionOperatorCatalog::from_resolve_registration(|role| match role {
+            rumoca_core::ConnectionGraphOperatorRole::Branch => CONNECTION_BRANCH_DEF,
+            rumoca_core::ConnectionGraphOperatorRole::Root => CONNECTION_ROOT_DEF,
+            rumoca_core::ConnectionGraphOperatorRole::PotentialRoot => {
+                CONNECTION_POTENTIAL_ROOT_DEF
+            }
+            rumoca_core::ConnectionGraphOperatorRole::IsRoot => CONNECTION_IS_ROOT_DEF,
+            rumoca_core::ConnectionGraphOperatorRole::Rooted => CONNECTION_ROOTED_DEF,
+        }),
+        ast::ExternalObjectLifecycleCatalog::begin_resolve_check(),
+    )
+}
+
+pub(crate) fn semantic_catalog_projection_ref() -> &'static ast::SemanticCatalogProjection {
+    static CATALOG: std::sync::OnceLock<ast::SemanticCatalogProjection> =
+        std::sync::OnceLock::new();
+    CATALOG.get_or_init(semantic_catalog_projection)
+}
+
+pub(crate) fn connection_operators() -> ast::ConnectionOperatorCatalog {
+    semantic_catalog_projection().connections().clone()
+}
+
 pub(crate) fn type_overlay(tree: &ast::ClassTree) -> ast::InstanceOverlay {
     let mut overlay = ast::InstanceOverlay::new();
     for (name, type_id) in [
@@ -102,6 +142,23 @@ pub(crate) fn type_overlay(tree: &ast::ClassTree) -> ast::InstanceOverlay {
         overlay.type_roots.insert(type_id, type_id);
     }
     overlay
+}
+
+/// Complete the same two one-shot Instance proofs required by production
+/// flattening for a fully authored fixture and return the production proof.
+/// This helper supplies no identities, defaults, repair, or fallback.
+pub(crate) fn finalized_test_overlay(
+    overlay: &mut ast::InstanceOverlay,
+) -> ast::FinalizedOverconstrainedCatalog<'_> {
+    overlay
+        .finalize_overconstrained_record_owners()
+        .expect("test Instance owner catalog is well formed");
+    overlay
+        .finalize_effective_type_publication(semantic_catalog_projection())
+        .expect("test Instance effective-type publication is well formed");
+    overlay
+        .finalized_overconstrained()
+        .expect("test Instance proof transitions must issue the production catalog")
 }
 
 fn param(

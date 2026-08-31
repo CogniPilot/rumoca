@@ -22,19 +22,27 @@
 //! # Example
 //!
 //! ```ignore
-//! use rumoca_phase_flatten::flatten;
+//! use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
 //!
-//! let instanced: ast::InstancedTree = instantiate(typed, "MyModel")?;
-//! let flat: flat::Model = flatten(instanced)?;
+//! let overlay = match instantiate_model_with_outcome(resolved.inner(), "MyModel") {
+//!     InstantiationOutcome::Success(overlay) => overlay,
+//!     InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+//!         report_missing_inners(missing_inners)
+//!     }
+//!     InstantiationOutcome::Error(error) => return Err(error),
+//! };
+//! let flat = rumoca_phase_flatten::flatten_ref(resolved.inner(), &overlay, "MyModel")?;
 //! ```
 
 mod algorithms;
 mod alias_paths;
 mod array_comprehension;
 mod ast_lower;
+mod ast_validation;
 mod boolean_eval;
 mod connections;
 mod connections_builtin;
+mod constant_eval;
 mod constant_extraction;
 #[cfg(test)]
 mod context_suffix_tests;
@@ -110,15 +118,14 @@ use record_constant_arrays::{
 };
 use rumoca_eval_flat::phase_constant::{
     ParamEvalContext, ParamEvaluator, eval_user_func_real, infer_array_dimensions,
-    infer_array_dimensions_full_with_functions, looks_like_enum_literal_path,
-    try_eval_flat_expr_enum, try_eval_integer_with_context, try_infer_better_dims,
+    infer_array_dimensions_checked, infer_array_dimensions_full_with_functions,
+    looks_like_enum_literal_path, try_eval_flat_expr_enum, try_eval_integer_with_context,
+    try_infer_better_dims,
 };
 
 /// Options controlling flatten strictness.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FlattenOptions {
-    /// Whether to enforce connection type/dimension validation.
-    pub strict_connection_validation: bool,
     /// Whether to shorten flat variable names after flattening.
     ///
     /// MLS §5.6 requires globally unique names but does not require shortening.
@@ -137,16 +144,6 @@ pub struct FlattenOptions {
     /// `true` forces full materialization -- retained as a debug toggle, which also
     /// exercises the corner-vs-full equivalence assertions.
     pub materialize_structured_families: bool,
-}
-
-impl Default for FlattenOptions {
-    fn default() -> Self {
-        Self {
-            strict_connection_validation: true,
-            simplify_variable_names: false,
-            materialize_structured_families: false,
-        }
-    }
 }
 
 /// Aggregate timing for a flatten subpass across all flattened models.
@@ -340,6 +337,8 @@ pub fn flatten_ref_with_options(
     model_name: &str,
     options: FlattenOptions,
 ) -> Result<flat::Model, FlattenError> {
+    ast_validation::validate_flatten_input(tree, overlay)?;
+    let overconstrained = finalized_overconstrained_catalog(overlay)?;
     let mut ctx = Context::new();
     ctx.predefined_string_declaration = tree
         .scope_tree
@@ -379,11 +378,12 @@ pub fn flatten_ref_with_options(
         tree,
         &class_index,
         &ctx.component_members,
+        overconstrained.semantic_catalogs(),
     )?;
     let flatten_graph = prepare_context_for_equation_flattening(
         &mut ctx,
         &mut flat,
-        overlay,
+        &overconstrained,
         tree,
         &class_index,
         model_name,
@@ -396,11 +396,12 @@ pub fn flatten_ref_with_options(
         &component_override_map,
         tree,
         &class_index,
+        overconstrained.semantic_catalogs(),
     )?;
     finalize_flat_model(FinalizeFlatModelInput {
         ctx: &mut ctx,
         flat: &mut flat,
-        overlay,
+        overconstrained: &overconstrained,
         tree,
         class_index: &class_index,
         model_name,
@@ -412,28 +413,27 @@ pub fn flatten_ref_with_options(
     Ok(flat)
 }
 
-/// Connection-set construction is intentionally scalar today, but the
-/// instantiate IR keeps regular vectorized connects compact and authoritative
-/// (SPEC_0032 §1). Each consumer boundary derives the scalar projection view
-/// on demand through `rumoca_eval_ast::connection::scalar_connection_view`
-/// instead of materializing a second copy of the whole overlay.
-/// Only classes that actually carry a compact family pay for a materialized
-/// scalar list; everything else borrows the stored slice.
-pub(crate) fn scalar_connections_of(
-    class_data: &ast::ClassInstanceData,
-) -> Result<std::borrow::Cow<'_, [ast::InstanceConnection]>, FlattenError> {
-    if !class_data
-        .connections
-        .iter()
-        .any(|connection| connection.family.is_some())
-    {
-        return Ok(std::borrow::Cow::Borrowed(&class_data.connections));
-    }
-    let mut connections = Vec::new();
-    for member in rumoca_eval_ast::connection::scalar_connection_view(&class_data.connections) {
-        connections.push(member.map_err(structured_connection_error)?.into_owned());
-    }
-    Ok(std::borrow::Cow::Owned(connections))
+fn finalized_overconstrained_catalog(
+    overlay: &ast::InstanceOverlay,
+) -> Result<ast::FinalizedOverconstrainedCatalog<'_>, FlattenError> {
+    let span = overlay
+        .classes
+        .values()
+        .flat_map(|class| class.connections.iter())
+        .next()
+        .map(|connection| match connection {
+            ast::InstanceConnection::Scalar(connection) => connection.span(),
+            ast::InstanceConnection::Family(family) => family.span(),
+        })
+        .unwrap_or(rumoca_core::Span::DUMMY);
+    overlay.finalized_overconstrained().map_err(|error| {
+        FlattenError::invalid_connection_evidence(
+            format!(
+                "flattening requires the finalized overconstrained occurrence catalog: {error}"
+            ),
+            span,
+        )
+    })
 }
 
 pub(crate) fn structured_connection_error(reason: String) -> FlattenError {
@@ -455,7 +455,11 @@ mod seed_function_tests {
     #[test]
     fn precollected_function_seed_assigns_identity_before_canonicalization() {
         let mut ctx = Context::new();
-        let mut function = rumoca_core::Function::new("Pkg.f", rumoca_core::Span::DUMMY);
+        let mut function = rumoca_core::Function::new(
+            "Pkg.f",
+            rumoca_core::DefId::new(61_012),
+            rumoca_core::Span::DUMMY,
+        );
         function.body.push(rumoca_core::Statement::Return {
             span: rumoca_core::Span::DUMMY,
         });
@@ -466,6 +470,7 @@ mod seed_function_tests {
                 name: rumoca_core::Reference::new("Pkg.f"),
                 args: Vec::new(),
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: rumoca_core::Span::DUMMY,
             },
             rumoca_core::Span::DUMMY,
@@ -918,7 +923,9 @@ mod nested_class_constant_scope_tests {
 
     #[test]
     fn extract_nested_class_constants_skips_non_package_nested_classes() {
-        let tree = ast::ClassTree::new();
+        let mut tree = ast::ClassTree::new();
+        crate::test_support::install_predefined_type_identities(&mut tree);
+        let integer_id = crate::test_support::predefined_type_def_id(&tree, "Integer");
         let class_index = ast::ClassDefIndex::from_tree(&tree);
         let mut ctx = Context::new();
 
@@ -938,6 +945,7 @@ mod nested_class_constant_scope_tests {
             ast::Component {
                 name: "nX".to_string(),
                 type_name: ast::Name::from_string("Integer"),
+                type_def_id: Some(integer_id),
                 variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
                 binding: Some(unsigned_integer("2")),
                 has_explicit_binding: true,

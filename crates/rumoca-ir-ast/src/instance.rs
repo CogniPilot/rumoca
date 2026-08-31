@@ -7,6 +7,28 @@
 //! and keyed by DefId, rather than bloating the core AST types with
 //! optional instance fields.
 
+mod equality_constraint;
+mod semantic_catalogs;
+
+pub use equality_constraint::{
+    EffectiveTypePublicationError, EqualityConstraintCardinality,
+    EqualityConstraintDeclarationIndex, EqualityConstraintEffectiveRecordIdentity,
+    EqualityConstraintExposureError, EqualityConstraintOccurrenceError,
+    EqualityConstraintOccurrenceExposure, EqualityConstraintPrototype,
+    EqualityConstraintSelectionProof, EqualityConstraintSpecializationKey,
+    FinalizedOverconstrainedCatalog, FinalizedOverconstrainedComponent,
+    FinalizedOverconstrainedRecord,
+};
+use equality_constraint::{
+    FinalizedOverconstrainedOccurrence, PendingEqualityConstraintOccurrenceExposure,
+};
+#[cfg(test)]
+pub(crate) use semantic_catalogs::test_semantic_catalog_projection;
+pub use semantic_catalogs::{
+    ConnectionOperatorCatalog, ExternalObjectLifecycleCatalog, ExternalObjectLifecycleIdentity,
+    SemanticCatalogProjection,
+};
+
 use crate::AstIndexMap as IndexMap;
 use indexmap::IndexSet;
 use rumoca_core::{
@@ -19,8 +41,18 @@ use crate::{
     Causality, ClassTree, ClassType, ComponentReference, Equation, Expression, StateSelect,
     Statement, Variability,
 };
+#[cfg(test)]
+use crate::{ClassDef, Subscript};
 
 type FastIndexMap<K, V> = IndexMap<K, V>;
+
+fn required<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
 
 /// A fully qualified path with resolved subscripts.
 ///
@@ -251,7 +283,7 @@ fn write_subscripts(out: &mut String, subs: &[i64]) {
         if sub_index > 0 {
             out.push(',');
         }
-        let _ = write!(out, "{subscript}");
+        write!(out, "{subscript}").expect("writing to a String cannot fail");
     }
     out.push(']');
 }
@@ -477,9 +509,8 @@ pub struct ClassOverride {
     pub alias: String,
     pub alias_def_id: DefId,
     pub target_def_id: DefId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
     pub target_ref: Option<ComponentReference>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modifier_args: Vec<Expression>,
 }
 
@@ -512,17 +543,25 @@ impl ClassOverride {
 /// This is stored in an overlay map keyed by DefId, rather than
 /// being embedded in Component directly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InstanceData {
     /// Unique identifier for this instance.
     pub instance_id: InstanceId,
+    /// Exact source component declaration that produced this occurrence.
+    ///
+    /// This identity is distinct from `type_def_id`: two record occurrences of
+    /// the same type may select different nested replaceable functions.
+    #[serde(deserialize_with = "required")]
+    pub declaration_def_id: Option<DefId>,
     /// Exact class occurrence that owns this component.
+    #[serde(deserialize_with = "required")]
     pub owner_class_id: Option<InstanceId>,
     /// Structured resolved component reference for this concrete instance.
     ///
     /// This is the semantic carrier for downstream Flat/DAE phases. The
     /// rendered `qualified_name` remains useful for stable output spelling, but
     /// compiler logic should prefer this structured reference when available.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "required")]
     pub component_ref: Option<CoreComponentReference>,
     /// Fully qualified name in the instance tree.
     pub qualified_name: QualifiedName,
@@ -541,14 +580,16 @@ pub struct InstanceData {
     pub type_name: String,
     /// DefId of the declared component type when available from resolve phase.
     /// Builtin types typically do not have a DefId.
+    #[serde(deserialize_with = "required")]
     pub type_def_id: Option<DefId>,
     /// Resolved first-segment declaration of a qualified type reference.
     ///
     /// For `Medium.State`, this identifies the `Medium` class/package slot
     /// without recovering semantic structure from the rendered type name.
+    #[serde(deserialize_with = "required")]
     pub type_reference_root_def_id: Option<DefId>,
     /// Lexical scope where this component declaration was written.
-    #[serde(default)]
+    #[serde(deserialize_with = "required")]
     pub declaration_source_scope: Option<QualifiedName>,
     /// Active replaceable class/package redeclare overrides for this component instance.
     ///
@@ -572,7 +613,6 @@ pub struct InstanceData {
     /// anything instantiated underneath it) is therefore this compiler's
     /// residue of the *original* declaration, not a statement about the model,
     /// and must never be reported to the user as one.
-    #[serde(default)]
     pub had_redeclare: bool,
 
     // Type prefixes (MLS §4.4.2, SPEC_0022 §3.19-3.20)
@@ -587,27 +627,37 @@ pub struct InstanceData {
 
     // Resolved attribute values (MLS §4.4)
     /// Start value attribute.
+    #[serde(deserialize_with = "required")]
     pub start: Option<Expression>,
     /// Fixed attribute.
+    #[serde(deserialize_with = "required")]
     pub fixed: Option<bool>,
     /// Minimum value attribute.
+    #[serde(deserialize_with = "required")]
     pub min: Option<Expression>,
     /// Maximum value attribute.
+    #[serde(deserialize_with = "required")]
     pub max: Option<Expression>,
     /// Nominal value attribute.
+    #[serde(deserialize_with = "required")]
     pub nominal: Option<Expression>,
     /// Quantity string attribute.
+    #[serde(deserialize_with = "required")]
     pub quantity: Option<String>,
     /// Unit string attribute.
+    #[serde(deserialize_with = "required")]
     pub unit: Option<String>,
     /// Display-unit string attribute.
+    #[serde(deserialize_with = "required")]
     pub display_unit: Option<String>,
     /// Optional declaration description string (`"..."` after component declaration).
+    #[serde(deserialize_with = "required")]
     pub description: Option<String>,
     /// State selection hint.
     pub state_select: StateSelect,
 
     /// Binding equation value (resolved).
+    #[serde(deserialize_with = "required")]
     pub binding: Option<Expression>,
     /// Optional symbolic binding source expression for modification-derived bindings.
     ///
@@ -615,11 +665,13 @@ pub struct InstanceData {
     /// intentionally reference outer parameters (e.g., `gain(g = k)`).
     /// We retain this source form for flat-output rendering while keeping `binding`
     /// available as a resolved value for semantic passes.
+    #[serde(deserialize_with = "required")]
     pub binding_source: Option<Expression>,
     /// Lexical scope where a modification-derived binding was written.
     ///
     /// Used during flattening to qualify symbolic modifier references according
     /// to MLS §7.2.4 without path-depth heuristics.
+    #[serde(deserialize_with = "required")]
     pub binding_source_scope: Option<QualifiedName>,
     /// Lexical scopes where attribute modifiers were written, keyed by attribute
     /// name (`start`, `min`, `max`, `nominal`).
@@ -643,9 +695,6 @@ pub struct InstanceData {
     /// True if this component declaration has the `final` prefix (MLS §7.2.6).
     /// Used for preserving flat-output declaration qualifiers.
     pub is_final: bool,
-    /// True if this variable belongs to an overconstrained connector (MLS §9.4).
-    /// A connector is overconstrained if its type defines an `equalityConstraint` function.
-    pub is_overconstrained: bool,
     /// True if this component is declared in a protected section (MLS §4.7).
     /// Protected components are not part of the public interface and their flow
     /// variables should not count as interface flows for balance checking.
@@ -660,21 +709,14 @@ pub struct InstanceData {
     /// Kept on the container instance because an empty expandable connector has
     /// no flattened descendants from which later phases could recover this
     /// semantic fact.
-    #[serde(default)]
     pub is_expandable_connector_type: bool,
-    /// The path of the enclosing overconstrained record (MLS §9.4).
-    /// E.g., "frame_a.R" for variables frame_a.R.T and frame_a.R.w.
-    /// Used to group OC variables into VCG nodes for balance correction.
-    pub oc_record_path: Option<String>,
-    /// The output size of the enclosing record's equalityConstraint function.
-    /// E.g., 3 for Orientation (returns `Real[3]`).
-    pub oc_eq_constraint_size: Option<usize>,
 }
 
 impl Default for InstanceData {
     fn default() -> Self {
         Self {
             instance_id: InstanceId::default(),
+            declaration_def_id: None,
             owner_class_id: None,
             component_ref: None,
             qualified_name: QualifiedName::default(),
@@ -713,12 +755,9 @@ impl Default for InstanceData {
             from_expandable_connector: false,
             evaluate: false,
             is_final: false,
-            is_overconstrained: false,
             is_protected: false,
             is_connector_type: false,
             is_expandable_connector_type: false,
-            oc_record_path: None,
-            oc_eq_constraint_size: None,
         }
     }
 }
@@ -736,10 +775,10 @@ pub struct ClassInstanceData {
     /// Fully qualified name in the instance tree.
     pub qualified_name: QualifiedName,
     /// Lexical scope of the class declaration that produced this instance.
-    #[serde(default)]
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
     pub source_scope: Option<QualifiedName>,
     /// Resolved lexical scope of the class declaration that produced this instance.
-    #[serde(default)]
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
     pub source_scope_id: Option<ScopeId>,
     /// Effective replaceable class/package selections in this concrete class instance.
     ///
@@ -747,7 +786,6 @@ pub struct ClassInstanceData {
     /// complete modification environment and enclosing redeclares are known.
     /// Downstream phases must consume it directly instead of reconstructing
     /// virtual class identity from instance paths.
-    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub class_overrides: ClassOverrideMap,
     /// Equations from this instance (not inherited).
     pub equations: Vec<InstanceEquation>,
@@ -801,42 +839,432 @@ pub struct InstanceStatement {
 /// A connection statement in the instance tree.
 ///
 /// MLS §9: Connection equations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InstanceConnection {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "connection",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum InstanceConnection {
+    /// One source connection between two concrete scalar endpoints.
+    Scalar(InstanceScalarConnection),
+    /// One authoritative compact family of scalar connections.
+    Family(InstanceConnectionFamily),
+}
+
+impl InstanceConnection {
+    pub fn scalar(
+        a: QualifiedName,
+        b: QualifiedName,
+        connector_type: Option<DefId>,
+        span: Span,
+        scope: String,
+    ) -> Result<Self, InstanceConnectionConstructionError> {
+        Ok(Self::Scalar(InstanceScalarConnection::new(
+            a,
+            b,
+            connector_type,
+            span,
+            scope,
+        )?))
+    }
+
+    pub fn family(
+        domain: rumoca_core::StructuredIndexDomain,
+        a: InstanceConnectionEndpoint,
+        b: InstanceConnectionEndpoint,
+        connector_type: Option<DefId>,
+        span: Span,
+        scope: String,
+    ) -> Result<Self, InstanceConnectionConstructionError> {
+        Ok(Self::Family(InstanceConnectionFamily::new(
+            domain,
+            a,
+            b,
+            connector_type,
+            span,
+            scope,
+        )?))
+    }
+
+    pub fn as_scalar(&self) -> Option<&InstanceScalarConnection> {
+        match self {
+            Self::Scalar(connection) => Some(connection),
+            Self::Family(_) => None,
+        }
+    }
+
+    pub fn as_family(&self) -> Option<&InstanceConnectionFamily> {
+        match self {
+            Self::Scalar(_) => None,
+            Self::Family(family) => Some(family),
+        }
+    }
+}
+
+/// One concrete scalar member of an instance connection.
+///
+/// Its invariants cannot be bypassed with a field literal; callers must use
+/// [`InstanceScalarConnection::new`] or [`InstanceConnection::scalar`].
+///
+/// ```compile_fail
+/// use rumoca_ir_ast::{InstanceScalarConnection, QualifiedName};
+/// use rumoca_core::Span;
+///
+/// let _forged = InstanceScalarConnection {
+///     a: QualifiedName::new(),
+///     b: QualifiedName::new(),
+///     connector_type: None,
+///     span: Span::DUMMY,
+///     scope: String::new(),
+/// };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InstanceScalarConnection {
     /// First connector.
-    pub a: QualifiedName,
+    a: QualifiedName,
     /// Second connector.
-    pub b: QualifiedName,
+    b: QualifiedName,
     /// Type of the connectors.
-    pub connector_type: Option<DefId>,
+    connector_type: Option<DefId>,
     /// Source span for error reporting.
-    pub span: Span,
+    span: Span,
     /// Scope where the connect statement was declared (flattened prefix).
     /// Used to determine the correct hierarchy level for flow sum equations.
     /// Empty string means root level.
-    pub scope: String,
-    /// Compact authoritative form for a regular vectorized connection.
-    ///
-    /// `a` and `b` above are the domain's first scalar member for diagnostic
-    /// and compatibility views. Flattening derives all scalar members from
-    /// this family at its input boundary.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub family: Option<InstanceConnectionFamily>,
+    scope: String,
+}
+
+impl InstanceScalarConnection {
+    pub fn new(
+        a: QualifiedName,
+        b: QualifiedName,
+        connector_type: Option<DefId>,
+        span: Span,
+        scope: String,
+    ) -> Result<Self, InstanceConnectionConstructionError> {
+        validate_scalar_connection_endpoint(&a, "left")?;
+        validate_scalar_connection_endpoint(&b, "right")?;
+        let span = span
+            .require_provenance("constructing a scalar instance connection")
+            .map_err(|_| InstanceConnectionConstructionError::MissingProvenance)?
+            .span();
+        Ok(Self {
+            a,
+            b,
+            connector_type,
+            span,
+            scope,
+        })
+    }
+
+    pub fn a(&self) -> &QualifiedName {
+        &self.a
+    }
+
+    pub fn b(&self) -> &QualifiedName {
+        &self.b
+    }
+
+    pub fn connector_type(&self) -> Option<DefId> {
+        self.connector_type
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+
+    pub fn scope(&self) -> &str {
+        &self.scope
+    }
+}
+
+impl<'de> Deserialize<'de> for InstanceScalarConnection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            a: QualifiedName,
+            b: QualifiedName,
+            connector_type: Option<DefId>,
+            span: Span,
+            scope: String,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.a, wire.b, wire.connector_type, wire.span, wire.scope)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// A qualified connection endpoint whose subscripts are affine in a structured
 /// connection family's binders.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InstanceConnectionEndpoint {
-    pub parts: Vec<(String, Vec<rumoca_core::AffineForm>)>,
+    parts: Vec<(String, Vec<rumoca_core::AffineForm>)>,
+}
+
+impl InstanceConnectionEndpoint {
+    pub fn new(
+        parts: Vec<(String, Vec<rumoca_core::AffineForm>)>,
+    ) -> Result<Self, InstanceConnectionConstructionError> {
+        if parts.is_empty() {
+            return Err(InstanceConnectionConstructionError::EmptyEndpoint);
+        }
+        if parts.iter().any(|(name, _)| name.is_empty()) {
+            return Err(InstanceConnectionConstructionError::EmptyEndpointPart);
+        }
+        Ok(Self { parts })
+    }
+
+    pub fn parts(&self) -> &[(String, Vec<rumoca_core::AffineForm>)] {
+        &self.parts
+    }
+}
+
+impl<'de> Deserialize<'de> for InstanceConnectionEndpoint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            parts: Vec<(String, Vec<rumoca_core::AffineForm>)>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.parts).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Compact instance-IR representation of a regular vectorized `connect`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InstanceConnectionFamily {
-    pub domain: rumoca_core::StructuredIndexDomain,
-    pub a: InstanceConnectionEndpoint,
-    pub b: InstanceConnectionEndpoint,
+    domain: rumoca_core::StructuredIndexDomain,
+    a: InstanceConnectionEndpoint,
+    b: InstanceConnectionEndpoint,
+    /// Type of the connectors.
+    connector_type: Option<DefId>,
+    /// Source span for error reporting.
+    span: Span,
+    /// Scope where the connect statement was declared (flattened prefix).
+    scope: String,
+}
+
+impl InstanceConnectionFamily {
+    fn new(
+        domain: rumoca_core::StructuredIndexDomain,
+        a: InstanceConnectionEndpoint,
+        b: InstanceConnectionEndpoint,
+        connector_type: Option<DefId>,
+        span: Span,
+        scope: String,
+    ) -> Result<Self, InstanceConnectionConstructionError> {
+        let scalar_count = domain.validate().map_err(|error| {
+            InstanceConnectionConstructionError::InvalidDomain(error.to_string())
+        })?;
+        for (expected, binder) in domain.binders.iter().enumerate() {
+            let expected = rumoca_core::StructuredIndexBinderId::from_ordinal(expected)
+                .expect("structured-domain rank must fit its typed binder identity");
+            if binder.id != expected {
+                return Err(InstanceConnectionConstructionError::NonCanonicalBinderId {
+                    expected,
+                    actual: binder.id,
+                });
+            }
+        }
+        for endpoint in [&a, &b] {
+            validate_connection_endpoint_forms(endpoint, &domain, scalar_count)?;
+        }
+        let span = span
+            .require_provenance("constructing an instance connection family")
+            .map_err(|_| InstanceConnectionConstructionError::MissingProvenance)?
+            .span();
+        Ok(Self {
+            domain,
+            a,
+            b,
+            connector_type,
+            span,
+            scope,
+        })
+    }
+
+    pub fn domain(&self) -> &rumoca_core::StructuredIndexDomain {
+        &self.domain
+    }
+
+    pub fn a(&self) -> &InstanceConnectionEndpoint {
+        &self.a
+    }
+
+    pub fn b(&self) -> &InstanceConnectionEndpoint {
+        &self.b
+    }
+
+    pub fn connector_type(&self) -> Option<DefId> {
+        self.connector_type
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+
+    pub fn scope(&self) -> &str {
+        &self.scope
+    }
+}
+
+impl<'de> Deserialize<'de> for InstanceConnectionFamily {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            domain: rumoca_core::StructuredIndexDomain,
+            a: InstanceConnectionEndpoint,
+            b: InstanceConnectionEndpoint,
+            connector_type: Option<DefId>,
+            span: Span,
+            scope: String,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(
+            wire.domain,
+            wire.a,
+            wire.b,
+            wire.connector_type,
+            wire.span,
+            wire.scope,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstanceConnectionConstructionError {
+    EmptyEndpoint,
+    EmptyEndpointPart,
+    EmptyScalarEndpoint {
+        side: &'static str,
+    },
+    InvalidDomain(String),
+    NonCanonicalBinderId {
+        expected: rumoca_core::StructuredIndexBinderId,
+        actual: rumoca_core::StructuredIndexBinderId,
+    },
+    AffineRank {
+        expected: usize,
+        actual: usize,
+    },
+    AffineValueRange,
+    MissingProvenance,
+}
+
+impl std::fmt::Display for InstanceConnectionConstructionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyEndpoint => formatter.write_str("connection family endpoint is empty"),
+            Self::EmptyEndpointPart => {
+                formatter.write_str("connection family endpoint contains an empty path part")
+            }
+            Self::EmptyScalarEndpoint { side } => {
+                write!(formatter, "scalar connection {side} endpoint is empty")
+            }
+            Self::InvalidDomain(reason) => {
+                write!(formatter, "invalid connection family domain: {reason}")
+            }
+            Self::NonCanonicalBinderId { expected, actual } => write!(
+                formatter,
+                "connection family binder id {actual} is not canonical id {expected}"
+            ),
+            Self::AffineRank { expected, actual } => write!(
+                formatter,
+                "connection endpoint affine rank {actual} does not match domain rank {expected}"
+            ),
+            Self::AffineValueRange => formatter.write_str(
+                "connection endpoint affine subscript exceeds i64 over its nonempty domain",
+            ),
+            Self::MissingProvenance => {
+                formatter.write_str("connection family requires non-dummy source provenance")
+            }
+        }
+    }
+}
+
+impl std::error::Error for InstanceConnectionConstructionError {}
+
+fn validate_scalar_connection_endpoint(
+    endpoint: &QualifiedName,
+    side: &'static str,
+) -> Result<(), InstanceConnectionConstructionError> {
+    if endpoint.parts.is_empty() || endpoint.parts.iter().any(|(name, _)| name.is_empty()) {
+        return Err(InstanceConnectionConstructionError::EmptyScalarEndpoint { side });
+    }
+    Ok(())
+}
+
+fn validate_connection_endpoint_forms(
+    endpoint: &InstanceConnectionEndpoint,
+    domain: &rumoca_core::StructuredIndexDomain,
+    scalar_count: usize,
+) -> Result<(), InstanceConnectionConstructionError> {
+    let rank = domain.binders.len();
+    let forms = endpoint
+        .parts()
+        .iter()
+        .flat_map(|(_, subscripts)| subscripts);
+    for form in forms {
+        if form.coeffs.len() != rank {
+            return Err(InstanceConnectionConstructionError::AffineRank {
+                expected: rank,
+                actual: form.coeffs.len(),
+            });
+        }
+        if scalar_count != 0 {
+            validate_affine_connection_range(form, domain)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_affine_connection_range(
+    form: &rumoca_core::AffineForm,
+    domain: &rumoca_core::StructuredIndexDomain,
+) -> Result<(), InstanceConnectionConstructionError> {
+    let mut minimum = i128::from(form.constant);
+    let mut maximum = minimum;
+    for (coefficient, binder) in form.coeffs.iter().zip(&domain.binders) {
+        let lower = i128::from(binder.lower);
+        let upper = i128::from(binder.upper);
+        let step = i128::from(binder.step);
+        let distance = if step > 0 {
+            upper - lower
+        } else {
+            lower - upper
+        };
+        let last = lower + (distance / step.abs()) * step;
+        let first_term = i128::from(*coefficient) * i128::from(binder.lower);
+        let last_term = i128::from(*coefficient) * last;
+        minimum = minimum
+            .checked_add(first_term.min(last_term))
+            .ok_or(InstanceConnectionConstructionError::AffineValueRange)?;
+        maximum = maximum
+            .checked_add(first_term.max(last_term))
+            .ok_or(InstanceConnectionConstructionError::AffineValueRange)?;
+    }
+    if minimum < i128::from(i64::MIN) || maximum > i128::from(i64::MAX) {
+        return Err(InstanceConnectionConstructionError::AffineValueRange);
+    }
+    Ok(())
 }
 
 /// Overlay containing instance-specific data keyed by InstanceId.
@@ -848,7 +1276,53 @@ pub struct InstanceConnectionFamily {
 /// InstanceId during instantiation, whereas DefIds identify declarations
 /// (which can have multiple instances). InstanceId is a simple u32, so
 /// lookups are O(1) with a cheap hasher for numeric keys.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstanceOverlayInsertError {
+    UnsetComponentIdentity,
+    UnsetClassIdentity,
+    UnallocatedComponentIdentity(InstanceId),
+    UnallocatedClassIdentity(InstanceId),
+    DuplicateComponent(InstanceId),
+    DuplicateClass(InstanceId),
+    MismatchedComponentClassPair(InstanceId),
+}
+
+impl std::fmt::Display for InstanceOverlayInsertError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsetComponentIdentity => {
+                formatter.write_str("component occurrence cannot use InstanceId::UNSET")
+            }
+            Self::UnsetClassIdentity => {
+                formatter.write_str("class occurrence cannot use InstanceId::UNSET")
+            }
+            Self::UnallocatedComponentIdentity(instance) => write!(
+                formatter,
+                "component occurrence {instance:?} was not allocated by this overlay"
+            ),
+            Self::UnallocatedClassIdentity(instance) => write!(
+                formatter,
+                "class occurrence {instance:?} was not allocated by this overlay"
+            ),
+            Self::DuplicateComponent(instance) => write!(
+                formatter,
+                "component occurrence {instance:?} is already registered"
+            ),
+            Self::DuplicateClass(instance) => write!(
+                formatter,
+                "class occurrence {instance:?} is already registered"
+            ),
+            Self::MismatchedComponentClassPair(instance) => write!(
+                formatter,
+                "component/class occurrence pair {instance:?} has mismatched owner or qualified-name evidence"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InstanceOverlayInsertError {}
+
+#[derive(Debug, Clone, Default)]
 pub struct InstanceOverlay {
     /// Instance data for components, keyed by their InstanceId.
     pub components: FastIndexMap<InstanceId, InstanceData>,
@@ -915,11 +1389,40 @@ pub struct InstanceOverlay {
     /// Typecheck constructs this set from its resolved `TypeTable`; later
     /// phases never infer enumeration semantics from a rendered type name.
     pub enumeration_types: IndexSet<TypeId>,
+    /// Exact declaration/occurrence proof awaiting effective TypeId issuance.
+    pending_overconstrained_records:
+        FastIndexMap<InstanceId, PendingEqualityConstraintOccurrenceExposure>,
+    /// Exact checked `equalityConstraint` exposure after typecheck binds the
+    /// effective record TypeId. This catalog is construction-owned.
+    overconstrained_records: FastIndexMap<InstanceId, FinalizedOverconstrainedOccurrence>,
+    /// Exact innermost overconstrained record occurrence that owns each
+    /// instantiated primitive descendant.
+    overconstrained_record_owners: FastIndexMap<InstanceId, InstanceId>,
+    /// The descendant-owner catalog is issued exactly once after the complete
+    /// component/class overlay has been built.
+    overconstrained_record_owners_finalized: bool,
+    /// Typecheck atomically upgraded every pending record exposure.
+    overconstrained_effective_types_finalized: bool,
+    /// Closed semantic identities published by the same successful Typecheck
+    /// transition as effective types. No earlier phase can expose a partial
+    /// operator or ExternalObject catalog to Flatten.
+    semantic_catalogs: Option<SemanticCatalogProjection>,
     /// Number of occurrence identities allocated so far.
     ///
     /// Allocation is one-based because `InstanceId::UNSET` reserves zero, so
     /// this is also the last identity handed out.
     next_id: u32,
+}
+
+fn instance_component_class_pair_matches(
+    component: &InstanceData,
+    class: &ClassInstanceData,
+) -> bool {
+    !component.is_primitive
+        && class.owner_component_id == Some(component.instance_id)
+        && component.qualified_name == class.qualified_name
+        && component.type_def_id.is_some()
+        && component.type_def_id == class.class_def_id
 }
 
 impl InstanceOverlay {
@@ -952,17 +1455,53 @@ impl InstanceOverlay {
     ///
     /// The component is keyed by its InstanceId to ensure uniqueness,
     /// since multiple instances can share the same DefId.
-    pub fn add_component(&mut self, data: InstanceData) {
+    pub fn add_component(&mut self, data: InstanceData) -> Result<(), InstanceOverlayInsertError> {
         let key = data.instance_id;
+        if key.is_unset() {
+            return Err(InstanceOverlayInsertError::UnsetComponentIdentity);
+        }
+        if key.index() > self.next_id {
+            return Err(InstanceOverlayInsertError::UnallocatedComponentIdentity(
+                key,
+            ));
+        }
+        if self.components.contains_key(&key) {
+            return Err(InstanceOverlayInsertError::DuplicateComponent(key));
+        }
+        if let Some(class) = self.classes.get(&key)
+            && !instance_component_class_pair_matches(&data, class)
+        {
+            return Err(InstanceOverlayInsertError::MismatchedComponentClassPair(
+                key,
+            ));
+        }
         self.components.insert(key, data);
+        Ok(())
     }
 
     /// Add instance data for a class.
     ///
     /// The class is keyed by its InstanceId to ensure uniqueness.
-    pub fn add_class(&mut self, data: ClassInstanceData) {
+    pub fn add_class(&mut self, data: ClassInstanceData) -> Result<(), InstanceOverlayInsertError> {
         let key = data.instance_id;
+        if key.is_unset() {
+            return Err(InstanceOverlayInsertError::UnsetClassIdentity);
+        }
+        if key.index() > self.next_id {
+            return Err(InstanceOverlayInsertError::UnallocatedClassIdentity(key));
+        }
+        if self.classes.contains_key(&key) {
+            return Err(InstanceOverlayInsertError::DuplicateClass(key));
+        }
+        if let Some(component) = self.components.get(&key)
+            && !instance_component_class_pair_matches(component, &data)
+        {
+            return Err(InstanceOverlayInsertError::MismatchedComponentClassPair(
+                key,
+            ));
+        }
         self.classes.insert(key, data);
+        Ok(())
     }
 
     /// Get instance data for a component by InstanceId.
@@ -1024,361 +1563,4 @@ impl std::ops::DerefMut for InstancedTree {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{ComponentRefPart, ComponentReference, Location, Token};
-
-    #[test]
-    fn test_from_dotted_simple() {
-        let qn = QualifiedName::from_dotted("x.start");
-        assert_eq!(qn.parts.len(), 2);
-        assert_eq!(qn.parts[0].0, "x");
-        assert_eq!(qn.parts[1].0, "start");
-        assert_eq!(qn.to_flat_string(), "x.start");
-    }
-
-    #[test]
-    fn test_from_dotted_single() {
-        let qn = QualifiedName::from_dotted("x");
-        assert_eq!(qn.parts.len(), 1);
-        assert_eq!(qn.parts[0].0, "x");
-    }
-
-    #[test]
-    fn test_from_dotted_empty() {
-        let qn = QualifiedName::from_dotted("");
-        assert!(qn.is_empty());
-    }
-
-    #[test]
-    fn test_from_dotted_trailing_dot() {
-        // Trailing dots should be filtered out
-        let qn = QualifiedName::from_dotted("x.y.");
-        assert_eq!(qn.parts.len(), 2);
-        assert_eq!(qn.to_flat_string(), "x.y");
-    }
-
-    #[test]
-    fn test_from_dotted_leading_dot() {
-        // Leading dots should be filtered out
-        let qn = QualifiedName::from_dotted(".x.y");
-        assert_eq!(qn.parts.len(), 2);
-        assert_eq!(qn.to_flat_string(), "x.y");
-    }
-
-    #[test]
-    fn test_from_dotted_consecutive_dots() {
-        // Consecutive dots should be filtered out
-        let qn = QualifiedName::from_dotted("x..y");
-        assert_eq!(qn.parts.len(), 2);
-        assert_eq!(qn.to_flat_string(), "x.y");
-    }
-
-    #[test]
-    fn test_starts_with_match() {
-        let qn = QualifiedName::from_dotted("l2.x.start");
-        assert!(qn.starts_with("l2"));
-    }
-
-    #[test]
-    fn test_starts_with_no_match() {
-        let qn = QualifiedName::from_dotted("l2.x.start");
-        assert!(!qn.starts_with("l1"));
-        assert!(!qn.starts_with("x"));
-    }
-
-    #[test]
-    fn test_starts_with_empty() {
-        let qn = QualifiedName::new();
-        assert!(!qn.starts_with("anything"));
-    }
-
-    #[test]
-    fn test_strip_prefix_success() {
-        let qn = QualifiedName::from_dotted("l2.x.start");
-        let stripped = qn.strip_prefix("l2").unwrap();
-        assert_eq!(stripped.to_flat_string(), "x.start");
-    }
-
-    #[test]
-    fn test_strip_prefix_no_match() {
-        let qn = QualifiedName::from_dotted("l2.x.start");
-        assert!(qn.strip_prefix("l1").is_none());
-    }
-
-    #[test]
-    fn test_strip_prefix_single_part() {
-        // Cannot strip if only one part remains
-        let qn = QualifiedName::from_dotted("x");
-        assert!(qn.strip_prefix("x").is_none());
-    }
-
-    #[test]
-    fn test_strip_prefix_preserves_subscripts() {
-        // Ensure subscripts on remaining parts are preserved
-        let mut qn = QualifiedName::new();
-        qn.push("comp".to_string(), vec![]);
-        qn.push("array".to_string(), vec![1, 2]);
-        qn.push("x".to_string(), vec![]);
-
-        let stripped = qn.strip_prefix("comp").unwrap();
-        assert_eq!(stripped.parts.len(), 2);
-        assert_eq!(stripped.parts[0].0, "array");
-        assert_eq!(stripped.parts[0].1, vec![1, 2]);
-        assert_eq!(stripped.to_flat_string(), "array[1,2].x");
-    }
-
-    #[test]
-    fn test_to_component_path_preserves_structured_subscripts() {
-        let mut qn = QualifiedName::new();
-        qn.push("sys".to_string(), vec![]);
-        qn.push("arr".to_string(), vec![1, 2]);
-        qn.push("state".to_string(), vec![]);
-
-        let path = qn.to_component_path();
-        assert_eq!(
-            path.parts(),
-            &[
-                "sys".to_string(),
-                "arr[1,2]".to_string(),
-                "state".to_string(),
-            ]
-        );
-        assert_eq!(path.to_flat_string(), "sys.arr[1,2].state");
-    }
-
-    #[test]
-    fn test_starts_with_component_path_matches_structured_subscripts() {
-        let mut qn = QualifiedName::new();
-        qn.push("sys".to_string(), vec![]);
-        qn.push("arr".to_string(), vec![1, 2]);
-        qn.push("state".to_string(), vec![]);
-
-        let prefix = ComponentPath::from_flat_path("sys.arr[1,2]");
-
-        assert!(qn.starts_with_component_path(&prefix));
-    }
-
-    #[test]
-    fn test_starts_with_component_path_rejects_subscript_mismatch() {
-        let mut qn = QualifiedName::new();
-        qn.push("sys".to_string(), vec![]);
-        qn.push("arr".to_string(), vec![1, 2]);
-        qn.push("state".to_string(), vec![]);
-
-        let prefix = ComponentPath::from_flat_path("sys.arr[1,3]");
-
-        assert!(!qn.starts_with_component_path(&prefix));
-    }
-
-    #[test]
-    fn test_subscripted_part_match_uses_canonical_integer_text() {
-        assert!(subscripted_part_matches_rendered("arr", &[0], "arr[0]"));
-        assert!(subscripted_part_matches_rendered("arr", &[-2], "arr[-2]"));
-        assert!(!subscripted_part_matches_rendered("arr", &[1], "arr[01]"));
-        assert!(!subscripted_part_matches_rendered("arr", &[0], "arr[-0]"));
-    }
-
-    #[test]
-    fn test_first_name() {
-        let qn = QualifiedName::from_dotted("a.b.c");
-        assert_eq!(qn.first_name(), Some("a"));
-
-        let empty = QualifiedName::new();
-        assert_eq!(empty.first_name(), None);
-    }
-
-    #[test]
-    fn test_child() {
-        let qn = QualifiedName::from_ident("x");
-        let child = qn.child("start");
-        assert_eq!(child.to_flat_string(), "x.start");
-    }
-
-    #[test]
-    fn test_parent_join_use_structured_parts() {
-        let qn = QualifiedName::from_dotted("system.medium.nXi");
-        assert_eq!(qn.parent().unwrap().to_flat_string(), "system.medium");
-        assert_eq!(
-            QualifiedName::from_dotted("system").join(&QualifiedName::from_dotted("medium.nXi")),
-            qn
-        );
-    }
-
-    #[test]
-    fn test_display_with_subscripts() {
-        let mut qn = QualifiedName::new();
-        qn.push("matrix".to_string(), vec![1, 2]);
-        qn.push("element".to_string(), vec![]);
-        assert_eq!(format!("{}", qn), "matrix[1,2].element");
-    }
-
-    /// Helper to create a distinguishable expression for testing.
-    /// Uses ComponentReference with a marker name to identify values.
-    fn test_expr(marker: &str) -> Expression {
-        Expression::ComponentReference(ComponentReference {
-            local: false,
-            span: rumoca_core::Span::DUMMY,
-            qualified_display_name: None,
-            parts: vec![ComponentRefPart {
-                ident: Token {
-                    text: std::sync::Arc::from(marker),
-                    location: Location::default(),
-                    token_number: 0,
-                    token_type: 0,
-                },
-                subs: None,
-                def_id: None,
-            }],
-        })
-    }
-
-    /// Check if an expression matches our test marker.
-    fn is_test_expr(expr: &Expression, marker: &str) -> bool {
-        match expr {
-            Expression::ComponentReference(cr) => {
-                cr.parts.first().map(|p| &*p.ident.text) == Some(marker)
-            }
-            _ => false,
-        }
-    }
-
-    #[test]
-    fn test_mod_env_add_and_get() {
-        let mut env = ModificationEnvironment::new();
-        let path = QualifiedName::from_dotted("x.start");
-        let value = ModificationValue::simple(test_expr("value_1"));
-
-        env.add(path.clone(), value);
-
-        let retrieved = env.get(&path);
-        assert!(retrieved.is_some());
-        assert!(is_test_expr(&retrieved.unwrap().value, "value_1"));
-    }
-
-    #[test]
-    fn test_mod_env_outer_precedence() {
-        // MLS §7.2.4: Outer modifications take precedence
-        let mut env = ModificationEnvironment::new();
-        let path = QualifiedName::from_dotted("x.start");
-
-        // First add (simulating outer modification)
-        let outer_value = ModificationValue::simple(test_expr("outer_10"));
-        env.add(path.clone(), outer_value);
-
-        // Second add (simulating inner modification) - should NOT overwrite
-        let inner_value = ModificationValue::simple(test_expr("inner_5"));
-        env.add(path.clone(), inner_value);
-
-        // Should still have the outer value
-        let retrieved = env.get(&path).unwrap();
-        assert!(is_test_expr(&retrieved.value, "outer_10"));
-    }
-
-    #[test]
-    fn test_mod_env_get_attr() {
-        let mut env = ModificationEnvironment::new();
-
-        // Add x.start modification
-        let path = QualifiedName::from_ident("x").child("start");
-        let value = ModificationValue::simple(test_expr("start_42"));
-        env.add(path, value);
-
-        // Look up via get_attr
-        let start = env.get_attr("x", "start");
-        assert!(start.is_some());
-        assert!(is_test_expr(start.unwrap(), "start_42"));
-
-        // Non-existent attribute
-        assert!(env.get_attr("x", "min").is_none());
-        assert!(env.get_attr("y", "start").is_none());
-    }
-
-    #[test]
-    fn test_mod_env_remove_with_prefix() {
-        let mut env = ModificationEnvironment::new();
-
-        // Add modifications for different components
-        env.add(
-            QualifiedName::from_dotted("comp1.x.start"),
-            ModificationValue::simple(test_expr("c1_x")),
-        );
-        env.add(
-            QualifiedName::from_dotted("comp1.y.start"),
-            ModificationValue::simple(test_expr("c1_y")),
-        );
-        env.add(
-            QualifiedName::from_dotted("comp2.x.start"),
-            ModificationValue::simple(test_expr("c2_x")),
-        );
-
-        assert_eq!(env.active.len(), 3);
-
-        env.remove_with_prefix("comp1");
-
-        assert_eq!(env.active.len(), 1);
-        assert!(
-            env.get(&QualifiedName::from_dotted("comp2.x.start"))
-                .is_some()
-        );
-        assert!(
-            env.get(&QualifiedName::from_dotted("comp1.x.start"))
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn test_modification_value_simple() {
-        let value = ModificationValue::simple(Expression::Empty {
-            span: rumoca_core::Span::DUMMY,
-        });
-        assert!(!value.each);
-        assert!(!value.final_);
-        assert!(matches!(value.value, Expression::Empty { .. }));
-    }
-
-    #[test]
-    fn test_instance_overlay_component_lookup_by_instance_id() {
-        let mut overlay = InstanceOverlay::new();
-        let id_a = overlay.alloc_id();
-        let id_b = overlay.alloc_id();
-
-        overlay.add_component(InstanceData {
-            instance_id: id_a,
-            qualified_name: QualifiedName::from_dotted("a"),
-            ..Default::default()
-        });
-        overlay.add_component(InstanceData {
-            instance_id: id_b,
-            qualified_name: QualifiedName::from_dotted("b"),
-            ..Default::default()
-        });
-
-        let component_a = overlay
-            .get_component(id_a)
-            .expect("component for id_a should exist");
-        let component_b = overlay
-            .get_component(id_b)
-            .expect("component for id_b should exist");
-
-        assert_eq!(component_a.qualified_name.to_flat_string(), "a");
-        assert_eq!(component_b.qualified_name.to_flat_string(), "b");
-    }
-
-    #[test]
-    fn allocated_occurrence_identities_are_one_based_and_never_unset() {
-        let mut overlay = InstanceOverlay::new();
-
-        let first = overlay.alloc_id();
-        let second = overlay.alloc_id();
-
-        assert!(
-            !first.is_unset(),
-            "the reserved identity is not allocatable"
-        );
-        assert!(!second.is_unset());
-        assert_eq!(first, InstanceId::new(1));
-        assert_eq!(second, InstanceId::new(2));
-        assert_eq!(overlay.allocated_instance_count(), 2);
-    }
-}
+mod tests;

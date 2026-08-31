@@ -58,6 +58,7 @@ impl<'a> OverlayScopeIndex<'a> {
 pub(crate) fn initialize_flat_metadata(flat: &mut flat::Model, overlay: &ast::InstanceOverlay) {
     // MLS §4.7: Propagate partial status and class type from overlay
     flat.effective_types = overlay.effective_types.clone();
+    flat.type_roots = overlay.type_roots.clone();
     flat.enumeration_types = overlay.enumeration_types.clone();
     flat.type_ids_by_def_id = overlay.type_ids_by_def_id.clone();
     flat.enumeration_type_roots = overlay.enumeration_type_roots.clone();
@@ -515,7 +516,7 @@ fn collect_expr_first_segment_aliases(
         class_name,
         imports,
     };
-    let _ = rumoca_ir_ast::Visitor::visit_expression(&mut collector, expr);
+    let _visit_outcome = rumoca_ir_ast::Visitor::visit_expression(&mut collector, expr);
 }
 
 struct FirstSegmentAliasCollector<'a, 'tree> {
@@ -818,6 +819,7 @@ pub(crate) fn process_component_instances_for_flatten(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     component_members: &component_member_scope::ComponentMemberScopes,
+    semantic_catalogs: &ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     let mut import_cache = ImportCaches::default();
     let scope_index = OverlayScopeIndex::new(overlay);
@@ -841,7 +843,8 @@ pub(crate) fn process_component_instances_for_flatten(
             import_cache: &mut import_cache,
             scope_index: &scope_index,
             component_members,
-            function_types: functions::FunctionTypeCatalog::new(overlay),
+            function_types: functions::FunctionTypeCatalog::new(overlay, semantic_catalogs),
+            semantic_catalogs,
         })?;
         track_top_level_component_markers(flat, instance_data);
     }
@@ -864,13 +867,20 @@ fn track_top_level_component_markers(flat: &mut flat::Model, instance_data: &ast
 pub(crate) fn prepare_context_for_equation_flattening(
     ctx: &mut Context,
     flat: &mut flat::Model,
-    overlay: &ast::InstanceOverlay,
+    overconstrained: &ast::FinalizedOverconstrainedCatalog<'_>,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     model_name: &str,
     component_override_map: &ComponentOverrideMap,
 ) -> Result<FlattenGraphData, FlattenError> {
-    pre_collect_functions(ctx, overlay, tree, class_index)?;
+    let overlay = overconstrained.overlay();
+    pre_collect_functions(
+        ctx,
+        overlay,
+        overconstrained.semantic_catalogs(),
+        tree,
+        class_index,
+    )?;
     extract_record_aliases(ctx, overlay, tree)?;
     for (outer, inner) in &overlay.outer_prefix_to_inner {
         ctx.record_aliases.insert(outer.clone(), inner.clone());
@@ -879,7 +889,7 @@ pub(crate) fn prepare_context_for_equation_flattening(
     array_comprehension::extract_component_array_dimensions(ctx, overlay);
     let expanded_array_comprehension_bindings =
         if array_comprehension::has_expandable_array_comprehension_bindings(overlay) {
-            ctx.build_parameter_lookup(flat, tree);
+            ctx.build_parameter_lookup(flat, tree)?;
             array_comprehension::expand_array_comprehension_bindings(
                 ctx,
                 flat,
@@ -892,7 +902,7 @@ pub(crate) fn prepare_context_for_equation_flattening(
             false
         };
     if expanded_array_comprehension_bindings {
-        ctx.build_parameter_lookup(flat, tree);
+        ctx.build_parameter_lookup(flat, tree)?;
     }
     ctx.seed_flat_parameter_constant_keys(flat);
     inject_model_nested_class_constants(tree, class_index, model_name, ctx);
@@ -902,12 +912,12 @@ pub(crate) fn prepare_context_for_equation_flattening(
     // Re-apply parameter lookup from materialized flat variables after
     // class/package constant injection so record rebindings override injected
     // declaration defaults (MLS §7.2.3/§7.2.4, §8.3.3 structural ranges).
-    ctx.build_parameter_lookup(flat, tree);
+    ctx.build_parameter_lookup(flat, tree)?;
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     if ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
-        ctx.build_parameter_lookup(flat, tree);
+        ctx.build_parameter_lookup(flat, tree)?;
     }
-    ctx.refresh_enum_parameter_lookup(flat);
+    ctx.refresh_enum_parameter_lookup(flat)?;
     pre_evaluate_structural_equations(ctx, overlay, tree)?;
 
     // Classify parameter-variability for-equation families now that the
@@ -917,8 +927,12 @@ pub(crate) fn prepare_context_for_equation_flattening(
     ctx.param_variability_families =
         crate::param_variability::prove_parameter_variability_families(overlay);
 
-    let vcg_data = vcg::pre_collect_vcg_data(overlay, ctx)?;
-    let optional_edges = vcg::derive_optional_edges(overlay, &vcg_data)?;
+    let vcg_data = vcg::pre_collect_vcg_data(
+        overlay,
+        ctx,
+        overconstrained.semantic_catalogs().connections(),
+    )?;
+    let optional_edges = vcg::derive_optional_edges(overconstrained, &vcg_data)?;
     vcg::validate_component_roots(&vcg_data, &optional_edges)?;
     flat.optional_edges = optional_edges.clone();
     let required_forest = vcg::RequiredEdgeForest::construct(&vcg_data, &optional_edges)?;
@@ -941,6 +955,7 @@ pub(crate) fn process_class_instances_for_flatten(
     component_override_map: &ComponentOverrideMap,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
+    semantic_catalogs: &ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     for class_data in overlay.classes.values() {
         if is_in_disabled_component(&class_data.qualified_name, &overlay.disabled_components) {
@@ -954,6 +969,7 @@ pub(crate) fn process_class_instances_for_flatten(
             component_override_map,
             tree,
             class_index,
+            semantic_catalogs,
         )?;
     }
     Ok(())
@@ -962,7 +978,7 @@ pub(crate) fn process_class_instances_for_flatten(
 pub(crate) struct FinalizeFlatModelInput<'a, 'tree> {
     pub(crate) ctx: &'a mut Context,
     pub(crate) flat: &'a mut flat::Model,
-    pub(crate) overlay: &'a ast::InstanceOverlay,
+    pub(crate) overconstrained: &'a ast::FinalizedOverconstrainedCatalog<'a>,
     pub(crate) tree: &'a ast::ClassTree,
     pub(crate) class_index: &'a ast::ClassDefIndex<'tree>,
     pub(crate) model_name: &'a str,
@@ -977,7 +993,7 @@ pub(crate) fn finalize_flat_model(
     let FinalizeFlatModelInput {
         ctx,
         flat,
-        overlay,
+        overconstrained,
         tree,
         class_index,
         model_name,
@@ -985,17 +1001,30 @@ pub(crate) fn finalize_flat_model(
         flatten_graph,
         component_override_map,
     } = input;
-    finalize_flat_connections(
+    let overlay = overconstrained.overlay();
+    seed_flat_functions_from_context(ctx, flat);
+    functions::collect_functions(
         flat,
         overlay,
-        options.strict_connection_validation,
-        flatten_graph,
+        overconstrained.semantic_catalogs(),
+        tree,
+        class_index,
+        Some(model_name),
     )?;
-
-    seed_flat_functions_from_context(ctx, flat);
-    functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
-    rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index)?;
-    functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
+    rewrite_function_extends_aliases_in_flat_functions(
+        flat,
+        tree,
+        class_index,
+        overconstrained.semantic_catalogs(),
+    )?;
+    functions::collect_functions(
+        flat,
+        overlay,
+        overconstrained.semantic_catalogs(),
+        tree,
+        class_index,
+        Some(model_name),
+    )?;
     mark_record_constructor_calls(flat, tree);
     // Attach callable identity before the rewrite fixed point so rewritten
     // calls retain the exact collected target.
@@ -1003,7 +1032,7 @@ pub(crate) fn finalize_flat_model(
     mark_record_constructor_calls(flat, tree);
     canonicalize_varrefs_via_record_aliases(flat, ctx);
     normalize_record_array_field_access_bindings(flat);
-    drop_invalid_field_access_bindings(flat);
+    reject_invalid_field_access_bindings(flat)?;
     propagate_unexpanded_record_array_dims(flat, overlay);
     let assertion_error_literal =
         tree.scope_tree
@@ -1024,9 +1053,9 @@ pub(crate) fn finalize_flat_model(
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     ctx.seed_expanded_component_keys(flat);
     substitute_known_constants_in_flat(flat, ctx)?;
-    ctx.build_parameter_lookup(flat, tree);
+    ctx.build_parameter_lookup(flat, tree)?;
     if ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
-        ctx.build_parameter_lookup(flat, tree);
+        ctx.build_parameter_lookup(flat, tree)?;
     }
     recover_indexed_lhs_dimensions(flat);
     mark_record_constructor_calls(flat, tree);
@@ -1038,6 +1067,7 @@ pub(crate) fn finalize_flat_model(
         model_name,
         component_override_map,
         &ctx.component_members,
+        overconstrained.semantic_catalogs(),
     )?;
     if collected_new_functions {
         mark_record_constructor_calls(flat, tree);
@@ -1054,17 +1084,10 @@ pub(crate) fn finalize_flat_model(
         collapse_index_refs_to_known_varrefs(flat);
     }
     functions::canonicalize_collected_function_calls(flat, class_index)?;
-    // Materialize source-level defaults while record inputs still have their
-    // source signatures. Record-field bindings belong to the constructor and
-    // must not be copied onto the scalar ABI parameters created below.
-    functions::materialize_flat_function_call_args(flat)?;
-    // Record parameter signatures and every call site must change together.
-    // Run this only after the rewrite fixed point: earlier lowering allowed a
-    // later rewrite to reintroduce source-shaped record arguments against an
-    // already decomposed signature.
-    functions::lower_record_function_params(flat)?;
-    // Recheck the decomposed ABI and materialize defaults of any scalar calls
-    // introduced by record projection.
+    // The final function inventory now owns every reachable record constructor.
+    // Materialize complete aggregate output/local defaults before the one final
+    // source-level argument pass fills constructor and ordinary call slots.
+    functions::materialize_complete_record_value_defaults(flat)?;
     functions::materialize_flat_function_call_args(flat)?;
     // Late collection and default-argument materialization can each make a
     // qualified constant newly reachable.
@@ -1073,39 +1096,47 @@ pub(crate) fn finalize_flat_model(
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     substitute_known_constants_in_flat(flat, ctx)?;
     resolve_nested_constructor_field_access_bindings(flat);
-    functions::prune_unreachable_functions(flat);
-    functions::validate_flat_function_bindings(flat)?;
-    ctx.refresh_enum_parameter_lookup(flat);
-    enum_literals::canonicalize_flat_enum_literals(flat, tree, &ctx.enum_parameter_values);
-    flat.enum_literal_ordinals = collect_enum_literal_ordinals(tree);
-    if options.simplify_variable_names {
-        name_simplify::simplify_flat_names(flat)?;
-    }
     flat.finalize_effective_type_shapes().map_err(|error| {
         FlattenError::internal(format!(
             "finalized Flat effective type construction failed: {error:?}"
         ))
     })?;
-
+    // Connection planning consumes the final callable catalog (not a name
+    // scan over a partial inventory), and the generated equalityConstraint
+    // call must exist before reachability pruning. Name simplification remains
+    // later because canonical Instance endpoints still use their unsimplified
+    // structured occurrence paths.
+    finalize_flat_connections(flat, overconstrained, tree, flatten_graph)?;
+    functions::prune_unreachable_functions(flat);
+    functions::validate_flat_function_bindings(flat)?;
+    ctx.refresh_enum_parameter_lookup(flat)?;
+    enum_literals::canonicalize_flat_enum_literals(flat, tree, &ctx.enum_parameter_values);
+    flat.enum_literal_ordinals = collect_enum_literal_ordinals(tree);
+    if options.simplify_variable_names {
+        name_simplify::simplify_flat_names(flat)?;
+    }
     Ok(())
 }
 
 fn finalize_flat_connections(
     flat: &mut flat::Model,
-    overlay: &ast::InstanceOverlay,
-    strict_connection_validation: bool,
+    overconstrained: &ast::FinalizedOverconstrainedCatalog<'_>,
+    tree: &ast::ClassTree,
     flatten_graph: &FlattenGraphData,
 ) -> Result<(), FlattenError> {
-    outer_refs::redirect_outer_refs(flat, &overlay.outer_prefix_to_inner);
+    let identity_span = flat
+        .variables
+        .values()
+        .map(|variable| variable.source_span)
+        .find(|span| !span.is_dummy())
+        .unwrap_or(rumoca_core::Span::DUMMY);
+    let stream_operators = connections::stream_operator_identities(tree, identity_span)?;
+    outer_refs::redirect_outer_refs(flat, &overconstrained.overlay().outer_prefix_to_inner);
     let connections_start = maybe_start_timer();
-    let mut oc_forest =
-        vcg::OverconstrainedEquationForest::new(flatten_graph.required_forest.clone());
-    let result = connections::process_connections(
-        flat,
-        overlay,
-        strict_connection_validation,
-        &mut oc_forest,
-    );
+    let oc_forest = vcg::OverconstrainedEquationForest::new(flatten_graph.required_forest.clone());
+    let result =
+        connections::process_connections(flat, overconstrained, oc_forest, stream_operators)
+            .map(|_| ());
     maybe_record_connections_timing(connections_start);
     result
 }
@@ -1118,6 +1149,7 @@ fn collect_rewritten_functions_to_fixed_point(
     model_name: &str,
     component_override_map: &ComponentOverrideMap,
     component_members: &component_member_scope::ComponentMemberScopes,
+    semantic_catalogs: &ast::SemanticCatalogProjection,
 ) -> Result<bool, FlattenError> {
     const FUNCTION_REWRITE_FIXED_POINT_LIMIT: usize = 8;
 
@@ -1130,8 +1162,16 @@ fn collect_rewritten_functions_to_fixed_point(
             class_index,
             component_override_map,
             component_members,
+            semantic_catalogs,
         )?;
-        functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
+        functions::collect_functions(
+            flat,
+            overlay,
+            semantic_catalogs,
+            tree,
+            class_index,
+            Some(model_name),
+        )?;
         if flat.functions.len() == function_count_before {
             return Ok(flat.functions.len() != initial_function_count);
         }

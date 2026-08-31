@@ -12,14 +12,30 @@ pub(super) struct FunctionExpressionContext<'types> {
 pub(crate) struct FunctionTypeCatalog<'types> {
     type_ids_by_def_id: &'types flat::TypeIdentityMap,
     type_roots: &'types ast::AstIndexMap<rumoca_core::TypeId, rumoca_core::TypeId>,
+    semantic_catalogs: &'types ast::SemanticCatalogProjection,
 }
 
 impl<'types> FunctionTypeCatalog<'types> {
-    pub(crate) fn new(overlay: &'types ast::InstanceOverlay) -> Self {
+    pub(crate) fn new(
+        overlay: &'types ast::InstanceOverlay,
+        semantic_catalogs: &'types ast::SemanticCatalogProjection,
+    ) -> Self {
         Self {
             type_ids_by_def_id: &overlay.type_ids_by_def_id,
             type_roots: &overlay.type_roots,
+            semantic_catalogs,
         }
+    }
+
+    pub(crate) fn external_object(
+        self,
+        owner: rumoca_core::DefId,
+    ) -> Option<ast::ExternalObjectLifecycleIdentity> {
+        self.semantic_catalogs.external_object(owner)
+    }
+
+    pub(crate) fn semantic_catalogs(self) -> &'types ast::SemanticCatalogProjection {
+        self.semantic_catalogs
     }
 
     fn effective_type(
@@ -68,17 +84,14 @@ pub(super) fn effective_function_param_class_type(
     class_index: &ast::ClassDefIndex<'_>,
     class_def: &ast::ClassDef,
 ) -> rumoca_core::ClassType {
-    const MAX_ALIAS_DEPTH: usize = 32;
     let mut current = class_def;
     let mut visited = HashSet::new();
 
-    for _ in 0..MAX_ALIAS_DEPTH {
+    loop {
         if current.class_type != rumoca_core::ClassType::Type {
             return current.class_type.clone();
         }
-        if let Some(def_id) = current.def_id
-            && !visited.insert(def_id)
-        {
+        if !visited.insert(std::ptr::from_ref(current)) {
             break;
         }
         let Some(base) = current.extends.first() else {
@@ -212,45 +225,123 @@ fn nested_class_in_scope_inner<'a>(
     })
 }
 
-fn primitive_type_name(name: &str) -> Option<&'static str> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ComponentConstantKind {
+    Real,
+    Integer,
+    Boolean,
+    Enumeration,
+}
+
+fn primitive_constant_kind(name: &str) -> Option<ComponentConstantKind> {
     match name {
+        "Real" => Some(ComponentConstantKind::Real),
+        "Integer" => Some(ComponentConstantKind::Integer),
+        "Boolean" => Some(ComponentConstantKind::Boolean),
+        _ => None,
+    }
+}
+
+/// Return the only typed structural cache a component declaration may own.
+///
+/// The value syntax is deliberately not consulted: Integer syntax is legal for
+/// a Real binding, and a bare reference is not necessarily an enumeration.
+/// Missing or incomplete declaration metadata therefore yields `None` rather
+/// than speculative ownership of one or more caches.
+pub(crate) fn effective_component_constant_kind(
+    class_index: &ast::ClassDefIndex<'_>,
+    component: &ast::Component,
+) -> Option<ComponentConstantKind> {
+    let declared_name = component.type_name.to_string();
+    if let Some(kind) = primitive_constant_kind(&declared_name) {
+        let resolved = component_type_identity(class_index, component).def_id?;
+        return (class_index.predefined_def_id(&declared_name) == Some(resolved)).then_some(kind);
+    }
+    let mut current = component_type_identity(class_index, component).class_def;
+    let mut visited = HashSet::new();
+    loop {
+        let class = current?;
+        if !visited.insert(std::ptr::from_ref(class)) {
+            return None;
+        }
+        if !class.enum_literals.is_empty() {
+            return Some(ComponentConstantKind::Enumeration);
+        }
+        let base = class.extends.first()?;
+        let base_name = base.base_name.to_string();
+        if let Some(kind) = primitive_constant_kind(&base_name) {
+            let resolved = base.base_def_id.or(base.base_name.def_id)?;
+            return (class_index.predefined_def_id(&base_name) == Some(resolved)).then_some(kind);
+        }
+        current = class_by_name_or_def_id(class_index, &base_name, base.base_def_id);
+    }
+}
+
+pub(crate) fn effective_component_primitive_type(
+    class_index: &ast::ClassDefIndex<'_>,
+    component: &ast::Component,
+    declared_name: &str,
+) -> Option<&'static str> {
+    let direct = match declared_name {
         "Real" => Some("Real"),
         "Integer" => Some("Integer"),
         "Boolean" => Some("Boolean"),
         "String" => Some("String"),
         _ => None,
+    };
+    if let Some(primitive) = direct {
+        let resolved = component_type_identity(class_index, component).def_id?;
+        return (class_index.predefined_def_id(declared_name) == Some(resolved))
+            .then_some(primitive);
+    }
+    match effective_component_constant_kind(class_index, component)? {
+        ComponentConstantKind::Real => Some("Real"),
+        ComponentConstantKind::Integer => Some("Integer"),
+        ComponentConstantKind::Boolean => Some("Boolean"),
+        ComponentConstantKind::Enumeration => None,
     }
 }
 
-fn effective_function_param_primitive_type(
-    class_index: &ast::ClassDefIndex<'_>,
-    component: &ast::Component,
-    declared_name: &str,
-) -> Option<&'static str> {
-    if let Some(name) = primitive_type_name(declared_name) {
-        return Some(name);
-    }
-    let mut current = component
-        .type_def_id
-        .or(component.type_name.def_id)
-        .and_then(|def_id| class_index.get(def_id));
+/// Search one class and its inherited classes in declaration-precedence order.
+///
+/// The class graph is finite and every traversed base has a resolved `DefId`,
+/// so the visited set is the termination proof; callers do not need a second
+/// extends walker or an arbitrary depth cutoff.
+pub(super) fn inherited_class_member<'tree, T>(
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
+    mut declared: impl FnMut(&'tree ast::ClassDef) -> Option<T>,
+) -> Option<T> {
+    let mut frontier = vec![class_def];
     let mut visited = HashSet::new();
-    const MAX_ALIAS_DEPTH: usize = 32;
-    for _ in 0..MAX_ALIAS_DEPTH {
-        let class = current?;
-        if let Some(def_id) = class.def_id
-            && !visited.insert(def_id)
-        {
-            return None;
+    while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for class in frontier.drain(..) {
+            if let Some(member) = declared(class) {
+                return Some(member);
+            }
+            next.extend(
+                class
+                    .extends
+                    .iter()
+                    .filter_map(|extend| extend.base_def_id.or(extend.base_name.def_id))
+                    .filter(|base_id| visited.insert(*base_id))
+                    .filter_map(|base_id| class_index.get(base_id)),
+            );
         }
-        let base = class.extends.first()?;
-        let base_name = base.base_name.to_string();
-        if let Some(name) = primitive_type_name(&base_name) {
-            return Some(name);
-        }
-        current = class_by_name_or_def_id(class_index, &base_name, base.base_def_id);
+        frontier = next;
     }
     None
+}
+
+/// Find a component declared by a class or one of its base classes, honoring
+/// the derived declaration before inherited declarations.
+pub(crate) fn component_in_class_scope<'tree>(
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
+    name: &str,
+) -> Option<&'tree ast::Component> {
+    inherited_class_member(class_index, class_def, |class| class.components.get(name))
 }
 
 /// Convert an AST ExternalFunction to ExternalFunction.
@@ -343,7 +434,7 @@ fn reject_lossy_external_annotation_value(value: &ast::Expression) -> Result<(),
     }
 
     let mut visitor = LossySyntax { kind: None };
-    let _ = <LossySyntax as ast::Visitor>::visit_expression(&mut visitor, value);
+    let _visit_outcome = <LossySyntax as ast::Visitor>::visit_expression(&mut visitor, value);
     visitor.kind.map_or(Ok(()), |kind| {
         Err(unsupported_external_annotation(
             value,
@@ -799,7 +890,7 @@ fn finish_function_param(
         param = param.with_type_class(type_class);
     }
     if let Some(type_name) =
-        effective_function_param_primitive_type(class_index, component, &param.type_name)
+        effective_component_primitive_type(class_index, component, &param.type_name)
     {
         param.type_name = type_name.to_string();
     }
@@ -832,23 +923,23 @@ fn finish_function_param(
         .transpose()?;
     param = param.with_bounds(lower_bound, upper_bound);
 
-    // Use explicit declaration binding (`= expr`) for default function inputs.
-    // Fall back to `start` when no declaration binding is available.
-    if component.has_explicit_binding {
-        if let Some(binding_expr) = component.binding.as_ref()
-            && !matches!(binding_expr, ast::Expression::Empty { .. })
-        {
+    // Use only the explicit declaration binding (`= expr`) for a function
+    // default. The flatten-input validator proves the flag/field invariant;
+    // keep this owner fail-closed if it is ever invoked independently.
+    match (component.has_explicit_binding, component.binding.as_ref()) {
+        (true, Some(binding_expr)) => {
             let qualified = qualify_function_expr(binding_expr, imports, locals);
             param = param.with_default(ast_lower::expression_from_ast_with_intrinsics(
                 &qualified,
                 expressions.predefined_intrinsics,
             )?);
-        } else if !matches!(component.start, ast::Expression::Empty { .. }) {
-            let qualified = qualify_function_expr(&component.start, imports, locals);
-            param = param.with_default(ast_lower::expression_from_ast_with_intrinsics(
-                &qualified,
-                expressions.predefined_intrinsics,
-            )?);
+        }
+        (false, None) => {}
+        _ => {
+            return Err(FlattenError::invalid_ast_recovery(
+                "Component explicit-binding marker and binding expression disagree",
+                component.start.span(),
+            ));
         }
     }
 
@@ -887,13 +978,15 @@ pub(super) fn lower_function_shape_subscript(
                 span,
             ))
         }
-        ast::Subscript::Range { .. } | ast::Subscript::Empty => {
-            Ok(rumoca_core::Subscript::try_generated_colon(
-                owner_span,
-                "flat function metadata subscript",
-            )
-            .map_err(|err| FlattenError::missing_source_context(err.to_string()))?)
-        }
+        ast::Subscript::Range { .. } => Ok(rumoca_core::Subscript::try_generated_colon(
+            owner_span,
+            "flat function metadata subscript",
+        )
+        .map_err(|err| FlattenError::missing_source_context(err.to_string()))?),
+        ast::Subscript::Empty => Err(FlattenError::invalid_ast_subscript(
+            "empty recovery subscript cannot lower into function metadata",
+            owner_span,
+        )),
     }
 }
 
@@ -972,7 +1065,7 @@ pub(super) fn resolve_component_constant_integer(
     result
 }
 
-pub(super) fn component_by_def_id<'a>(
+pub(crate) fn component_by_def_id<'a>(
     class_index: &'a ast::ClassDefIndex<'_>,
     def_id: rumoca_core::DefId,
 ) -> Option<&'a ast::Component> {
@@ -1001,4 +1094,4 @@ pub(super) fn qualify_function_expr(
     )
 }
 
-pub(crate) use crate::function_lowering::lower_record_function_params;
+pub(crate) use crate::function_lowering::materialize_complete_record_value_defaults;

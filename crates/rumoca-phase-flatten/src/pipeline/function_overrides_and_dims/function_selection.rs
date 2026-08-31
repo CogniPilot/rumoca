@@ -107,25 +107,14 @@ fn exact_function_implementation(
 }
 
 fn exact_external_object_constructor_selection(
-    reference: &rumoca_core::Reference,
     owner: rumoca_core::DefId,
     ctx: &FunctionOverrideRewriteContext<'_>,
-    span: rumoca_core::Span,
-) -> Result<Option<FunctionSelection>, FlattenError> {
-    let lifecycle = ctx
-        .class_index
-        .external_object_lifecycle(owner)
-        .map_err(|error| {
-            FlattenError::missing_function_selection_identity(
-                reference.as_str(),
-                error.required_fact(),
-                span,
-            )
-        })?;
-    Ok(lifecycle.map(|lifecycle| FunctionSelection {
-        exposure: lifecycle.owner_def_id(),
-        implementation: lifecycle.constructor_def_id(),
-    }))
+) -> Option<FunctionSelection> {
+    let lifecycle = ctx.external_object(owner);
+    lifecycle.map(|lifecycle| FunctionSelection {
+        exposure: lifecycle.owner(),
+        implementation: lifecycle.constructor(),
+    })
 }
 
 fn exact_function_exposure(
@@ -460,8 +449,7 @@ pub(super) fn resolve_exact_function_rewrite(
         )
     })?;
     if target_class.class_type != rumoca_core::ClassType::Function
-        && let Some(selection) =
-            exact_external_object_constructor_selection(reference, current_target, ctx, span)?
+        && let Some(selection) = exact_external_object_constructor_selection(current_target, ctx)
     {
         let mut rewrite = resolved_function_rewrite(
             reference,

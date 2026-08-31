@@ -114,12 +114,14 @@ pub(crate) fn rewrite_function_overrides_in_expression(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     override_packages: &[OverrideTarget],
     override_functions: &OverrideFunctionMap,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     let ctx = FunctionOverrideRewriteContext::new(
         tree,
         class_index,
         override_packages,
         override_functions,
+        semantic_catalogs,
     );
     rewrite_function_overrides_in_expression_with_ctx(expr, &ctx)
 }
@@ -130,12 +132,14 @@ pub(crate) fn rewrite_function_overrides_in_when_chain(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     override_packages: &[OverrideTarget],
     override_functions: &OverrideFunctionMap,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     let ctx = FunctionOverrideRewriteContext::new(
         tree,
         class_index,
         override_packages,
         override_functions,
+        semantic_catalogs,
     );
     rewrite_function_overrides_in_when_chain_with_ctx(chain, &ctx)
 }
@@ -146,12 +150,14 @@ pub(crate) fn rewrite_function_overrides_in_statement(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     override_packages: &[OverrideTarget],
     override_functions: &OverrideFunctionMap,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     let ctx = FunctionOverrideRewriteContext::new(
         tree,
         class_index,
         override_packages,
         override_functions,
+        semantic_catalogs,
     );
     rewrite_function_overrides_in_statement_with_ctx(stmt, &ctx)
 }
@@ -162,6 +168,7 @@ pub(crate) fn rewrite_function_overrides_in_algorithm(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     override_packages: &[OverrideTarget],
     override_functions: &OverrideFunctionMap,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     for stmt in &mut algorithm.statements {
         rewrite_function_overrides_in_statement(
@@ -170,6 +177,7 @@ pub(crate) fn rewrite_function_overrides_in_algorithm(
             class_index,
             override_packages,
             override_functions,
+            semantic_catalogs,
         )?;
     }
     Ok(())
@@ -181,6 +189,7 @@ pub(crate) fn rewrite_function_overrides_in_flattened(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     override_packages: &[OverrideTarget],
     override_functions: &OverrideFunctionMap,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     for equation in &mut flattened.equations {
         rewrite_function_overrides_in_expression(
@@ -189,6 +198,7 @@ pub(crate) fn rewrite_function_overrides_in_flattened(
             class_index,
             override_packages,
             override_functions,
+            semantic_catalogs,
         )?;
     }
     for assert_eq in &mut flattened.assert_equations {
@@ -198,6 +208,7 @@ pub(crate) fn rewrite_function_overrides_in_flattened(
             class_index,
             override_packages,
             override_functions,
+            semantic_catalogs,
         )?;
         rewrite_function_overrides_in_expression(
             &mut assert_eq.message,
@@ -205,6 +216,7 @@ pub(crate) fn rewrite_function_overrides_in_flattened(
             class_index,
             override_packages,
             override_functions,
+            semantic_catalogs,
         )?;
         if let Some(level_expr) = &mut assert_eq.level {
             rewrite_function_overrides_in_expression(
@@ -213,6 +225,7 @@ pub(crate) fn rewrite_function_overrides_in_flattened(
                 class_index,
                 override_packages,
                 override_functions,
+                semantic_catalogs,
             )?;
         }
     }
@@ -223,6 +236,7 @@ pub(crate) fn rewrite_function_overrides_in_flattened(
             class_index,
             override_packages,
             override_functions,
+            semantic_catalogs,
         )?;
     }
     Ok(())
@@ -236,6 +250,7 @@ pub(crate) fn rewrite_function_overrides_in_flat_variable(
     override_functions: &OverrideFunctionMap,
     active_scope: &ComponentPath,
     component_members: &component_member_scope::ComponentMemberScopes,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     let expression_ctx = || {
         FunctionOverrideRewriteContext::new(
@@ -243,6 +258,7 @@ pub(crate) fn rewrite_function_overrides_in_flat_variable(
             class_index,
             override_packages,
             override_functions,
+            semantic_catalogs,
         )
         .with_active_scope(active_scope.clone())
         .with_component_member_scope(component_members)
@@ -279,6 +295,7 @@ pub(crate) fn rewrite_function_overrides_in_flat_model(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     component_override_map: &ComponentOverrideMap,
     component_members: &component_member_scope::ComponentMemberScopes,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     rewrite_function_overrides_in_flat_variables(
         flat,
@@ -286,6 +303,7 @@ pub(crate) fn rewrite_function_overrides_in_flat_model(
         class_index,
         component_override_map,
         component_members,
+        semantic_catalogs,
     )?;
     rewrite_function_overrides_in_equations(
         flat,
@@ -293,6 +311,7 @@ pub(crate) fn rewrite_function_overrides_in_flat_model(
         class_index,
         component_override_map,
         component_members,
+        semantic_catalogs,
     )?;
     let (override_packages, override_functions) =
         override_context_for_scope("", component_override_map);
@@ -301,6 +320,7 @@ pub(crate) fn rewrite_function_overrides_in_flat_model(
         class_index,
         &override_packages,
         &override_functions,
+        semantic_catalogs,
     )
     .with_component_member_scope(component_members);
     for equation in &mut flat.initial_equations {
@@ -351,6 +371,7 @@ pub(crate) fn rewrite_function_overrides_in_flat_model(
             class_index,
             override_packages,
             override_functions,
+            semantic_catalogs,
         )
         .with_active_scope(cache_key)
         .with_component_member_scope(component_members);
@@ -362,6 +383,7 @@ pub(crate) fn rewrite_function_overrides_in_flat_model(
         class_index,
         &override_packages,
         &override_functions,
+        semantic_catalogs,
     )?;
     Ok(())
 }
@@ -372,6 +394,7 @@ fn rewrite_function_overrides_in_flat_variables(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     component_override_map: &ComponentOverrideMap,
     component_members: &component_member_scope::ComponentMemberScopes,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     let mut contexts = rustc_hash::FxHashMap::<ComponentPath, OverrideContext>::default();
     for (name, variable) in &mut flat.variables {
@@ -394,6 +417,7 @@ fn rewrite_function_overrides_in_flat_variables(
             override_functions,
             &active_scope,
             component_members,
+            semantic_catalogs,
         )?;
     }
     Ok(())
@@ -405,6 +429,7 @@ fn rewrite_function_overrides_in_equations(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     component_override_map: &ComponentOverrideMap,
     component_members: &component_member_scope::ComponentMemberScopes,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     let mut contexts = rustc_hash::FxHashMap::<ComponentPath, OverrideContext>::default();
     for equation in &mut flat.equations {
@@ -425,6 +450,7 @@ fn rewrite_function_overrides_in_equations(
             class_index,
             override_packages,
             override_functions,
+            semantic_catalogs,
         )
         .with_active_scope(cache_key)
         .with_component_member_scope(component_members);
@@ -455,6 +481,7 @@ fn rewrite_function_overrides_in_equations(
             class_index,
             override_packages,
             override_functions,
+            semantic_catalogs,
         )
         .with_active_scope(cache_key)
         .with_component_member_scope(component_members);
@@ -469,9 +496,15 @@ pub(crate) fn rewrite_function_extends_aliases_in_flat_functions(
     flat: &mut Model,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     for function in flat.functions.values_mut() {
-        rewrite_function_extends_aliases_in_function(function, tree, class_index)?;
+        rewrite_function_extends_aliases_in_function(
+            function,
+            tree,
+            class_index,
+            semantic_catalogs,
+        )?;
     }
     Ok(())
 }
@@ -482,6 +515,7 @@ pub(super) fn rewrite_function_overrides_in_flat_functions(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     active_override_packages: &[OverrideTarget],
     active_override_functions: &OverrideFunctionMap,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     for function in flat.functions.values_mut() {
         let mut override_packages = active_override_packages.to_vec();
@@ -496,6 +530,7 @@ pub(super) fn rewrite_function_overrides_in_flat_functions(
             class_index,
             &override_packages,
             active_override_functions,
+            semantic_catalogs,
         )?;
     }
     Ok(())
@@ -505,6 +540,7 @@ pub(crate) fn rewrite_function_extends_aliases_in_function(
     function: &mut rumoca_core::Function,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     let override_functions = OverrideFunctionMap::default();
     let override_packages =
@@ -515,6 +551,7 @@ pub(crate) fn rewrite_function_extends_aliases_in_function(
         class_index,
         &override_packages,
         &override_functions,
+        semantic_catalogs,
     )
 }
 
@@ -524,6 +561,7 @@ pub(super) fn rewrite_function_overrides_in_function(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     override_packages: &[OverrideTarget],
     override_functions: &OverrideFunctionMap,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     let lexical_package_def_id =
         function_lexical_package_def_id(function.name.as_str(), tree, class_index)?;
@@ -532,6 +570,7 @@ pub(super) fn rewrite_function_overrides_in_function(
         class_index,
         override_packages,
         override_functions,
+        semantic_catalogs,
     )
     .with_lexical_package_def_id(lexical_package_def_id)
     .with_local_def_ids(function_local_def_ids(function));
@@ -603,6 +642,7 @@ impl ExpressionRewriter for FunctionSelfPackageRewriter<'_> {
             name,
             args,
             is_constructor,
+            call_kind,
             span,
         } = expr
         else {
@@ -614,6 +654,7 @@ impl ExpressionRewriter for FunctionSelfPackageRewriter<'_> {
                 name: name.clone(),
                 args: rewritten_args,
                 is_constructor: *is_constructor,
+                call_kind: *call_kind,
                 span: *span,
             };
         }
@@ -622,6 +663,7 @@ impl ExpressionRewriter for FunctionSelfPackageRewriter<'_> {
                 name: name.clone(),
                 args: rewritten_args,
                 is_constructor: *is_constructor,
+                call_kind: *call_kind,
                 span: *span,
             };
         }
@@ -630,6 +672,7 @@ impl ExpressionRewriter for FunctionSelfPackageRewriter<'_> {
                 name: rewritten_name,
                 args: rewritten_args,
                 is_constructor: *is_constructor,
+                call_kind: *call_kind,
                 span: *span,
             };
         }
@@ -638,6 +681,7 @@ impl ExpressionRewriter for FunctionSelfPackageRewriter<'_> {
                 name: name.clone(),
                 args: rewritten_args,
                 is_constructor: *is_constructor,
+                call_kind: *call_kind,
                 span: *span,
             };
         }
@@ -652,6 +696,7 @@ impl ExpressionRewriter for FunctionSelfPackageRewriter<'_> {
                 name: name.clone(),
                 args: rewritten_args,
                 is_constructor: *is_constructor,
+                call_kind: *call_kind,
                 span: *span,
             };
         };
@@ -666,6 +711,7 @@ impl ExpressionRewriter for FunctionSelfPackageRewriter<'_> {
             ),
             args: rewritten_args,
             is_constructor: *is_constructor,
+            call_kind: *call_kind,
             span: *span,
         }
     }

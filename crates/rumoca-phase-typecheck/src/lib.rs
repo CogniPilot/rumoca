@@ -37,12 +37,11 @@ mod instanced;
 mod modifier_targets;
 mod path_utils;
 mod semantic_scope;
+mod type_roots;
 mod typechecker;
 pub mod unit_syntax;
 
-use rumoca_core::{
-    ComponentPath, DefId, EffectiveType, InstanceId, ScopeId, SourceId, Span, TypeId,
-};
+use rumoca_core::{ComponentPath, DefId, InstanceId, ScopeId, SourceId, Span, TypeId};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics, PhaseError, PrimaryLabel, SourceMap,
 };
@@ -50,17 +49,24 @@ use rumoca_core::{
 /// Placeholder used when a `SourceId` has no registered name in the source map.
 pub(crate) const UNKNOWN_SOURCE_DISPLAY_NAME: &str = "<unknown source>";
 use rumoca_ir_ast::{
-    ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceOverlay,
-    ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType, TypeTable, TypedTree,
+    ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, ExpressionContext,
+    InstanceOverlay, ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType, TypeTable,
+    TypedTree, Visitor,
 };
 use rumoca_phase_resolve::ResolvedTree;
-use semantic_scope::{ComponentSemantics, InstanceSemanticScope, SemanticLookup};
+use semantic_scope::{
+    ComponentSemantics, InstanceSemanticScope, SemanticLookup, invalid_subscript_owner,
+    subscripts_required_value_violation,
+};
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 use thiserror::Error;
 use typechecker::traversal_adapter::{
     walk_equation, walk_equations, walk_expression, walk_statement, walk_statements,
 };
 
+#[cfg(test)]
+use typechecker::api::typecheck_instanced_test_projection;
 pub use typechecker::api::{typecheck, typecheck_instanced};
 
 /// Type alias for typecheck results with boxed errors.
@@ -69,6 +75,237 @@ pub use typechecker::api::{typecheck, typecheck_instanced};
 /// preserving rich diagnostic information. The error path is cold (errors
 /// are exceptional), so the allocation overhead is negligible.
 pub type TypeCheckResult<T> = Result<T, Box<TypeCheckError>>;
+
+/// Canonical test-only projection for fixtures that deliberately mutate a raw
+/// ClassTree and therefore cannot carry Resolve's production success brand.
+#[cfg(test)]
+pub(crate) fn semantic_catalog_projection_for_test(
+    tree: &ClassTree,
+) -> Result<rumoca_ir_ast::SemanticCatalogProjection, String> {
+    let predefined = |role: rumoca_core::ConnectionGraphOperatorRole| {
+        let path = match role {
+            rumoca_core::ConnectionGraphOperatorRole::Branch => role.predefined_path(),
+            rumoca_core::ConnectionGraphOperatorRole::Root => role.predefined_path(),
+            rumoca_core::ConnectionGraphOperatorRole::PotentialRoot => role.predefined_path(),
+            rumoca_core::ConnectionGraphOperatorRole::IsRoot => role.predefined_path(),
+            rumoca_core::ConnectionGraphOperatorRole::Rooted => role.predefined_path(),
+        };
+        tree.scope_tree
+            .predefined_member(&ComponentPath::from_parts(path))
+            .ok_or_else(|| format!("fixture is missing predefined {}.{}", path[0], path[1]))
+    };
+    let branch = predefined(rumoca_core::ConnectionGraphOperatorRole::Branch)?;
+    let root = predefined(rumoca_core::ConnectionGraphOperatorRole::Root)?;
+    let potential_root = predefined(rumoca_core::ConnectionGraphOperatorRole::PotentialRoot)?;
+    let is_root = predefined(rumoca_core::ConnectionGraphOperatorRole::IsRoot)?;
+    let rooted = predefined(rumoca_core::ConnectionGraphOperatorRole::Rooted)?;
+    let connections =
+        rumoca_ir_ast::ConnectionOperatorCatalog::from_resolve_registration(|role| match role {
+            rumoca_core::ConnectionGraphOperatorRole::Branch => branch,
+            rumoca_core::ConnectionGraphOperatorRole::Root => root,
+            rumoca_core::ConnectionGraphOperatorRole::PotentialRoot => potential_root,
+            rumoca_core::ConnectionGraphOperatorRole::IsRoot => is_root,
+            rumoca_core::ConnectionGraphOperatorRole::Rooted => rooted,
+        });
+    let index = rumoca_ir_ast::ClassDefIndex::from_tree(tree);
+    let mut external_objects = rumoca_ir_ast::ExternalObjectLifecycleCatalog::begin_resolve_check();
+    for owner in index.def_ids() {
+        let Some(lifecycle) = index
+            .external_object_lifecycle(owner)
+            .map_err(|error| format!("{error:?}"))?
+        else {
+            continue;
+        };
+        external_objects
+            .insert_from_resolve_check(
+                rumoca_ir_ast::ExternalObjectLifecycleIdentity::from_resolve_check(
+                    lifecycle.owner_def_id(),
+                    lifecycle.constructor_def_id(),
+                    lifecycle.destructor_def_id(),
+                ),
+            )
+            .map_err(|duplicate| {
+                format!("fixture repeats ExternalObject owner identity {duplicate:?}")
+            })?;
+    }
+    Ok(
+        rumoca_ir_ast::SemanticCatalogProjection::from_resolve_issued(
+            connections,
+            external_objects,
+        ),
+    )
+}
+
+struct ResolvedTypeRootCatalog {
+    roots: HashMap<TypeId, TypeId>,
+    failures: HashMap<TypeId, type_roots::TypeRootResolutionError>,
+    enumeration_roots: HashSet<TypeId>,
+    declarations: Vec<(DefId, TypeId)>,
+}
+
+#[derive(Default)]
+struct UsedFunctionCollector {
+    declarations: HashMap<DefId, Span>,
+    missing_target: Option<Span>,
+}
+
+impl Visitor for UsedFunctionCollector {
+    fn visit_expression_ctx(
+        &mut self,
+        expression: &Expression,
+        context: ExpressionContext,
+    ) -> ControlFlow<()> {
+        if matches!(
+            context,
+            ExpressionContext::ComponentAnnotation
+                | ExpressionContext::ClassAnnotation
+                | ExpressionContext::ExtendAnnotation
+                | ExpressionContext::ExternalAnnotation
+        ) {
+            return ControlFlow::Continue(());
+        }
+        self.visit_expression(expression)
+    }
+
+    fn visit_expr_function_call(
+        &mut self,
+        call: &rumoca_ir_ast::ComponentReference,
+        arguments: &[Expression],
+    ) -> ControlFlow<()> {
+        if let Some(declaration) = call.target_def_id() {
+            self.declarations.entry(declaration).or_insert(call.span);
+        } else if self.missing_target.is_none() {
+            self.missing_target = Some(call.span);
+        }
+        self.visit_each(arguments, Self::visit_expression)
+    }
+}
+
+fn format_type_root_failure(failure: Option<&type_roots::TypeRootResolutionError>) -> String {
+    match failure {
+        Some(type_roots::TypeRootResolutionError::UnknownTarget { source }) => {
+            format!("the alias edge from {source:?} has no exact target")
+        }
+        Some(type_roots::TypeRootResolutionError::Cycle { repeated }) => {
+            format!("the alias graph repeats {repeated:?}")
+        }
+        None => "the type identity is absent from the issued type table".to_string(),
+    }
+}
+
+fn collect_overlay_function_declarations(
+    overlay: &InstanceOverlay,
+) -> Result<Vec<(DefId, Span)>, Span> {
+    let mut collector = UsedFunctionCollector::default();
+    for data in overlay.components.values() {
+        for expression in [
+            data.start.as_ref(),
+            data.min.as_ref(),
+            data.max.as_ref(),
+            data.nominal.as_ref(),
+            data.binding.as_ref(),
+            data.binding_source.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let _visit_outcome = collector.visit_expression(expression);
+        }
+        for subscript in &data.dims_expr {
+            let _visit_outcome = collector.visit_subscript(subscript);
+        }
+    }
+    for class in overlay.classes.values() {
+        for equation in class.equations.iter().chain(&class.initial_equations) {
+            let _visit_outcome = collector.visit_equation(&equation.equation);
+        }
+        for statement in class
+            .algorithms
+            .iter()
+            .chain(&class.initial_algorithms)
+            .flatten()
+        {
+            let _visit_outcome = collector.visit_statement(&statement.statement);
+        }
+    }
+    if let Some(span) = collector.missing_target {
+        return Err(span);
+    }
+    let mut declarations = collector.declarations.into_iter().collect::<Vec<_>>();
+    declarations.sort_unstable_by_key(|(declaration, _)| declaration.index());
+    Ok(declarations)
+}
+
+fn collect_class_function_declarations(class: &ClassDef) -> Result<Vec<(DefId, Span)>, Span> {
+    let mut collector = UsedFunctionCollector::default();
+    for equation in class.equations.iter().chain(&class.initial_equations) {
+        let _visit_outcome = collector.visit_equation(equation);
+    }
+    for statement in class
+        .algorithms
+        .iter()
+        .chain(&class.initial_algorithms)
+        .flatten()
+    {
+        let _visit_outcome = collector.visit_statement(statement);
+    }
+    for component in class.components.values() {
+        let _visit_outcome = collector.visit_component(component);
+    }
+    if let Some(span) = collector.missing_target {
+        return Err(span);
+    }
+    Ok(collector.declarations.into_iter().collect())
+}
+
+fn is_predefined_function_declaration(
+    tree: &ClassTree,
+    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
+    declaration: DefId,
+) -> bool {
+    let flat_builtin = rumoca_core::BUILTIN_FUNCTIONS.iter().any(|name| {
+        tree.scope_tree
+            .predefined_member(&ComponentPath::from_flat_path(name))
+            == Some(declaration)
+    });
+    flat_builtin || semantic_catalogs.connections().role(declaration).is_some()
+}
+
+fn missing_checked_call_target(declaration: DefId, span: Span) -> Box<TypeCheckError> {
+    Box::new(TypeCheckError::phase_diagnostic(
+        "ET012",
+        format!("used call target {declaration:?} is absent from the checked class graph"),
+        "call requires an exact checked declaration",
+        span,
+    ))
+}
+
+fn missing_checked_call_identity(span: Span) -> Box<TypeCheckError> {
+    Box::new(TypeCheckError::phase_diagnostic(
+        "ET012",
+        "a used call has no exact resolved callable declaration identity",
+        "call requires an exact checked declaration",
+        span,
+    ))
+}
+
+fn invalid_checked_call_target(declaration: DefId, span: Span) -> Box<TypeCheckError> {
+    Box::new(TypeCheckError::phase_diagnostic(
+        "ET012",
+        format!("used call target {declaration:?} is not a function or record constructor"),
+        "call requires an exact checked declaration",
+        span,
+    ))
+}
+
+fn missing_checked_function_signature(declaration: DefId, span: Span) -> Box<TypeCheckError> {
+    Box::new(TypeCheckError::phase_diagnostic(
+        "ET012",
+        format!("used function {declaration:?} has no checked signature"),
+        "call requires a complete checked function signature",
+        span,
+    ))
+}
 
 /// Errors that can occur during type checking.
 #[derive(Debug, Clone, Error)]
@@ -92,6 +329,14 @@ pub enum TypeCheckError {
     /// Array dimensions could not be evaluated.
     #[error("unevaluable array dimensions for '{name}': {reason}")]
     UnevaluableDimensions { name: String, reason: String },
+
+    /// Invalid required-value syntax reached an array selector.
+    #[error("invalid subscript on component reference `{reference}`: {reason}")]
+    InvalidAstSubscript {
+        reference: String,
+        reason: String,
+        span: Span,
+    },
 
     /// Required source provenance was missing from type-check metadata.
     #[error("missing source context: {reason}")]
@@ -190,6 +435,18 @@ impl PhaseError for TypeCheckError {
             .with_note(
                 "MLS §10.1: array dimensions must be parameter expressions evaluable at translation time",
             ),
+            Self::InvalidAstSubscript {
+                reference,
+                reason,
+                span,
+            } => CommonDiagnostic::error(
+                "ET005",
+                format!("invalid subscript on component reference `{reference}`: {reason}"),
+                PrimaryLabel::new(*span).with_message("invalid subscript value here"),
+            )
+            .with_note(
+                "invalid required-value syntax cannot be used for semantic name or instance lookup",
+            ),
             Self::MissingSourceContext { reason } => CommonDiagnostic::global_error(
                 "ET000",
                 format!("missing source context: {reason}"),
@@ -242,6 +499,12 @@ pub struct TypeChecker {
     /// This unwraps aliases and trivial class wrappers (e.g. operator-record
     /// unit wrappers) so assignment checks compare semantic roots.
     type_roots: HashMap<TypeId, TypeId>,
+    /// Exact refusal retained for every type identity omitted from `type_roots`.
+    ///
+    /// Unused unresolved aliases are intentionally absent from downstream
+    /// catalogs, but their construction failure is not erased: a later use can
+    /// surface the original unknown edge or cycle.
+    type_root_failures: HashMap<TypeId, type_roots::TypeRootResolutionError>,
     /// Source-declaration component metadata for standalone resolved-tree checks.
     current_declaration_semantics: HashMap<DefId, ComponentSemantics>,
     /// Concrete component metadata keyed by `InstanceId`.
@@ -300,6 +563,7 @@ impl TypeChecker {
             class_base_def_ids: HashMap::new(),
             operator_record_zero_capabilities: HashMap::new(),
             type_roots: HashMap::new(),
+            type_root_failures: HashMap::new(),
             current_declaration_semantics: HashMap::new(),
             current_instance_semantics: InstanceSemanticScope::default(),
             current_class_instance_id: None,
@@ -346,6 +610,7 @@ impl TypeChecker {
     /// Type check a ClassTree.
     pub fn check(&mut self, tree: &mut ClassTree) {
         self.source_map = tree.source_map.clone();
+        register_predefined_eval_functions(tree, &mut self.eval_ctx);
         self.predefined_intrinsics = rumoca_core::BuiltinFunction::PREDEFINED_IDENTITY_REQUIRED
             .iter()
             .filter_map(|intrinsic| {
@@ -939,52 +1204,382 @@ impl TypeChecker {
     }
 
     /// Populate overlay-level canonical type roots for downstream flatten checks.
+    #[cfg(test)]
     fn populate_overlay_type_roots(
         &self,
         tree: &ClassTree,
         overlay: &mut InstanceOverlay,
         type_table: &TypeTable,
-    ) {
-        overlay.type_roots.clear();
-        overlay.enumeration_type_roots.clear();
+    ) -> TypeCheckResult<()> {
+        let used_functions = collect_overlay_function_declarations(overlay)
+            .map_err(missing_checked_call_identity)?;
+        let semantic_catalogs = semantic_catalog_projection_for_test(tree).map_err(|error| {
+            Box::new(TypeCheckError::missing_source_context(format!(
+                "cannot construct checked semantic catalogs: {error}",
+            )))
+        })?;
+        self.populate_overlay_type_roots_with_semantics(
+            tree,
+            overlay,
+            type_table,
+            used_functions,
+            &semantic_catalogs,
+        )
+    }
+
+    fn populate_overlay_type_roots_with_semantics(
+        &self,
+        tree: &ClassTree,
+        overlay: &mut InstanceOverlay,
+        type_table: &TypeTable,
+        used_functions: Vec<(DefId, Span)>,
+        semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
+    ) -> TypeCheckResult<()> {
+        let catalog = self.construct_type_root_catalog(tree, type_table);
+        self.require_overlay_component_type_roots(
+            tree,
+            overlay,
+            type_table,
+            &catalog,
+            used_functions,
+            semantic_catalogs,
+        )?;
+
+        let mut roots = catalog.roots.into_iter().collect::<Vec<_>>();
+        roots.sort_unstable_by_key(|(type_id, _)| type_id.index());
+        let mut enumeration_roots = catalog.enumeration_roots.into_iter().collect::<Vec<_>>();
+        enumeration_roots.sort_unstable_by_key(|type_id| type_id.index());
+        overlay.type_roots = roots.into_iter().collect();
+        overlay.enumeration_type_roots = enumeration_roots.into_iter().collect();
+        overlay.type_ids_by_def_id = catalog.declarations.into_iter().collect();
+        Ok(())
+    }
+
+    fn construct_type_root_catalog(
+        &self,
+        tree: &ClassTree,
+        type_table: &TypeTable,
+    ) -> ResolvedTypeRootCatalog {
+        let mut roots = HashMap::new();
+        let mut failures = HashMap::new();
+        let mut enumeration_roots = HashSet::new();
         for idx in 0..type_table.len() {
             let ty = TypeId::new(idx as u32);
-            let root = self.resolve_overlay_type_root(tree, type_table, ty);
-            overlay.type_roots.insert(ty, root);
-            if matches!(type_table.get(root), Some(Type::Enumeration(_))) {
-                overlay.enumeration_type_roots.insert(root);
+            match self.resolve_overlay_type_root(tree, type_table, ty) {
+                Ok(root) => {
+                    roots.insert(ty, root);
+                    if matches!(type_table.get(root), Some(Type::Enumeration(_))) {
+                        enumeration_roots.insert(root);
+                    }
+                }
+                Err(error) => {
+                    failures.insert(ty, error);
+                }
             }
+        }
+        let mut declarations = self
+            .type_ids_by_def_id
+            .iter()
+            .filter_map(|(&declaration, &type_id)| {
+                roots
+                    .contains_key(&type_id)
+                    .then_some((declaration, type_id))
+            })
+            .collect::<Vec<_>>();
+        declarations.sort_unstable_by_key(|(declaration, _)| declaration.index());
+        ResolvedTypeRootCatalog {
+            roots,
+            failures,
+            enumeration_roots,
+            declarations,
         }
     }
 
     fn rebuild_type_roots(&mut self, tree: &ClassTree, type_table: &TypeTable) {
-        self.type_roots.clear();
-        for idx in 0..type_table.len() {
-            let ty = TypeId::new(idx as u32);
-            self.type_roots
-                .insert(ty, self.resolve_overlay_type_root(tree, type_table, ty));
+        let catalog = self.construct_type_root_catalog(tree, type_table);
+        self.type_roots = catalog.roots;
+        self.type_root_failures = catalog.failures;
+    }
+
+    fn require_overlay_component_type_roots(
+        &self,
+        tree: &ClassTree,
+        overlay: &InstanceOverlay,
+        type_table: &TypeTable,
+        catalog: &ResolvedTypeRootCatalog,
+        used_functions: Vec<(DefId, Span)>,
+        semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
+    ) -> TypeCheckResult<()> {
+        let specializations = instanced::overlay_component_type_specializations(tree, overlay);
+        for data in overlay.components.values() {
+            let type_def_id = instanced::specialized_instance_type_def_id(data, &specializations)
+                .or(data.type_def_id);
+            let type_id = self.resolve_type_name(&data.type_name, type_def_id, type_table);
+            if let Some((missing, span)) = self.deferred_alias_errors.get(&type_id) {
+                return Err(Box::new(TypeCheckError::undefined_type(
+                    missing.clone(),
+                    *span,
+                )));
+            }
+            if catalog.roots.contains_key(&type_id) {
+                continue;
+            }
+            let span = self.location_span(&data.source_location)?;
+            let failure = catalog.failures.get(&type_id);
+            return Err(Box::new(TypeCheckError::phase_diagnostic(
+                "ET000",
+                format!(
+                    "cannot issue the canonical type root for component `{}` (type {:?}, declaration {:?}): {}",
+                    data.qualified_name.to_flat_string(),
+                    type_id,
+                    type_def_id,
+                    format_type_root_failure(failure),
+                ),
+                "component uses an incomplete type identity",
+                span,
+            )));
         }
+        self.require_used_function_type_roots(
+            tree,
+            type_table,
+            catalog,
+            used_functions,
+            semantic_catalogs,
+        )
+    }
+
+    fn require_used_function_type_roots(
+        &self,
+        tree: &ClassTree,
+        type_table: &TypeTable,
+        catalog: &ResolvedTypeRootCatalog,
+        mut used: Vec<(DefId, Span)>,
+        semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
+    ) -> TypeCheckResult<()> {
+        let mut checked_functions = HashSet::new();
+        let mut checked_records = HashSet::new();
+        while let Some((function, use_span)) = used.pop() {
+            if !checked_functions.insert(function) {
+                continue;
+            }
+            if is_predefined_function_declaration(tree, semantic_catalogs, function) {
+                continue;
+            }
+            let Some(class) = tree.get_class_by_def_id(function) else {
+                return Err(missing_checked_call_target(function, use_span));
+            };
+            if matches!(class.class_type, rumoca_core::ClassType::Record) {
+                self.require_record_field_type_roots(
+                    tree,
+                    function,
+                    type_table,
+                    catalog,
+                    &mut checked_records,
+                    use_span,
+                )?;
+                continue;
+            }
+            if !matches!(class.class_type, rumoca_core::ClassType::Function) {
+                if let Some(lifecycle) = semantic_catalogs.external_object(function) {
+                    used.push((lifecycle.constructor(), use_span));
+                    used.push((lifecycle.destructor(), use_span));
+                    continue;
+                }
+                return Err(invalid_checked_call_target(function, use_span));
+            }
+            let signature = self
+                .function_signatures
+                .get(&function)
+                .ok_or_else(|| missing_checked_function_signature(function, use_span))?;
+            for (_, component) in signature.inputs.iter().chain(&signature.outputs) {
+                self.require_declaration_component_type_root(
+                    tree,
+                    component,
+                    type_table,
+                    catalog,
+                    &mut checked_records,
+                )?;
+            }
+            used.extend(
+                collect_class_function_declarations(class)
+                    .map_err(missing_checked_call_identity)?,
+            );
+            for component in class.components.values() {
+                self.require_declaration_component_type_root(
+                    tree,
+                    component,
+                    type_table,
+                    catalog,
+                    &mut checked_records,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn require_declaration_component_type_root(
+        &self,
+        tree: &ClassTree,
+        component: &Component,
+        type_table: &TypeTable,
+        catalog: &ResolvedTypeRootCatalog,
+        checked_records: &mut HashSet<DefId>,
+    ) -> TypeCheckResult<()> {
+        let type_id = self.resolve_type_name(
+            &component.type_name.to_string(),
+            component.type_def_id,
+            type_table,
+        );
+        if let Some((missing, span)) = self.deferred_alias_errors.get(&type_id) {
+            return Err(Box::new(TypeCheckError::undefined_type(
+                missing.clone(),
+                *span,
+            )));
+        }
+        let Some(&canonical) = catalog.roots.get(&type_id) else {
+            let span = self.location_span(&component.location)?;
+            return Err(Box::new(TypeCheckError::phase_diagnostic(
+                "ET000",
+                format!(
+                    "cannot issue the canonical type root for declaration {:?} (type {:?}): {}",
+                    component.def_id,
+                    type_id,
+                    format_type_root_failure(catalog.failures.get(&type_id)),
+                ),
+                "function or record declaration uses an incomplete type identity",
+                span,
+            )));
+        };
+        let Some(record) =
+            self.record_declaration_for_canonical_root(component, canonical, type_table, catalog)?
+        else {
+            return Ok(());
+        };
+        let span = self.location_span(&component.location)?;
+        self.require_record_field_type_roots(
+            tree,
+            record,
+            type_table,
+            catalog,
+            checked_records,
+            span,
+        )
+    }
+
+    fn record_declaration_for_canonical_root(
+        &self,
+        component: &Component,
+        canonical: TypeId,
+        type_table: &TypeTable,
+        catalog: &ResolvedTypeRootCatalog,
+    ) -> TypeCheckResult<Option<DefId>> {
+        let Some(Type::Class(class_type)) = type_table.get(canonical) else {
+            return Ok(None);
+        };
+        if class_type.kind != ClassKind::Record {
+            return Ok(None);
+        }
+        let exact_nominal = self.type_ids_by_def_id.get(&class_type.def_id).copied();
+        if exact_nominal != Some(canonical)
+            || catalog.roots.get(&canonical).copied() != Some(canonical)
+        {
+            let span = self.location_span(&component.location)?;
+            return Err(Box::new(TypeCheckError::phase_diagnostic(
+                "ET000",
+                format!(
+                    "record declaration {:?} contradicts canonical type identity {canonical:?}",
+                    class_type.def_id,
+                ),
+                "function or record declaration requires an exact nominal record root",
+                span,
+            )));
+        }
+        Ok(Some(class_type.def_id))
+    }
+
+    fn require_record_field_type_roots(
+        &self,
+        tree: &ClassTree,
+        record: DefId,
+        type_table: &TypeTable,
+        catalog: &ResolvedTypeRootCatalog,
+        checked_records: &mut HashSet<DefId>,
+        use_span: Span,
+    ) -> TypeCheckResult<()> {
+        let Some(class) = tree.get_class_by_def_id(record) else {
+            return Err(Box::new(TypeCheckError::phase_diagnostic(
+                "ET000",
+                format!("required record declaration {record:?} is absent from the class tree"),
+                "record type is required by this checked declaration",
+                use_span,
+            )));
+        };
+        if !matches!(class.class_type, rumoca_core::ClassType::Record) {
+            return Err(Box::new(TypeCheckError::phase_diagnostic(
+                "ET000",
+                format!("required record declaration {record:?} is not a record class"),
+                "record type is required by this checked declaration",
+                use_span,
+            )));
+        }
+        if !checked_records.insert(record) {
+            return Ok(());
+        }
+        for field in class.components.values() {
+            self.require_declaration_component_type_root(
+                tree,
+                field,
+                type_table,
+                catalog,
+                checked_records,
+            )?;
+        }
+        for extends in &class.extends {
+            let base = extends.base_def_id.ok_or_else(|| {
+                Box::new(TypeCheckError::phase_diagnostic(
+                    "ET012",
+                    format!("required record declaration {record:?} has an unresolved base edge"),
+                    "record base requires an exact resolved declaration identity",
+                    use_span,
+                ))
+            })?;
+            let Some(base_class) = tree.get_class_by_def_id(base) else {
+                return Err(Box::new(TypeCheckError::phase_diagnostic(
+                    "ET000",
+                    format!("record base declaration {base:?} is absent from the class tree"),
+                    "record type is required by this checked declaration",
+                    use_span,
+                )));
+            };
+            if !matches!(base_class.class_type, rumoca_core::ClassType::Record) {
+                return Err(Box::new(TypeCheckError::phase_diagnostic(
+                    "ET000",
+                    format!("record base declaration {base:?} is not a record class"),
+                    "record inheritance requires an exact record declaration",
+                    use_span,
+                )));
+            }
+            self.require_record_field_type_roots(
+                tree,
+                base,
+                type_table,
+                catalog,
+                checked_records,
+                use_span,
+            )?;
+        }
+        Ok(())
     }
 
     fn resolve_overlay_type_root(
         &self,
         tree: &ClassTree,
         type_table: &TypeTable,
-        mut ty: TypeId,
-    ) -> TypeId {
-        const MAX_DEPTH: usize = 16;
-        for _ in 0..MAX_DEPTH {
-            let Some(next) =
-                self.next_overlay_type_root_step(tree, type_table, ty, &self.type_ids_by_def_id)
-            else {
-                return ty;
-            };
-            if next.is_unknown() || next == ty {
-                return ty;
-            }
-            ty = next;
-        }
-        ty
+        ty: TypeId,
+    ) -> Result<TypeId, type_roots::TypeRootResolutionError> {
+        type_roots::resolve_type_root(ty, |current| {
+            self.next_overlay_type_root_step(tree, type_table, current, &self.type_ids_by_def_id)
+        })
     }
 
     fn next_overlay_type_root_step(
@@ -1002,7 +1597,9 @@ impl TypeChecker {
                     || class_ty.kind == ClassKind::Operator
                     || class_ty.kind == ClassKind::Record =>
             {
-                let class = tree.get_class_by_def_id(class_ty.def_id)?;
+                let Some(class) = tree.get_class_by_def_id(class_ty.def_id) else {
+                    return Some(TypeId::UNKNOWN);
+                };
                 let is_wrapper = if class_ty.kind == ClassKind::Connector {
                     Self::is_connector_alias_wrapper(class)
                 } else {
@@ -1011,8 +1608,12 @@ impl TypeChecker {
                 if !is_wrapper {
                     return None;
                 }
-                Self::try_resolve_alias_target_type_id(class, type_table, type_ids_by_def_id)
+                Some(
+                    Self::try_resolve_alias_target_type_id(class, type_table, type_ids_by_def_id)
+                        .unwrap_or(TypeId::UNKNOWN),
+                )
             }
+            Some(Type::Unknown) | None => Some(TypeId::UNKNOWN),
             _ => None,
         }
     }
@@ -1188,6 +1789,17 @@ fn build_function_defs_for_eval(
     }
     insert_import_function_aliases(tree, &mut functions);
     std::sync::Arc::new(functions)
+}
+
+fn register_predefined_eval_functions(
+    tree: &ClassTree,
+    ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+) {
+    ctx.set_predefined_functions(rumoca_core::BUILTIN_FUNCTIONS.iter().filter_map(|name| {
+        tree.scope_tree
+            .predefined_member(&rumoca_core::ComponentPath::from_flat_path(name))
+            .map(|identity| ((*name).to_string(), identity))
+    }));
 }
 
 fn insert_import_function_aliases(

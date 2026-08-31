@@ -9,6 +9,7 @@ pub(crate) fn compute_cardinality_counts(
     ctx: &mut Context,
     overlay: &ast::InstanceOverlay,
 ) -> Result<(), FlattenError> {
+    connections::ensure_connection_scalarization_budget(overlay)?;
     for (_def_id, class_data) in &overlay.classes {
         // SPEC_0032 §1: derive the scalar view lazily; family-free connections
         // are borrowed, so the common case stays allocation-free.
@@ -17,8 +18,8 @@ pub(crate) fn compute_cardinality_counts(
             if connections::connection_involves_disabled(&conn, &overlay.disabled_components) {
                 continue;
             }
-            let a_path = conn.a.to_flat_string();
-            let b_path = conn.b.to_flat_string();
+            let a_path = conn.a().to_flat_string();
+            let b_path = conn.b().to_flat_string();
             *ctx.cardinality_counts.entry(a_path).or_insert(0) += 1;
             *ctx.cardinality_counts.entry(b_path).or_insert(0) += 1;
         }
@@ -29,6 +30,7 @@ pub(crate) fn compute_cardinality_counts(
 pub(crate) fn pre_collect_functions(
     ctx: &mut Context,
     overlay: &ast::InstanceOverlay,
+    semantic_catalogs: &ast::SemanticCatalogProjection,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
 ) -> Result<(), FlattenError> {
@@ -38,10 +40,11 @@ pub(crate) fn pre_collect_functions(
         for eq in &class_data.equations {
             collect_function_calls_from_equation(
                 &eq.equation,
+                eq.span,
                 &mut function_names,
                 tree,
                 class_index,
-            );
+            )?;
         }
     }
 
@@ -76,7 +79,14 @@ pub(crate) fn pre_collect_functions(
         if !visited.insert_if_new(func_request.clone()) {
             continue;
         }
-        let Some(func) = add_function_to_context(&func_request, ctx, overlay, tree, class_index)?
+        let Some(func) = add_function_to_context(
+            &func_request,
+            ctx,
+            overlay,
+            semantic_catalogs,
+            tree,
+            class_index,
+        )?
         else {
             continue;
         };
@@ -93,6 +103,7 @@ fn add_function_to_context(
     request: &functions::FunctionRequest,
     ctx: &mut Context,
     overlay: &ast::InstanceOverlay,
+    semantic_catalogs: &ast::SemanticCatalogProjection,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
 ) -> Result<Option<rumoca_core::Function>, FlattenError> {
@@ -100,7 +111,7 @@ fn add_function_to_context(
         tree,
         class_index,
         request,
-        functions::FunctionTypeCatalog::new(overlay),
+        functions::FunctionTypeCatalog::new(overlay, semantic_catalogs),
     )?
     else {
         return Ok(None);
@@ -121,7 +132,14 @@ fn add_function_to_context(
         .get(&request.name)
         .is_none_or(|existing| existing.name.as_str() != request.name)
     {
-        insert_requested_exposure(&mut ctx.functions, &request.name, &func, tree, class_index)?;
+        insert_requested_exposure(
+            &mut ctx.functions,
+            &request.name,
+            &func,
+            tree,
+            class_index,
+            semantic_catalogs,
+        )?;
     }
     add_function_short_name(&request.name, &func, ctx);
     add_function_short_name(&resolved_name, &func, ctx);
@@ -135,6 +153,7 @@ fn insert_requested_exposure(
     function: &rumoca_core::Function,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
+    semantic_catalogs: &ast::SemanticCatalogProjection,
 ) -> Result<(), FlattenError> {
     let mut exposed = function.clone();
     exposed.name = rumoca_core::VarName::new(requested_name);
@@ -144,7 +163,12 @@ fn insert_requested_exposure(
         requested_name,
         &mut exposed,
     )?;
-    crate::pipeline::rewrite_function_extends_aliases_in_function(&mut exposed, tree, class_index)?;
+    crate::pipeline::rewrite_function_extends_aliases_in_function(
+        &mut exposed,
+        tree,
+        class_index,
+        semantic_catalogs,
+    )?;
     functions.insert(requested_name.to_string(), exposed);
     Ok(())
 }
@@ -191,6 +215,7 @@ mod tests {
         let mut functions = rustc_hash::FxHashMap::default();
         let generic = rumoca_core::Function::new(
             "Lib.Generic.f",
+            rumoca_core::DefId::new(61_005),
             rumoca_core::Span::from_offsets(
                 rumoca_core::SourceId::from_source_name("exposure.mo"),
                 0,
@@ -200,8 +225,16 @@ mod tests {
 
         let tree = ast::ClassTree::new();
         let class_index = ast::ClassDefIndex::from_tree(&tree);
-        insert_requested_exposure(&mut functions, "Local.f", &generic, &tree, &class_index)
-            .expect("exposure rewrite");
+        let semantic_catalogs = crate::test_support::semantic_catalog_projection();
+        insert_requested_exposure(
+            &mut functions,
+            "Local.f",
+            &generic,
+            &tree,
+            &class_index,
+            &semantic_catalogs,
+        )
+        .expect("exposure rewrite");
 
         assert_eq!(functions["Local.f"].name.as_str(), "Local.f");
         assert_eq!(generic.name.as_str(), "Lib.Generic.f");

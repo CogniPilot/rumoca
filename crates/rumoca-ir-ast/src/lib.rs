@@ -62,13 +62,30 @@ use std::{fmt::Debug, fmt::Display};
 
 pub use visitor::{
     ComponentReferenceContext, ExpressionContext, ExpressionTransformer, FunctionCallContext,
-    NameContext, SubscriptContext, TypeNameContext, VisitScope, Visitor, collect_component_refs,
-    contains_component_ref, contains_function_call, expression_component_path,
-    walk_class_def_default, walk_component_default, walk_component_reference_default,
-    walk_equation_default, walk_expression_default, walk_extend_default, walk_statement_default,
+    NameContext, RequiredValueViolation, RequiredValueViolationKind, SubscriptContext,
+    TypeNameContext, VisitScope, Visitor, collect_component_refs, contains_component_ref,
+    contains_function_call, declaration_subscript_required_value_violation,
+    equation_contains_required_recovery, equation_required_value_violation,
+    expression_component_path, expression_contains_required_recovery,
+    expression_required_value_violation, is_invocation_tuple_equation,
+    modifier_required_value_violation, statement_contains_required_recovery,
+    statement_required_value_violation, subscript_required_value_violation, walk_class_def_default,
+    walk_component_default, walk_component_reference_default, walk_equation_default,
+    walk_expression_default, walk_extend_default, walk_statement_default,
 };
 
 pub type AstIndexMap<K, V> = IndexMap<K, V, rustc_hash::FxBuildHasher>;
+
+/// Decode a semantically optional current AST value while requiring its wire
+/// key. Absence is represented by an explicit `null`, never by deleting the
+/// field and asking serde to invent `None`.
+pub(crate) fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
 
 pub use external_object::{
     ExternalObjectLifecycle, ExternalObjectLifecycleError, ExternalObjectLifecycleRole,
@@ -80,10 +97,19 @@ pub use semantic_identity::{
 
 // Re-export key types from submodules
 pub use instance::{
-    ClassInstanceData, ClassOverride, ClassOverrideMap, InstanceConnection,
+    ClassInstanceData, ClassOverride, ClassOverrideMap, ConnectionOperatorCatalog,
+    EffectiveTypePublicationError, EqualityConstraintCardinality,
+    EqualityConstraintDeclarationIndex, EqualityConstraintEffectiveRecordIdentity,
+    EqualityConstraintExposureError, EqualityConstraintOccurrenceError,
+    EqualityConstraintOccurrenceExposure, EqualityConstraintPrototype,
+    EqualityConstraintSelectionProof, EqualityConstraintSpecializationKey,
+    ExternalObjectLifecycleCatalog, ExternalObjectLifecycleIdentity,
+    FinalizedOverconstrainedCatalog, FinalizedOverconstrainedComponent,
+    FinalizedOverconstrainedRecord, InstanceConnection, InstanceConnectionConstructionError,
     InstanceConnectionEndpoint, InstanceConnectionFamily, InstanceData, InstanceEquation,
-    InstanceOverlay, InstanceStatement, InstancedTree, ModificationEnvironment, ModificationValue,
-    QualifiedName,
+    InstanceOverlay, InstanceOverlayInsertError, InstanceScalarConnection, InstanceStatement,
+    InstancedTree, ModificationEnvironment, ModificationValue, QualifiedName,
+    SemanticCatalogProjection,
 };
 pub use scope::{Import as ScopeImport, InheritedMember, Scope, ScopeKind, ScopeTree};
 pub use state_machines::{State, StateMachine, StateMachineState, StateMachines, Transition};
@@ -121,11 +147,9 @@ pub struct ClassTree {
     /// Each class scope's declaring class. Populated during resolve so later
     /// phases walk enclosing classes through the scope tree instead of
     /// re-parsing qualified names.
-    #[serde(default)]
     pub scope_to_class: AstIndexMap<ScopeId, DefId>,
     /// Source map for mapping file names to SourceIds.
     /// Populated during session build for multi-file diagnostics.
-    #[serde(default)]
     pub source_map: rumoca_core::SourceMap,
 }
 
@@ -227,6 +251,7 @@ pub struct ClassDefIndex<'tree> {
     qualified_names: FxHashMap<DefId, String>,
     parent_classes: FxHashMap<DefId, DefId>,
     local_names: FxHashMap<DefId, &'tree str>,
+    predefined_def_ids: FxHashMap<&'static str, DefId>,
     builtin_def_ids: FxHashSet<DefId>,
     external_object_def_id: Option<DefId>,
     external_object_owner_def_ids: FxHashSet<DefId>,
@@ -234,19 +259,22 @@ pub struct ClassDefIndex<'tree> {
 
 impl<'tree> ClassDefIndex<'tree> {
     pub fn from_tree(tree: &'tree ClassTree) -> Self {
+        let predefined_def_ids = BUILTIN_TYPES
+            .iter()
+            .filter_map(|&name| {
+                tree.scope_tree
+                    .predefined_member(&ComponentPath::from_flat_path(name))
+                    .map(|def_id| (name, def_id))
+            })
+            .collect::<FxHashMap<_, _>>();
         let mut index = Self {
             classes: FxHashMap::default(),
             qualified_name_def_ids: FxHashMap::default(),
             qualified_names: FxHashMap::default(),
             parent_classes: FxHashMap::default(),
             local_names: FxHashMap::default(),
-            builtin_def_ids: BUILTIN_TYPES
-                .iter()
-                .filter_map(|name| {
-                    tree.scope_tree
-                        .predefined_member(&ComponentPath::from_flat_path(name))
-                })
-                .collect(),
+            builtin_def_ids: predefined_def_ids.values().copied().collect(),
+            predefined_def_ids,
             external_object_def_id: tree
                 .scope_tree
                 .predefined_member(&ComponentPath::from_flat_path("ExternalObject")),
@@ -308,6 +336,11 @@ impl<'tree> ClassDefIndex<'tree> {
 
     pub fn local_name(&self, def_id: DefId) -> Option<&str> {
         self.local_names.get(&def_id).copied()
+    }
+
+    /// Return the resolved declaration identity of a predefined type.
+    pub fn predefined_def_id(&self, name: &str) -> Option<DefId> {
+        self.predefined_def_ids.get(name).copied()
     }
 
     pub fn def_ancestry(&self, def_id: DefId) -> Vec<DefId> {
@@ -445,6 +478,23 @@ fn prove_transitively_non_replaceable_definition(
 #[cfg(test)]
 mod transitive_nonreplaceability_tests {
     use super::*;
+
+    #[test]
+    fn current_class_tree_wire_rejects_deleted_semantic_maps() {
+        let complete = serde_json::to_value(ClassTree::new()).expect("class tree serializes");
+        for key in ["scope_to_class", "source_map"] {
+            let mut missing = complete.clone();
+            missing
+                .as_object_mut()
+                .expect("class tree wire is an object")
+                .remove(key)
+                .unwrap_or_else(|| panic!("class tree wire contains `{key}`"));
+            assert!(
+                serde_json::from_value::<ClassTree>(missing).is_err(),
+                "deleted `{key}` must not invent compilation-unit semantics"
+            );
+        }
+    }
 
     fn token(text: &str) -> Token {
         Token {

@@ -171,6 +171,7 @@ fn when_elsewhen_retains_one_owner_and_ordered_branch_spans() {
         &ast::QualifiedName::new(),
         owner_span,
         None,
+        &crate::test_support::connection_operators(),
     )
     .expect("flatten one when/elsewhen owner");
 
@@ -204,6 +205,7 @@ fn when_producer_rejects_an_empty_branch_list() {
         &ast::QualifiedName::new(),
         span,
         None,
+        &crate::test_support::connection_operators(),
     )
     .expect_err("source when owner requires its first branch");
 
@@ -249,6 +251,7 @@ fn when_chain_still_rejects_mismatched_dynamic_branch_targets() {
         &ast::QualifiedName::new(),
         owner_span,
         None,
+        &crate::test_support::connection_operators(),
     )
     .expect_err("dynamic branches with different targets violate EQN-013");
 
@@ -284,6 +287,7 @@ fn mutually_exclusive_when_if_branches_may_define_the_same_target() {
         &ast::QualifiedName::new(),
         span,
         None,
+        &crate::test_support::connection_operators(),
     )
     .expect("alternative conditional branches contribute one target definition");
 }
@@ -308,8 +312,15 @@ fn structural_false_when_if_ignores_inactive_duplicate_target() {
         ],
     }];
 
-    let chain = flatten_when_blocks(&ctx, &blocks, &ast::QualifiedName::new(), span, None)
-        .expect("the inactive structural x definition must not collide");
+    let chain = flatten_when_blocks(
+        &ctx,
+        &blocks,
+        &ast::QualifiedName::new(),
+        span,
+        None,
+        &crate::test_support::connection_operators(),
+    )
+    .expect("the inactive structural x definition must not collide");
     let targets = collect_when_eq_targets(&chain.first().equations);
     assert_eq!(
         targets,
@@ -347,6 +358,7 @@ fn duplicate_flat_summary_reports_second_span_and_producer_rejects() {
         &ast::QualifiedName::new(),
         second,
         None,
+        &crate::test_support::connection_operators(),
     )
     .expect_err("the Flat producer validates each completed branch");
     assert!(matches!(
@@ -456,6 +468,7 @@ fn for_expansion_cannot_define_one_scalar_target_twice() {
         &ast::QualifiedName::new(),
         span,
         None,
+        &crate::test_support::connection_operators(),
     )
     .expect_err("expanded iterations cannot repeatedly define one scalar target");
 
@@ -492,6 +505,7 @@ fn function_call_outputs_must_be_unique_within_one_tuple() {
         &ast::QualifiedName::new(),
         span,
         None,
+        &crate::test_support::connection_operators(),
     )
     .expect_err("one tuple cannot name the same output target twice");
 
@@ -521,6 +535,7 @@ fn when_assert_preserves_optional_level() {
         &ast::QualifiedName::new(),
         span,
         None,
+        &crate::test_support::connection_operators(),
     )
     .expect("source assert is a checked when action");
 
@@ -676,6 +691,7 @@ fn nested_when_if_rejects_mismatched_explicit_else_target() {
         &ast::QualifiedName::new(),
         span,
         None,
+        &crate::test_support::connection_operators(),
     )
     .expect_err("one if plus else must compare target sets");
 
@@ -695,6 +711,7 @@ fn nested_when_if_rejects_missing_first_condition_block() {
         &ast::QualifiedName::new(),
         span,
         None,
+        &crate::test_support::connection_operators(),
     )
     .expect_err("malformed if-equation cannot select an else without a first condition");
 
@@ -719,6 +736,7 @@ fn nested_when_if_distinguishes_absent_from_explicit_empty_else() {
         &ast::QualifiedName::new(),
         span,
         None,
+        &crate::test_support::connection_operators(),
     )
     .expect("an absent else remains absent");
     let [absent] = absent.as_slice() else {
@@ -739,6 +757,7 @@ fn nested_when_if_distinguishes_absent_from_explicit_empty_else() {
         &ast::QualifiedName::new(),
         span,
         None,
+        &crate::test_support::connection_operators(),
     )
     .expect_err("an explicit empty else has an empty target set");
     assert!(matches!(
@@ -815,6 +834,28 @@ fn streams_side_effect_matching_uses_structured_parts() {
 }
 
 #[test]
+fn direct_when_body_helper_rejects_empty_recovery_node_at_owner_span() {
+    let span = test_span();
+    let error = flatten_when_body_equation(
+        &crate::Context::default(),
+        &ast::Equation::Empty,
+        &ast::QualifiedName::new(),
+        span,
+        None,
+        &crate::test_support::connection_operators(),
+    )
+    .expect_err("the when-body helper must not discard Equation::Empty");
+
+    assert!(matches!(
+        error,
+        FlattenError::InvalidAstRecovery {
+            span: error_span,
+            ..
+        } if error_span == span
+    ));
+}
+
+#[test]
 fn when_for_equation_expands_all_index_ranges() {
     let ctx = crate::Context::default();
     let indices = vec![for_index("i", 1, 2), for_index("j", 1, 2)];
@@ -835,6 +876,7 @@ fn when_for_equation_expands_all_index_ranges() {
         &ast::QualifiedName::new(),
         rumoca_core::Span::DUMMY,
         None,
+        &crate::test_support::connection_operators(),
     )
     .unwrap();
 

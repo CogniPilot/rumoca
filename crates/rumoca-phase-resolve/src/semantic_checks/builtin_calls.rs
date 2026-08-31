@@ -9,20 +9,25 @@ pub(super) const ER059_EXPANDABLE_CONNECTOR_MISMATCH: &str = "ER059";
 pub(super) const ER073_STATE_MACHINE_UNSUPPORTED: &str = "ER073";
 pub(super) const ER096_DELAY_TIME_BOUNDS: &str = "ER096";
 
-pub(super) fn run_builtin_call_semantic_checks(def: &StoredDefinition) -> Vec<Diagnostic> {
+pub(super) fn run_builtin_call_semantic_checks(
+    def: &StoredDefinition,
+    connection_operators: &ast::ConnectionOperatorCatalog,
+) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     let mut visitor = BuiltinCallVisitor {
         def,
+        connection_operators,
         class_path: Vec::new(),
         in_function: false,
         diags: &mut diags,
     };
-    let _ = visitor.visit_stored_definition(def);
+    let _visit_outcome = visitor.visit_stored_definition(def);
     diags
 }
 
 struct BuiltinCallVisitor<'a> {
     def: &'a StoredDefinition,
+    connection_operators: &'a ast::ConnectionOperatorCatalog,
     class_path: Vec<String>,
     in_function: bool,
     diags: &'a mut Vec<Diagnostic>,
@@ -70,10 +75,12 @@ impl ast::Visitor for BuiltinCallVisitor<'_> {
         // MLS §9.4: Connections.* graph operators are not allowed inside
         // function classes (CONN-023).
         if self.in_function
-            && comp.parts.len() == 2
-            && comp.parts[0].ident.text.as_ref() == "Connections"
+            && let Some(role) = comp
+                .target_def_id()
+                .and_then(|declaration| self.connection_operators.role(declaration))
         {
-            let operator = format!("Connections.{}", comp.parts[1].ident.text);
+            let [namespace, member] = role.predefined_path();
+            let operator = format!("{namespace}.{member}");
             self.check_function_forbidden_operator(comp, &operator);
         }
         // `terminate(...)` appears in statement position; the function-scope

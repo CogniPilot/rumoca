@@ -4,6 +4,11 @@
 
 use super::*;
 
+/// Maximum number of integer indices one structural range may eagerly retain.
+/// SPEC_0032 §7 owns this scalar-element unit and value. The constant remains
+/// phase-local; symbolic and compact owners remain free to represent larger domains.
+pub(crate) const MAX_EAGER_RANGE_ELEMENTS: usize = 100_000;
+
 /// Expand a nested non-constant if-equation to simple equations with conditional RHS.
 ///
 /// For an if-equation like:
@@ -25,6 +30,7 @@ pub(super) fn expand_nested_if_to_simple(
     else_block: &Option<Vec<ast::Equation>>,
     prefix: &QualifiedName,
     span: rumoca_core::Span,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<Vec<SimpleEquation>, FlattenError> {
     if cond_blocks.is_empty() {
         return Ok(vec![]);
@@ -34,12 +40,12 @@ pub(super) fn expand_nested_if_to_simple(
     let mut expanded_branches: Vec<(ast::Expression, Vec<SimpleEquation>)> = Vec::new();
 
     for block in cond_blocks {
-        let simple_eqs = expand_to_simple_equations(ctx, &block.eqs, prefix, span)?;
+        let simple_eqs = expand_to_simple_equations(ctx, &block.eqs, prefix, span, operators)?;
         expanded_branches.push((block.cond.clone(), simple_eqs));
     }
 
     let else_simple_eqs = if let Some(else_eqs) = else_block {
-        expand_to_simple_equations(ctx, else_eqs, prefix, span)?
+        expand_to_simple_equations(ctx, else_eqs, prefix, span, operators)?
     } else {
         vec![]
     };
@@ -263,15 +269,18 @@ fn flatten_simple_in_list(
     span: rumoca_core::Span,
     origin: &rumoca_ir_flat::EquationOrigin,
     def_map: Option<&crate::ResolveDefMap>,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<FlattenedEquations, FlattenError> {
     // MLS §10.5: Skip equations with empty range subscripts
-    if has_empty_range_subscript(ctx, lhs, prefix) || has_empty_range_subscript(ctx, rhs, prefix) {
+    if has_empty_range_subscript(ctx, lhs, prefix, operators)?
+        || has_empty_range_subscript(ctx, rhs, prefix, operators)?
+    {
         return Ok(FlattenedEquations::default());
     }
 
     // Keep array comprehensions in equations by expanding structural ranges.
-    let lhs = expand_array_comprehensions_in_expression(ctx, lhs, prefix, span)?;
-    let rhs = expand_array_comprehensions_in_expression(ctx, rhs, prefix, span)?;
+    let lhs = expand_array_comprehensions_in_expression(ctx, lhs, prefix, span, operators)?;
+    let rhs = expand_array_comprehensions_in_expression(ctx, rhs, prefix, span, operators)?;
 
     let residual = make_residual(ctx, &lhs, &rhs, prefix, def_map, None)?;
     let scalar_count = infer_simple_equation_scalar_count(&lhs, &rhs, prefix, ctx);
@@ -307,18 +316,21 @@ pub(super) fn flatten_equations_list(
     span: rumoca_core::Span,
     origin: &rumoca_ir_flat::EquationOrigin,
     def_map: Option<&crate::ResolveDefMap>,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<FlattenedEquations, FlattenError> {
     let mut result = FlattenedEquations::default();
     for eq in equations {
         match eq {
             ast::Equation::Simple { lhs, rhs } => {
-                let equations =
-                    flatten_simple_in_list(ctx, lhs, rhs, prefix, span, origin, def_map)?;
+                let equations = flatten_simple_in_list(
+                    ctx, lhs, rhs, prefix, span, origin, def_map, operators,
+                )?;
                 result.append(equations);
             }
             ast::Equation::For { indices, equations } => {
-                let expanded =
-                    expand_for_equation(ctx, indices, equations, prefix, span, origin, def_map)?;
+                let expanded = expand_for_equation(
+                    ctx, indices, equations, prefix, span, origin, def_map, operators,
+                )?;
                 result.append(expanded);
             }
             ast::Equation::If {
@@ -333,6 +345,7 @@ pub(super) fn flatten_equations_list(
                     span,
                     origin,
                     def_map,
+                    operators,
                 )?;
                 result.append(expanded);
             }
@@ -362,20 +375,26 @@ pub(super) fn flatten_equations_list(
                 );
                 result.assert_equations.push(assert_eq);
             }
-            ast::Equation::Empty | ast::Equation::Connect { .. } => {
-                // Skip these
+            ast::Equation::Empty => {
+                return Err(FlattenError::invalid_ast_recovery(
+                    "Equation::Empty is a parser-recovery node",
+                    span,
+                ));
             }
+            ast::Equation::Connect { .. } => {}
             ast::Equation::When(blocks) => {
                 // MLS §8.3.3/§8.3.5: When-equations inside for-loops are allowed.
                 // Flatten each when-block with the current prefix (which includes for-loop indices)
-                let chain =
-                    crate::when_equations::flatten_when_blocks(ctx, blocks, prefix, span, def_map)?;
+                let chain = crate::when_equations::flatten_when_blocks(
+                    ctx, blocks, prefix, span, def_map, operators,
+                )?;
                 result.when_chains.push(chain);
             }
             ast::Equation::FunctionCall { comp, args, .. } => {
-                let flattened =
-                    flatten_function_call_equation(ctx, comp, args, prefix, span, def_map, origin)?;
-                if flattened.is_empty() && !is_side_effect_only_function(comp) {
+                let flattened = flatten_function_call_equation(
+                    ctx, comp, args, prefix, span, def_map, origin, operators,
+                )?;
+                if flattened.is_empty() && !is_side_effect_only_function(comp, operators) {
                     return Err(FlattenError::unsupported_equation(
                         format!(
                             "function call equation '{}' in nested context not yet supported",
@@ -419,7 +438,7 @@ pub(crate) fn expand_range_indices(
         ast::Expression::Range {
             start, step, end, ..
         } => {
-            let start_val = try_eval_integer_with_ctx(ctx, start, prefix).ok_or_else(|| {
+            let start_val = eval_required_range_integer(ctx, start, prefix, span)?.ok_or_else(|| {
                 FlattenError::unsupported_equation(
                     format!(
                         "for-equation range start must be a constant integer or parameter (scope `{scope}`, got `{}`)",
@@ -428,7 +447,7 @@ pub(crate) fn expand_range_indices(
                     span,
                 )
             })?;
-            let end_val = try_eval_integer_with_ctx(ctx, end, prefix).ok_or_else(|| {
+            let end_val = eval_required_range_integer(ctx, end, prefix, span)?.ok_or_else(|| {
                 FlattenError::unsupported_equation(
                     format!(
                         "for-equation range end must be a constant integer or parameter (scope `{scope}`, got `{}`)",
@@ -438,7 +457,7 @@ pub(crate) fn expand_range_indices(
                 )
             })?;
             let step_val = match step {
-                Some(s) => try_eval_integer_with_ctx(ctx, s, prefix).ok_or_else(|| {
+                Some(s) => eval_required_range_integer(ctx, s, prefix, span)?.ok_or_else(|| {
                     FlattenError::unsupported_equation(
                         format!(
                             "for-equation range step must be a constant integer or parameter (scope `{scope}`, got `{}`)",
@@ -457,25 +476,11 @@ pub(crate) fn expand_range_indices(
                 ));
             }
 
-            let mut indices = Vec::new();
-            if step_val > 0 {
-                let mut i = start_val;
-                while i <= end_val {
-                    indices.push(i);
-                    i += step_val;
-                }
-            } else {
-                let mut i = start_val;
-                while i >= end_val {
-                    indices.push(i);
-                    i += step_val;
-                }
-            }
-            Ok(indices)
+            materialize_integer_range(start_val, end_val, step_val, span)
         }
         _ => {
-            if let Some(n) = try_eval_integer_with_ctx(ctx, range_expr, prefix) {
-                Ok((1..=n).collect())
+            if let Some(n) = eval_required_range_integer(ctx, range_expr, prefix, span)? {
+                materialize_integer_range(1, n, 1, span)
             } else {
                 Err(FlattenError::unsupported_equation(
                     format!(
@@ -489,13 +494,149 @@ pub(crate) fn expand_range_indices(
     }
 }
 
+fn eval_required_range_integer(
+    ctx: &Context,
+    expr: &ast::Expression,
+    prefix: &QualifiedName,
+    owner_span: rumoca_core::Span,
+) -> Result<Option<i64>, FlattenError> {
+    if let Some(value) = try_eval_integer_simple_with_ctx(ctx, expr, prefix) {
+        return Ok(Some(value));
+    }
+
+    let flat_expr = qualify_expression_imports_with_def_map_ctx(
+        expr,
+        prefix,
+        &ctx.current_imports,
+        None,
+        ctx,
+        None,
+    )?;
+    match crate::constant_eval::evaluate_optional(
+        &flat_expr,
+        ctx.eval_fallback_context(),
+        "evaluating a required structural range integer",
+        owner_span,
+    )? {
+        Some(Value::Integer(value)) => Ok(Some(value)),
+        Some(value) => Err(FlattenError::constant_evaluation_failed(
+            "evaluating a required structural range integer",
+            format!("type mismatch: expected Integer, got {}", value.type_name()),
+            owner_span,
+        )),
+        None => Ok(None),
+    }
+}
+
+fn materialize_integer_range(
+    start: i64,
+    end: i64,
+    step: i64,
+    span: rumoca_core::Span,
+) -> Result<Vec<i64>, FlattenError> {
+    let element_count = integer_range_cardinality(start, end, step, span)?;
+    if element_count > MAX_EAGER_RANGE_ELEMENTS as u128 {
+        return Err(FlattenError::RangeMaterializationLimit {
+            element_count,
+            limit: MAX_EAGER_RANGE_ELEMENTS,
+            span,
+        });
+    }
+    let element_count = usize::try_from(element_count).map_err(|_| {
+        FlattenError::constant_evaluation_failed(
+            "computing a structural range cardinality",
+            "range cardinality does not fit the host index type",
+            span,
+        )
+    })?;
+
+    let mut indices = Vec::with_capacity(element_count);
+    let mut value = start;
+    for position in 0..element_count {
+        indices.push(value);
+        if position + 1 < element_count {
+            value = value.checked_add(step).ok_or_else(|| {
+                FlattenError::constant_evaluation_failed(
+                    "stepping through a structural integer range",
+                    format!("Integer overflow after range value {value} with step {step}"),
+                    span,
+                )
+            })?;
+        }
+    }
+    Ok(indices)
+}
+
+fn integer_range_cardinality(
+    start: i64,
+    end: i64,
+    step: i64,
+    span: rumoca_core::Span,
+) -> Result<u128, FlattenError> {
+    if step == 0 {
+        return Err(FlattenError::unsupported_equation(
+            "for-equation range step cannot be zero",
+            span,
+        ));
+    }
+    if (step > 0 && start > end) || (step < 0 && start < end) {
+        return Ok(0);
+    }
+
+    let (start, end, step) = (i128::from(start), i128::from(end), i128::from(step));
+    let distance = if step > 0 {
+        end.checked_sub(start)
+    } else {
+        start.checked_sub(end)
+    };
+    let element_count = distance
+        .and_then(|distance| distance.checked_div(step.checked_abs()?))
+        .and_then(|steps| steps.checked_add(1))
+        .ok_or_else(|| {
+            FlattenError::constant_evaluation_failed(
+                "computing a structural range cardinality",
+                "Integer overflow in range cardinality",
+                span,
+            )
+        })?;
+    u128::try_from(element_count).map_err(|_| {
+        FlattenError::constant_evaluation_failed(
+            "computing a structural range cardinality",
+            "range cardinality became negative",
+            span,
+        )
+    })
+}
+
 /// Try to evaluate an expression to a constant integer, with parameter lookup.
 pub(crate) fn try_eval_integer_with_ctx(
     ctx: &Context,
     expr: &ast::Expression,
     prefix: &QualifiedName,
 ) -> Option<i64> {
-    let result = match expr {
+    let result = try_eval_integer_simple_with_ctx(ctx, expr, prefix);
+
+    // If simple evaluation failed, try the full evaluator as fallback.
+    let result = result.or_else(|| {
+        #[cfg(feature = "tracing")]
+        debug!("simple evaluation failed, trying rumoca_eval_const fallback");
+        try_eval_with_rumoca_eval_const(ctx, expr, prefix)
+    });
+
+    #[cfg(feature = "tracing")]
+    if result.is_some() {
+        debug!(result = ?result, "expression evaluated");
+    }
+
+    result
+}
+
+fn try_eval_integer_simple_with_ctx(
+    ctx: &Context,
+    expr: &ast::Expression,
+    prefix: &QualifiedName,
+) -> Option<i64> {
+    match expr {
         ast::Expression::Terminal {
             terminal_type: TerminalType::UnsignedInteger,
             token,
@@ -516,7 +657,7 @@ pub(crate) fn try_eval_integer_with_ctx(
         ast::Expression::Unary { op, rhs, .. } => {
             let val = try_eval_integer_with_ctx(ctx, rhs, prefix)?;
             match op {
-                rumoca_core::OpUnary::Minus => Some(-val),
+                rumoca_core::OpUnary::Minus => val.checked_neg(),
                 rumoca_core::OpUnary::Plus => Some(val),
                 _ => None,
             }
@@ -537,29 +678,14 @@ pub(crate) fn try_eval_integer_with_ctx(
         }
 
         _ => {
-            // Fall back to rumoca_eval_const for complex expressions
             #[cfg(feature = "tracing")]
             debug!(
                 expr_kind = std::any::type_name_of_val(expr),
-                "trying rumoca_eval_const for unhandled expression kind"
+                "simple integer evaluator does not handle expression kind"
             );
-            try_eval_with_rumoca_eval_const(ctx, expr, prefix)
+            None
         }
-    };
-
-    // If simple evaluation failed, try the full evaluator as fallback
-    let result = result.or_else(|| {
-        #[cfg(feature = "tracing")]
-        debug!("simple evaluation failed, trying rumoca_eval_const fallback");
-        try_eval_with_rumoca_eval_const(ctx, expr, prefix)
-    });
-
-    #[cfg(feature = "tracing")]
-    if result.is_some() {
-        debug!(result = ?result, "expression evaluated");
     }
-
-    result
 }
 
 /// Evaluate a builtin function call to an integer value for for-loop ranges (MLS §3.7.2).
@@ -579,7 +705,7 @@ fn try_eval_builtin_function(
         "size" => try_eval_size_call(ctx, args, prefix),
         "max" => try_eval_max_min(ctx, args, prefix, true),
         "min" => try_eval_max_min(ctx, args, prefix, false),
-        "abs" if args.len() == 1 => eval(&args[0]).map(|v| v.abs()),
+        "abs" if args.len() == 1 => eval(&args[0]).and_then(i64::checked_abs),
         "sign" if args.len() == 1 => eval(&args[0]).map(|v| v.signum()),
         "integer" if args.len() == 1 => eval(&args[0]),
         "div" if args.len() == 2 => {
@@ -614,14 +740,19 @@ pub(super) fn has_empty_range_subscript(
     ctx: &Context,
     expr: &ast::Expression,
     prefix: &QualifiedName,
-) -> bool {
+    operators: &ast::ConnectionOperatorCatalog,
+) -> Result<bool, FlattenError> {
     match expr {
-        ast::Expression::ComponentReference(cr) => cr_has_empty_range_subscript(ctx, cr, prefix),
-        ast::Expression::Binary { lhs, rhs, .. } => {
-            has_empty_range_subscript(ctx, lhs, prefix)
-                || has_empty_range_subscript(ctx, rhs, prefix)
+        ast::Expression::ComponentReference(cr) => {
+            Ok(cr_has_empty_range_subscript(ctx, cr, prefix))
         }
-        ast::Expression::Unary { rhs, .. } => has_empty_range_subscript(ctx, rhs, prefix),
+        ast::Expression::Binary { lhs, rhs, .. } => {
+            Ok(has_empty_range_subscript(ctx, lhs, prefix, operators)?
+                || has_empty_range_subscript(ctx, rhs, prefix, operators)?)
+        }
+        ast::Expression::Unary { rhs, .. } => {
+            has_empty_range_subscript(ctx, rhs, prefix, operators)
+        }
         ast::Expression::FunctionCall { args, .. } => {
             // Don't recurse into function call arguments.  A function
             // can legitimately accept an empty‐range array and return
@@ -630,10 +761,10 @@ pub(super) fn has_empty_range_subscript(
             // with empty ranges should trigger equation elimination.
             // However, we still check the first argument for common
             // patterns like der(x[2:1]) where the function is der.
-            args.iter().any(|a| matches!(a, ast::Expression::ComponentReference(cr) if cr_has_empty_range_subscript(ctx, cr, prefix)))
+            Ok(args.iter().any(|a| matches!(a, ast::Expression::ComponentReference(cr) if cr_has_empty_range_subscript(ctx, cr, prefix))))
         }
         ast::Expression::Parenthesized { inner, .. } => {
-            has_empty_range_subscript(ctx, inner, prefix)
+            has_empty_range_subscript(ctx, inner, prefix, operators)
         }
         ast::Expression::If {
             branches,
@@ -647,16 +778,18 @@ pub(super) fn has_empty_range_subscript(
             // Clocked.FractionalDelay where n=0 makes u_buffer[1:0]
             // appear only in the else branch that is never executed).
             for (cond, then_expr) in branches {
-                match try_eval_boolean_with_ctx_inner(cond, Some(ctx), prefix) {
-                    Some(true) => return has_empty_range_subscript(ctx, then_expr, prefix),
+                match try_eval_boolean_with_ctx_inner(cond, Some(ctx), prefix, operators)? {
+                    Some(true) => {
+                        return has_empty_range_subscript(ctx, then_expr, prefix, operators);
+                    }
                     Some(false) => continue,
-                    None => return false, // non‐constant → don't drop
+                    None => return Ok(false), // non‐constant → don't drop
                 }
             }
             // All conditions were false → check else branch
-            has_empty_range_subscript(ctx, else_branch, prefix)
+            has_empty_range_subscript(ctx, else_branch, prefix, operators)
         }
-        _ => false,
+        _ => Ok(false),
     }
 }
 
@@ -904,9 +1037,9 @@ fn try_eval_max_min(
                     "evaluating array form"
                 );
                 // Flatten nested arrays and evaluate all elements
-                let values: Option<Vec<i64>> = elements
+                let rows = elements
                     .iter()
-                    .filter_map(|row| match row {
+                    .map(|row| match row {
                         ast::Expression::Array {
                             elements: inner, ..
                         } => {
@@ -918,11 +1051,8 @@ fn try_eval_max_min(
                         }
                         e => try_eval_integer_with_ctx(ctx, e, prefix).map(|v| vec![v]),
                     })
-                    .flatten()
-                    .map(Some)
-                    .collect();
-
-                let values = values?;
+                    .collect::<Option<Vec<_>>>()?;
+                let values = rows.into_iter().flatten().collect::<Vec<_>>();
                 #[cfg(feature = "tracing")]
                 debug!(func = func_name, values = ?values, "array elements evaluated");
                 if values.is_empty() {
@@ -1531,22 +1661,11 @@ pub(crate) fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> Eva
         }
     }
 
-    // Add array dimensions as array values (for size() evaluation)
-    // This is a simplified representation - we create arrays of the right size
-    // but with placeholder values, since we mainly need the dimensions
+    // Shape metadata may answer size()/ndims(), but it is not an element value.
+    // Materializing zeros here lets ordinary indexing and reductions fabricate
+    // compile-time results for arrays whose values are not actually known.
     for (name, dims) in &ctx.array_dimensions {
-        if dims.len() == 1 {
-            // 1D array
-            let arr: Vec<Value> = (0..dims[0]).map(|_| Value::Integer(0)).collect();
-            eval_ctx.add_parameter(name.clone(), Value::Array(arr));
-        } else if dims.len() == 2 {
-            // 2D array
-            let arr: Vec<Value> = (0..dims[0])
-                .map(|_| Value::Array((0..dims[1]).map(|_| Value::Integer(0)).collect()))
-                .collect();
-            eval_ctx.add_parameter(name.clone(), Value::Array(arr));
-        }
-        // For higher dimensions, we could extend this pattern
+        eval_ctx.add_array_dimensions(name.clone(), dims.clone());
     }
 
     // Add functions from flatten context (pre-collected)
@@ -1591,10 +1710,22 @@ fn try_eval_with_rumoca_eval_const(
     // parameter/function maps on every complex-expression fallback.
     let eval_ctx = ctx.eval_fallback_context();
 
-    // Try to evaluate
+    // This is deliberately a non-authoritative recognizer: its callers use an
+    // absent value only to decline an optional structural optimization. The
+    // owning required range path lowers and evaluates through a Result-returning
+    // path before materialization, so semantic and arithmetic failures are
+    // diagnosed there rather than fabricated into a value here.
     let result = rumoca_eval_flat::constant::try_eval_integer(&flat_expr, eval_ctx);
     crate::maybe_record_eval_fallback_timing(fallback_start);
-    result
+    result.unwrap_or_else(decline_optional_structural_integer)
+}
+
+fn decline_optional_structural_integer(
+    _error: rumoca_eval_flat::constant::EvalError,
+) -> Option<i64> {
+    #[cfg(feature = "tracing")]
+    tracing::debug!(error = %_error, "optional structural-integer recognition declined");
+    None
 }
 
 #[cfg(test)]

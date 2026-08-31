@@ -6,6 +6,8 @@
 use std::{collections::HashSet, sync::Arc};
 
 mod shape_inference;
+#[cfg(test)]
+mod structured_binder_tests;
 pub(crate) use shape_inference::{
     ExpressionShape, infer_component_ref_shape, infer_simple_equation_dims,
     infer_simple_equation_scalar_count, is_tuple_receiver_equation_lhs,
@@ -24,7 +26,10 @@ use crate::boolean_eval::{
 };
 use crate::errors::FlattenError;
 use crate::static_subscripts::try_constant_integer;
-use crate::{Context, qualify_expression_imports_with_def_map_ctx};
+use crate::{
+    Context, qualify_equation_residual_imports_with_def_map_ctx,
+    qualify_expression_imports_with_def_map_ctx,
+};
 
 pub(crate) mod affine;
 pub(crate) mod array_family;
@@ -44,7 +49,8 @@ pub(crate) use assert_equations::{decode_assert_arguments, decode_terminate_argu
 pub(crate) use conditional_and_eval::build_eval_context;
 use conditional_and_eval::*;
 pub(crate) use conditional_and_eval::{
-    expand_range_indices, substitute_index_in_equation, substitute_index_in_expression,
+    MAX_EAGER_RANGE_ELEMENTS, expand_range_indices, substitute_index_in_equation,
+    substitute_index_in_expression,
 };
 use connections_graph::{extract_vcg_data_from_function_call, is_side_effect_only_function};
 pub(crate) use flattened_equations::FlattenedEquations;
@@ -130,7 +136,10 @@ fn format_component_ref_part(part: &ast::ComponentRefPart) -> String {
 fn format_subscript_for_lookup(sub: &ast::Subscript) -> String {
     match sub {
         ast::Subscript::Expression(expr) => format_subscript_expr(expr),
-        ast::Subscript::Range { .. } | ast::Subscript::Empty => ":".to_string(),
+        ast::Subscript::Range { .. } => ":".to_string(),
+        ast::Subscript::Empty => {
+            unreachable!("flatten input validation rejects empty recovery subscripts")
+        }
     }
 }
 
@@ -420,6 +429,7 @@ pub(crate) fn flatten_equation_with_def_map(
     inst_eq: &ast::InstanceEquation,
     prefix: &ast::QualifiedName,
     def_map: Option<&crate::ResolveDefMap>,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<FlattenedEquations, FlattenError> {
     let span = inst_eq.span;
     let origin = rumoca_ir_flat::EquationOrigin::ComponentEquation {
@@ -427,7 +437,10 @@ pub(crate) fn flatten_equation_with_def_map(
     };
 
     match &inst_eq.equation {
-        ast::Equation::Empty => Ok(FlattenedEquations::default()),
+        ast::Equation::Empty => Err(FlattenError::invalid_ast_recovery(
+            "Equation::Empty is a parser-recovery node",
+            span,
+        )),
 
         ast::Equation::Simple { lhs, rhs } => {
             // MLS Appendix B allows edge()/change() in discrete equations:
@@ -453,16 +466,16 @@ pub(crate) fn flatten_equation_with_def_map(
             // MLS §10.5: Check for range subscripts that evaluate to empty ranges.
             // For example, `der(x_scaled[2:nx])` with nx=1 produces range 2:1
             // which is empty, so the equation should be skipped entirely.
-            let lhs_empty = has_empty_range_subscript(ctx, lhs, prefix);
-            let rhs_empty = has_empty_range_subscript(ctx, rhs, prefix);
+            let lhs_empty = has_empty_range_subscript(ctx, lhs, prefix, operators)?;
+            let rhs_empty = has_empty_range_subscript(ctx, rhs, prefix, operators)?;
             if lhs_empty || rhs_empty {
                 return Ok(FlattenedEquations::default());
             }
 
             // MLS §10.4.1: Preserve array-comprehension equations by expanding
             // structural ranges before AST->Flat conversion.
-            let lhs = expand_array_comprehensions_in_expression(ctx, lhs, prefix, span)?;
-            let rhs = expand_array_comprehensions_in_expression(ctx, rhs, prefix, span)?;
+            let lhs = expand_array_comprehensions_in_expression(ctx, lhs, prefix, span, operators)?;
+            let rhs = expand_array_comprehensions_in_expression(ctx, rhs, prefix, span, operators)?;
             let lhs = simplify_zero_sized_reductions(ctx, &lhs, prefix);
             let rhs = simplify_zero_sized_reductions(ctx, &rhs, prefix);
 
@@ -510,7 +523,9 @@ pub(crate) fn flatten_equation_with_def_map(
         ast::Equation::For { indices, equations } => {
             // Expand for-equations by iterating over indices (MLS §8.3.3)
             // This now also handles when-equations inside for-loops (MLS §8.3.5)
-            expand_for_equation(ctx, indices, equations, prefix, span, &origin, def_map)
+            expand_for_equation(
+                ctx, indices, equations, prefix, span, &origin, def_map, operators,
+            )
         }
 
         ast::Equation::When(_blocks) => {
@@ -524,19 +539,28 @@ pub(crate) fn flatten_equation_with_def_map(
             else_block,
         } => {
             // Convert if-equations to conditional expressions (MLS §8.3.4)
-            expand_if_equation(ctx, cond_blocks, else_block, prefix, span, &origin, def_map)
+            expand_if_equation(
+                ctx,
+                cond_blocks,
+                else_block,
+                prefix,
+                span,
+                &origin,
+                def_map,
+                operators,
+            )
         }
 
-        ast::Equation::FunctionCall { comp, args, .. } => {
-            flatten_function_call_equation(ctx, comp, args, prefix, span, def_map, &origin)
-        }
+        ast::Equation::FunctionCall { comp, args, .. } => flatten_function_call_equation(
+            ctx, comp, args, prefix, span, def_map, &origin, operators,
+        ),
 
         ast::Equation::Assert {
             condition,
             message,
             level,
         } => flatten_assert_equation(
-            AssertEquationLowering::new(ctx, prefix, span, def_map, origin),
+            AssertEquationLowering::new(ctx, prefix, span, def_map, origin, operators),
             condition,
             message,
             level.as_ref(),
@@ -552,14 +576,15 @@ fn flatten_function_call_equation(
     span: rumoca_core::Span,
     def_map: Option<&crate::ResolveDefMap>,
     origin: &flat::EquationOrigin,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<FlattenedEquations, FlattenError> {
     if is_assert_function_call(comp) {
         return flatten_assert_function_call(
-            AssertEquationLowering::new(ctx, prefix, span, def_map, origin.clone()),
+            AssertEquationLowering::new(ctx, prefix, span, def_map, origin.clone(), operators),
             args,
         );
     }
-    extract_vcg_data_from_function_call(comp, args, prefix)
+    extract_vcg_data_from_function_call(comp, args, prefix, operators)
 }
 
 /// Create a residual expression: lhs - rhs
@@ -578,7 +603,7 @@ fn make_residual(
         span: lhs.span(),
     };
 
-    qualify_expression_imports_with_def_map_ctx(
+    qualify_equation_residual_imports_with_def_map_ctx(
         &residual,
         prefix,
         &ctx.current_imports,
@@ -599,6 +624,7 @@ fn expand_array_comprehensions_in_expression(
     expr: &ast::Expression,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<ast::Expression, FlattenError> {
     match expr {
         ast::Expression::ArrayComprehension {
@@ -613,21 +639,22 @@ fn expand_array_comprehensions_in_expression(
             filter.as_deref(),
             prefix,
             span,
+            operators,
         ),
         ast::Expression::Binary { op, lhs, rhs, span } => Ok(ast::Expression::Binary {
             op: op.clone(),
             lhs: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, lhs, prefix, *span,
+                ctx, lhs, prefix, *span, operators,
             )?),
             rhs: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, rhs, prefix, *span,
+                ctx, rhs, prefix, *span, operators,
             )?),
             span: *span,
         }),
         ast::Expression::Unary { op, rhs, span } => Ok(ast::Expression::Unary {
             op: op.clone(),
             rhs: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, rhs, prefix, *span,
+                ctx, rhs, prefix, *span, operators,
             )?),
             span: *span,
         }),
@@ -643,7 +670,7 @@ fn expand_array_comprehensions_in_expression(
             }
             Ok(ast::Expression::FunctionCall {
                 comp: comp.clone(),
-                args: expand_expression_list(ctx, args, prefix, *span)?,
+                args: expand_expression_list(ctx, args, prefix, *span, operators)?,
                 is_partial_application: *is_partial_application,
                 span: *span,
             })
@@ -652,18 +679,18 @@ fn expand_array_comprehensions_in_expression(
             branches,
             else_branch,
             ..
-        } => expand_if_expression(ctx, branches, else_branch, prefix, span),
+        } => expand_if_expression(ctx, branches, else_branch, prefix, span, operators),
         ast::Expression::Array {
             elements,
             is_matrix,
             span,
         } => Ok(ast::Expression::Array {
-            elements: expand_expression_list(ctx, elements, prefix, *span)?,
+            elements: expand_expression_list(ctx, elements, prefix, *span, operators)?,
             is_matrix: *is_matrix,
             span: *span,
         }),
         ast::Expression::Tuple { elements, span } => Ok(ast::Expression::Tuple {
-            elements: expand_expression_list(ctx, elements, prefix, *span)?,
+            elements: expand_expression_list(ctx, elements, prefix, *span, operators)?,
             span: *span,
         }),
         ast::Expression::Range {
@@ -673,21 +700,23 @@ fn expand_array_comprehensions_in_expression(
             span,
         } => Ok(ast::Expression::Range {
             start: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, start, prefix, *span,
+                ctx, start, prefix, *span, operators,
             )?),
             step: step
                 .as_ref()
-                .map(|s| expand_array_comprehensions_in_expression(ctx, s, prefix, *span))
+                .map(|s| {
+                    expand_array_comprehensions_in_expression(ctx, s, prefix, *span, operators)
+                })
                 .transpose()?
                 .map(Arc::new),
             end: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, end, prefix, *span,
+                ctx, end, prefix, *span, operators,
             )?),
             span: *span,
         }),
         ast::Expression::Parenthesized { inner, span } => Ok(ast::Expression::Parenthesized {
             inner: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, inner, prefix, *span,
+                ctx, inner, prefix, *span, operators,
             )?),
             span: *span,
         }),
@@ -697,7 +726,7 @@ fn expand_array_comprehensions_in_expression(
             span,
         } => Ok(ast::Expression::ArrayIndex {
             base: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, base, prefix, *span,
+                ctx, base, prefix, *span, operators,
             )?),
             subscripts: subscripts.clone(),
             span: *span,
@@ -709,7 +738,7 @@ fn expand_array_comprehensions_in_expression(
             span,
         } => Ok(ast::Expression::FieldAccess {
             base: Arc::new(expand_array_comprehensions_in_expression(
-                ctx, base, prefix, *span,
+                ctx, base, prefix, *span, operators,
             )?),
             field: field.clone(),
             field_def_id: *field_def_id,
@@ -724,10 +753,11 @@ fn expand_expression_list(
     exprs: &[ast::Expression],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<Vec<ast::Expression>, FlattenError> {
     exprs
         .iter()
-        .map(|expr| expand_array_comprehensions_in_expression(ctx, expr, prefix, span))
+        .map(|expr| expand_array_comprehensions_in_expression(ctx, expr, prefix, span, operators))
         .collect()
 }
 
@@ -737,13 +767,14 @@ fn expand_if_expression(
     else_branch: &ast::Expression,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<ast::Expression, FlattenError> {
     let branches = branches
         .iter()
         .map(|(cond, then_expr)| {
             Ok::<_, FlattenError>((
-                expand_array_comprehensions_in_expression(ctx, cond, prefix, span)?,
-                expand_array_comprehensions_in_expression(ctx, then_expr, prefix, span)?,
+                expand_array_comprehensions_in_expression(ctx, cond, prefix, span, operators)?,
+                expand_array_comprehensions_in_expression(ctx, then_expr, prefix, span, operators)?,
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -752,6 +783,7 @@ fn expand_if_expression(
         else_branch,
         prefix,
         span,
+        operators,
     )?);
     Ok(ast::Expression::If {
         branches,
@@ -767,6 +799,7 @@ fn expand_array_comprehension_expression(
     filter: Option<&ast::Expression>,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<ast::Expression, FlattenError> {
     let mut index_ranges: Vec<(String, Vec<i64>)> = Vec::new();
     for idx in indices {
@@ -779,6 +812,7 @@ fn expand_array_comprehension_expression(
         prefix,
         span,
         index_ranges: &index_ranges,
+        operators,
     };
     let mut expanded_elements = Vec::new();
     expand_array_comprehension_recursive(
@@ -801,6 +835,7 @@ struct ArrayComprehensionExpansionEnv<'a> {
     prefix: &'a ast::QualifiedName,
     span: rumoca_core::Span,
     index_ranges: &'a [(String, Vec<i64>)],
+    operators: &'a ast::ConnectionOperatorCatalog,
 }
 
 fn expand_array_comprehension_recursive(
@@ -812,7 +847,12 @@ fn expand_array_comprehension_recursive(
 ) -> Result<(), FlattenError> {
     if depth == env.index_ranges.len() {
         if let Some(filter_expr) = &filter {
-            match try_eval_boolean_with_ctx_inner(filter_expr, Some(env.ctx), env.prefix) {
+            match try_eval_boolean_with_ctx_inner(
+                filter_expr,
+                Some(env.ctx),
+                env.prefix,
+                env.operators,
+            )? {
                 Some(true) => {}
                 Some(false) => return Ok(()),
                 None => {
@@ -824,7 +864,11 @@ fn expand_array_comprehension_recursive(
             }
         }
         out.push(expand_array_comprehensions_in_expression(
-            env.ctx, &body, env.prefix, env.span,
+            env.ctx,
+            &body,
+            env.prefix,
+            env.span,
+            env.operators,
         )?);
         return Ok(());
     }
@@ -1036,14 +1080,15 @@ fn expand_for_equation(
     span: rumoca_core::Span,
     origin: &rumoca_ir_flat::EquationOrigin,
     def_map: Option<&crate::ResolveDefMap>,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<FlattenedEquations, FlattenError> {
     // If no indices, just process the equations directly
     if indices.is_empty() {
-        return flatten_equations_list(ctx, equations, prefix, span, origin, def_map);
+        return flatten_equations_list(ctx, equations, prefix, span, origin, def_map, operators);
     }
     if equations.len() > 1 {
         return expand_independent_for_bodies(
-            ctx, indices, equations, prefix, span, origin, def_map,
+            ctx, indices, equations, prefix, span, origin, def_map, operators,
         );
     }
 
@@ -1095,6 +1140,7 @@ fn expand_for_equation(
         span,
         origin,
         def_map,
+        operators,
     };
     collect_for_iterations(
         &env,
@@ -1193,6 +1239,7 @@ fn expand_independent_for_bodies(
     span: rumoca_core::Span,
     origin: &rumoca_ir_flat::EquationOrigin,
     def_map: Option<&crate::ResolveDefMap>,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<FlattenedEquations, FlattenError> {
     let mut result = FlattenedEquations::default();
     for equation in equations {
@@ -1204,6 +1251,7 @@ fn expand_independent_for_bodies(
             span,
             origin,
             def_map,
+            operators,
         )?);
     }
     Ok(result)
@@ -1226,11 +1274,29 @@ fn capture_comprehension_template(
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Option<rumoca_core::ComprehensionTemplate> {
     let mut body = Vec::new();
+    let mut binders = indices
+        .iter()
+        .enumerate()
+        .map(|(ordinal, index)| {
+            Some((
+                index.ident.text.to_string(),
+                rumoca_core::StructuredIndexBinderId::from_ordinal(ordinal)?,
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
     let locals = indices
         .iter()
         .map(|index| index.ident.text.to_string())
         .collect::<HashSet<_>>();
-    collect_template_residuals(ctx, equations, prefix, def_map, &locals, &mut body)?;
+    collect_template_residuals(
+        ctx,
+        equations,
+        prefix,
+        def_map,
+        &locals,
+        &mut binders,
+        &mut body,
+    )?;
     (!body.is_empty()).then_some(rumoca_core::ComprehensionTemplate {
         body,
         scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
@@ -1248,12 +1314,18 @@ fn collect_template_residuals(
     prefix: &ast::QualifiedName,
     def_map: Option<&crate::ResolveDefMap>,
     locals: &HashSet<String>,
+    binders: &mut Vec<(String, rumoca_core::StructuredIndexBinderId)>,
     body: &mut Vec<rumoca_core::Expression>,
 ) -> Option<()> {
     for equation in equations {
         match equation {
             ast::Equation::Simple { lhs, rhs } => {
-                body.push(make_residual(ctx, lhs, rhs, prefix, def_map, Some(locals)).ok()?);
+                let residual = make_residual(ctx, lhs, rhs, prefix, def_map, Some(locals)).ok()?;
+                // If a lexical binder occurrence cannot carry its typed
+                // identity, abandon the compact template. The caller keeps
+                // the already materialized scalar rows, so no semantic
+                // reference is silently emitted without binder provenance.
+                body.push(annotate_structured_binder_targets(&residual, binders)?);
             }
             ast::Equation::For {
                 indices,
@@ -1261,12 +1333,85 @@ fn collect_template_residuals(
             } => {
                 let mut nested_locals = locals.clone();
                 nested_locals.extend(indices.iter().map(|index| index.ident.text.to_string()));
-                collect_template_residuals(ctx, inner, prefix, def_map, &nested_locals, body)?;
+                let outer_rank = binders.len();
+                binders.extend(indices.iter().enumerate().map(|(offset, index)| {
+                    (
+                        index.ident.text.to_string(),
+                        rumoca_core::StructuredIndexBinderId::from_ordinal(outer_rank + offset)
+                            .expect("Flat structured-domain rank must fit its typed binder ID"),
+                    )
+                }));
+                collect_template_residuals(
+                    ctx,
+                    inner,
+                    prefix,
+                    def_map,
+                    &nested_locals,
+                    binders,
+                    body,
+                )?;
+                binders.truncate(outer_rank);
             }
             _ => return None,
         }
     }
     Some(())
+}
+
+fn annotate_structured_binder_targets(
+    expression: &rumoca_core::Expression,
+    binders: &[(String, rumoca_core::StructuredIndexBinderId)],
+) -> Option<rumoca_core::Expression> {
+    struct Annotator<'a> {
+        binders: &'a [(String, rumoca_core::StructuredIndexBinderId)],
+        annotation_failed: bool,
+    }
+
+    impl rumoca_core::ExpressionRewriter for Annotator<'_> {
+        fn rewrite_var_ref_expression(
+            &mut self,
+            name: &rumoca_core::Reference,
+            subscripts: &[rumoca_core::Subscript],
+            span: rumoca_core::Span,
+        ) -> rumoca_core::Expression {
+            let binder = name
+                .component_ref()
+                // A leading-dot reference is an explicit lookup escape, not
+                // the lexically shadowing source loop token.
+                .filter(|component| !component.local() && component.parts().len() == 1)
+                .and_then(|component| {
+                    let part = &component.parts()[0];
+                    self.binders
+                        .iter()
+                        .rev()
+                        .find(|(display_name, _)| display_name == &part.ident)
+                })
+                .map(|(_, binder)| *binder);
+            let rewritten = if let Some(binder) = binder {
+                match name.clone().with_structured_binder(binder) {
+                    Ok(reference) => reference,
+                    Err(_) => {
+                        self.annotation_failed = true;
+                        name.clone()
+                    }
+                }
+            } else {
+                name.clone()
+            };
+            rumoca_core::Expression::VarRef {
+                name: rewritten,
+                subscripts: self.rewrite_subscripts(subscripts),
+                span,
+            }
+        }
+    }
+
+    let mut annotator = Annotator {
+        binders,
+        annotation_failed: false,
+    };
+    let rewritten = rumoca_core::ExpressionRewriter::rewrite_expression(&mut annotator, expression);
+    (!annotator.annotation_failed).then_some(rewritten)
 }
 
 struct ForIterationEnv<'a> {
@@ -1275,6 +1420,7 @@ struct ForIterationEnv<'a> {
     span: rumoca_core::Span,
     origin: &'a rumoca_ir_flat::EquationOrigin,
     def_map: Option<&'a crate::ResolveDefMap>,
+    operators: &'a ast::ConnectionOperatorCatalog,
 }
 
 fn collect_for_iterations(
@@ -1299,8 +1445,15 @@ fn collect_for_iterations(
             }
             _ => equations,
         };
-        let flattened =
-            flatten_equations_list(env.ctx, body, env.prefix, env.span, env.origin, env.def_map)?;
+        let flattened = flatten_equations_list(
+            env.ctx,
+            body,
+            env.prefix,
+            env.span,
+            env.origin,
+            env.def_map,
+            env.operators,
+        )?;
         iterations.push(SourceStructuredIteration {
             index_values: index_values.clone(),
             equation_count: flattened.equations.len(),
@@ -1439,6 +1592,7 @@ fn expand_if_equation(
     span: rumoca_core::Span,
     origin: &rumoca_ir_flat::EquationOrigin,
     def_map: Option<&crate::ResolveDefMap>,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<FlattenedEquations, FlattenError> {
     if cond_blocks.is_empty() {
         return Ok(FlattenedEquations::default());
@@ -1447,9 +1601,18 @@ fn expand_if_equation(
     // First, try to evaluate constant conditions at compile time
     // This handles cases like "if false then ... else ... end if"
     // and parameter-dependent conditions that can be resolved
-    if let Some(selected_branch) = try_select_constant_branch(ctx, cond_blocks, else_block, prefix)
+    if let Some(selected_branch) =
+        try_select_constant_branch(ctx, cond_blocks, else_block, prefix, operators)?
     {
-        return flatten_equations_list(ctx, &selected_branch, prefix, span, origin, def_map);
+        return flatten_equations_list(
+            ctx,
+            &selected_branch,
+            prefix,
+            span,
+            origin,
+            def_map,
+            operators,
+        );
     }
 
     // MLS §8.3.4: branches that differ in which variables they differentiate
@@ -1458,9 +1621,17 @@ fn expand_if_equation(
     // `der()` target a state even when the taken branch never assigns it.
     if branches_differ_in_der_targets(cond_blocks, else_block)
         && let Some(selected_branch) =
-            try_select_parameter_branch(cond_blocks, else_block, ctx, prefix)
+            try_select_parameter_branch(cond_blocks, else_block, ctx, prefix, operators)?
     {
-        return flatten_equations_list(ctx, &selected_branch, prefix, span, origin, def_map);
+        return flatten_equations_list(
+            ctx,
+            &selected_branch,
+            prefix,
+            span,
+            origin,
+            def_map,
+            operators,
+        );
     }
 
     // Non-constant conditions: expand each branch to simple equations first
@@ -1468,12 +1639,12 @@ fn expand_if_equation(
     let mut expanded_branches: Vec<(ast::Expression, Vec<SimpleEquation>)> = Vec::new();
 
     for block in cond_blocks {
-        let simple_eqs = expand_to_simple_equations(ctx, &block.eqs, prefix, span)?;
+        let simple_eqs = expand_to_simple_equations(ctx, &block.eqs, prefix, span, operators)?;
         expanded_branches.push((block.cond.clone(), simple_eqs));
     }
 
     let else_simple_eqs = if let Some(else_eqs) = else_block {
-        expand_to_simple_equations(ctx, else_eqs, prefix, span)?
+        expand_to_simple_equations(ctx, else_eqs, prefix, span, operators)?
     } else {
         vec![]
     };
@@ -1520,6 +1691,7 @@ fn expand_if_equation(
             span,
             origin,
             def_map,
+            operators,
         )
     }
 }
@@ -1538,17 +1710,18 @@ fn try_select_constant_branch(
     cond_blocks: &[ast::EquationBlock],
     else_block: &Option<Vec<ast::Equation>>,
     prefix: &ast::QualifiedName,
-) -> Option<Vec<ast::Equation>> {
+    operators: &ast::ConnectionOperatorCatalog,
+) -> Result<Option<Vec<ast::Equation>>, FlattenError> {
     // Try to evaluate conditions using structural parameters only
     // This respects Evaluate=true annotation per MLS §18.3
     for (i, block) in cond_blocks.iter().enumerate() {
-        let is_struct = is_structural_expression(ctx, &block.cond, prefix);
-        let eval_result = try_eval_structural_boolean(ctx, &block.cond, prefix);
+        let is_struct = is_structural_expression(ctx, &block.cond, prefix, operators);
+        let eval_result = try_eval_structural_boolean(ctx, &block.cond, prefix, operators)?;
         let _ = (i, is_struct); // suppress unused warnings
         match eval_result {
             Some(true) => {
                 // Condition is true - select this branch
-                return Some(block.eqs.clone());
+                return Ok(Some(block.eqs.clone()));
             }
             Some(false) => {
                 // Condition is false - continue to next branch
@@ -1556,14 +1729,14 @@ fn try_select_constant_branch(
             }
             None => {
                 // Non-constant or non-structural condition - can't select at compile time
-                return None;
+                return Ok(None);
             }
         }
     }
 
     // All conditions were constant false - use else branch if present
     // If no else branch, return empty equations (valid per MLS §8.3.4)
-    Some(equations_from_optional_else(else_block))
+    Ok(Some(equations_from_optional_else(else_block)))
 }
 
 fn equations_from_optional_else(else_block: &Option<Vec<ast::Equation>>) -> Vec<ast::Equation> {
@@ -1587,22 +1760,32 @@ fn try_select_branch_for_mismatched_if(
     span: rumoca_core::Span,
     origin: &rumoca_ir_flat::EquationOrigin,
     def_map: Option<&crate::ResolveDefMap>,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<FlattenedEquations, FlattenError> {
     for block in cond_blocks {
-        if let Some(true) = try_eval_boolean_with_ctx_inner(&block.cond, Some(ctx), prefix) {
-            return flatten_equations_list(ctx, &block.eqs, prefix, span, origin, def_map);
-        }
-        if let Some(false) = try_eval_boolean_with_ctx_inner(&block.cond, Some(ctx), prefix) {
-            continue;
+        match try_eval_boolean_with_ctx_inner(&block.cond, Some(ctx), prefix, operators)? {
+            Some(true) => {
+                return flatten_equations_list(
+                    ctx, &block.eqs, prefix, span, origin, def_map, operators,
+                );
+            }
+            Some(false) => continue,
+            None => {}
         }
         // Can't evaluate this condition at all
-        let description =
-            mismatched_if_equation_description(ctx, cond_blocks, else_block, prefix, span)?;
+        let description = mismatched_if_equation_description(
+            ctx,
+            cond_blocks,
+            else_block,
+            prefix,
+            span,
+            operators,
+        )?;
         return Err(FlattenError::unsupported_equation(description, span));
     }
     // All conditions false, use else branch
     let else_eqs = equations_from_optional_else(else_block);
-    flatten_equations_list(ctx, &else_eqs, prefix, span, origin, def_map)
+    flatten_equations_list(ctx, &else_eqs, prefix, span, origin, def_map, operators)
 }
 
 fn mismatched_if_equation_description(
@@ -1611,14 +1794,20 @@ fn mismatched_if_equation_description(
     else_block: &Option<Vec<ast::Equation>>,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<String, FlattenError> {
     let mut counts = cond_blocks
         .iter()
-        .map(|block| expand_to_simple_equations(ctx, &block.eqs, prefix, span).map(|eqs| eqs.len()))
+        .map(|block| {
+            expand_to_simple_equations(ctx, &block.eqs, prefix, span, operators)
+                .map(|eqs| eqs.len())
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let else_count = else_block
         .as_ref()
-        .map(|eqs| expand_to_simple_equations(ctx, eqs, prefix, span).map(|eqs| eqs.len()))
+        .map(|eqs| {
+            expand_to_simple_equations(ctx, eqs, prefix, span, operators).map(|eqs| eqs.len())
+        })
         .transpose()?;
     if let Some(count) = else_count {
         counts.push(count);
@@ -1630,7 +1819,7 @@ fn mismatched_if_equation_description(
         .join("; ");
     let references = cond_blocks
         .iter()
-        .flat_map(|block| condition_reference_debug(ctx, &block.cond, prefix))
+        .flat_map(|block| condition_reference_debug(ctx, &block.cond, prefix, operators))
         .collect::<Vec<_>>()
         .join(", ");
     let enum_candidates = cond_blocks
@@ -1682,13 +1871,16 @@ fn condition_reference_debug(
     ctx: &Context,
     expr: &ast::Expression,
     prefix: &ast::QualifiedName,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Vec<String> {
     match expr {
         ast::Expression::ComponentReference(cr) => {
             let name = cr.to_string();
             let enum_value =
                 try_resolve_enum_value(Some(ctx), expr, prefix).unwrap_or_else(|| "-".to_string());
-            let bool_value = try_eval_boolean_with_ctx_inner(expr, Some(ctx), prefix)
+            let bool_value = try_eval_boolean_with_ctx_inner(expr, Some(ctx), prefix, operators)
+                .ok()
+                .flatten()
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "-".to_string());
             let int_value = lookup_parameter_in_scope(ctx, cr, prefix)
@@ -1699,17 +1891,19 @@ fn condition_reference_debug(
             )]
         }
         ast::Expression::Binary { lhs, rhs, .. } => {
-            let mut refs = condition_reference_debug(ctx, lhs, prefix);
-            refs.extend(condition_reference_debug(ctx, rhs, prefix));
+            let mut refs = condition_reference_debug(ctx, lhs, prefix, operators);
+            refs.extend(condition_reference_debug(ctx, rhs, prefix, operators));
             refs
         }
-        ast::Expression::Unary { rhs, .. } => condition_reference_debug(ctx, rhs, prefix),
+        ast::Expression::Unary { rhs, .. } => {
+            condition_reference_debug(ctx, rhs, prefix, operators)
+        }
         ast::Expression::Parenthesized { inner, .. } => {
-            condition_reference_debug(ctx, inner, prefix)
+            condition_reference_debug(ctx, inner, prefix, operators)
         }
         ast::Expression::FunctionCall { args, .. } => args
             .iter()
-            .flat_map(|arg| condition_reference_debug(ctx, arg, prefix))
+            .flat_map(|arg| condition_reference_debug(ctx, arg, prefix, operators))
             .collect(),
         _ => Vec::new(),
     }
@@ -1724,11 +1918,18 @@ fn expand_to_simple_equations(
     equations: &[ast::Equation],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<Vec<SimpleEquation>, FlattenError> {
     let mut result = Vec::new();
 
     for eq in equations {
         match eq {
+            ast::Equation::Empty => {
+                return Err(FlattenError::invalid_ast_recovery(
+                    "Equation::Empty is a parser-recovery node",
+                    span,
+                ));
+            }
             ast::Equation::Simple { lhs, rhs } => {
                 let expanded = expand_array_assignment(lhs, rhs);
                 result.extend(expanded);
@@ -1736,7 +1937,8 @@ fn expand_to_simple_equations(
 
             ast::Equation::For { indices, equations } => {
                 // Expand for-equation to simple equations
-                let expanded = expand_for_to_simple(ctx, indices, equations, prefix, span)?;
+                let expanded =
+                    expand_for_to_simple(ctx, indices, equations, prefix, span, operators)?;
                 result.extend(expanded);
             }
 
@@ -1746,20 +1948,26 @@ fn expand_to_simple_equations(
             } => {
                 // For nested if-equations, try constant condition evaluation first
                 if let Some(selected) =
-                    try_select_constant_branch(ctx, cond_blocks, else_block, prefix)
+                    try_select_constant_branch(ctx, cond_blocks, else_block, prefix, operators)?
                 {
-                    let expanded = expand_to_simple_equations(ctx, &selected, prefix, span)?;
+                    let expanded =
+                        expand_to_simple_equations(ctx, &selected, prefix, span, operators)?;
                     result.extend(expanded);
                 } else {
                     // Non-constant nested if-equation - expand recursively
-                    let nested =
-                        expand_nested_if_to_simple(ctx, cond_blocks, else_block, prefix, span)?;
+                    let nested = expand_nested_if_to_simple(
+                        ctx,
+                        cond_blocks,
+                        else_block,
+                        prefix,
+                        span,
+                        operators,
+                    )?;
                     result.extend(nested);
                 }
             }
 
-            ast::Equation::Empty
-            | ast::Equation::Connect { .. }
+            ast::Equation::Connect { .. }
             | ast::Equation::Assert { .. }
             | ast::Equation::When(_)
             | ast::Equation::FunctionCall { .. } => {
@@ -1833,9 +2041,10 @@ fn expand_for_to_simple(
     equations: &[ast::Equation],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
+    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<Vec<SimpleEquation>, FlattenError> {
     if indices.is_empty() {
-        return expand_to_simple_equations(ctx, equations, prefix, span);
+        return expand_to_simple_equations(ctx, equations, prefix, span, operators);
     }
 
     let first_index = &indices[0];
@@ -1853,7 +2062,14 @@ fn expand_for_to_simple(
             .collect();
 
         // Recursively expand remaining indices
-        let expanded = expand_for_to_simple(ctx, remaining_indices, &substituted, prefix, span)?;
+        let expanded = expand_for_to_simple(
+            ctx,
+            remaining_indices,
+            &substituted,
+            prefix,
+            span,
+            operators,
+        )?;
         result.extend(expanded);
     }
 
