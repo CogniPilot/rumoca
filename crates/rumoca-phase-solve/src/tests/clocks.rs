@@ -50,20 +50,23 @@ fn clocked_discrete_definition_lowers_with_exact_row_owner() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    assert_eq!(solve.clocks.periodic_event_schedules.len(), 1);
-    assert_eq!(solve.clocks.periodic_event_schedules[0].lattice(), lattice);
-    assert_eq!(solve.discrete.clock_owners.len(), 1);
-    let clock = solve.discrete.clock_owners[0].expect("row has a clock owner");
+    assert_eq!(solve.clocks().periodic_event_schedules.len(), 1);
+    assert_eq!(
+        solve.clocks().periodic_event_schedules[0].lattice(),
+        lattice
+    );
+    assert_eq!(solve.discrete().clock_owners.len(), 1);
+    let clock = solve.discrete().clock_owners[0].expect("row has a clock owner");
     assert_eq!(
         solve
-            .clocks
+            .clocks()
             .periodic_schedule(clock)
             .expect("typed clock owner resolves")
             .lattice(),
         lattice
     );
     assert!(
-        solve.discrete.rhs.programs()[0]
+        solve.discrete().rhs.programs()[0]
             .iter()
             .any(|operation| matches!(operation, LinearOp::LoadTime { .. }))
     );
@@ -112,7 +115,7 @@ fn periodic_clock_interval_lowers_to_an_exact_constant() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     assert!(
@@ -210,33 +213,32 @@ fn clocked_unconditional_discrete_value_owner_reads_its_previous_history() {
     let model = clocked_tick_counter_model(lattice);
 
     let solve = lower_solve_problem(&model).unwrap();
-    solve
-        .validate()
+    reseal_solve_problem(&solve)
         .expect("the clocked B.1c owner satisfies the Solve shape contract");
     let schedule = solve
-        .discrete
+        .discrete()
         .clock_owners
         .iter()
-        .zip(&solve.discrete.row_roles)
+        .zip(&solve.discrete().row_roles)
         .find(|(_, role)| **role == rumoca_ir_solve::DiscreteRowRole::Equation)
         .and_then(|(clock, _)| *clock)
         .expect("the always-active clocked owner keeps its periodic row schedule");
     assert_eq!(
         solve
-            .clocks
+            .clocks()
             .periodic_schedule(schedule)
             .expect("typed clock owner resolves")
             .lattice(),
         lattice
     );
     let equation = solve
-        .discrete
+        .discrete()
         .row_roles
         .iter()
         .position(|role| *role == rumoca_ir_solve::DiscreteRowRole::Equation)
         .expect("the clocked owner has one equation row");
     assert!(
-        solve.discrete.rhs.programs()[equation]
+        solve.discrete().rhs.programs()[equation]
             .iter()
             .all(|operation| !matches!(operation, LinearOp::Select { .. })),
         "typed clock activation makes the Always branch direct before scalar lowering"
@@ -299,10 +301,10 @@ fn clock_owned_b1c_branch_lowers_its_value_instead_of_a_self_hold() {
 
     let solve = lower_solve_problem(&model).expect("clock-owned B.1c owner lowers");
     let target = solve
-        .layout
+        .layout()
         .binding("initialized")
         .expect("the Boolean target has parameter storage");
-    let [guarded] = solve.discrete.guarded_assignments.as_slice() else {
+    let [guarded] = solve.discrete().guarded_assignments.as_slice() else {
         panic!("one compact guarded owner expected");
     };
     assert_eq!(guarded.target_ranges()[0].base(), target);
@@ -336,20 +338,20 @@ fn clocked_relation_leaves_the_continuous_root_set() {
 
     let solve = lower_solve_problem(&model).unwrap();
     assert_eq!(
-        solve.events.root_conditions.len(),
+        solve.events().root_conditions.len(),
         0,
         "a clocked relation is evaluated on its tick, not by continuous root finding"
     );
-    assert_eq!(solve.events.root_zero_domains.len(), 0);
-    assert_eq!(solve.events.root_relation_memory_targets.len(), 0);
+    assert_eq!(solve.events().root_zero_domains.len(), 0);
+    assert_eq!(solve.events().root_relation_memory_targets.len(), 0);
     let memory = solve
-        .discrete
+        .discrete()
         .row_roles
         .iter()
         .position(|role| *role == rumoca_ir_solve::DiscreteRowRole::ConditionMemory)
         .expect("the clocked relation still keeps a condition-memory row");
     assert!(
-        solve.discrete.clock_owners[memory].is_some(),
+        solve.discrete().clock_owners[memory].is_some(),
         "the condition-memory row of a clocked relation runs on its clock's ticks"
     );
 }
@@ -424,15 +426,15 @@ fn mixed_initial_and_clock_activation_needs_no_target_clock_owner() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).expect("the mixed event DAG has a checked schedule");
-    solve.validate().expect("the activation lane is in bounds");
+    reseal_solve_problem(&solve).expect("the activation lane is in bounds");
     let equation = solve
-        .discrete
+        .discrete()
         .guarded_assignments
         .iter()
         .find(|program| program.role() == rumoca_ir_solve::DiscreteRowRole::Equation)
         .expect("one guarded event equation owner");
     assert_eq!(equation.clock_owner(), None);
-    let activation = solve.clocks.activation_parameter_indices[0];
+    let activation = solve.clocks().activation_parameter_indices[0];
     let conditional = equation
         .program()
         .iter()
@@ -443,9 +445,9 @@ fn mixed_initial_and_clock_activation_needs_no_target_clock_owner() {
         .expect("the mixed activation retains one compact conditional owner");
     assert!(
         conditional
-            .arms
+            .arms()
             .iter()
-            .flat_map(|arm| arm.condition.iter())
+            .flat_map(|arm| arm.condition().iter())
             .any(|op| matches!(op, LinearOp::LoadP { index, .. } if *index == activation)),
         "the clock leaf reads its schedule-derived lane"
     );
@@ -506,9 +508,9 @@ fn unclocked_clock_leaf_alias_is_proven_safe_for_observation_refresh() {
     .expect("the unclocked clock-leaf alias is valid checked DAE");
 
     let solve = lower_solve_problem(&model).expect("the alias lowers with a refresh proof");
-    let activation = solve.clocks.activation_parameter_indices[0];
+    let activation = solve.clocks().activation_parameter_indices[0];
     let row = solve
-        .discrete
+        .discrete()
         .rhs
         .programs()
         .iter()
@@ -518,11 +520,11 @@ fn unclocked_clock_leaf_alias_is_proven_safe_for_observation_refresh() {
                 .any(|op| matches!(op, LinearOp::LoadP { index, .. } if *index == activation))
         })
         .expect("the alias reads the compiler-owned activation lane");
-    assert_eq!(solve.discrete.clock_owners[row], None);
+    assert_eq!(solve.discrete().clock_owners[row], None);
     assert_eq!(
-        solve.discrete.pre_modes[row],
+        solve.discrete().pre_modes[row],
         rumoca_ir_solve::DiscreteEventPreMode::FollowCurrent
     );
-    assert!(solve.discrete.observation_refresh[row]);
-    assert!(!solve.discrete.observation_refresh_reads_y);
+    assert!(solve.discrete().observation_refresh[row]);
+    assert!(!solve.discrete().observation_refresh_reads_y);
 }

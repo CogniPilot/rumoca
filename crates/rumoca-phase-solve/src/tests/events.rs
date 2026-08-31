@@ -40,11 +40,11 @@ fn dynamic_time_event_deadline_lowers_to_owned_row() {
     .expect("dynamic deadline is valid by construction");
 
     let solve = lower_solve_problem(&model).expect("dynamic deadline lowers to Solve IR");
-    assert!(solve.events.scheduled_time_events.is_empty());
-    assert!(solve.events.root_conditions.is_empty());
-    assert_eq!(solve.events.dynamic_time_event_rhs.programs().len(), 1);
+    assert!(solve.events().scheduled_time_events.is_empty());
+    assert!(solve.events().root_conditions.is_empty());
+    assert_eq!(solve.events().dynamic_time_event_rhs.programs().len(), 1);
     assert!(matches!(
-        solve.events.dynamic_time_event_rhs.programs()[0].as_slice(),
+        solve.events().dynamic_time_event_rhs.programs()[0].as_slice(),
         [LinearOp::LoadP { .. }, LinearOp::StoreOutput { .. }]
     ));
 }
@@ -100,7 +100,9 @@ fn fmi_inventory_promotes_a_state_dependent_deadline_to_an_indicator() {
     })
     .expect("state-dependent deadline is valid by construction");
 
-    let component = crate::fmi::lower_to_fmi_component(&model, &std::collections::HashMap::new())
+    let lowered = crate::lower_solve_model(&model, &std::collections::HashMap::new(), |_| {})
+        .expect("the checked DAE constructs one complete Solve root");
+    let component = crate::fmi::finish_fmi_component(lowered)
         .expect("FMI lowering constructs the checked indicator inventory");
     assert_eq!(
         component.event_indicators().sources(),
@@ -196,7 +198,9 @@ fn fmi_inventory_keeps_a_time_only_root_as_an_indicator() {
     })
     .expect("a time relation registered as a root is valid by construction");
 
-    let component = crate::fmi::lower_to_fmi_component(&model, &std::collections::HashMap::new())
+    let lowered = crate::lower_solve_model(&model, &std::collections::HashMap::new(), |_| {})
+        .expect("the checked DAE constructs one complete Solve root");
+    let component = crate::fmi::finish_fmi_component(lowered)
         .expect("FMI lowering constructs the checked indicator inventory");
     assert_eq!(
         component.event_indicators().sources(),
@@ -272,13 +276,13 @@ fn terminal_coordinate_lowers_to_the_driver_owned_final_event_slot() {
 
     let solve = lower_solve_problem(&model).expect("terminal DAE has checked Solve lowering");
     let terminal_index = solve
-        .solve_layout
+        .solve_layout()
         .terminal_event_parameter_index
         .expect("terminal runtime slot is allocated");
-    assert!(solve.events.has_terminal_event);
-    assert!(terminal_index < solve.layout.p_scalars());
-    assert_eq!(solve.events.actions.len(), 1);
-    assert_eq!(solve.events.action_conditions.programs().len(), 1);
+    assert!(solve.events().has_terminal_event);
+    assert!(terminal_index < solve.layout().p_scalars());
+    assert_eq!(solve.events().actions.len(), 1);
+    assert_eq!(solve.events().action_conditions.programs().len(), 1);
 }
 
 #[test]
@@ -431,16 +435,16 @@ fn primitive_relation_root_lowers_to_signed_event_program() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    assert_eq!(solve.events.root_conditions.programs().len(), 1);
+    assert_eq!(solve.events().root_conditions.programs().len(), 1);
     assert_eq!(
-        solve.events.root_conditions.program_spans(),
+        solve.events().root_conditions.program_spans(),
         [when_owner.span()]
     );
     assert_eq!(
-        solve.events.root_zero_domains,
+        solve.events().root_zero_domains,
         [rumoca_ir_solve::RootZeroDomain::Positive]
     );
-    assert!(solve.events.root_relation_memory_targets[0].is_none());
+    assert!(solve.events().root_relation_memory_targets[0].is_none());
 }
 
 #[test]
@@ -514,8 +518,8 @@ fn roots_from_one_source_owner_lower_to_one_multi_output_program() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    assert_eq!(solve.events.root_conditions.row_count(), 1);
-    assert_eq!(solve.events.root_conditions.stored_output_count(), 2);
+    assert_eq!(solve.events().root_conditions.row_count(), 1);
+    assert_eq!(solve.events().root_conditions.stored_output_count(), 2);
 }
 
 #[test]
@@ -577,7 +581,7 @@ fn exact_unconditional_b1c_relation_owns_the_root_post_side() {
     let solve = lower_solve_problem(&model).expect("exact relation owner lowers");
 
     assert_eq!(
-        solve.events.root_relation_memory_targets,
+        solve.events().root_relation_memory_targets,
         [Some(rumoca_ir_solve::scalar_slot_p(0))]
     );
 }
@@ -711,12 +715,12 @@ fn root_refresh_excludes_relation_bearing_follow_current_owner() {
     let solve = lower_solve_problem(&model).expect("typed root-refresh partition lowers");
 
     assert_eq!(
-        solve.discrete.post_commit_assignment_targets,
+        solve.discrete().post_commit_assignment_targets,
         [rumoca_ir_solve::scalar_slot_p(2)],
         "the relation-free alias is root-refreshable, while the relation-bearing mode owner remains event-only"
     );
     assert_eq!(
-        solve.discrete.runtime_assignment_targets,
+        solve.discrete().runtime_assignment_targets,
         [
             rumoca_ir_solve::scalar_slot_p(1),
             rumoca_ir_solve::scalar_slot_p(2),
@@ -797,5 +801,5 @@ fn multiply_owned_relation_fails_closed_without_an_arbitrary_root_target() {
 
     let solve = lower_solve_problem(&model).expect("duplicate exact relation owners lower");
 
-    assert_eq!(solve.events.root_relation_memory_targets, [None]);
+    assert_eq!(solve.events().root_relation_memory_targets, [None]);
 }

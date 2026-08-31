@@ -210,15 +210,20 @@ fn sampled_owner_reads_its_own_tick_output_from_the_left_limit() {
 
     assert!(
         solve
-            .discrete
+            .discrete()
             .pre_modes
             .contains(&rumoca_ir_solve::DiscreteEventPreMode::EventEntry),
         "the sampled row must request the event-entry snapshot"
     );
     assert!(
-        solve.discrete.rhs.programs().iter().all(|program| !program
+        solve
+            .discrete()
+            .rhs
+            .programs()
             .iter()
-            .any(|op| matches!(op, LinearOp::LoadY { .. }))),
+            .all(|program| !program
+                .iter()
+                .any(|op| matches!(op, LinearOp::LoadY { .. }))),
         "the sampled source must load its hidden left-limit P lane, not live Y"
     );
 }
@@ -238,10 +243,10 @@ fn clocked_row_sampling_across_a_state_stays_accepted() {
     ))
     .expect("a sampled plant output separated by a state stays expressible");
 
-    assert_eq!(solve.clocks.periodic_event_schedules.len(), 1);
+    assert_eq!(solve.clocks().periodic_event_schedules.len(), 1);
     assert!(
         solve
-            .discrete
+            .discrete()
             .clock_owners
             .iter()
             .all(|owner| owner.is_some()),
@@ -275,7 +280,7 @@ fn ordinary_periodic_feedback_across_state_stays_accepted() {
     ))
     .expect("integration breaks the same-instant dependency path");
 
-    assert_eq!(solve.clocks.periodic_event_schedules.len(), 1);
+    assert_eq!(solve.clocks().periodic_event_schedules.len(), 1);
 }
 
 /// A clocked row reading a continuous-time value no clock writes is untouched
@@ -345,10 +350,10 @@ fn clocked_row_sampling_an_independent_continuous_value_stays_accepted() {
 
     let solve = lower_solve_problem(&model).expect("an independent sample stays expressible");
 
-    assert_eq!(solve.discrete.clock_owners.len(), 1);
-    assert!(solve.discrete.clock_owners[0].is_some());
+    assert_eq!(solve.discrete().clock_owners.len(), 1);
+    assert!(solve.discrete().clock_owners[0].is_some());
     assert_eq!(
-        solve.discrete.integrator_history_effects,
+        solve.discrete().integrator_history_effects,
         [rumoca_ir_solve::IntegratorHistoryEffect::Preserve],
         "a sampled observation that cannot reach the continuous carrier preserves history"
     );

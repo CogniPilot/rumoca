@@ -53,25 +53,24 @@ fn discrete_initial_value_becomes_an_initialization_update_of_the_coordinate_and
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    solve
-        .validate()
+    reseal_solve_problem(&solve)
         .expect("the initialization update satisfies the Solve shape contract");
     let ScalarSlot::P { index, .. } = solve
-        .layout
+        .layout()
         .binding("count")
         .expect("a discrete coordinate keeps parameter storage")
     else {
         panic!("a discrete coordinate occupies P storage");
     };
-    let [current, pre] = solve.initialization.update_targets.as_slice() else {
+    let [current, pre] = solve.initialization().update_targets.as_slice() else {
         panic!(
             "one current and one pre update target expected, got {:?}",
-            solve.initialization.update_targets
+            solve.initialization().update_targets
         );
     };
     assert_eq!(*current, rumoca_ir_solve::scalar_slot_p(index));
     let pre_index = solve
-        .solve_layout
+        .solve_layout()
         .pre_param_bindings
         .iter()
         .find(|binding| {
@@ -84,7 +83,7 @@ fn discrete_initial_value_becomes_an_initialization_update_of_the_coordinate_and
         .dest_p_index;
     assert_eq!(*pre, rumoca_ir_solve::scalar_slot_p(pre_index));
     assert_eq!(
-        solve.initialization.update_rhs.len(),
+        solve.initialization().update_rhs.len(),
         2,
         "each update target has its own row"
     );

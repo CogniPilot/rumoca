@@ -35,12 +35,12 @@ fn discrete_valued_input_is_external_and_excluded_from_event_iteration() {
 
     let solve = lower_solve_problem(&model).unwrap();
     assert_eq!(
-        solve.solve_layout.variable_storage_runs[0].role,
+        solve.solve_layout().variable_storage_runs[0].role,
         rumoca_ir_solve::SolveVariableStorageRole::ExternalInput
     );
-    assert_eq!(solve.solve_layout.input_scalar_names, ["m"]);
-    assert!(solve.solve_layout.discrete_valued_scalar_names.is_empty());
-    assert!(solve.discrete.event_iteration_plan.runs.is_empty());
+    assert_eq!(solve.solve_layout().input_scalar_names, ["m"]);
+    assert!(solve.solve_layout().discrete_valued_scalar_names.is_empty());
+    assert!(solve.discrete().event_iteration_plan.runs.is_empty());
 }
 
 #[test]
@@ -84,12 +84,12 @@ fn unconditional_discrete_real_definition_does_not_require_a_clock() {
 
     let solve = lower_solve_problem(&model).unwrap();
     assert_eq!(
-        solve.discrete.row_roles,
+        solve.discrete().row_roles,
         [rumoca_ir_solve::DiscreteRowRole::Equation]
     );
-    assert_eq!(solve.discrete.clock_owners, [None]);
+    assert_eq!(solve.discrete().clock_owners, [None]);
     assert_eq!(
-        solve.discrete.integrator_history_effects,
+        solve.discrete().integrator_history_effects,
         [rumoca_ir_solve::IntegratorHistoryEffect::Preserve]
     );
 }
@@ -173,10 +173,16 @@ fn coupled_discrete_real_row_is_oriented_by_the_coordinate_left_undefined() {
     let model = discrete_real_pair_model(source, 1, true);
 
     let solve = lower_solve_problem(&model).unwrap();
-    let first = solve.layout.binding("a").expect("`a` owns a runtime slot");
-    let second = solve.layout.binding("b").expect("`b` owns a runtime slot");
+    let first = solve
+        .layout()
+        .binding("a")
+        .expect("`a` owns a runtime slot");
+    let second = solve
+        .layout()
+        .binding("b")
+        .expect("`b` owns a runtime slot");
     assert_ne!(first, second);
-    assert_eq!(solve.discrete.update_targets, [first, second]);
+    assert_eq!(solve.discrete().update_targets, [first, second]);
 }
 
 /// Two identical connection rows leave both coordinates undefined, so neither
@@ -300,7 +306,7 @@ fn structured_b1c_owner_lowers_to_one_compact_map_without_scalar_rows() {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
-                        id: 0,
+                        id: rumoca_core::StructuredIndexBinderId::new(0),
                         display_name: "i".to_string(),
                         lower: 1,
                         upper: 2,
@@ -333,23 +339,23 @@ fn structured_b1c_owner_lowers_to_one_compact_map_without_scalar_rows() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    assert!(solve.discrete.rhs.is_empty());
-    assert_eq!(solve.discrete.structured_rhs.nodes.len(), 1);
-    assert_eq!(solve.discrete.structured_updates.len(), 1);
+    assert!(solve.discrete().rhs.is_empty());
+    assert_eq!(solve.discrete().structured_rhs.nodes.len(), 1);
+    assert_eq!(solve.discrete().structured_updates.len(), 1);
     assert_eq!(
-        solve.discrete.structured_updates[0].integrator_history_effect,
+        solve.discrete().structured_updates[0].integrator_history_effect,
         rumoca_ir_solve::IntegratorHistoryEffect::Preserve
     );
     assert!(matches!(
-        solve.discrete.structured_rhs.nodes.first(),
+        solve.discrete().structured_rhs.nodes.first(),
         Some(ComputeNode::Map { .. })
     ));
     assert_eq!(
-        solve.discrete.structured_assignments(0).unwrap(),
+        solve.discrete().structured_assignments(0).unwrap(),
         vec![
             (rumoca_ir_solve::scalar_slot_p(0), 0),
             (rumoca_ir_solve::scalar_slot_p(1), 1),
         ]
     );
-    solve.validate_shape_contract().unwrap();
+    reseal_solve_problem(&solve).unwrap();
 }

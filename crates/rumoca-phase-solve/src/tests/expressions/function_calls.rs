@@ -87,7 +87,8 @@ fn demanded_function_call_issues_one_typed_owner() {
     assert_eq!(owner.outputs().len(), 1);
     assert!(owner.body().operations().len() >= 5);
 
-    let [ComputeNode::ScalarPrograms(rows)] = package.problem.continuous.residual.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] =
+        package.problem.continuous().residual.nodes.as_slice()
     else {
         panic!("one scalar residual block expected");
     };
@@ -165,7 +166,7 @@ fn clocked_function_call_projects_issued_typed_owner_without_body_inlining() {
 
     let package = lower_solve_package(&model).unwrap();
     assert_eq!(package.pure_calls.owners().len(), 1);
-    let [row] = package.problem.discrete.rhs.programs() else {
+    let [row] = package.problem.discrete().rhs.programs() else {
         panic!("one clocked discrete row expected");
     };
     assert_eq!(
@@ -303,7 +304,7 @@ fn function_conditional_captures_preceding_definition_once_per_call_frame() {
 
     let package = lower_solve_package(&model).unwrap();
     let solve = &package.problem;
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     let sites = rows
@@ -476,7 +477,7 @@ fn function_conditional_captures_tensor_definition_as_one_semantic_range() {
 
     let package = lower_solve_package(&model).unwrap();
     let solve = &package.problem;
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one tensor residual block expected");
     };
     let site = rows.programs()[0]
@@ -646,7 +647,7 @@ fn aggregate_conditional_expression_retains_one_lazy_tensor_result_range() {
 
     let package = lower_solve_package(&model).unwrap();
     let solve = &package.problem;
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one tensor residual block expected");
     };
     let site = rows.programs()[0]
@@ -713,11 +714,11 @@ fn aggregate_conditional_expression_retains_one_lazy_tensor_result_range() {
         eval_residual_rows_with_pure_calls(rows, &package.pure_calls, &[0.0; 3], &[1.0, 2.0, 3.0]),
         [-1.0, -2.0, -3.0]
     );
-    assert_eq!(solve.events.root_conditions.len(), 1);
+    assert_eq!(solve.events().root_conditions.len(), 1);
     let mut root = [0.0];
-    let parameters = vec![0.0; solve.layout.p_scalars()];
+    let parameters = vec![0.0; solve.layout().p_scalars()];
     rumoca_eval_solve::eval_scalar_program_block_with_context(
-        &solve.events.root_conditions,
+        &solve.events().root_conditions,
         &[0.0; 3],
         &parameters,
         0.0,
@@ -734,7 +735,7 @@ fn aggregate_conditional_expression_retains_one_lazy_tensor_result_range() {
         "an assertion hoisted from an inactive tensor arm retains that arm's guard"
     );
     rumoca_eval_solve::eval_scalar_program_block_with_context(
-        &solve.events.root_conditions,
+        &solve.events().root_conditions,
         &[0.0; 3],
         &parameters,
         2.0,
@@ -756,13 +757,13 @@ fn aggregate_conditional_expression_retains_one_lazy_tensor_result_range() {
 fn call_scoped_assertion_constructs_guarded_root_and_action_rows() {
     let package = function_assertion_solve(true, -1.0, false, false);
     let solve = &package.problem;
-    assert_eq!(solve.events.root_conditions.len(), 1);
-    assert_eq!(solve.events.actions.len(), 1);
+    assert_eq!(solve.events().root_conditions.len(), 1);
+    assert_eq!(solve.events().actions.len(), 1);
     let mut root = [0.0];
     rumoca_eval_solve::eval_scalar_program_block_with_context(
-        &solve.events.root_conditions,
+        &solve.events().root_conditions,
         &[0.0],
-        &vec![0.0; solve.layout.p_scalars()],
+        &vec![0.0; solve.layout().p_scalars()],
         0.0,
         rumoca_eval_solve::RowEvalContext {
             pure_calls: Some(&package.pure_calls),
@@ -773,9 +774,9 @@ fn call_scoped_assertion_constructs_guarded_root_and_action_rows() {
     .unwrap();
     assert_eq!(root, [1.0], "an active failing assertion is above zero");
     let request = rumoca_eval_solve::eval_event_action_request(
-        &solve.events,
+        &solve.events(),
         &[0.0],
-        &vec![0.0; solve.layout.p_scalars()],
+        &vec![0.0; solve.layout().p_scalars()],
         0.0,
         rumoca_eval_solve::RowEvalContext {
             pure_calls: Some(&package.pure_calls),
@@ -794,20 +795,20 @@ fn call_scoped_assertion_constructs_guarded_root_and_action_rows() {
 fn one_typed_call_owns_all_assertion_root_and_action_outputs() {
     let package = function_two_assertions_solve();
     let solve = &package.problem;
-    assert_eq!(solve.events.root_conditions.programs().len(), 1);
-    assert_eq!(solve.events.root_conditions.output_indices().len(), 2);
-    assert_eq!(solve.events.action_conditions.programs().len(), 1);
-    assert_eq!(solve.events.action_conditions.output_indices().len(), 2);
-    assert_eq!(solve.events.actions.len(), 2);
+    assert_eq!(solve.events().root_conditions.programs().len(), 1);
+    assert_eq!(solve.events().root_conditions.output_indices().len(), 2);
+    assert_eq!(solve.events().action_conditions.programs().len(), 1);
+    assert_eq!(solve.events().action_conditions.output_indices().len(), 2);
+    assert_eq!(solve.events().actions.len(), 2);
     assert_eq!(
-        solve.events.root_conditions.programs()[0]
+        solve.events().root_conditions.programs()[0]
             .iter()
             .filter(|operation| matches!(operation, LinearOp::PureCall { .. }))
             .count(),
         1
     );
     assert_eq!(
-        solve.events.action_conditions.programs()[0]
+        solve.events().action_conditions.programs()[0]
             .iter()
             .filter(|operation| matches!(operation, LinearOp::PureCall { .. }))
             .count(),
@@ -815,9 +816,9 @@ fn one_typed_call_owns_all_assertion_root_and_action_outputs() {
     );
     let mut roots = [0.0; 2];
     rumoca_eval_solve::eval_scalar_program_block_with_context(
-        &solve.events.root_conditions,
+        &solve.events().root_conditions,
         &[0.0],
-        &vec![0.0; solve.layout.p_scalars()],
+        &vec![0.0; solve.layout().p_scalars()],
         0.0,
         rumoca_eval_solve::RowEvalContext {
             pure_calls: Some(&package.pure_calls),
@@ -834,11 +835,11 @@ fn inactive_conditional_call_cannot_fire_its_function_assertion() {
     let package = function_assertion_solve(false, -1.0, false, false);
     let solve = &package.problem;
     assert!(
-        solve.events.root_conditions.is_empty(),
+        solve.events().root_conditions.is_empty(),
         "a statically unreachable call must not construct an event root"
     );
     assert!(
-        solve.events.actions.is_empty(),
+        solve.events().actions.is_empty(),
         "a statically unreachable call must not construct an action"
     );
 }
@@ -941,16 +942,16 @@ fn function_two_assertions_solve() -> crate::LoweredSolvePackage {
 fn shared_call_in_branch_condition_and_value_has_one_assertion_schedule() {
     let package = function_assertion_solve(true, 1.0, true, false);
     let solve = &package.problem;
-    assert_eq!(solve.events.root_conditions.len(), 1);
-    assert_eq!(solve.events.actions.len(), 1);
+    assert_eq!(solve.events().root_conditions.len(), 1);
+    assert_eq!(solve.events().actions.len(), 1);
 }
 
 #[test]
 fn nested_call_assertion_resolves_actual_argument_in_the_caller_frame() {
     let package = function_assertion_solve(true, 1.0, false, true);
     let solve = &package.problem;
-    assert_eq!(solve.events.root_conditions.len(), 1);
-    assert_eq!(solve.events.actions.len(), 1);
+    assert_eq!(solve.events().root_conditions.len(), 1);
+    assert_eq!(solve.events().actions.len(), 1);
 }
 
 fn construct_asserting_identity<'dae>(

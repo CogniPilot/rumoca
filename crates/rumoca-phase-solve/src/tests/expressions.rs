@@ -63,6 +63,7 @@ fn pure_call_ad_invokes_one_checked_directional_owner() {
     let arithmetic = rumoca_ir_solve::SolveArithmeticProfile::construct(
         rumoca_ir_solve::SolveRealFormat::Binary64,
         rumoca_ir_solve::SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
+        rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct,
     );
     let real =
         rumoca_ir_solve::SolveValueType::scalar(rumoca_ir_solve::SolveScalarType::real(arithmetic));
@@ -180,21 +181,21 @@ fn function_conditional_ad_keeps_primal_predicate_and_dual_result_tuple() {
         })
         .expect("derived row keeps one conditional owner");
 
-    assert_eq!(program.capture_count, 2);
-    assert_eq!(program.target_widths.as_ref(), &[2]);
-    assert_eq!(program.result_count, 2);
+    assert_eq!(program.capture_count(), 2);
+    assert_eq!(program.target_widths(), &[2]);
+    assert_eq!(program.result_count(), 2);
     assert_eq!(
-        rumoca_ir_solve::ScalarProgramBlock::program_output_count(&program.arms[0].condition),
+        rumoca_ir_solve::ScalarProgramBlock::program_output_count(program.arms()[0].condition(),),
         1,
         "branch selection is primal-only"
     );
     assert_eq!(
-        rumoca_ir_solve::ScalarProgramBlock::program_output_count(&program.arms[0].result),
+        rumoca_ir_solve::ScalarProgramBlock::program_output_count(program.arms()[0].result()),
         2,
         "selected result retains interleaved primal/derivative lanes"
     );
     assert_eq!(
-        rumoca_ir_solve::ScalarProgramBlock::program_output_count(&program.fallback),
+        rumoca_ir_solve::ScalarProgramBlock::program_output_count(program.fallback()),
         2
     );
 }
@@ -262,10 +263,10 @@ fn function_conditional_ad_preserves_one_interleaved_capture_range() {
         })
         .expect("derived row keeps one conditional owner");
 
-    assert_eq!(program.capture_count, 4);
-    assert_eq!(program.target_widths.as_ref(), &[4]);
+    assert_eq!(program.capture_count(), 4);
+    assert_eq!(program.target_widths(), &[4]);
     assert!(matches!(
-        program.arms[0].result[0],
+        program.arms()[0].result()[0],
         LinearOp::LoadFunctionConditionalCaptureRange {
             dst_start: 0,
             index_start: 0,
@@ -353,9 +354,9 @@ fn function_conditional_ad_retains_tensor_division_as_one_dual_range() {
         })
         .expect("derived row keeps one conditional owner");
 
-    assert_eq!(program.capture_count, 8);
-    assert_eq!(program.target_widths.as_ref(), &[6]);
-    assert!(program.arms[0].result.iter().any(|operation| matches!(
+    assert_eq!(program.capture_count(), 8);
+    assert_eq!(program.target_widths(), &[6]);
+    assert!(program.arms()[0].result().iter().any(|operation| matches!(
         operation,
         LinearOp::TensorBinary {
             op: rumoca_ir_solve::BinaryOp::Div,
@@ -367,7 +368,7 @@ fn function_conditional_ad_retains_tensor_division_as_one_dual_range() {
         }
     )));
     assert!(matches!(
-        program.arms[0].result.last(),
+        program.arms()[0].result().last(),
         Some(LinearOp::StoreOutputRange {
             count: 6,
             stride: 1,
@@ -453,7 +454,7 @@ fn cubic_power_lowers_to_multiplication_chain() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     let operations = &rows.programs()[0];
@@ -523,7 +524,7 @@ fn integer_builtin_lowers_to_floor_without_conflating_division_semantics() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     assert!(rows.programs()[0].iter().any(|operation| matches!(
@@ -584,10 +585,9 @@ fn promoted_concatenation_selects_each_operand_scalar_in_result_order() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    solve
-        .validate()
+    reseal_solve_problem(&solve)
         .expect("constructor-certified concatenation produces valid Solve rows");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     assert_eq!(rows.row_count(), 1);
@@ -639,7 +639,7 @@ fn identity_derives_diagonal_constants_without_materializing_dae_scalars() {
         "identity remains one compact expression"
     );
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected")
     };
     assert_eq!(rows.row_count(), 1);
@@ -708,7 +708,7 @@ fn vector_lowers_each_result_scalar_directly_from_its_compact_operand() {
         "vector remains one compact DAE node"
     );
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected")
     };
     assert_eq!(rows.row_count(), 1);
@@ -771,7 +771,7 @@ fn transpose_lowers_rank_three_rows_through_the_exact_operand_permutation() {
 
     assert_eq!(model.inspect(|view| view.expression_count()), 4);
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected")
     };
     let expected = [0, 1, 6, 7, 2, 3, 8, 9, 4, 5, 10, 11];
@@ -830,7 +830,7 @@ fn skew_lowers_each_matrix_scalar_from_one_compact_parameter_vector() {
         "skew remains one compact DAE node"
     );
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected")
     };
     let expected = [
@@ -912,7 +912,7 @@ fn cross_lowers_to_one_checked_tensor_owner() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one tensor residual block expected");
     };
     assert_eq!(rows.row_count(), 1);
@@ -1011,10 +1011,9 @@ fn static_quotient_family_lowers_to_computable_solve_operations() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    solve
-        .validate()
+    reseal_solve_problem(&solve)
         .expect("constructor-certified quotients produce computable Solve IR");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     assert_static_quotient_program(&rows.programs()[0]);

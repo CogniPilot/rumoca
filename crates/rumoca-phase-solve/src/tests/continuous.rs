@@ -43,7 +43,7 @@ fn causal_event_held_algebraic_owns_typed_solve_time_domain() {
 
     let solve = lower_solve_problem(&model).unwrap();
     assert_eq!(
-        solve.solve_layout.variable_declarations[0].time_domain(),
+        solve.solve_layout().variable_declarations[0].time_domain(),
         rumoca_ir_solve::SolveVariableTimeDomain::EventDiscontinuous
     );
 }
@@ -88,15 +88,14 @@ fn explicit_state_equation_lowers_to_derivative_program() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    assert_eq!(solve.solve_layout.state_scalar_count(), 1);
-    assert!(solve.continuous.residual.nodes.is_empty());
-    assert!(solve.continuous.implicit_rhs.nodes.is_empty());
-    assert!(solve.continuous.implicit_row_targets.is_empty());
-    assert!(solve.continuous.algebraic_projection_plan.is_empty());
-    solve
-        .validate()
+    assert_eq!(solve.solve_layout().state_scalar_count(), 1);
+    assert!(solve.continuous().residual.nodes.is_empty());
+    assert!(solve.continuous().implicit_rhs.nodes.is_empty());
+    assert!(solve.continuous().implicit_row_targets.is_empty());
+    assert!(solve.continuous().algebraic_projection_plan.is_empty());
+    reseal_solve_problem(&solve)
         .expect("lowered explicit state system satisfies the Solve shape contract");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs.nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };
@@ -116,7 +115,95 @@ fn explicit_state_equation_lowers_to_derivative_program() {
 }
 
 #[test]
-fn explicit_array_state_equation_lowers_to_one_multi_output_program() {
+fn complete_solve_model_owns_exact_state_and_static_template_values() {
+    let source = TestSource::new(
+        "Real x(start=-0.0); parameter Real gain=2.5; constant Real bias=7.0; der(x)=0.0;",
+    );
+    let state_at = source.at(0, 18);
+    let parameter_at = source.at(20, 42);
+    let constant_at = source.at(44, 66);
+    let equation_at = source.at(68, 80);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                state_at,
+            )
+        })?;
+        let (state_start, gain_binding, bias_binding) = model.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(state_at)
+                    .literal(dae::DaeLiteral::Real(-0.0))?,
+                expressions
+                    .at(parameter_at)
+                    .literal(dae::DaeLiteral::Real(2.5))?,
+                expressions
+                    .at(constant_at)
+                    .literal(dae::DaeLiteral::Real(7.0))?,
+            ))
+        })?;
+        let state = model.variables(|variables| {
+            let state = variables.state(
+                VarName::new("x"),
+                real,
+                state_at,
+                dae::VariableAttributes {
+                    start: Some(state_start),
+                    ..dae::VariableAttributes::default()
+                },
+            )?;
+            variables.parameter(
+                VarName::new("gain"),
+                real,
+                parameter_at,
+                dae::VariableAttributes {
+                    binding: Some(gain_binding),
+                    ..dae::VariableAttributes::default()
+                },
+            )?;
+            variables.constant(
+                VarName::new("bias"),
+                real,
+                constant_at,
+                dae::VariableAttributes {
+                    binding: Some(bias_binding),
+                    ..dae::VariableAttributes::default()
+                },
+            )?;
+            Ok(state)
+        })?;
+        let residual = model.expressions(|expressions| {
+            let derivative = expressions
+                .at(equation_at)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let zero = expressions
+                .at(equation_at)
+                .literal(dae::DaeLiteral::Real(0.0))?;
+            expressions
+                .at(equation_at)
+                .binary(dae::BinaryOperator::Subtract, derivative, zero)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(equation_at, residual))
+    })
+    .unwrap();
+
+    let model = crate::lower_solve_model(&model, &std::collections::HashMap::new(), |_| {})
+        .expect("complete Solve model lowers")
+        .into_model();
+
+    assert_eq!(model.state_names(), ["x"]);
+    assert_eq!(
+        model.initial_state_values()[0].to_bits(),
+        (-0.0_f64).to_bits()
+    );
+    assert_eq!(model.static_parameter_names(), ["gain", "bias"]);
+    assert_eq!(model.static_parameter_values(), [2.5, 7.0]);
+}
+
+#[test]
+fn explicit_array_state_equation_rejects_uncontracted_numeric_reduction_at_call() {
     let source = TestSource::new("function f Real u[3]; Real y[3]; Real x[3]; der(x) = f(x);");
     let function_at = source.at(0, 34);
     let declaration = source.at(35, 45);
@@ -178,14 +265,14 @@ fn explicit_array_state_equation_lowers_to_one_multi_output_program() {
     })
     .unwrap();
 
-    let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
-    else {
-        panic!("one scalar derivative block expected");
-    };
-    assert_eq!(rows.row_count(), 1);
-    assert_eq!(rows.stored_output_count(), 3);
-    assert_eq!(rows.output_indices(), [0, 1, 2]);
+    let error = lower_solve_problem(&model)
+        .expect_err("numeric reductions have no provisional typed execution semantics");
+    assert!(matches!(
+        error,
+        LowerError::ContractViolation { reason, span }
+            if reason == "typed reduction has no construction-issued arithmetic contract"
+                && span == owner.span()
+    ));
 }
 
 #[test]
@@ -308,7 +395,7 @@ fn exact_aggregate_call_projections_share_one_multi_output_program() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     assert_eq!(rows.row_count(), 2);
@@ -335,7 +422,7 @@ fn nested_comprehension_binders_lower_through_lexical_domain_scopes() {
     let inner_range = source.at(43, 46);
     let singleton_domain = |name: &str, upper| StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: name.to_string(),
             lower: 1,
             upper,
@@ -385,9 +472,9 @@ fn nested_comprehension_binders_lower_through_lexical_domain_scopes() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    assert_eq!(solve.solve_layout.algebraic_scalar_count(), 6);
-    assert_eq!(solve.continuous.residual.len().unwrap(), 6);
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    assert_eq!(solve.solve_layout().algebraic_scalar_count(), 6);
+    assert_eq!(solve.continuous().residual.len().unwrap(), 6);
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one compact multi-output residual block expected");
     };
     assert_eq!(rows.row_count(), 1);
@@ -475,7 +562,7 @@ fn square_matrix_state_equation_lowers_to_one_checked_linear_solve() {
             span,
             ..
         },
-    ] = solve.continuous.derivative_rhs.nodes.as_slice()
+    ] = solve.continuous().derivative_rhs.nodes.as_slice()
     else {
         panic!("one checked linear-solve node expected");
     };
@@ -514,7 +601,7 @@ fn square_matrix_state_equation_lowers_to_one_checked_linear_solve() {
         "the checked linear solve consumes two compact tensor loads without scalar Move repacking"
     );
 
-    let rows = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.derivative_rhs)
+    let rows = rumoca_eval_solve::to_scalar_program_block(&solve.continuous().derivative_rhs)
         .expect("checked linear solve has a scalar execution view");
     let mut derivative = [0.0; 2];
     rumoca_eval_solve::eval_scalar_program_block(
@@ -584,14 +671,14 @@ fn algebraic_residual_uses_checked_y_and_p_layouts() {
 
     let solve = lower_solve_problem(&model).unwrap();
     assert!(matches!(
-        solve.layout.binding("y"),
+        solve.layout().binding("y"),
         Some(ScalarSlot::Y { index: 0, .. })
     ));
     assert!(matches!(
-        solve.layout.binding("p"),
+        solve.layout().binding("p"),
         Some(ScalarSlot::P { index: 0, .. })
     ));
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     assert_eq!(rows.output_indices(), [0]);
@@ -605,24 +692,24 @@ fn algebraic_residual_uses_checked_y_and_p_layouts() {
             .iter()
             .any(|op| matches!(op, LinearOp::LoadP { index: 0, .. }))
     );
-    let [ComputeNode::ScalarPrograms(implicit)] = solve.continuous.implicit_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(implicit)] = solve.continuous().implicit_rhs.nodes.as_slice()
     else {
         panic!("the matched algebraic row must be executable by the runtime");
     };
     assert_eq!(implicit.output_indices(), [0]);
     assert_eq!(
-        solve.continuous.implicit_row_targets,
+        solve.continuous().implicit_row_targets,
         [Some(ScalarSlot::Y {
             index: 0,
             byte_offset: 0,
         })]
     );
     assert_eq!(
-        solve.continuous.algebraic_projection_plan.blocks[0].rows,
+        solve.continuous().algebraic_projection_plan.blocks[0].rows,
         [0]
     );
     assert_eq!(
-        solve.continuous.algebraic_projection_plan.blocks[0].y_indices,
+        solve.continuous().algebraic_projection_plan.blocks[0].y_indices,
         [0]
     );
 }
@@ -689,28 +776,27 @@ fn algebraic_projection_keeps_equation_rows_distinct_from_y_indices() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(implicit)] = solve.continuous.implicit_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(implicit)] = solve.continuous().implicit_rhs.nodes.as_slice()
     else {
         panic!("the algebraic equation must remain executable");
     };
     assert_eq!(implicit.output_indices(), [0]);
     assert_eq!(
-        solve.continuous.implicit_row_targets,
+        solve.continuous().implicit_row_targets,
         [Some(ScalarSlot::Y {
             index: 1,
             byte_offset: 8,
         })]
     );
     assert_eq!(
-        solve.continuous.algebraic_projection_plan.blocks[0].rows,
+        solve.continuous().algebraic_projection_plan.blocks[0].rows,
         [0]
     );
     assert_eq!(
-        solve.continuous.algebraic_projection_plan.blocks[0].y_indices,
+        solve.continuous().algebraic_projection_plan.blocks[0].y_indices,
         [1]
     );
-    solve
-        .validate()
+    reseal_solve_problem(&solve)
         .expect("projection row ordinals need not equal their assigned Y indices");
 }
 

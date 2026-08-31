@@ -45,11 +45,11 @@ fn ordinary_pre_discrete_value_is_fixed_within_one_whole_event_pass() {
 
     let solve = lower_solve_problem(&model).unwrap();
     assert!(matches!(
-        solve.layout.binding("count"),
+        solve.layout().binding("count"),
         Some(ScalarSlot::P { index: 0, .. })
     ));
-    assert_eq!(solve.solve_layout.compiled_parameter_len, 2);
-    let [binding] = solve.solve_layout.pre_param_bindings.as_slice() else {
+    assert_eq!(solve.solve_layout().compiled_parameter_len, 2);
+    let [binding] = solve.solve_layout().pre_param_bindings.as_slice() else {
         panic!("one exact pre-history binding expected");
     };
     assert_eq!(binding.dest_p_index, 1);
@@ -59,11 +59,11 @@ fn ordinary_pre_discrete_value_is_fixed_within_one_whole_event_pass() {
     ));
     assert!(binding.clock_schedule.is_none());
     assert_eq!(
-        solve.discrete.pre_modes,
+        solve.discrete().pre_modes,
         [rumoca_ir_solve::DiscreteEventPreMode::Fixed]
     );
     assert!(
-        solve.discrete.rhs.programs()[0]
+        solve.discrete().rhs.programs()[0]
             .iter()
             .any(|operation| matches!(operation, LinearOp::LoadP { index: 1, .. }))
     );
@@ -132,7 +132,7 @@ fn previous_loads_history_owned_by_its_exact_clock_schedule() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ordinary_pre, previous] = solve.solve_layout.pre_param_bindings.as_slice() else {
+    let [ordinary_pre, previous] = solve.solve_layout().pre_param_bindings.as_slice() else {
         panic!("ordinary pre and clock-owned previous history bindings expected");
     };
     assert!(ordinary_pre.clock_schedule.is_none());
@@ -145,7 +145,7 @@ fn previous_loads_history_owned_by_its_exact_clock_schedule() {
         lattice
     );
     assert!(
-        solve.discrete.guarded_assignments[0]
+        solve.discrete().guarded_assignments[0]
             .program()
             .iter()
             .any(|operation| matches!(operation, LinearOp::LoadP { index: 2, .. }))
@@ -217,10 +217,8 @@ fn delay_lowers_to_runtime_history_programs_and_a_typed_value_slot() {
     });
 
     let solve = lower_solve_problem(&model).unwrap();
-    solve
-        .validate()
-        .expect("delay lowering produces a computable Solve problem");
-    let delays = &solve.events.delays;
+    reseal_solve_problem(&solve).expect("delay lowering produces a computable Solve problem");
+    let delays = &solve.events().delays;
     assert_eq!(delays.value_parameter_indices.len(), 1);
     assert_eq!(delays.source_is_discrete, [false]);
     let delay_slot = delays.value_parameter_indices[0];
@@ -236,7 +234,7 @@ fn delay_lowers_to_runtime_history_programs_and_a_typed_value_slot() {
         delays.delay_max_rhs.programs()[0][0],
         LinearOp::Const { value: 0.5, .. }
     ));
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs.nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };

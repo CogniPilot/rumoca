@@ -83,7 +83,7 @@ fn builtin_valued_affine_coefficient_keeps_its_runtime_parameter_slot() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs.nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };
@@ -206,7 +206,7 @@ fn structural_inductor_model(guard_is_tunable: bool, guard_value: bool) -> dae::
 #[test]
 fn translation_time_guard_selects_its_affine_derivative_branch() {
     let solve = lower_solve_problem(&structural_inductor_model(false, false)).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs.nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };
@@ -354,13 +354,11 @@ fn derivative_alias_model(read_from_discrete: bool) -> dae::Dae {
 fn algebraic_row_reads_a_derivative_through_its_defining_equation() {
     let model = derivative_alias_model(false);
     let solve = lower_solve_problem(&model).unwrap();
-    solve
-        .validate()
-        .expect("the derivative alias satisfies the Solve shape contract");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    reseal_solve_problem(&solve).expect("the derivative alias satisfies the Solve shape contract");
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!(
             "one algebraic residual block expected, got {:?}",
-            solve.continuous.residual.nodes
+            solve.continuous().residual.nodes
         );
     };
     let program = &rows.programs()[0];
@@ -464,7 +462,7 @@ fn affine_state_equation_preserves_its_runtime_parameter_coefficient() {
     let model = scaled_state_model(source, 2.0);
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs.nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };

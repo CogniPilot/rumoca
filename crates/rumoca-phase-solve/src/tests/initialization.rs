@@ -134,10 +134,10 @@ fn scalar_initial_coordinate_reads_the_existing_runtime_flag() {
 
     let solve = lower_solve_problem(&model).unwrap();
     let flag = solve
-        .solve_layout
+        .solve_layout()
         .initial_event_parameter_index
         .expect("the initial condition reserves its established runtime flag");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     let program = &rows.programs()[0];
@@ -155,11 +155,11 @@ fn scalar_initial_coordinate_reads_the_existing_runtime_flag() {
 
 fn assert_grouped_initial_b1b(solve: &rumoca_ir_solve::SolveProblem) {
     let flag = solve
-        .solve_layout
+        .solve_layout()
         .initial_event_parameter_index
         .expect("initial() owns one checked runtime flag");
     let guarded = solve
-        .discrete
+        .discrete()
         .guarded_assignments
         .iter()
         .filter(|program| program.role() == rumoca_ir_solve::DiscreteRowRole::Equation)
@@ -175,7 +175,7 @@ fn assert_grouped_initial_b1b(solve: &rumoca_ir_solve::SolveProblem) {
             _ => None,
         })
         .expect("the initial B.1b branches retain one compact owner");
-    assert_eq!(conditional.arms.len(), 2);
+    assert_eq!(conditional.arms().len(), 2);
     assert!(
         guarded
             .program()
@@ -185,9 +185,9 @@ fn assert_grouped_initial_b1b(solve: &rumoca_ir_solve::SolveProblem) {
     );
     assert!(
         conditional
-            .arms
+            .arms()
             .iter()
-            .flat_map(|arm| arm.condition.iter())
+            .flat_map(|arm| arm.condition().iter())
             .any(|operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == flag))
     );
 }
@@ -255,10 +255,10 @@ fn homotopy_owns_a_dedicated_continuation_parameter() {
     });
     let solve = lower_solve_problem(&model).unwrap();
     let lambda = solve
-        .solve_layout
+        .solve_layout()
         .initial_homotopy_parameter_index
         .expect("homotopy owns one checked continuation parameter");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs.nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };
@@ -326,26 +326,25 @@ fn fixed_false_parameter_becomes_an_initialization_projection_unknown() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    solve
-        .validate()
+    reseal_solve_problem(&solve)
         .expect("the initialization projection satisfies the Solve shape contract");
     let ScalarSlot::P { index, .. } = solve
-        .layout
+        .layout()
         .binding("q")
         .expect("the unsolved parameter keeps its parameter storage")
     else {
         panic!("a parameter occupies P storage");
     };
-    let [block] = solve.initialization.projection_plan.blocks.as_slice() else {
+    let [block] = solve.initialization().projection_plan.blocks.as_slice() else {
         panic!(
             "one initialization projection block expected, got {:?}",
-            solve.initialization.projection_plan.blocks
+            solve.initialization().projection_plan.blocks
         );
     };
     assert_eq!(block.rows, [0]);
     assert_eq!(block.unknowns, [rumoca_ir_solve::scalar_slot_p(index)]);
     assert_eq!(
-        solve.initialization.projection_unknowns,
+        solve.initialization().projection_unknowns,
         [rumoca_ir_solve::scalar_slot_p(index)]
     );
 }
@@ -424,26 +423,29 @@ fn fixed_algebraic_initial_equation_joins_the_continuous_initial_solve() {
     .expect("fixed algebraic fixture DAE is valid");
 
     let solve = lower_solve_problem(&model).expect("fixed algebraic equation is retained");
-    solve.validate().expect("lowered Solve problem is valid");
-    let q_slot = solve.layout.binding("q").expect("q has parameter storage");
+    reseal_solve_problem(&solve).expect("lowered Solve problem is valid");
+    let q_slot = solve
+        .layout()
+        .binding("q")
+        .expect("q has parameter storage");
     let ScalarSlot::P { .. } = q_slot else {
         panic!("q occupies parameter storage");
     };
-    assert_eq!(solve.initialization.projection_unknowns, [q_slot]);
-    let [block] = solve.initialization.projection_plan.blocks.as_slice() else {
+    assert_eq!(solve.initialization().projection_unknowns, [q_slot]);
+    let [block] = solve.initialization().projection_plan.blocks.as_slice() else {
         panic!("one initialization projection block expected");
     };
     assert_eq!(block.rows, [0]);
     assert_eq!(block.unknowns, [q_slot]);
     assert_eq!(
-        solve.initialization.row_roles,
+        solve.initialization().row_roles,
         [rumoca_ir_solve::InitializationRowRole::SolvedThroughAlgebraicRefresh]
     );
-    let a_slot = solve.layout.binding("a").expect("a has solver storage");
+    let a_slot = solve.layout().binding("a").expect("a has solver storage");
     let ScalarSlot::Y { index: a_index, .. } = a_slot else {
         panic!("a occupies solver storage");
     };
-    assert!(solve.initialization.residual.nodes.iter().any(|node| {
+    assert!(solve.initialization().residual.nodes.iter().any(|node| {
         matches!(node, ComputeNode::ScalarPrograms(rows) if rows.programs().iter().flatten().any(
             |operation| matches!(operation, LinearOp::LoadY { index, .. } if *index == a_index)
         ))
@@ -464,20 +466,19 @@ fn fixed_algebraic_initial_equation_joins_the_continuous_initial_solve() {
 fn a_parameter_reading_an_initialization_unknown_is_re_applied_after_the_solve() {
     let model = dependent_parameter_model();
     let solve = lower_solve_problem(&model).unwrap();
-    solve
-        .validate()
+    reseal_solve_problem(&solve)
         .expect("the dependent parameter update satisfies the Solve shape contract");
     let dependent_slot = solve
-        .layout
+        .layout()
         .binding("g")
         .expect("the dependent parameter keeps its parameter storage");
     assert_eq!(
-        solve.initialization.update_targets,
+        solve.initialization().update_targets,
         [dependent_slot],
         "the dependent binding is the only initialization update row"
     );
     let unsolved_slot = solve
-        .layout
+        .layout()
         .binding("q")
         .expect("the unsolved parameter keeps its parameter storage");
     let ScalarSlot::P {
@@ -488,7 +489,7 @@ fn a_parameter_reading_an_initialization_unknown_is_re_applied_after_the_solve()
         panic!("a parameter occupies P storage");
     };
     assert!(
-        solve.initialization.update_rhs.programs()[0]
+        solve.initialization().update_rhs.programs()[0]
             .iter()
             .any(|operation| matches!(
                 operation,
@@ -498,7 +499,7 @@ fn a_parameter_reading_an_initialization_unknown_is_re_applied_after_the_solve()
     );
     assert!(
         !solve
-            .initialization
+            .initialization()
             .projection_unknowns
             .contains(&dependent_slot),
         "the dependent parameter is assigned by its binding, not solved as an unknown"
