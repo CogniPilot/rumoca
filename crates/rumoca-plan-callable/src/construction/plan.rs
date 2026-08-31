@@ -391,11 +391,17 @@ impl CallablePlanConstruction<'_, '_> {
         if let Some(error) = self.poison {
             return Err(error);
         }
-        if let Some(span) = self.first_outstanding_span() {
-            return Err(PlanConstructionError::IncompleteCoverage { span });
-        }
+        // An abandoned linear capability is checked first because it is the
+        // cause, not the symptom: a region only claims its own source
+        // occurrence when it closes, so leaving one open also leaves that
+        // occurrence outstanding. Reporting the coverage gap first would name
+        // an arbitrary unclaimed expression instead of the region the caller
+        // actually abandoned, and would make this refusal unreachable.
         if let Some(span) = self.first_unclosed_capability_span() {
             return Err(PlanConstructionError::InvalidOperation { span });
+        }
+        if let Some(span) = self.first_outstanding_span() {
+            return Err(PlanConstructionError::IncompleteCoverage { span });
         }
         let call_occurrences = self
             .call_edges

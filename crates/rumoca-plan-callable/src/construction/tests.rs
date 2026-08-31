@@ -46,8 +46,7 @@ fn one_constant_function() -> Dae {
 ///
 /// Returns the DAE and the exact span of that conditional expression.
 fn one_conditional_function() -> (Dae, Span) {
-    const TEXT: &str =
-        "function choose input Boolean c; output Real y; algorithm y := if c then 1.0 else 2.0; end choose;";
+    const TEXT: &str = "function choose input Boolean c; output Real y; algorithm y := if c then 1.0 else 2.0; end choose;";
     let mut source_map = SourceMap::new();
     let source = source_map.add("callable-conditional.mo", TEXT);
     let span = Span::from_offsets(source, 0, 1);
@@ -86,8 +85,11 @@ fn define_conditional_choice<'function, 'dae>(
         dae.expressions(|expressions| expressions.at(at).function_parameter(parameter))?;
     let one = dae.expressions(|expressions| expressions.at(at).literal(DaeLiteral::Real(1.0)))?;
     let two = dae.expressions(|expressions| expressions.at(at).literal(DaeLiteral::Real(2.0)))?;
-    let conditional = dae
-        .expressions(|expressions| expressions.at(region_at).conditional([(condition, one)], two))?;
+    let conditional = dae.expressions(|expressions| {
+        expressions
+            .at(region_at)
+            .conditional([(condition, one)], two)
+    })?;
     let mut body = dae.functions(|functions| functions.begin(reservation, at))?;
     dae.functions(|functions| functions.assign(&mut body, output, conditional, at))?;
     dae.functions(|functions| functions.define(body, at))?;
@@ -389,9 +391,11 @@ fn construct_conditional_group(
                 &[],
             )?;
             if matches!(case, ConditionalGroupCase::Split) {
-                // Planted mutation: abandon the region capability instead of
-                // closing it, so `finish` must refuse the whole plan.
-                let _abandoned = construction.open_conditional(root, joined[0])?;
+                // Planted mutation: reopen a joined conditional as its own
+                // region. `open_conditional` refuses immediately because the
+                // expression already belongs to an atomic group, so the plan
+                // never reaches `finish`.
+                let _refused = construction.open_conditional(root, joined[0])?;
                 return Ok(());
             }
             let region = construction.open_conditional_group(root, group)?;
