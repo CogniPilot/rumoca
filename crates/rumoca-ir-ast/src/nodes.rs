@@ -1,5 +1,32 @@
 use super::*;
 
+fn deserialize_unique_stored_definition_classes<'de, D>(
+    deserializer: D,
+) -> Result<AstIndexMap<String, ClassDef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    crate::deserialize_unique_index_map(deserializer, "StoredDefinition.classes")
+}
+
+fn deserialize_unique_class_def_classes<'de, D>(
+    deserializer: D,
+) -> Result<AstIndexMap<String, ClassDef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    crate::deserialize_unique_index_map(deserializer, "ClassDef.classes")
+}
+
+fn deserialize_unique_class_def_components<'de, D>(
+    deserializer: D,
+) -> Result<AstIndexMap<String, Component>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    crate::deserialize_unique_index_map(deserializer, "ClassDef.components")
+}
+
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 
 pub struct Name {
@@ -55,6 +82,7 @@ impl Name {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 
 pub struct StoredDefinition {
+    #[serde(deserialize_with = "deserialize_unique_stored_definition_classes")]
     pub classes: AstIndexMap<String, ClassDef>,
     pub within: Option<Name>,
 }
@@ -223,7 +251,7 @@ impl Component {
             type_name: Name::default(),
             variability: Variability::Empty,
             causality: Causality::Empty,
-            connection: Connection::default(),
+            connection: Connection::Empty,
             description: Vec::new(),
             start: Expression::Empty { span: start_span },
             start_is_modification: false,
@@ -415,7 +443,6 @@ pub struct ExternalFunction {
     ///
     /// These remain syntax-preserving AST expressions so annotations such as
     /// `Library` and `Include` are not collapsed into rendered strings.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotation: Vec<Expression>,
 }
 
@@ -459,7 +486,9 @@ pub struct ClassDef {
     pub extends: Vec<Extend>,
     pub imports: Vec<Import>,
     /// Nested class definitions (functions, models, packages, etc.)
+    #[serde(deserialize_with = "deserialize_unique_class_def_classes")]
     pub classes: AstIndexMap<String, ClassDef>,
+    #[serde(deserialize_with = "deserialize_unique_class_def_components")]
     pub components: AstIndexMap<String, Component>,
     pub equations: Vec<Equation>,
     pub initial_equations: Vec<Equation>,
@@ -498,7 +527,7 @@ pub struct ClassDef {
     /// This is semantic identity, not a same-spelling heuristic. It is
     /// populated by name resolution after the containing class's extends
     /// graph is available.
-    #[serde(default)]
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
     pub redeclare_target_def_id: Option<DefId>,
     /// Constraining type for replaceable classes (MLS §7.3.2)
     /// If set, redeclarations must be subtypes of this type
@@ -696,7 +725,7 @@ fn format_subscripts(subs: &[Subscript]) -> String {
 #[derive(Clone, Serialize, Deserialize)]
 
 pub struct ComponentReference {
-    /// Whether this reference starts with a `.` (local lookup).
+    /// Whether this reference starts with `.` and therefore uses global lookup.
     pub local: bool,
     /// The parts of the reference (e.g., `a.b.c` has 3 parts).
     pub parts: Vec<ComponentRefPart>,
@@ -798,10 +827,9 @@ pub struct ForIndex {
     pub range: Expression,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 
 pub enum Equation {
-    #[default]
     Empty,
     Simple {
         lhs: Expression,
@@ -856,9 +884,8 @@ impl Equation {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TerminalType {
-    #[default]
     Empty,
     UnsignedReal,
     UnsignedInteger,
@@ -903,7 +930,6 @@ pub enum Expression {
         ///
         /// A partial application is a function value, not a call result. The
         /// parser must preserve that distinction through semantic checking.
-        #[serde(default)]
         is_partial_application: bool,
         span: Span,
     },
@@ -914,11 +940,8 @@ pub enum Expression {
     ClassModification {
         target: ComponentReference,
         modifications: Vec<Expression>,
-        #[serde(default)]
         each_flags: Vec<bool>,
-        #[serde(default)]
         final_flags: Vec<bool>,
-        #[serde(default)]
         redeclare_flags: Vec<bool>,
         span: Span,
     },
@@ -1462,10 +1485,9 @@ fn format_if_equation(
     write!(f, "end if")
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 
 pub enum Statement {
-    #[default]
     Empty,
     Assignment {
         comp: ComponentReference,
@@ -1538,15 +1560,12 @@ impl Statement {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 
 pub enum Subscript {
-    #[default]
     Empty,
     Expression(Expression),
-    Range {
-        token: Token,
-    },
+    Range { token: Token },
 }
 
 impl Subscript {
@@ -1599,10 +1618,15 @@ impl Display for Subscript {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-
+/// A connection prefix must be selected explicitly, including its absence.
+///
+/// ```compile_fail
+/// use rumoca_ir_ast::Connection;
+///
+/// let _ = Connection::default();
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Connection {
-    #[default]
     Empty,
     Flow(Token),
     Stream(Token),
@@ -1628,6 +1652,65 @@ pub struct Modification {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RepeatedMap;
+    use serde::de::DeserializeOwned;
+
+    fn remove_object_key(value: &mut serde_json::Value, key: &str) {
+        value
+            .as_object_mut()
+            .expect("wire value is an object")
+            .remove(key)
+            .unwrap_or_else(|| panic!("wire value contains `{key}`"));
+    }
+
+    #[test]
+    fn current_ast_wire_rejects_deleted_semantic_keys() {
+        let class = ClassDef::default();
+        let mut class_wire = serde_json::to_value(class).expect("class serializes");
+        assert!(class_wire["redeclare_target_def_id"].is_null());
+        remove_object_key(&mut class_wire, "redeclare_target_def_id");
+        assert!(serde_json::from_value::<ClassDef>(class_wire).is_err());
+
+        let reference = ComponentReference {
+            local: false,
+            parts: Vec::new(),
+            span: Span::DUMMY,
+            qualified_display_name: None,
+        };
+        let call = Expression::FunctionCall {
+            comp: reference.clone(),
+            args: Vec::new(),
+            is_partial_application: false,
+            span: Span::DUMMY,
+        };
+        let mut call_wire = serde_json::to_value(call).expect("function call serializes");
+        remove_object_key(&mut call_wire["FunctionCall"], "is_partial_application");
+        assert!(serde_json::from_value::<Expression>(call_wire).is_err());
+
+        let modification = Expression::ClassModification {
+            target: reference,
+            modifications: Vec::new(),
+            each_flags: Vec::new(),
+            final_flags: Vec::new(),
+            redeclare_flags: Vec::new(),
+            span: Span::DUMMY,
+        };
+        for key in ["each_flags", "final_flags", "redeclare_flags"] {
+            let mut wire =
+                serde_json::to_value(&modification).expect("class modification serializes");
+            remove_object_key(&mut wire["ClassModification"], key);
+            assert!(
+                serde_json::from_value::<Expression>(wire).is_err(),
+                "deleted `{key}` must not select an empty semantic flag vector"
+            );
+        }
+
+        let external = ExternalFunction::default();
+        let mut external_wire =
+            serde_json::to_value(external).expect("external function serializes");
+        remove_object_key(&mut external_wire, "annotation");
+        assert!(serde_json::from_value::<ExternalFunction>(external_wire).is_err());
+    }
 
     fn make_class(name: &str, def_id: DefId) -> ClassDef {
         ClassDef {
@@ -1637,6 +1720,276 @@ mod tests {
                 ..Token::default()
             },
             ..ClassDef::default()
+        }
+    }
+
+    fn make_component(name: &str, def_id: DefId) -> Component {
+        let mut component = Component::empty_with_span(Span::DUMMY);
+        component.name = name.to_string();
+        component.name_token.text = Arc::from(name);
+        component.def_id = Some(def_id);
+        component
+    }
+
+    fn replace_unique_bytes(input: &[u8], original: &[u8], replacement: &[u8]) -> Vec<u8> {
+        let offsets = input
+            .windows(original.len())
+            .enumerate()
+            .filter_map(|(offset, window)| (window == original).then_some(offset))
+            .collect::<Vec<_>>();
+        assert_eq!(offsets.len(), 1, "wire fragment must occur exactly once");
+        let offset = offsets[0];
+        let mut result = Vec::with_capacity(input.len() - original.len() + replacement.len());
+        result.extend_from_slice(&input[..offset]);
+        result.extend_from_slice(replacement);
+        result.extend_from_slice(&input[offset + original.len()..]);
+        result
+    }
+
+    fn forged_json_field<T, C, R>(owner: &T, field: &str, canonical: &C, repeated: &R) -> Vec<u8>
+    where
+        T: Serialize,
+        C: Serialize,
+        R: Serialize,
+    {
+        let mut canonical_field = serde_json::to_vec(field).expect("field name serializes");
+        canonical_field.push(b':');
+        canonical_field.extend(serde_json::to_vec(canonical).expect("canonical map serializes"));
+        let mut repeated_field = serde_json::to_vec(field).expect("field name serializes");
+        repeated_field.push(b':');
+        repeated_field.extend(serde_json::to_vec(repeated).expect("repeated map serializes"));
+        replace_unique_bytes(
+            &serde_json::to_vec(owner).expect("owner JSON serializes"),
+            &canonical_field,
+            &repeated_field,
+        )
+    }
+
+    fn forged_binary_field<T, C, R>(owner: &T, canonical: &C, repeated: &R) -> Vec<u8>
+    where
+        T: Serialize,
+        C: Serialize,
+        R: Serialize,
+    {
+        replace_unique_bytes(
+            &bincode::serialize(owner).expect("owner binary serializes"),
+            &bincode::serialize(canonical).expect("canonical map serializes"),
+            &bincode::serialize(repeated).expect("repeated map serializes"),
+        )
+    }
+
+    fn assert_wire_refuses<T>(json: &[u8], binary: &[u8], field: &str, boundary: &str)
+    where
+        T: DeserializeOwned,
+    {
+        let json_error = match serde_json::from_slice::<T>(json) {
+            Ok(_) => panic!("{boundary} JSON must reject {field}"),
+            Err(error) => error,
+        };
+        assert!(
+            json_error.to_string().contains(field),
+            "{boundary} JSON refusal must identify {field}: {json_error}",
+        );
+        let binary_error = match bincode::deserialize::<T>(binary) {
+            Ok(_) => panic!("{boundary} binary must reject {field}"),
+            Err(error) => error,
+        };
+        assert!(
+            binary_error.to_string().contains(field),
+            "{boundary} binary refusal must identify {field}: {binary_error}",
+        );
+    }
+
+    fn assert_recursive_class_tree_refuses<T: Serialize>(
+        tree: &ClassTree,
+        canonical_owner: &T,
+        forged_json_owner: &[u8],
+        forged_binary_owner: &[u8],
+        field: &str,
+    ) {
+        let tree_json = replace_unique_bytes(
+            &serde_json::to_vec(tree).expect("ClassTree JSON serializes"),
+            &serde_json::to_vec(canonical_owner).expect("canonical owner JSON serializes"),
+            forged_json_owner,
+        );
+        let tree_binary = replace_unique_bytes(
+            &bincode::serialize(tree).expect("ClassTree binary serializes"),
+            &bincode::serialize(canonical_owner).expect("canonical owner binary serializes"),
+            forged_binary_owner,
+        );
+        assert_wire_refuses::<ClassTree>(&tree_json, &tree_binary, field, "recursive ClassTree");
+    }
+
+    #[test]
+    fn stored_definition_classes_reject_repeated_keys_before_root_construction() {
+        let name = "Outer".to_string();
+        let canonical = make_class(&name, DefId::new(41));
+        let forged = make_class(&name, DefId::new(42));
+        let definitions = StoredDefinition {
+            classes: AstIndexMap::from_iter([(name.clone(), canonical)]),
+            within: None,
+        };
+        let mut tree = ClassTree::new();
+        tree.definitions = definitions.clone();
+
+        for canonical_first in [true, false] {
+            let repeated = RepeatedMap {
+                entries: &definitions.classes,
+                repeated_key: &name,
+                forged_value: &forged,
+                canonical_first,
+            };
+            let forged_json =
+                forged_json_field(&definitions, "classes", &definitions.classes, &repeated);
+            let forged_binary = forged_binary_field(&definitions, &definitions.classes, &repeated);
+            assert_wire_refuses::<StoredDefinition>(
+                &forged_json,
+                &forged_binary,
+                "StoredDefinition.classes",
+                "direct StoredDefinition",
+            );
+            assert_recursive_class_tree_refuses(
+                &tree,
+                &definitions,
+                &forged_json,
+                &forged_binary,
+                "StoredDefinition.classes",
+            );
+        }
+    }
+
+    #[test]
+    fn nested_class_declarations_reject_repeated_keys_before_root_construction() {
+        let name = "Nested".to_string();
+        let canonical = make_class(&name, DefId::new(51));
+        let forged = make_class(&name, DefId::new(52));
+        let mut outer = make_class("Outer", DefId::new(50));
+        outer.classes.insert(name.clone(), canonical);
+        let mut tree = ClassTree::new();
+        tree.definitions
+            .classes
+            .insert("Outer".to_string(), outer.clone());
+
+        for canonical_first in [true, false] {
+            let repeated = RepeatedMap {
+                entries: &outer.classes,
+                repeated_key: &name,
+                forged_value: &forged,
+                canonical_first,
+            };
+            let forged_json = forged_json_field(&outer, "classes", &outer.classes, &repeated);
+            let forged_binary = forged_binary_field(&outer, &outer.classes, &repeated);
+            assert_wire_refuses::<ClassDef>(
+                &forged_json,
+                &forged_binary,
+                "ClassDef.classes",
+                "direct ClassDef",
+            );
+            assert_recursive_class_tree_refuses(
+                &tree,
+                &outer,
+                &forged_json,
+                &forged_binary,
+                "ClassDef.classes",
+            );
+        }
+    }
+
+    #[test]
+    fn component_declarations_reject_repeated_keys_before_root_construction() {
+        let name = "x".to_string();
+        let canonical = make_component(&name, DefId::new(61));
+        let forged = make_component(&name, DefId::new(62));
+        let mut outer = make_class("Outer", DefId::new(60));
+        outer.components.insert(name.clone(), canonical);
+        let mut tree = ClassTree::new();
+        tree.definitions
+            .classes
+            .insert("Outer".to_string(), outer.clone());
+
+        for canonical_first in [true, false] {
+            let repeated = RepeatedMap {
+                entries: &outer.components,
+                repeated_key: &name,
+                forged_value: &forged,
+                canonical_first,
+            };
+            let forged_json = forged_json_field(&outer, "components", &outer.components, &repeated);
+            let forged_binary = forged_binary_field(&outer, &outer.components, &repeated);
+            assert_wire_refuses::<ClassDef>(
+                &forged_json,
+                &forged_binary,
+                "ClassDef.components",
+                "direct ClassDef",
+            );
+            assert_recursive_class_tree_refuses(
+                &tree,
+                &outer,
+                &forged_json,
+                &forged_binary,
+                "ClassDef.components",
+            );
+        }
+    }
+
+    #[test]
+    fn declaration_maps_preserve_unique_insertion_order() {
+        let mut outer = make_class("Outer", DefId::new(70));
+        outer
+            .classes
+            .insert("Second".to_string(), make_class("Second", DefId::new(72)));
+        outer
+            .classes
+            .insert("First".to_string(), make_class("First", DefId::new(71)));
+        outer.components.insert(
+            "component_b".to_string(),
+            make_component("component_b", DefId::new(74)),
+        );
+        outer.components.insert(
+            "component_a".to_string(),
+            make_component("component_a", DefId::new(73)),
+        );
+        let definitions = StoredDefinition {
+            classes: AstIndexMap::from_iter([
+                ("Outer".to_string(), outer),
+                ("Before".to_string(), make_class("Before", DefId::new(75))),
+            ]),
+            within: None,
+        };
+
+        let json = serde_json::to_vec(&definitions).expect("declarations serialize to JSON");
+        let json_replayed = serde_json::from_slice::<StoredDefinition>(&json)
+            .expect("unique JSON declaration maps replay");
+        let binary = bincode::serialize(&definitions).expect("declarations serialize to binary");
+        let binary_replayed = bincode::deserialize::<StoredDefinition>(&binary)
+            .expect("unique binary declaration maps replay");
+
+        for replayed in [&json_replayed, &binary_replayed] {
+            assert_eq!(
+                replayed
+                    .classes
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["Outer", "Before"],
+            );
+            let replayed_outer = &replayed.classes["Outer"];
+            assert_eq!(
+                replayed_outer
+                    .classes
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["Second", "First"],
+            );
+            assert_eq!(
+                replayed_outer
+                    .components
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["component_b", "component_a"],
+            );
         }
     }
 
