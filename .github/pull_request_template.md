@@ -27,9 +27,33 @@ Alignment". Update both files together if you change either one.
 - Why the change belongs in these crate(s):
 - Any new abstraction, public API, or migration path:
 
+## Proof Packet
+
+- spec_mls_anchors:
+- construction_invariant:
+- construction_authority:
+- concrete_reproduction:
+- first_divergence:
+- rejected_hypotheses:
+- producer_artifact_delta:
+- dependency_predecessors:
+- keystone_files_and_types:
+- reservation_window:
+- reservation_release_or_checkpoint:
+- positive_witness:
+- negative_witness:
+- mutation_witness:
+- claim_status: <!-- VERIFIED, INFERRED, or RELAYED-UNVERIFIED -->
+- command_results_with_exit_status:
+- review_verdict:
+- reviewed_revision:
+- commands_not_run:
+
 ## Testing
 
-- Key command(s) run (fmt, clippy, workspace test, doc):
+- Focused command(s) run with exit status:
+- `cargo xtask verify quick` result:
+- `cargo xtask verify full` result on the same frozen revision:
 - Behavior or regression covered:
 - Commands NOT run and why:
 - For compiler/simulator changes: did you run the MSL gate
@@ -60,12 +84,14 @@ If `net_added_lines` is positive, add:
 - [ ] MLS-sensitive changes cite the right MLS section.
 - [ ] Crate boundaries and phase ownership preserved (SPEC_0029).
 - [ ] Tests prove behavior or explain the remaining gap.
-- [ ] Standard CI gates pass (`fmt`, `clippy -D warnings`, `cargo test`, `cargo doc`).
+- [ ] Proof packet binds green focused gates and a fresh exact-byte review.
+- [ ] Every overlapping keystone reservation was checkpointed or released.
+- [ ] `cargo xtask verify quick` and then `cargo xtask verify full` pass on the same frozen revision.
 - [ ] MSL gate run for compiler/simulator changes; no regression vs baseline.
 - [ ] Size-budget section completed.
 - [ ] Positive net diff has explicit compression justification.
 - [ ] New APIs are required and minimal.
 - [ ] Old/new parallel paths removed unless explicitly migrating.
-- [ ] No `#[allow(clippy::...)]` added outside generated code.
+- [ ] No hand-written `#[allow(clippy::...)]`; any generated-parser exception has explicit generator provenance.
 - [ ] Every commit signed off (`git commit -s`); no named AI assistant/session references or AI `Co-Authored-By` trailers.
 - [ ] External material (if any) attributed and Apache-2.0 compatible.

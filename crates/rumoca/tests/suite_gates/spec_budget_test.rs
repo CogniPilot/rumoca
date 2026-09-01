@@ -18,6 +18,38 @@ const HARD_WORDS: usize = 2500;
 const HARD_LINES: usize = 350;
 const ACTIVE_SPEC_CAP: usize = 20;
 
+struct GovernedAnnex {
+    parent: &'static str,
+    annex: &'static str,
+    rule_sections: &'static [(&'static str, usize)],
+}
+
+const GOVERNED_ANNEXES: &[GovernedAnnex] = &[
+    GovernedAnnex {
+        parent: "SPEC_0029_CRATE_BOUNDARIES.md",
+        annex: "SPEC_0054_RUNTIME_LAYERING_CATALOG.md",
+        rule_sections: &[(
+            "### 12. Runtime, Backend, Simulation Session, And Visualization Layering",
+            8,
+        )],
+    },
+    GovernedAnnex {
+        parent: "SPEC_0034_GALEC_EFMI_EXPORT.md",
+        annex: "SPEC_0042_GALEC_LANGUAGE_CATALOG.md",
+        rule_sections: &[("### Rules", 6)],
+    },
+    GovernedAnnex {
+        parent: "SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md",
+        annex: "SPEC_0055_TARGET_REFINEMENT_CATALOG.md",
+        rule_sections: &[
+            ("### 2. Prepared Execution Artifacts", 1),
+            ("### 3. Target Build Session And Product Plans", 5),
+            ("### 4. Final Expansion Boundary And Budgets", 1),
+            ("### 5. eFMI Refinement Chain", 1),
+        ],
+    },
+];
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -47,6 +79,97 @@ fn word_count(text: &str) -> usize {
 
 fn line_count(text: &str) -> usize {
     text.lines().count()
+}
+
+fn heading_body<'a>(content: &'a str, heading: &str) -> Option<&'a str> {
+    let heading_start = content.find(heading)?;
+    let body_start = heading_start.checked_add(heading.len())?;
+    let remainder = content.get(body_start..)?;
+    let Some(body_end) = remainder.find("\n#") else {
+        return Some(remainder);
+    };
+    remainder.get(..body_end)
+}
+
+fn rule_table_row_count(section: &str) -> usize {
+    section
+        .lines()
+        .filter(|line| {
+            let line = line.trim();
+            line.starts_with('|') && !line.starts_with("|---") && !line.starts_with("| Rule |")
+        })
+        .count()
+}
+
+fn rule_home_violations(contract: &GovernedAnnex, parent: &str, annex: &str) -> Vec<String> {
+    let mut errors = Vec::new();
+    let annex_link = format!("({}", contract.annex);
+    let parent_link = format!("({}", contract.parent);
+    if !parent.contains(&annex_link) {
+        errors.push(format!(
+            "{} does not link {}",
+            contract.parent, contract.annex
+        ));
+    }
+    if !annex.contains(&parent_link) {
+        errors.push(format!(
+            "{} does not link {}",
+            contract.annex, contract.parent
+        ));
+    }
+    for (heading, minimum_rule_rows) in contract.rule_sections {
+        if let Some(section) = heading_body(parent, heading) {
+            let normalized = section
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase();
+            let blanket_delegation = ["every rule in", "every row in", "every clause in"]
+                .iter()
+                .any(|phrase| normalized.contains(phrase));
+            if blanket_delegation && normalized.contains("normative by reference") {
+                errors.push(format!(
+                    "{} delegates `{heading}` through a blanket annex reference",
+                    contract.parent
+                ));
+            }
+            let rows = rule_table_row_count(section);
+            if rows < *minimum_rule_rows {
+                errors.push(format!(
+                    "{} has {rows} affirmative rows in `{heading}`, expected at least {minimum_rule_rows}",
+                    contract.parent
+                ));
+            }
+        } else {
+            errors.push(format!(
+                "{} lacks affirmative rule section `{heading}`",
+                contract.parent
+            ));
+        }
+    }
+    let Some((annex_preamble, _)) = annex.split_once("\n### ") else {
+        errors.push(format!(
+            "{} lacks a detailed catalog section",
+            contract.annex
+        ));
+        return errors;
+    };
+    let normalized_annex = annex_preamble
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let disclaims_independent_rule = normalized_annex
+        .contains("introduce no additional requirement")
+        || normalized_annex.contains("introduces no additional requirement");
+    if !normalized_annex.contains("normative only through that parent link")
+        || !disclaims_independent_rule
+    {
+        errors.push(format!(
+            "{} must disclaim independent rule authority",
+            contract.annex
+        ));
+    }
+    errors
 }
 
 fn collect_source_files(root: &Path, files: &mut Vec<PathBuf>) {
@@ -258,6 +381,69 @@ Either merge specs, move future work to spec/archive/deferred, delete an inactiv
     );
 }
 
+const PROOF_PACKET_FIELDS: &[&str] = &[
+    "spec_mls_anchors",
+    "construction_invariant",
+    "construction_authority",
+    "concrete_reproduction",
+    "first_divergence",
+    "rejected_hypotheses",
+    "producer_artifact_delta",
+    "dependency_predecessors",
+    "keystone_files_and_types",
+    "reservation_window",
+    "reservation_release_or_checkpoint",
+    "positive_witness",
+    "negative_witness",
+    "mutation_witness",
+    "claim_status",
+    "command_results_with_exit_status",
+    "review_verdict",
+    "reviewed_revision",
+    "commands_not_run",
+];
+
+fn proof_packet_alignment_violations(spec: &str, template: &str) -> Vec<String> {
+    let mut missing = Vec::new();
+    let spec_packet = heading_body(spec, "### 3a. Proof Packet").unwrap_or("");
+    let template_packet = heading_body(template, "## Proof Packet").unwrap_or("");
+    if spec_packet.is_empty() {
+        missing.push("SPEC_0025 missing Proof Packet section".to_string());
+    }
+    if template_packet.is_empty() {
+        missing.push("PR template missing Proof Packet section".to_string());
+    }
+    for field in PROOF_PACKET_FIELDS {
+        if !proof_packet_has_field(spec_packet, field) {
+            missing.push(format!("SPEC_0025 missing proof-packet field `{field}`"));
+        }
+        if !proof_packet_has_field(template_packet, field) {
+            missing.push(format!("PR template missing proof-packet field `{field}`"));
+        }
+    }
+    missing
+}
+
+fn proof_packet_has_field(section: &str, field: &str) -> bool {
+    let label = format!("{field}:");
+    section.lines().any(|line| {
+        let line = line.trim();
+        line.strip_prefix("- ").unwrap_or(line).starts_with(&label)
+    })
+}
+
+#[test]
+fn proof_packet_field_matching_rejects_superstrings() {
+    assert!(proof_packet_has_field(
+        "- construction_invariant: exact owner",
+        "construction_invariant"
+    ));
+    assert!(!proof_packet_has_field(
+        "- not_construction_invariant: deceptive superstring",
+        "construction_invariant"
+    ));
+}
+
 #[test]
 fn test_spec_0025_aligns_with_pr_template() {
     // SPEC_0025 mandates the PR template at .github/pull_request_template.md
@@ -275,6 +461,7 @@ fn test_spec_0025_aligns_with_pr_template() {
         "## Summary",
         "## Spec / MLS Alignment",
         "## Risk and Design Notes",
+        "## Proof Packet",
         "## Testing",
         "## Code Size Budget",
         "## Reviewer Checklist",
@@ -315,12 +502,50 @@ fn test_spec_0025_aligns_with_pr_template() {
     if !spec.contains(".github/pull_request_template.md") {
         missing.push("SPEC_0025 missing reference to .github/pull_request_template.md".to_string());
     }
+    missing.extend(proof_packet_alignment_violations(&spec, &template));
 
     assert!(
         missing.is_empty(),
         "SPEC_0025 ↔ PR template are out of sync:\n  {}",
         missing.join("\n  "),
     );
+}
+
+#[test]
+fn proof_packet_alignment_detects_each_missing_field_in_either_owner() {
+    let root = workspace_root();
+    let spec = fs::read_to_string(root.join("spec/SPEC_0025_PR_REVIEW_PROCESS.md"))
+        .expect("read SPEC_0025");
+    let template = fs::read_to_string(root.join(".github/pull_request_template.md"))
+        .expect("read PR template");
+
+    for field in PROOF_PACKET_FIELDS {
+        let without_spec_field = spec
+            .lines()
+            .filter(|line| !line.contains(field))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let spec_violations = proof_packet_alignment_violations(&without_spec_field, &template);
+        assert!(
+            spec_violations
+                .iter()
+                .any(|violation| violation
+                    == &format!("SPEC_0025 missing proof-packet field `{field}`")),
+            "removing `{field}` from SPEC_0025 must fail that exact field"
+        );
+
+        let without_template_field = template
+            .lines()
+            .filter(|line| !line.contains(field))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let template_violations = proof_packet_alignment_violations(&spec, &without_template_field);
+        assert!(
+            template_violations.iter().any(|violation| violation
+                == &format!("PR template missing proof-packet field `{field}`")),
+            "removing `{field}` from the PR template must fail that exact field"
+        );
+    }
 }
 
 #[test]
@@ -352,4 +577,52 @@ fn test_specs_have_required_status_marker() {
         missing.is_empty(),
         "specs missing a Status marker (## Status + value, or **Status:** value): {missing:?}",
     );
+}
+
+#[test]
+fn test_reference_annexes_have_affirmative_parent_rule_homes() {
+    let spec_dir = workspace_root().join("spec");
+    let mut errors = Vec::new();
+    for contract in GOVERNED_ANNEXES {
+        let parent = fs::read_to_string(spec_dir.join(contract.parent)).expect("read parent spec");
+        let annex = fs::read_to_string(spec_dir.join(contract.annex)).expect("read annex spec");
+        errors.extend(rule_home_violations(contract, &parent, &annex));
+    }
+    assert!(
+        errors.is_empty(),
+        "REFERENCE annexes must not replace affirmative parent rules:\n  {}",
+        errors.join("\n  "),
+    );
+}
+
+#[test]
+fn test_rule_home_gate_rejects_blanket_delegation_mutations() {
+    let spec_dir = workspace_root().join("spec");
+    for contract in GOVERNED_ANNEXES {
+        let annex = fs::read_to_string(spec_dir.join(contract.annex)).expect("read annex spec");
+        let first_heading = contract
+            .rule_sections
+            .first()
+            .map(|(heading, _)| *heading)
+            .expect("governed annex has a parent rule section");
+        let hollow_parent = format!(
+            "## Specification\n\n{}\n\nEvery rule in [{}] is REQUIRED and normative by reference.\n\n[annex]({})\n",
+            first_heading, contract.annex, contract.annex
+        );
+        let errors = rule_home_violations(contract, &hollow_parent, &annex);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("blanket annex reference")),
+            "{} blanket-delegation mutation escaped: {errors:?}",
+            contract.parent,
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("affirmative rows")),
+            "{} rule-table deletion mutation escaped: {errors:?}",
+            contract.parent,
+        );
+    }
 }

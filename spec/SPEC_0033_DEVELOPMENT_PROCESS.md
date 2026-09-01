@@ -28,6 +28,17 @@ evidence.
 | Fixes SHOULD land at the earliest responsible layer | owning crate/phase | Preserves upstream invariants |
 | Later-layer fixes MUST justify why earlier ownership is infeasible | validators/runtime/templates | Avoids compatibility workarounds |
 
+### 2a. Bounded Cuts And Proof Packets
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Before editing, each cut ledger MUST name its invariant, earliest constructor, predecessors, keystone files/type shapes, writer, reviewer, and reservation window. Exemption requires no type-shape, public-item, or normative change and reviewer approval. Mechanically forced consumers MUST be added before editing; other widening is prohibited | development ledger | Make ownership and scope explicit |
+| Proof packets MUST record spec/MLS anchors, reproduction, first divergence, rejected hypotheses, producer delta, expressible positive/negative/mutation witnesses, commands/results with exit status, commands not run, per-claim `VERIFIED`/`INFERRED`, and `ACCEPT`/`FIX`. Relays MUST name their source and remain `RELAYED-UNVERIFIED` until independently checked | author/reviewer handoff | Evidence survives session boundaries |
+| Read-only audits MAY overlap; writers only on disjoint files and changed type shapes. Earlier ledger declaration wins. A blocking holder MUST checkpoint or release; unreleased reservations lapse at their declared window | concurrent work | Prevent collisions and permanent locks |
+| Focused gates, strict scoped Clippy, formatting, and diff check MUST be green before review. Review binds those bytes; later proof-boundary edits invalidate `ACCEPT`. `FIX` MUST cite an executable counterexample, normative violation, or mechanism-proved construction escape. Dependency-closed accepted cuts MUST checkpoint before overlapping work opens | review/checkpoint | Review stable green bytes once |
+| Unrelated findings MUST enter the durable backlog unless they invalidate the current invariant. `cargo xtask verify quick` runs at dependency-closed milestones; `cargo xtask verify full` runs on PR-final frozen bytes after quick | roadmap/verification | Bound scope and broad-gate cost |
+| Static obligations MUST be classified as construction-time, deferred-construction, or runtime-dependent. Each fact has one issuer at its earliest complete-input phase and opaque consumers. Earlier phases MUST carry a typed outstanding obligation for deferred construction. An absent identity or obligation-free deferral is not proof. Re-proving an already issued fact is prohibited | compiler pipeline | Check each semantic fact once |
+
 ### 3. Evidence Requirements
 
 | Rule | Owner/Where | Brief Justification |
@@ -65,7 +76,7 @@ manifest facts. Display names and raw TOML formatting never enter identity.
 | Unsupported compiler-owned wire versions MUST fail immediately | IR deserialization | Invalid input must not enter the pipeline |
 | Source-language compatibility deviations MUST be explicit and opt-in | config/tooling | Users choose non-standard Modelica behavior |
 | Source-language compatibility docs MUST name the requiring library/model and default | deviation docs | Makes exceptions reviewable |
-| Validators/checkers MUST NOT be weakened just to pass failing models | validation layers | Hides producer bugs |
+| Validators/checkers MUST NOT be weakened to pass models. Deletion requires unrepresentability by construction and a mutation witness preserving refusal | validation layers | Hides producer bugs |
 | Hand-written compiler code MUST NOT suppress the Rust `dead_code` lint; unreachable items MUST be deleted and reintroduced only with their first real consumer. Generated parser output with explicit generator provenance is the sole carve-out | compiler crates and architecture gate | A lint allowance can preserve abandoned APIs, speculative helpers, and marker methods outside the current construction chain |
 | Temporary debug probes MUST be removed before finalization | all changes | Keeps tree clean |
 
@@ -125,42 +136,17 @@ Failure classifications:
 | A canary timeout, panic, unsupported operation, or non-finite result MUST be recorded as a failure | canary runs | Retries and fallbacks manufacture passes |
 | Tier 2 MUST cover the full 566-model set, either in one run or as CI shards merged by the fan-in job | CI / milestone | Cohort evidence without a serial CI long pole |
 | Tier 2 is the sole source of cohort parity claims | reports, PRs, specs | One cohort number, one origin |
-| A parity claim MUST come from the OMC trace comparator's agreement bands; `sim_ok` alone is completion, never parity | reports, PRs, specs | A trace nobody compared can be plausibly wrong |
-| Initialization parity MUST use each trace's last row at the exact common start time; nearby positive-time rows remain trajectory behavior | trace comparator | Separates initialization from later events |
-| Trace production, publication, and malformed-evidence rejection MUST satisfy [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) | trace producers/comparator | Detailed rows remain normative by reference |
-| The comparator's candidate set MUST be every `sim_ok` trace | `rumoca_model_is_trace_candidate` | Completion picks candidates; comparison decides parity |
-| Every candidate MUST be compared or recorded under `skipped`, `missing_trace`, or `trace_nonidentifiable` with a typed reason | `sim_trace_comparison.json` | An uncompared trace must name the exact proof boundary |
-| `trace_nonidentifiable` MUST be reported separately, excluded from the pointwise-comparison denominator, and MUST NOT count as strict-high, passing, supported, or certified | comparator and all consumers | Inapplicable pointwise evidence cannot become affirmative evidence |
-| Stochastic non-identifiability MUST follow typed random IR; deterministic-chaotic evidence MUST record a positive finite Lyapunov lower bound, sample count, and artifact digest | trace producer | Classification is machine-readable evidence, not a model-name exception |
-| A non-identifiability profile MUST list outstanding proof obligations; incomplete evidence MUST fail comparison | trace producer/comparator | Classification narrows the proof method but never discharges the proof |
-| Automatic trace classification MUST NOT branch on model name, OMC output, or an observed comparison band | trace producer/comparator | Corpus-specific heuristics cannot establish correctness |
-| A run whose comparator stage did not execute, or compared zero models, reports "parity unmeasured", not a number | harness gate, `verify msl-parity` | Missing comparison must be visible, not defaulted |
-| A quoted number MUST state `models_compared` and the skipped/missing counts beside it | reports, review evidence | Partial coverage is part of the claim |
-| Tracked comparator exclusions MUST explain why pointwise OMC comparison is non-identifying; they remain visible and non-strict-high but are not refinement counterexamples | comparator | Oracle-test boundaries must be auditable |
-| An unmeasured cohort run MUST fail its quality gate, not pass with `sim_ok` | harness gate, `verify msl-parity` | A run nobody could check must not read as a green run |
-| The cohort ratchet MUST be strict-high; strict-high MUST contain zero deviation channels | harness gate | One wrong observable falsifies parity |
-| `sim_ok` MUST remain a raw execution count and MUST NOT be called supported, certified, or passing | reports, PRs, specs | Solver completion does not prove semantics |
-| A package or stage simulation pass MUST require a comparable strict-high OMC trace | package pass-rate report | Near, deviation, and absent bands are unsupported |
-| A full Tier 2 gate MUST classify every `sim_ok` as strict-high, tracked exclusion, or typed `trace_nonidentifiable` | harness gate | Every completion needs parity or a reviewed boundary |
-| Every non-high result without such a boundary MUST be triaged as a refinement counterexample or harness defect | review evidence, issue/PR | Wrong traces falsify the claim |
-| A counterexample MUST yield a general semantic fix or typed profile rejection | compiler/runtime owners | Model exceptions cannot establish correctness |
-| Any actionable counterexample blocks merges, releases, and unrelated capability work until its count is zero | campaign planning, PR/release gates | False success outranks breadth |
-| The actionable counterexample count MUST be zero before compile-frontier or unrelated capability work resumes | campaign planning, review evidence | False success outranks breadth work |
-| Counterexample closure MUST be recorded per model as strict-high, typed refusal, or reasoned comparator exclusion | review evidence, issue/PR | Aggregates cannot close false success |
-| Every closed counterexample MUST retain a focused regression for the semantic defect, and the originating model MUST remain in the next complete Tier 2 comparison | focused suites, cohort sweep | A repaired proof obligation must not silently regress or disappear from evidence |
-| Tolerance changes, retries, and model-specific compiler/runtime branches MUST NOT close a counterexample | compiler/runtime owners | Exceptions in implementation cannot establish semantic correctness |
-| Pointwise-nonidentifiable traces and oracle-test limitations MUST be tallied separately as non-strict-high | comparator reports, review evidence | Separation manufactures neither proof nor falsification |
-| No validity check that reads simulation outcomes may run before the comparator stage | harness gate flow | A gate that aborts first destroys the measurement it judges |
-| Every quoted parity number MUST name the Tier 2 run and commit it came from | reports, PRs, specs | An unsourced number cannot be rechecked |
-| Parity numbers MUST NOT be quoted from a partial, single-shard, focused, or stale run | any claim | Partial snapshots are not cohort evidence |
-| A Tier 1 canary delta MUST NOT be reported as a cohort parity number | review evidence, PR text | Tier 1 is a tripwire, not a metric |
+| Trace production, classification, comparison, and malformed-evidence rejection MUST satisfy every row in [SPEC_0050 §§1–4](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) | trace producers/comparator | Detailed rows are normative by reference |
+| Parity claims require complete strict-high comparator evidence under SPEC_0050; `sim_ok`, exclusions, non-identifiability, and partial runs are never affirmative parity | reports, PRs, specs | Completion is not correctness |
+| Every actionable comparator counterexample blocks breadth/release work and closes only through the general-fix evidence in SPEC_0050 §5 | campaign planning | Wrong output outranks breadth |
+| Every quoted parity number obeys SPEC_0050 §6 source/run/count rules; Tier 1 is never a cohort metric | reports, PRs, specs | Claims remain reproducible |
 
-[Canonical commands](SPEC_0050_TRACE_EVIDENCE_CATALOG.md#3-canonical-tier-commands)
+[Canonical commands](SPEC_0050_TRACE_EVIDENCE_CATALOG.md#7-canonical-tier-commands)
 duplicate this cadence.
 
 #### Tier 2 parity-number acceptance contract
 
-[SPEC_0050 acceptance rows](SPEC_0050_TRACE_EVIDENCE_CATALOG.md#2-tier-2-parity-number-acceptance-rows)
+[SPEC_0050 acceptance rows](SPEC_0050_TRACE_EVIDENCE_CATALOG.md#3-tier-2-parity-number-acceptance-rows)
 are mandatory; omission reports `parity unmeasured`.
 
 ### 6b. Authenticated Embedded-C Competitor Matrix

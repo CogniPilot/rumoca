@@ -28,6 +28,7 @@ one-to-one.
 | §1 Summary        | "Summary"                 |
 | §2 Spec/MLS       | "Spec / MLS Alignment"    |
 | §3 Risk/Design    | "Risk and Design Notes"   |
+| §3a Proof Packet  | "Proof Packet"            |
 | §4 Testing        | "Testing"                 |
 | §5 Size Budget    | "Code Size Budget"        |
 | §6 Reviewer Gate  | "Reviewer Checklist"      |
@@ -71,6 +72,39 @@ fn flatten_if_equation(...) { ... }
 | Justify the crate(s) the change lives in | Prevents drift across crate boundaries (SPEC_0029) |
 | Document any new abstraction, public API, or migration path | New surface is permanent until removed; the PR is where the trade-off is recorded |
 
+### 3a. Proof Packet
+
+Every non-exempt cut under SPEC_0033 §2a MUST report:
+
+```text
+spec_mls_anchors:
+construction_invariant:
+construction_authority:
+concrete_reproduction:
+first_divergence:
+rejected_hypotheses:
+producer_artifact_delta:
+dependency_predecessors:
+keystone_files_and_types:
+reservation_window:
+reservation_release_or_checkpoint:
+positive_witness:
+negative_witness:
+mutation_witness:
+claim_status:
+command_results_with_exit_status:
+review_verdict:
+reviewed_revision:
+commands_not_run:
+```
+
+| Rule | Why |
+|---|---|
+| Mark every claim `VERIFIED`, `INFERRED`, or `RELAYED-UNVERIFIED` | Review must distinguish evidence from inference |
+| Record command exit status beside each result | Output without status can manufacture success |
+| Review verdict MUST bind the reported revision and green focused gates | Later edits require fresh review |
+| List reservation release/checkpoint for every overlapping keystone | A blocked writer needs a release point |
+
 ### 4. Testing
 
 | Rule | Why |
@@ -81,17 +115,16 @@ fn flatten_if_equation(...) { ... }
 | Report Tier 1 evidence — focused suites plus the fixed 20-model canary delta — for every capability change | Tier 1 is the per-change done-criterion (SPEC_0033 §6a) |
 | Quote cohort parity only from a complete Tier 2 566-model sweep, naming its commit | Partial, sharded, focused, and stale runs are not cohort evidence |
 
-Run every command below under `CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4`
-(SPEC_0033 §6a).
-
-Standard verification commands (all merged code MUST pass):
+Canonical verification commands (all merged code MUST pass):
 
 ```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace      # includes architecture_hardening_test + spec_budget_test
-cargo doc --no-deps
+cargo xtask verify quick
+cargo xtask verify full
 ```
+
+Run quick at each dependency-closed milestone. Run full only after quick on the
+same PR-final frozen bytes. The xtask suites own the repository's resource
+budget and underlying Cargo-native checks (SPEC_0033 §6/§6a).
 
 MSL gate (compiler / simulator changes):
 
@@ -198,10 +231,12 @@ net_added_lines:
 | Capability PRs show Tier 1 evidence and source every parity number | SPEC_0033 §6a cadence must be checkable at review |
 | No unresolved conversations | Open threads = open questions |
 | Branch is up-to-date with target | Avoids merge-on-stale surprises |
+| Every proof packet binds a dependency-closed checkpoint and fresh exact-byte review | Stale review is not evidence |
+| `cargo xtask verify quick` and then `cargo xtask verify full` pass on PR-final frozen bytes | One canonical final gate sequence |
 | Signed-off-by on every commit (`git commit -s`) | DCO compliance |
 | Commit messages contain no named AI assistant or AI-session references and no `Co-Authored-By` for AI assistants | The human author owns the code; tooling provenance does not belong in project history |
 | External material attributed and Apache-2.0 compatible | Provenance and license compliance |
-| No new `#[allow(clippy::...)]` without the SPEC_0021 exception comment directly above it | SPEC_0021 "Exceptions" sanctions documented allows; an undocumented one hides an unfixed maintainability issue |
+| No hand-written `#[allow(clippy::...)]`; only generated parser output with explicit generator provenance is exempt | SPEC_0021 Suppression Policy has a zero hand-written baseline; comments cannot authorize exceptions |
 | No new trait without ≥ 2 concrete impls | Single-impl traits are noise |
 | No old/new code paths left side-by-side without explicit migration plan | Dead-but-alive code accretes |
 
