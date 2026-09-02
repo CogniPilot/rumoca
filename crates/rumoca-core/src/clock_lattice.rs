@@ -19,9 +19,10 @@
 //! value that does not fit the representation reports a spanned error instead of
 //! wrapping, saturating or substituting an approximation.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::cmp::Ordering;
 use std::fmt;
+use std::ops::RangeInclusive;
 
 use crate::Span;
 
@@ -38,6 +39,8 @@ pub enum ClockLatticeErrorKind {
     NonPositiveFactor,
     /// Exact integer arithmetic left the representable range.
     IntegerOverflow,
+    /// A closed horizon must have its start at or before its end.
+    InvertedHorizon,
     /// A seconds value has no reduced rational form in range.
     NotRationallyRepresentable,
     /// MLS §16.5.2 Operator 16.12: `backSample` moved the first activation of
@@ -58,6 +61,7 @@ impl ClockLatticeErrorKind {
                 "clock conversion factor must be strictly positive (MLS §16.5.2)"
             }
             Self::IntegerOverflow => "exact clock lattice arithmetic overflowed 128-bit integers",
+            Self::InvertedHorizon => "clock lattice horizon starts after it ends",
             Self::NotRationallyRepresentable => {
                 "clock interval has no exact reduced rational representation"
             }
@@ -104,10 +108,27 @@ type LatticeResult<T> = Result<T, ClockLatticeErrorKind>;
 /// Arithmetic stays in reduced `i128` form. Products cross-cancel before
 /// multiplication, and every remaining operation is checked, so values outside
 /// the representation are reported rather than wrapped.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize)]
 pub struct ClockRational {
     num: i128,
     den: i128,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClockRationalWire {
+    num: i128,
+    den: i128,
+}
+
+impl<'de> Deserialize<'de> for ClockRational {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ClockRationalWire::deserialize(deserializer)?;
+        Self::new(wire.num, wire.den).map_err(serde::de::Error::custom)
+    }
 }
 
 impl ClockRational {
@@ -380,7 +401,11 @@ fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
         a = b;
         b = next;
     }
-    if a == 0 { 1 } else { a }
+    if a == 0 {
+        1
+    } else {
+        a
+    }
 }
 
 fn divide_signed_by_unsigned(value: i128, divisor: u128) -> LatticeResult<i128> {
@@ -527,16 +552,223 @@ fn round_tripping_candidate(
     (candidate.to_f64() == seconds).then_some(candidate)
 }
 
+// A rational numerator magnitude is at most 2^127, including i128::MIN,
+// while every positive denominator and positive period numerator is < 2^127.
+// Each difference cross-product is < 2^254, so their sum is < 2^255;
+// multiplying by the period denominator makes the index numerator < 2^382.
+// The three-factor divisor is < 2^381. During long division the remainder is
+// below that divisor, so shifting it and adding the incoming bit stays < 2^382.
+// Six 64-bit limbs cover every bound; five do not cover the genuine 382-bit
+// numerator exercised in the tests.
+const WIDE_LIMBS: usize = 6;
+const WIDE_BITS: usize = WIDE_LIMBS * u64::BITS as usize;
+
+/// Unsigned scratch arithmetic wide enough for three products of `i128`
+/// magnitudes. It lets index division reduce only at the final quotient rather
+/// than requiring an unrepresentable intermediate [`ClockRational`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WideUint([u64; WIDE_LIMBS]);
+
+impl WideUint {
+    const ZERO: Self = Self([0; WIDE_LIMBS]);
+
+    fn from_u128(value: u128) -> Self {
+        let mut limbs = [0; WIDE_LIMBS];
+        limbs[0] = value as u64;
+        limbs[1] = (value >> 64) as u64;
+        Self(limbs)
+    }
+
+    fn is_zero(self) -> bool {
+        self == Self::ZERO
+    }
+
+    fn cmp_wide(self, other: Self) -> Ordering {
+        for (left, right) in self.0.iter().rev().zip(other.0.iter().rev()) {
+            match left.cmp(right) {
+                Ordering::Equal => {}
+                ordering => return ordering,
+            }
+        }
+        Ordering::Equal
+    }
+
+    fn checked_add(self, other: Self) -> LatticeResult<Self> {
+        let mut result = [0; WIDE_LIMBS];
+        let mut carry = false;
+        for (index, slot) in result.iter_mut().enumerate() {
+            let (sum, first_carry) = self.0[index].overflowing_add(other.0[index]);
+            let (sum, second_carry) = sum.overflowing_add(u64::from(carry));
+            *slot = sum;
+            carry = first_carry || second_carry;
+        }
+        if carry {
+            return Err(ClockLatticeErrorKind::IntegerOverflow);
+        }
+        Ok(Self(result))
+    }
+
+    fn checked_sub(self, other: Self) -> LatticeResult<Self> {
+        if self.cmp_wide(other) == Ordering::Less {
+            return Err(ClockLatticeErrorKind::IntegerOverflow);
+        }
+        let mut result = [0; WIDE_LIMBS];
+        let mut borrow = false;
+        for (index, slot) in result.iter_mut().enumerate() {
+            let (difference, first_borrow) = self.0[index].overflowing_sub(other.0[index]);
+            let (difference, second_borrow) = difference.overflowing_sub(u64::from(borrow));
+            *slot = difference;
+            borrow = first_borrow || second_borrow;
+        }
+        if borrow {
+            return Err(ClockLatticeErrorKind::IntegerOverflow);
+        }
+        Ok(Self(result))
+    }
+
+    fn checked_mul_u128(self, factor: u128) -> LatticeResult<Self> {
+        let low = factor as u64;
+        let high = (factor >> 64) as u64;
+        self.checked_mul_u64(low)?
+            .checked_add(self.checked_mul_u64(high)?.checked_shift_limbs(1)?)
+    }
+
+    fn checked_mul_u64(self, factor: u64) -> LatticeResult<Self> {
+        let mut result = [0; WIDE_LIMBS];
+        let mut carry = 0u64;
+        for (source, slot) in self.0.into_iter().zip(result.iter_mut()) {
+            let product = u128::from(source) * u128::from(factor) + u128::from(carry);
+            *slot = product as u64;
+            carry = (product >> 64) as u64;
+        }
+        if carry != 0 {
+            return Err(ClockLatticeErrorKind::IntegerOverflow);
+        }
+        Ok(Self(result))
+    }
+
+    fn checked_shift_limbs(self, count: usize) -> LatticeResult<Self> {
+        if self.0[WIDE_LIMBS - count..].iter().any(|limb| *limb != 0) {
+            return Err(ClockLatticeErrorKind::IntegerOverflow);
+        }
+        let mut result = [0; WIDE_LIMBS];
+        result[count..].copy_from_slice(&self.0[..WIDE_LIMBS - count]);
+        Ok(Self(result))
+    }
+
+    fn bit(self, index: usize) -> bool {
+        self.0[index / 64] & (1u64 << (index % 64)) != 0
+    }
+
+    fn set_bit(&mut self, index: usize) {
+        self.0[index / 64] |= 1u64 << (index % 64);
+    }
+
+    fn checked_shift_bit(self, bit: bool) -> LatticeResult<Self> {
+        let mut result = [0; WIDE_LIMBS];
+        let mut carry = u64::from(bit);
+        for (source, slot) in self.0.into_iter().zip(result.iter_mut()) {
+            *slot = source << 1 | carry;
+            carry = source >> 63;
+        }
+        if carry != 0 {
+            return Err(ClockLatticeErrorKind::IntegerOverflow);
+        }
+        Ok(Self(result))
+    }
+
+    fn checked_div_rem(self, divisor: Self) -> LatticeResult<(Self, Self)> {
+        if divisor.is_zero() {
+            return Err(ClockLatticeErrorKind::ZeroDenominator);
+        }
+        let mut quotient = Self::ZERO;
+        let mut remainder = Self::ZERO;
+        for index in (0..WIDE_BITS).rev() {
+            remainder = remainder.checked_shift_bit(self.bit(index))?;
+            if remainder.cmp_wide(divisor) != Ordering::Less {
+                remainder = remainder.checked_sub(divisor)?;
+                quotient.set_bit(index);
+            }
+        }
+        Ok((quotient, remainder))
+    }
+
+    fn checked_nonnegative_i128(self) -> LatticeResult<i128> {
+        if self.0[2..].iter().any(|limb| *limb != 0) {
+            return Err(ClockLatticeErrorKind::IntegerOverflow);
+        }
+        let value = u128::from(self.0[0]) | u128::from(self.0[1]) << 64;
+        i128::try_from(value).map_err(|_| ClockLatticeErrorKind::IntegerOverflow)
+    }
+}
+
+fn wide_product(left: u128, right: u128) -> LatticeResult<WideUint> {
+    WideUint::from_u128(left).checked_mul_u128(right)
+}
+
+fn positive_difference_numerator(
+    greater: ClockRational,
+    lesser: ClockRational,
+) -> LatticeResult<WideUint> {
+    debug_assert!(greater >= lesser);
+    let greater_scaled = wide_product(greater.num.unsigned_abs(), lesser.den as u128)?;
+    let lesser_scaled = wide_product(lesser.num.unsigned_abs(), greater.den as u128)?;
+    match (greater.num.is_negative(), lesser.num.is_negative()) {
+        (false, true) => greater_scaled.checked_add(lesser_scaled),
+        (false, false) => greater_scaled.checked_sub(lesser_scaled),
+        (true, true) => lesser_scaled.checked_sub(greater_scaled),
+        (true, false) => Err(ClockLatticeErrorKind::IntegerOverflow),
+    }
+}
+
+fn checked_positive_offset_index(
+    endpoint: ClockRational,
+    phase: ClockRational,
+    period: ClockRational,
+    round_up: bool,
+) -> LatticeResult<i128> {
+    debug_assert!(endpoint >= phase);
+    let numerator =
+        positive_difference_numerator(endpoint, phase)?.checked_mul_u128(period.den as u128)?;
+    let denominator = wide_product(endpoint.den as u128, phase.den as u128)?
+        .checked_mul_u128(period.num as u128)?;
+    let (quotient, remainder) = numerator.checked_div_rem(denominator)?;
+    let quotient = quotient.checked_nonnegative_i128()?;
+    if round_up && !remainder.is_zero() {
+        return quotient
+            .checked_add(1)
+            .ok_or(ClockLatticeErrorKind::IntegerOverflow);
+    }
+    Ok(quotient)
+}
+
 /// An exact periodic clock: tick `k` happens at `phase + k * period`
 /// (MLS §16.3), with `period > 0`.
 ///
 /// Two lattices are equal exactly when their reduced period and phase agree, so
 /// clock identity and tick simultaneity never depend on a floating-point
 /// epsilon.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize)]
 pub struct ClockLattice {
     period: ClockRational,
     phase: ClockRational,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClockLatticeWire {
+    period: ClockRational,
+    phase: ClockRational,
+}
+
+impl<'de> Deserialize<'de> for ClockLattice {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ClockLatticeWire::deserialize(deserializer)?;
+        Self::new(wire.period, wire.phase).map_err(serde::de::Error::custom)
+    }
 }
 
 /// The runtime anchor of a periodic schedule's phase.
@@ -546,10 +778,9 @@ pub struct ClockLattice {
 /// instead anchors the phase at the simulation start instant. Keeping that
 /// distinction typed prevents translation from silently assuming a particular
 /// `startTime`.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClockPhaseAnchor {
-    #[default]
     Absolute,
     SimulationStart,
 }
@@ -560,10 +791,31 @@ pub enum ClockPhaseAnchor {
 /// offset from the simulation start rather than an absolute time. The schedule
 /// remains unresolved in compiler IR and is resolved exactly once at the
 /// simulation boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize)]
 pub struct PeriodicClockSchedule {
     lattice: ClockLattice,
     anchor: ClockPhaseAnchor,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeriodicClockScheduleWire {
+    lattice: ClockLattice,
+    anchor: ClockPhaseAnchor,
+}
+
+impl<'de> Deserialize<'de> for PeriodicClockSchedule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = PeriodicClockScheduleWire::deserialize(deserializer)?;
+        match wire.anchor {
+            ClockPhaseAnchor::Absolute => Self::absolute(wire.lattice),
+            ClockPhaseAnchor::SimulationStart => Self::simulation_start_relative(wire.lattice),
+        }
+        .map_err(serde::de::Error::custom)
+    }
 }
 
 impl PeriodicClockSchedule {
@@ -617,8 +869,10 @@ impl PeriodicClockSchedule {
             return Self::absolute(self.lattice);
         }
         let start = ClockRational::from_seconds(start_time)?;
-        let phase = start.checked_add(self.lattice.phase())?;
-        Self::absolute(ClockLattice::new(self.lattice.period(), phase)?)
+        Self::absolute(ClockLattice::new(
+            self.lattice.period(),
+            start.checked_add(self.lattice.phase())?,
+        )?)
     }
 }
 
@@ -758,6 +1012,33 @@ impl ClockLattice {
     /// Instant of tick `index` in seconds, rounded exactly once.
     pub fn tick_time_seconds(self, index: impl Into<i128>) -> LatticeResult<f64> {
         Ok(self.tick_time(index)?.to_f64())
+    }
+
+    /// Closed nonnegative tick-index interval whose exact tick instants lie in
+    /// the inclusive exact horizon `[start, end]`.
+    ///
+    /// An inverted horizon is invalid. `None` therefore means only that a
+    /// valid horizon contains no nonnegative tick. This operation proves the
+    /// index bounds, not that [`Self::tick_time`] can represent every rational
+    /// instant between them.
+    pub fn nonnegative_tick_indices_in(
+        self,
+        start: ClockRational,
+        end: ClockRational,
+    ) -> LatticeResult<Option<RangeInclusive<i128>>> {
+        if start > end {
+            return Err(ClockLatticeErrorKind::InvertedHorizon);
+        }
+        if end < self.phase {
+            return Ok(None);
+        }
+        let first = if start <= self.phase {
+            0
+        } else {
+            checked_positive_offset_index(start, self.phase, self.period, true)?
+        };
+        let last = checked_positive_offset_index(end, self.phase, self.period, false)?;
+        Ok((first <= last).then_some(first..=last))
     }
 }
 

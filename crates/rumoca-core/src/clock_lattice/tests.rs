@@ -17,6 +17,30 @@ fn lattice(period: ClockRational, phase: ClockRational) -> ClockLattice {
     ClockLattice::new(period, phase).expect("test lattice must be positive")
 }
 
+fn indices(clock: ClockLattice, start: ClockRational, end: ClockRational) -> Option<(i128, i128)> {
+    clock
+        .nonnegative_tick_indices_in(start, end)
+        .expect("test horizon index arithmetic must fit")
+        .map(|range| (*range.start(), *range.end()))
+}
+
+fn enumerated_indices(
+    clock: ClockLattice,
+    start: ClockRational,
+    end: ClockRational,
+) -> Option<(i128, i128)> {
+    let mut matching = (0i128..=64).filter(|index| {
+        let tick = clock.tick_time(*index).expect("small tick must fit");
+        start <= tick && tick <= end
+    });
+    let first = matching.next()?;
+    let last = match matching.next_back() {
+        Some(last) => last,
+        None => first,
+    };
+    Some((first, last))
+}
+
 #[test]
 fn simulation_start_relative_schedule_resolves_once_at_the_runtime_boundary() {
     let schedule =
@@ -31,10 +55,285 @@ fn simulation_start_relative_schedule_resolves_once_at_the_runtime_boundary() {
 }
 
 #[test]
+fn resolved_nonzero_start_uses_absolute_phase_for_index_bounds() {
+    let schedule =
+        PeriodicClockSchedule::simulation_start_relative(lattice(rational(1, 4), rational(1, 4)))
+            .expect("relative schedule is valid");
+    let clock = schedule
+        .resolve_at(2.0)
+        .expect("start-relative phase resolves exactly")
+        .lattice();
+
+    assert_eq!(
+        indices(clock, rational(2, 1), rational(11, 4)),
+        Some((0, 2))
+    );
+}
+
+#[test]
+fn closed_horizon_includes_coincident_tick_endpoints() {
+    let clock = lattice(rational(1, 3), rational(-2, 3));
+    assert_eq!(
+        indices(clock, rational(-1, 3), rational(2, 3)),
+        Some((1, 4))
+    );
+    assert_eq!(
+        indices(clock, rational(-1, 3), rational(-1, 3)),
+        Some((1, 1))
+    );
+}
+
+#[test]
+fn just_before_and_after_a_tick_round_in_the_correct_direction() {
+    let clock = lattice(rational(1, 2), rational(-1, 4));
+    let just_before = rational(249, 1000);
+    let tick = rational(1, 4);
+    let just_after = rational(251, 1000);
+
+    assert_eq!(indices(clock, just_before, tick), Some((1, 1)));
+    assert_eq!(indices(clock, tick, just_after), Some((1, 1)));
+    assert_eq!(indices(clock, just_after, rational(3, 4)), Some((2, 2)));
+    assert_eq!(indices(clock, just_before, just_before), None);
+}
+
+#[test]
+fn valid_empty_horizons_are_distinct_from_inverted_horizons() {
+    let clock = lattice(ClockRational::ONE, rational(2, 1));
+    assert_eq!(indices(clock, rational(-3, 1), rational(1, 1)), None);
+    assert_eq!(indices(clock, rational(5, 2), rational(11, 4)), None);
+    assert_eq!(
+        clock.nonnegative_tick_indices_in(rational(1, 1), rational(0, 1)),
+        Err(ClockLatticeErrorKind::InvertedHorizon)
+    );
+    assert_eq!(
+        ClockLatticeErrorKind::InvertedHorizon.message(),
+        "clock lattice horizon starts after it ends"
+    );
+}
+
+#[test]
+fn exact_index_division_survives_maximum_cross_products() {
+    let maximum = i128::MAX;
+    let phase = rational128(maximum - 1, maximum);
+    let endpoint = rational128(maximum, maximum - 1);
+    let clock = lattice(rational128(1, maximum), phase);
+
+    assert_eq!(indices(clock, phase, endpoint), Some((0, 2)));
+    assert_eq!(indices(clock, endpoint, endpoint), None);
+    assert_eq!(
+        endpoint.checked_sub(phase),
+        Err(ClockLatticeErrorKind::IntegerOverflow),
+        "the index operation must not require the rational difference to fit"
+    );
+}
+
+#[test]
+fn exact_index_division_covers_the_full_382_bit_numerator() {
+    let maximum = i128::MAX;
+    let phase = rational128(i128::MIN, maximum);
+    let endpoint = rational128(maximum, maximum - 1);
+    let period = rational128(maximum - 2, maximum);
+    let clock = lattice(period, phase);
+
+    assert_eq!(indices(clock, phase, endpoint), Some((0, 2)));
+}
+
+#[test]
+fn minimum_and_maximum_numerators_have_exact_bounds() {
+    let clock = lattice(
+        ClockRational::integer(i128::MAX),
+        ClockRational::integer(i128::MIN),
+    );
+    assert_eq!(
+        indices(
+            clock,
+            ClockRational::integer(i128::MIN),
+            ClockRational::integer(i128::MAX),
+        ),
+        Some((0, 2))
+    );
+}
+
+#[test]
+fn index_overflow_is_reported_at_the_adjacent_horizon() {
+    let maximum_tick = lattice(ClockRational::ONE, ClockRational::ZERO);
+    assert_eq!(
+        indices(
+            maximum_tick,
+            ClockRational::integer(i128::MAX),
+            ClockRational::integer(i128::MAX),
+        ),
+        Some((i128::MAX, i128::MAX))
+    );
+
+    let adjacent = lattice(ClockRational::ONE, rational128(-1, i128::MAX));
+    assert_eq!(
+        adjacent.nonnegative_tick_indices_in(
+            ClockRational::integer(i128::MAX),
+            ClockRational::integer(i128::MAX),
+        ),
+        Err(ClockLatticeErrorKind::IntegerOverflow)
+    );
+}
+
+#[test]
+fn index_overflow_rejects_a_quotient_with_its_first_high_bit_in_limb_two() {
+    let clock = lattice(rational(1, 1024), ClockRational::ZERO);
+    let endpoint = ClockRational::integer(1i128 << 120);
+
+    assert_eq!(
+        clock.nonnegative_tick_indices_in(endpoint, endpoint),
+        Err(ClockLatticeErrorKind::IntegerOverflow),
+        "the exact tick index is 2^130 and must not be truncated to its low 128 bits"
+    );
+}
+
+#[test]
+fn small_rational_horizons_match_exhaustive_tick_enumeration() {
+    let clock_cases = (1..=4).flat_map(|period_num| {
+        (1..=4).flat_map(move |period_den| {
+            (-4..=4).map(move |phase_num| (period_num, period_den, phase_num))
+        })
+    });
+    for (period_num, period_den, phase_num) in clock_cases {
+        let clock = lattice(rational(period_num, period_den), rational(phase_num, 3));
+        for start_num in -6..=6 {
+            for end_num in start_num..=6 {
+                let start = rational(start_num, 2);
+                let end = rational(end_num, 2);
+                let expected = enumerated_indices(clock, start, end);
+                assert_eq!(
+                    indices(clock, start, end),
+                    expected,
+                    "period={period_num}/{period_den}, phase={phase_num}/3, horizon={start_num}/2..={end_num}/2"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn rationals_reduce_and_normalize_denominator_sign() {
     let value = rational(6, -8);
     assert_eq!(value.numerator(), -3);
     assert_eq!(value.denominator(), 4);
+}
+
+#[test]
+fn rational_current_wire_replays_through_checked_reduction() {
+    let negative_denominator: ClockRational =
+        serde_json::from_str(r#"{"num":6,"den":-8}"#).expect("negative denominator normalizes");
+    let noncanonical: ClockRational =
+        serde_json::from_str(r#"{"num":2,"den":4}"#).expect("noncanonical rational reduces");
+
+    assert_eq!(negative_denominator, rational(-3, 4));
+    assert_eq!(noncanonical, rational(1, 2));
+    assert_eq!(
+        serde_json::to_value(noncanonical).expect("rational serializes"),
+        serde_json::json!({"num": 1, "den": 2})
+    );
+}
+
+#[test]
+fn rational_wire_rejects_zero_denominator() {
+    let error = serde_json::from_str::<ClockRational>(r#"{"num":1,"den":0}"#)
+        .expect_err("zero denominator must not enter the exact-clock domain");
+
+    assert!(error.to_string().contains("zero denominator"));
+}
+
+#[test]
+fn rational_wire_rejects_unknown_fields() {
+    let wire = serde_json::json!({
+        "num": 1,
+        "den": 2,
+        "unchecked": true,
+    });
+    let error = serde_json::from_value::<ClockRational>(wire)
+        .expect_err("unknown rational fields must fail closed");
+
+    assert!(error.to_string().contains("unknown field"));
+}
+
+#[test]
+fn lattice_wire_rejects_nonpositive_periods() {
+    for period in [
+        serde_json::json!({"num": 0, "den": 1}),
+        serde_json::json!({"num": -1, "den": 2}),
+    ] {
+        let wire = serde_json::json!({
+            "period": period,
+            "phase": {"num": 0, "den": 1},
+        });
+        let error = serde_json::from_value::<ClockLattice>(wire)
+            .expect_err("nonpositive period must not enter the exact-clock domain");
+        assert!(error.to_string().contains("strictly positive"));
+    }
+}
+
+#[test]
+fn lattice_wire_rejects_unknown_fields() {
+    let wire = serde_json::json!({
+        "period": {"num": 1, "den": 4},
+        "phase": {"num": 0, "den": 1},
+        "unchecked": true,
+    });
+    let error = serde_json::from_value::<ClockLattice>(wire)
+        .expect_err("unknown lattice fields must fail closed");
+
+    assert!(error.to_string().contains("unknown field"));
+}
+
+#[test]
+fn schedule_current_wire_replays_through_the_selected_checked_constructor() {
+    let lattice = lattice(rational(1, 4), rational(-1, 8));
+    let absolute = PeriodicClockSchedule::absolute(lattice).expect("absolute schedule is valid");
+    assert_eq!(
+        serde_json::to_value(absolute).expect("schedule serializes"),
+        serde_json::json!({
+            "lattice": {
+                "period": {"num": 1, "den": 4},
+                "phase": {"num": -1, "den": 8},
+            },
+            "anchor": "absolute",
+        })
+    );
+
+    for (anchor, expected) in [
+        ("absolute", absolute),
+        (
+            "simulation_start",
+            PeriodicClockSchedule::simulation_start_relative(lattice)
+                .expect("start-relative schedule is valid"),
+        ),
+    ] {
+        let wire = serde_json::json!({
+            "lattice": {
+                "period": {"num": 1, "den": 4},
+                "phase": {"num": -1, "den": 8},
+            },
+            "anchor": anchor,
+        });
+        let decoded: PeriodicClockSchedule =
+            serde_json::from_value(wire).expect("current schedule wire decodes");
+        assert_eq!(decoded, expected);
+    }
+}
+
+#[test]
+fn schedule_wire_rejects_unknown_fields() {
+    let wire = serde_json::json!({
+        "lattice": {
+            "period": {"num": 1, "den": 4},
+            "phase": {"num": 0, "den": 1},
+        },
+        "anchor": "absolute",
+        "unchecked": true,
+    });
+    let error = serde_json::from_value::<PeriodicClockSchedule>(wire)
+        .expect_err("unknown schedule fields must fail closed");
+
+    assert!(error.to_string().contains("unknown field"));
 }
 
 #[test]
