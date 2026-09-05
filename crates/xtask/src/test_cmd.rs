@@ -39,11 +39,16 @@ pub(crate) fn run_architecture_gates(root: &Path) -> Result<()> {
 }
 
 pub(crate) fn run_workspace_clippy(root: &Path) -> Result<()> {
+    run_status(workspace_clippy_command(root))
+}
+
+fn workspace_clippy_command(root: &Path) -> Command {
     let mut cmd = Command::new("cargo");
     cmd.arg("clippy")
         .arg("--workspace")
         .arg("--all-targets")
         .arg("--all-features")
+        .arg("--keep-going")
         .arg("--")
         .arg("-D")
         .arg("warnings")
@@ -53,7 +58,7 @@ pub(crate) fn run_workspace_clippy(root: &Path) -> Result<()> {
         cmd.env("PYO3_PYTHON", python);
     }
 
-    run_status(cmd)
+    cmd
 }
 
 pub(crate) fn run_workspace_docs(root: &Path) -> Result<()> {
@@ -185,4 +190,31 @@ fn resolve_from_path(bin: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn workspace_clippy_collects_independent_errors_without_relaxing_the_gate() {
+        let root = Path::new("workspace-root");
+        let command = workspace_clippy_command(root);
+        assert_eq!(command.get_program(), OsStr::new("cargo"));
+        assert_eq!(command.get_current_dir(), Some(root));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--all-features",
+                "--keep-going",
+                "--",
+                "-D",
+                "warnings",
+            ]
+        );
+    }
 }
