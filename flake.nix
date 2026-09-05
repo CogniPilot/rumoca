@@ -5,6 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
+    aeneas.url = "github:AeneasVerif/aeneas/f9a8e338188447c77f31246892cb9a7a742e58ef";
     openmodelica.url = "git+https://github.com/jgoppert/OpenModelica?submodules=1&rev=a96aa1a682c463b0fd2d285b486c09a8b7fe496d";
     fenix = {
       url = "github:nix-community/fenix";
@@ -18,6 +19,7 @@
       nixpkgs,
       flake-utils,
       crane,
+      aeneas,
       openmodelica,
       fenix,
     }:
@@ -440,6 +442,10 @@
         devShells.modelica = modelicaShell;
         devShells.fmi = fmiShell;
         devShells.docs = docsShell;
+        devShells.${if system == "x86_64-linux" then "lean-pilot" else null} = mkDevShell [
+          aeneas.packages.${system}.aeneas
+          pkgs.elan
+        ];
         # Python wheel packaging must depend only on the build and smoke-test
         # toolchain.  In particular, it must not inherit optional template
         # runtimes such as JAX, whose platform support is narrower than the
