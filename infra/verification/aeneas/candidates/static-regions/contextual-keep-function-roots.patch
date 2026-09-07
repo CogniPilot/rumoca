@@ -1,0 +1,52 @@
+--- a/Config.ml
++++ b/Config.ml
+@@ -614,1 +614,5 @@
+ let max_heartbeats = ref 1000000
++(** Explicit function roots to retain after call-simplification pruning.
++    Patterns are matched against already translated Rust names. *)
++let keep_function_patterns : string list ref = ref []
++
+--- a/Main.ml
++++ b/Main.ml
+@@ -219,1 +219,8 @@
++      ( "-keep-function",
++        Arg.String
++          (fun pattern ->
++            keep_function_patterns := pattern :: !keep_function_patterns),
++        " Retain translated functions matching this Rust name pattern after \
++         call simplification. Repeat for multiple roots; unmatched patterns \
++         are errors." );
+       ( "-all-computable",
+--- a/PrePasses.ml
++++ b/PrePasses.ml
+@@ -2148 +2148,29 @@
+-  let used_funs = ref FunDeclId.Set.empty in
++  let is_ordered_function id =
++    List.exists
++      (fun group ->
++        List.mem (IdFun id) (Charon.GAstUtils.declaration_group_to_list group))
++      (Option.get crate.declarations)
++  in
++  let retained_funs =
++    List.fold_left
++      (fun retained pattern ->
++        let parsed = NameMatcher.parse_pattern pattern in
++        let matched =
++          FunDeclId.Map.fold
++            (fun id (f : fun_decl) found ->
++              if match_pattern parsed f.item_meta.name then (
++                if not (is_ordered_function id) then
++                  [%craise] f.item_meta.span
++                    ("-keep-function matched a function absent from declaration \
++                     ordering: " ^ pattern);
++                FunDeclId.Set.add id found)
++              else found)
++            crate.fun_decls FunDeclId.Set.empty
++        in
++        if FunDeclId.Set.is_empty matched then
++          [%craise_opt_span] None
++            ("-keep-function pattern matches no translated function: " ^ pattern);
++        FunDeclId.Set.union retained matched)
++      FunDeclId.Set.empty !Config.keep_function_patterns
++  in
++  let used_funs = ref retained_funs in

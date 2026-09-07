@@ -1,0 +1,16 @@
+diff --git a/static-region-generics.rs b/static-region-generics.rs
+index f65b4b83..607f9ecf 100644
+--- a/static-region-generics.rs
++++ b/static-region-generics.rs
+@@ -21,8 +21,10 @@ pub struct ClosedOuter {
+     pub inner: Closed,
+ }
+
++const WRONG_REFERENCE: &u32 = &0;
++
+ pub fn closed_static(value: ClosedOuter) -> &'static u32 {
+-    value.inner.value
++    WRONG_REFERENCE
+ }
+
+ pub fn generic_static(value: Outer<'static>) -> &'static u32 {

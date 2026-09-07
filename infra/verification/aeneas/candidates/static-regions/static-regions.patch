@@ -1,0 +1,2485 @@
+diff --git a/Config.ml b/Config.ml
+index 11554f97..7d814731 100644
+--- a/Config.ml
++++ b/Config.ml
+@@ -518,10 +518,6 @@ let type_analysis_ignore_dyn = true
+     be updated. *)
+ let use_dyn_regions = false
+
+-(** When analyzing an opaque type about which we have no information, should we
+-    consider its regions as being used for mutable references or not? *)
+-let opaque_types_have_mut_regions_by_default = false
+-
+ (** Should we use colors when logging? *)
+ let log_with_colors = ref false
+
+diff --git a/extract/ExtractTypes.ml b/extract/ExtractTypes.ml
+index 983e0ccb..ed8b2507 100644
+--- a/extract/ExtractTypes.ml
++++ b/extract/ExtractTypes.ml
+@@ -1565,14 +1565,18 @@ let extract_type_decl_gen (ctx : extraction_ctx) (fmt : F.formatter)
+      with
+      | None -> []
+      | Some info ->
+-         let mut_region_ids = info.TypesAnalysis.mut_regions in
+-         if T.RegionId.Set.is_empty mut_region_ids then []
++         let stored_borrows = info.TypesAnalysis.borrows_info.stored_borrows in
++         if T.BorrowRegionMap.is_empty stored_borrows then []
+          else
+            let positions =
+              List.filter_map
+                (fun (i, (r : T.region_param)) ->
+-                 if T.RegionId.Set.mem r.index mut_region_ids then Some i
+-                 else None)
++                 match
++                   T.BorrowRegionMap.find_opt (T.VariableRegion r.index)
++                     stored_borrows
++                 with
++                 | Some T.RMut -> Some i
++                 | None | Some T.RShared -> None)
+                (List.mapi (fun i r -> (i, r)) def.llbc_generics.regions)
+            in
+            if positions = [] then []
+diff --git a/interp/Interp.ml b/interp/Interp.ml
+index 6b6f110c..4223e70d 100644
+--- a/interp/Interp.ml
++++ b/interp/Interp.ml
+@@ -316,6 +316,9 @@ let initialize_symbolic_context_for_fun (ctx : decls_ctx)
+   let input_svs =
+     List.map (fun ty -> mk_fresh_symbolic_value span ctx ty) inst_sg.inputs
+   in
++  let ctx =
++    List.fold_left (register_static_symbolic_value span) ctx input_svs
++  in
+   (* Initialize the abstractions as empty (i.e., with no avalues) abstractions *)
+   let call_id = ctx.fresh_fun_call_id () in
+   [%sanity_check] span (call_id = FunCallId.zero);
+@@ -325,7 +328,8 @@ let initialize_symbolic_context_for_fun (ctx : decls_ctx)
+     let avalues =
+       List.map
+         (fun (sv : symbolic_value) ->
+-          mk_aproj_loans_value_from_symbolic_value abs.regions.owned sv sv.sv_ty)
++          mk_aproj_loans_value_from_symbolic_value ctx.type_ctx.type_infos
++            abs.regions.owned sv sv.sv_ty)
+         input_svs
+     in
+     (* The continuation expression *)
+diff --git a/interp/InterpAbs.ml b/interp/InterpAbs.ml
+index 184c563e..5a180670 100644
+--- a/interp/InterpAbs.ml
++++ b/interp/InterpAbs.ml
+@@ -73,7 +73,7 @@ let convert_value_to_abstractions (span : Meta.span) (abs_kind : abs_kind)
+           kind = abs_kind;
+           can_end;
+           parents = AbsId.Set.empty;
+-          regions = { owned = RegionId.Set.singleton r_id };
++          regions = { owned = BorrowRegionSet.singleton (VariableRegion r_id) };
+           ended_subabs = AbsLevelSet.empty;
+           avalues;
+           cont = Some { output = Some output; input = Some input };
+@@ -189,7 +189,7 @@ let convert_value_to_abstractions (span : Meta.span) (abs_kind : abs_kind)
+         let rid = ctx.fresh_region_id () in
+         let avl, input = to_inputs rid v in
+         (* Create a let-binding to ignore the input *)
+-        let rids = RegionId.Set.singleton rid in
++        let rids = BorrowRegionSet.singleton (VariableRegion rid) in
+         let input : tevalue =
+           let value =
+             ELet
+@@ -238,14 +238,14 @@ let convert_value_to_abstractions (span : Meta.span) (abs_kind : abs_kind)
+   List.rev !absl
+
+ let convert_value_to_output_avalues (span : Meta.span) (ctx : eval_ctx)
+-    (pm : proj_marker) (v : tvalue) (regions : RegionId.Set.t) (proj_ty : ty) :
+-    tavalue list * tevalue =
++    (pm : proj_marker) (v : tvalue) (regions : borrow_region_set) (proj_ty : ty)
++    : tavalue list * tevalue =
+   [%ltrace tvalue_to_string ctx v];
+
+   let keep_region (r : region) =
+     match r with
+-    | RVar (Free rid) -> RegionId.Set.mem rid regions
+-    | _ -> false
++    | RStatic | RVar (Free _) -> region_in_set r regions
++    | RVar (Bound _) | RErased | RBody _ -> false
+   in
+
+   (* We only call this on values inside mutable borrows *)
+@@ -899,7 +899,8 @@ let merge_abstractions_merge_loan_borrow_pairs (span : Meta.span)
+     ]} *)
+ let merge_abstractions_merge_markers (span : Meta.span)
+     (merge_funs : merge_duplicates_funcs) (ctx : eval_ctx)
+-    (owned_regions : RegionId.Set.t) (avalues : tavalue list) : tavalue list =
++    (owned_regions : borrow_region_set) (avalues : tavalue list) : tavalue list
++    =
+   [%ltrace
+     "- avalues:\n"
+     ^ String.concat ", " (List.map (tavalue_to_string ctx) avalues)];
+@@ -1322,12 +1323,13 @@ let bound_inputs_outputs_update_input_symbolic (span : Meta.span)
+     might have replaced some loans with free variables, in case the output of
+     the corresponding borrows were bound elsewhere). *)
+ let bind_outputs_from_output_input (span : Meta.span) (ctx : eval_ctx)
+-    (regions : RegionId.Set.t) (bound : bound_inputs_outputs ref)
++    (regions : borrow_region_set) (bound : bound_inputs_outputs ref)
+     (output : tevalue) (input : tevalue) : tepat * tevalue =
+   (* Update the input value by substituting expressions (such as a mutable loan)
+      whose input have been bound earlier (because we bound an abstraction continuation
+      earlier which has a mutable borrow corresponding to this mutable loan) *)
+-  let rec update_input (regions : RegionId.Set.t) (input : tevalue) : tevalue =
++  let rec update_input (regions : borrow_region_set) (input : tevalue) : tevalue
++      =
+     match input.value with
+     | ELet (regions', pat, bvalue, next) ->
+         (* Explore the bound expression *)
+@@ -1416,7 +1418,7 @@ let bind_outputs_from_output_input (span : Meta.span) (ctx : eval_ctx)
+         { input with value = EMutBorrowInput (update_input regions x) }
+     | EValue _ | EIgnored _ -> input
+   in
+-  let rec bind_output (regions : RegionId.Set.t) (output : tevalue) : tepat =
++  let rec bind_output (regions : borrow_region_set) (output : tevalue) : tepat =
+     match output.value with
+     | ELet _ | EJoinMarkers _ | EBVar _ | EFVar _ | EApp _ | EMutBorrowInput _
+       ->
+@@ -1677,7 +1679,7 @@ let abs_cont_destructure_input_output_levels (span : Meta.span) (ctx : eval_ctx)
+       (output, input)
+
+ let abs_cont_bind_outputs (span : Meta.span) (ctx : eval_ctx)
+-    (regions : RegionId.Set.t) (bound : bound_inputs_outputs ref)
++    (regions : borrow_region_set) (bound : bound_inputs_outputs ref)
+     (cont : abs_cont) : tepat * tevalue =
+   match (cont.output, cont.input) with
+   | Some output, Some input ->
+@@ -1979,7 +1981,9 @@ let merge_abs_conts_aux (span : Meta.span) (ctx : eval_ctx) (abs0 : abs)
+   (* Create the let-bindings (this is the input expression) *)
+   let input = mk_let span abs0.regions.owned pat0 inputs0 output_input_expr in
+   let input = mk_let span abs1.regions.owned pat1 inputs1 input in
+-  let all_regions = RegionId.Set.union abs0.regions.owned abs1.regions.owned in
++  let all_regions =
++    BorrowRegionSet.union abs0.regions.owned abs1.regions.owned
++  in
+   let input = mk_let span all_regions input_pat input_input input in
+
+   (* Sanity check: no free variables in the expressions *)
+@@ -2040,7 +2044,7 @@ let merge_abstractions (span : Meta.span) (abs_kind : abs_kind)
+       (AbsId.Set.of_list [ abs0.abs_id; abs1.abs_id ])
+   in
+   let regions =
+-    let owned = RegionId.Set.union abs0.regions.owned abs1.regions.owned in
++    let owned = BorrowRegionSet.union abs0.regions.owned abs1.regions.owned in
+     { owned }
+   in
+
+@@ -2206,7 +2210,7 @@ let merge_into_first_abstraction (span : Meta.span) (abs_kind : abs_kind)
+      is not the case if there are no nested borrows, but we anticipate).
+   *)
+   let ctx =
+-    let regions = nabs.regions.owned in
++    let regions = BorrowRegionSet.require_variable_ids nabs.regions.owned in
+     (* Pick the first region id (this is the smallest) *)
+     let rid = RegionId.Set.min_elt regions in
+     (* If there is only one region, do nothing *)
+diff --git a/interp/InterpAbs.mli b/interp/InterpAbs.mli
+index 61edc751..2a9bb551 100644
+--- a/interp/InterpAbs.mli
++++ b/interp/InterpAbs.mli
+@@ -37,7 +37,7 @@ val convert_value_to_output_avalues :
+   eval_ctx ->
+   proj_marker ->
+   tvalue ->
+-  RegionId.Set.t ->
++  borrow_region_set ->
+   ty ->
+   tavalue list * tevalue
+
+diff --git a/interp/InterpBorrows.ml b/interp/InterpBorrows.ml
+index f3dcde14..7d3bd7a4 100644
+--- a/interp/InterpBorrows.ml
++++ b/interp/InterpBorrows.ml
+@@ -457,8 +457,8 @@ let give_back_value (span : Meta.span) (bid : BorrowId.id) (nv : tvalue)
+                   (* The loan projector *)
+                   let _, ty, _ = ty_as_ref ty in
+                   let given_back =
+-                    mk_aproj_loans_value_from_symbolic_value abs.regions.owned
+-                      sv ty
++                    mk_aproj_loans_value_from_symbolic_value
++                      ctx.type_ctx.type_infos abs.regions.owned sv ty
+                   in
+                   (* Continue giving back in the child value *)
+                   let child = super#visit_tavalue opt_abs child in
+@@ -741,7 +741,9 @@ let end_aproj_borrows (span : Meta.span) (ended_regions : RegionId.Set.t)
+   in
+   update_intersecting_aproj_borrows span ~fail_if_unchanged:true
+     ~include_owned:true ~include_outlive:true ~update_shared:None ~update_mut
+-    ~update_emut ended_regions proj ctx
++    ~update_emut
++    (BorrowRegionSet.of_ids ended_regions)
++    proj ctx
+
+ (** Give back a *modified* symbolic value. *)
+ let give_back_symbolic_value (_config : config) (span : Meta.span)
+@@ -821,8 +823,9 @@ let give_back_symbolic_value (_config : config) (span : Meta.span)
+       EProjLoans { aproj with borrows = (consumed, borrow) :: aproj.borrows }
+   in
+   update_intersecting_aproj_loans span ~fail_if_unchanged:true
+-    ~include_owned:true ~include_outlive:true ended_regions proj subst esubst
+-    ctx
++    ~include_owned:true ~include_outlive:true
++    (BorrowRegionSet.of_ids ended_regions)
++    proj subst esubst ctx
+
+ (** Convert an {!type:avalue} to a {!type:value}.
+
+@@ -1242,7 +1245,8 @@ and end_abs_aux (config : config) (span : Meta.span) ~(snapshots : bool)
+          changes... *)
+       let ctx =
+         let ended_regions =
+-          RegionId.Set.union ctx.ended_regions abs.regions.owned
++          RegionId.Set.union ctx.ended_regions
++            (BorrowRegionSet.require_variable_ids abs.regions.owned)
+         in
+         { ctx with ended_regions }
+       in
+@@ -1496,11 +1500,13 @@ and end_abs_borrows (config : config) (span : Meta.span) ~(snapshots : bool)
+       (* Generate a fresh symbolic value *)
+       let nsv = mk_fresh_symbolic_value span ctx aproj.proj.proj_ty in
+       (* Replace the proj_borrows - there should be exactly one *)
+-      let ctx = end_aproj_borrows span abs.regions.owned aproj.proj nsv ctx in
++      let ended_regions =
++        BorrowRegionSet.require_variable_ids abs.regions.owned
++      in
++      let ctx = end_aproj_borrows span ended_regions aproj.proj nsv ctx in
+       (* Give back the symbolic value *)
+       let ctx =
+-        give_back_symbolic_value config span abs.regions.owned aproj.proj nsv
+-          ctx
++        give_back_symbolic_value config span ended_regions aproj.proj nsv ctx
+       in
+       (* Reexplore *)
+       end_abs_borrows config span ~snapshots chain abs_id level ctx
+@@ -1579,12 +1585,12 @@ and end_abs_synthesize (_config : config) (span : Meta.span) (abs_id : AbsId.id)
+     actually doesn't exist anymore when we get here. *)
+ and end_proj_loans_symbolic (config : config) (span : Meta.span)
+     ~(snapshots : bool) (chain : borrow_loan_abs_ids) (abs_id : AbsId.id)
+-    (level : abs_level) (regions : RegionId.Set.t) (proj : symbolic_proj) :
++    (level : abs_level) (regions : borrow_region_set) (proj : symbolic_proj) :
+     cm_fun =
+  fun ctx ->
+   [%ltrace
+     "- abs_id: " ^ AbsId.to_string abs_id ^ "\n- regions: "
+-    ^ RegionId.Set.to_string None regions
++    ^ BorrowRegionSet.to_string None regions
+     ^ "\n- sv: "
+     ^ symbolic_value_id_to_pretty_string proj.sv_id
+     ^ "\n- projection type: "
+@@ -2142,8 +2148,11 @@ let destructure_abs (span : Meta.span) (abs_kind : abs_kind) ~(can_end : bool)
+                    have the type `& ...` - TODO: this is annoying and not very clean... *)
+                 let ty =
+                   (* Take the first region of the abstraction - this doesn't really matter *)
+-                  let r = RegionId.Set.min_elt abs0.regions.owned in
+-                  TRef (RVar (Free r), ty, RShared)
++                  let r =
++                    borrow_region_to_region
++                      (BorrowRegionSet.min_elt abs0.regions.owned)
++                  in
++                  TRef (r, ty, RShared)
+                 in
+                 { value; ty }
+               in
+diff --git a/interp/InterpBorrowsCore.ml b/interp/InterpBorrowsCore.ml
+index c4a7ab22..53162a0a 100644
+--- a/interp/InterpBorrowsCore.ml
++++ b/interp/InterpBorrowsCore.ml
+@@ -493,8 +493,8 @@ let rec compare_rtys ?(allow_erased = false) (span : Meta.span) (ctx : eval_ctx)
+     that the two abstractions have different views (in terms of regions) of the
+     symbolic value (hence the two region types). *)
+ let projections_intersect (span : Meta.span) (ctx : eval_ctx)
+-    ?(allow_erased = false) (rset1 : RegionId.Set.t) (ty1 : rty)
+-    (rset2 : RegionId.Set.t) (ty2 : rty) : bool =
++    ?(allow_erased = false) (rset1 : borrow_region_set) (ty1 : rty)
++    (rset2 : borrow_region_set) (ty2 : rty) : bool =
+   let default = false in
+   let combine b1 b2 = b1 || b2 in
+   let compare_regions r1 r2 =
+@@ -508,8 +508,8 @@ let projections_intersect (span : Meta.span) (ctx : eval_ctx)
+     The regions in the types shouldn't be erased (this function will raise an
+     exception otherwise). *)
+ let projection_contains ?(allow_erased = false) (span : Meta.span)
+-    (ctx : eval_ctx) (rset1 : RegionId.Set.t) (ty1 : rty)
+-    (rset2 : RegionId.Set.t) (ty2 : rty) : bool =
++    (ctx : eval_ctx) (rset1 : borrow_region_set) (ty1 : rty)
++    (rset2 : borrow_region_set) (ty2 : rty) : bool =
+   let default = true in
+   let combine b1 b2 = b1 && b2 in
+   let compare_regions r1 r2 =
+@@ -1105,8 +1105,8 @@ let get_first_outer_loan_or_borrow_in_value (with_borrows : bool) (v : tvalue) :
+   | FoundBorrowContent bc -> Some (BorrowContent bc)
+
+ let proj_borrows_intersects_proj_loans (span : Meta.span) (ctx : eval_ctx)
+-    (proj_borrows : RegionId.Set.t * symbolic_value_id * rty)
+-    (proj_loans : RegionId.Set.t * symbolic_value_id * rty) : bool =
++    (proj_borrows : borrow_region_set * symbolic_value_id * rty)
++    (proj_loans : borrow_region_set * symbolic_value_id * rty) : bool =
+   let b_regions, b_sv_id, b_ty = proj_borrows in
+   let l_regions, l_sv_id, l_ty = proj_loans in
+   if b_sv_id = l_sv_id then
+@@ -1130,7 +1130,7 @@ type looked_up_aproj_borrows = {
+
+     This is a helper function. *)
+ let lookup_intersecting_aproj_borrows_opt (span : Meta.span)
+-    (lookup_shared : bool) (regions : RegionId.Set.t) (proj : symbolic_proj)
++    (lookup_shared : bool) (regions : borrow_region_set) (proj : symbolic_proj)
+     (ctx : eval_ctx) : looked_up_aproj_borrows option =
+   let shared_projs = ref [] in
+   let non_shared_projs = ref [] in
+@@ -1215,7 +1215,7 @@ let update_intersecting_aproj_borrows (span : Meta.span)
+        option)
+     ~(update_mut : owned:bool -> outlive:bool -> abs -> aproj_borrows -> aproj)
+     ~(update_emut : owned:bool -> outlive:bool -> abs -> eproj_borrows -> eproj)
+-    (proj_regions : RegionId.Set.t) (proj : symbolic_proj) (ctx : eval_ctx) :
++    (proj_regions : borrow_region_set) (proj : symbolic_proj) (ctx : eval_ctx) :
+     eval_ctx =
+   (* Small helpers for sanity checks *)
+   let shared = ref None in
+@@ -1243,7 +1243,7 @@ let update_intersecting_aproj_borrows (span : Meta.span)
+         ^ "\n- proj.proj_ty: "
+         ^ ty_to_string ctx proj.proj_ty
+         ^ "\n- proj'_ty: " ^ ty_to_string ctx proj'_ty ^ "\n- owned regions: "
+-        ^ RegionId.Set.to_string None abs.regions.owned];
++        ^ BorrowRegionSet.to_string None abs.regions.owned];
+
+       (* We used to check that if the projectors use the same symbolic id then:
+          1. either the projections intersect
+@@ -1353,11 +1353,12 @@ let update_intersecting_aproj_borrows (span : Meta.span)
+
+     This is a helper function: it might break invariants. *)
+ let remove_intersecting_aproj_borrows_shared (span : Meta.span)
+-    ~(include_owned : bool) ~(include_outlive : bool) (regions : RegionId.Set.t)
+-    (proj : symbolic_proj) (ctx : eval_ctx) : eval_ctx =
++    ~(include_owned : bool) ~(include_outlive : bool)
++    (regions : borrow_region_set) (proj : symbolic_proj) (ctx : eval_ctx) :
++    eval_ctx =
+   [%ltrace
+     "- regions: "
+-    ^ RegionId.Set.to_string None regions
++    ^ BorrowRegionSet.to_string None regions
+     ^ "\n- proj: "
+     ^ symbolic_proj_to_string ctx proj
+     ^ "\n- ctx:\n" ^ eval_ctx_to_string ctx];
+@@ -1411,7 +1412,7 @@ let remove_intersecting_aproj_borrows_shared (span : Meta.span)
+ *)
+ let update_intersecting_aproj_loans (span : Meta.span)
+     ~(fail_if_unchanged : bool) ~(include_owned : bool)
+-    ~(include_outlive : bool) (proj_regions : RegionId.Set.t)
++    ~(include_outlive : bool) (proj_regions : borrow_region_set)
+     (proj : symbolic_proj)
+     (subst : owned:bool -> outlive:bool -> abs -> aproj_loans -> aproj)
+     (esubst : owned:bool -> outlive:bool -> abs -> eproj_loans -> eproj)
+@@ -2224,17 +2225,17 @@ let marked_norm_symb_proj_to_unmarked (m : marked_norm_symb_proj) :
+
+     For instance, when normalizing the projection type [S<'a, 'b>] for the
+     projection region ['a]. *)
+-let normalize_proj_ty (regions : RegionId.Set.t) (ty : rty) : rty =
++let normalize_proj_ty (regions : borrow_region_set) (ty : rty) : rty =
+   let visitor =
+     object
+       inherit [_] map_ty
+
+       method! visit_region _ r =
+         match r with
+-        | RVar (Free r) ->
+-            if RegionId.Set.mem r regions then RVar (Free (RegionId.of_int 0))
++        | RStatic | RVar (Free _) ->
++            if region_in_set r regions then RVar (Free RegionId.zero)
+             else RErased
+-        | RVar (Bound _) | RStatic | RErased -> r
++        | RVar (Bound _) | RErased -> r
+         | RBody _ -> [%craise_opt_span] None "unsupported: Body region"
+     end
+   in
+@@ -2382,12 +2383,12 @@ and norm_proj_const_generics_union (span : Meta.span) (cg1 : constant_expr)
+   cg1
+
+ let norm_proj_ty_contains span ctx (ty1 : rty) (ty2 : rty) : bool =
+-  let set = RegionId.Set.singleton RegionId.zero in
++  let set = BorrowRegionSet.singleton (VariableRegion RegionId.zero) in
+   projection_contains span ~allow_erased:true ctx set ty1 set ty2
+
+ let norm_proj_tys_intersect span ctx (ty1 : norm_proj_ty) (ty2 : norm_proj_ty) :
+     bool =
+-  let rset = RegionId.Set.singleton RegionId.zero in
++  let rset = BorrowRegionSet.singleton (VariableRegion RegionId.zero) in
+   projections_intersect ~allow_erased:true span ctx rset ty1 rset ty2
+
+ (** Refresh the live region ids appearing in a type, and return the new type
+@@ -2433,8 +2434,8 @@ let update_endable (ctx : eval_ctx) (abs_ids : abs_id list) ~(can_end : bool) :
+   in
+   { ctx with env = List.map update ctx.env }
+
+-let normalize_symbolic_proj (regions : RegionId.Set.t) (proj : symbolic_proj) :
+-    norm_symb_proj =
++let normalize_symbolic_proj (regions : borrow_region_set) (proj : symbolic_proj)
++    : norm_symb_proj =
+   let { sv_id; proj_ty } : symbolic_proj = proj in
+   let norm_proj_ty = normalize_proj_ty regions proj_ty in
+   { sv_id; norm_proj_ty }
+diff --git a/interp/InterpExpansion.ml b/interp/InterpExpansion.ml
+index 249c8a72..ee95a7b9 100644
+--- a/interp/InterpExpansion.ml
++++ b/interp/InterpExpansion.ml
+@@ -497,7 +497,8 @@ let expand_symbolic_value_borrow (span : Meta.span)
+  fun ctx ->
+   [%sanity_check] span (region <> RErased);
+   (* Check that we are allowed to expand the reference *)
+-  [%sanity_check] span (not (region_in_set region ctx.ended_regions));
++  [%sanity_check] span
++    (not (region_in_set region (BorrowRegionSet.of_ids ctx.ended_regions)));
+   (* Match on the reference kind *)
+   match rkind with
+   | RMut ->
+diff --git a/interp/InterpExpressions.ml b/interp/InterpExpressions.ml
+index 224c4080..99bad4ba 100644
+--- a/interp/InterpExpressions.ml
++++ b/interp/InterpExpressions.ml
+@@ -241,7 +241,7 @@ let rec copy_value (span : Meta.span) (allow_adt_copy : bool) (config : config)
+         let abs =
+           List.map
+             (fun rid ->
+-              let owned = RegionId.Set.singleton rid in
++              let owned = BorrowRegionSet.singleton (VariableRegion rid) in
+
+               (* Create the continuation, for the translation *)
+               let abs_cont : abs_cont =
+@@ -288,6 +288,8 @@ let rec copy_value (span : Meta.span) (allow_adt_copy : bool) (config : config)
+         in
+         let abs = List.map (fun a -> EAbs a) (List.rev abs) in
+         let ctx = { ctx with env = abs @ ctx.env } in
++        let ctx = register_static_symbolic_value span ctx updated_sv in
++        let ctx = register_static_symbolic_value span ctx copied_sv in
+         (* Create the continuation: we need to introduce intermediate let-bindings *)
+         let cf e =
+           let mk sv e =
+@@ -891,7 +893,8 @@ let eval_unary_op_symbolic (config : config) (span : Meta.span) (unop : unop)
+               kind = CopySymbolicValue;
+               can_end = true;
+               parents = AbsId.Set.empty;
+-              regions = { owned = RegionId.Set.singleton rid };
++              regions =
++                { owned = BorrowRegionSet.singleton (VariableRegion rid) };
+               ended_subabs = AbsLevelSet.empty;
+               avalues = borrows @ [ loan ];
+               cont =
+diff --git a/interp/InterpJoin.ml b/interp/InterpJoin.ml
+index 1ade80d0..9fe98fe7 100644
+--- a/interp/InterpJoin.ml
++++ b/interp/InterpJoin.ml
+@@ -112,7 +112,9 @@ let reborrow_ashared_loans (span : Meta.span) (loop_id : LoopId.id option)
+
+     (* Prepare the shared value *)
+     let nsv =
+-      mk_value_with_fresh_sids_no_shared_loans abs.regions.owned nrid sv
++      mk_value_with_fresh_sids_no_shared_loans
++        (BorrowRegionSet.require_variable_ids abs.regions.owned)
++        nrid sv
+     in
+
+     (* Introduce the new abstraction for the shared values.
+@@ -153,7 +155,9 @@ let reborrow_ashared_loans (span : Meta.span) (loop_id : LoopId.id option)
+       | None -> Identity
+     in
+     let can_end = true in
+-    let regions : abs_regions = { owned = RegionId.Set.singleton nrid } in
++    let regions : abs_regions =
++      { owned = BorrowRegionSet.singleton (VariableRegion nrid) }
++    in
+     let cont : abs_cont option =
+       if with_abs_conts then
+         Some
+@@ -348,14 +352,16 @@ let reborrow_symbolic_borrows (span : Meta.span) (loop_id : LoopId.id option)
+         | None -> WithCont
+       in
+       let can_end = true in
+-      let regions : abs_regions = { owned = RegionId.Set.singleton nrid } in
++      let regions : abs_regions =
++        { owned = BorrowRegionSet.singleton (VariableRegion nrid) }
++      in
+       let cont : abs_cont option =
+         if with_abs_conts then
+           (* Create the symbolic borrow. We introduce borrows/loans only if the
+              region projects *mutable* borrows/loans. *)
+           if
+             ty_has_mut_borrow_for_region_in_set ctx.type_ctx.type_infos
+-              (RegionId.Set.singleton nrid)
++              (BorrowRegionSet.singleton (VariableRegion nrid))
+               rty
+           then
+             let borrow : tevalue =
+@@ -1259,7 +1265,10 @@ let destructure_shared_loans (span : Meta.span) (fixed_aids : AbsId.Set.t) :
+                    (TypesUtils.ty_has_borrows (Some span)
+                       ctx.type_ctx.type_infos ty))
+                 "Not implemented";
+-              let rid = RegionId.Set.choose abs.regions.owned in
++              let rid =
++                RegionId.Set.choose
++                  (BorrowRegionSet.require_variable_ids abs.regions.owned)
++              in
+               let ref_ty = TRef (RVar (Free rid), ty, RShared) in
+               let child = ValuesUtils.mk_aignored span ty None in
+               let av = ALoan (ASharedLoan (PNone, lid, copy_value sv, child)) in
+diff --git a/interp/InterpMatchCtxs.ml b/interp/InterpMatchCtxs.ml
+index 4f087307..2ab05c68 100644
+--- a/interp/InterpMatchCtxs.ml
++++ b/interp/InterpMatchCtxs.ml
+@@ -663,7 +663,7 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
+
+     (* Project the ADTs into different region abstractions *)
+     let project (rid : RegionId.id) =
+-      let regions = RegionId.Set.singleton rid in
++      let regions = BorrowRegionSet.singleton (VariableRegion rid) in
+       let avl0, output0 =
+         convert_value_to_output_avalues span ctx0 PLeft v0 regions
+           ty_with_regions
+@@ -743,7 +743,7 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
+           kind = S.fresh_abs_kind;
+           can_end = true;
+           parents = AbsId.Set.empty;
+-          regions = { owned = RegionId.Set.singleton rid };
++          regions = { owned = BorrowRegionSet.singleton (VariableRegion rid) };
+           ended_subabs = AbsLevelSet.empty;
+           avalues = avl0 @ avl1 @ [ av ];
+           cont;
+@@ -818,7 +818,10 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
+           let absl =
+             List.map
+               (fun (abs : abs) ->
+-                let rid = RegionId.Set.choose abs.regions.owned in
++                let rid =
++                  RegionId.Set.choose
++                    (BorrowRegionSet.require_variable_ids abs.regions.owned)
++                in
+                 let sb : tavalue =
+                   {
+                     value =
+@@ -890,7 +893,7 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
+             kind = S.fresh_abs_kind;
+             can_end = true;
+             parents = AbsId.Set.empty;
+-            regions = { owned = RegionId.Set.singleton rid };
++            regions = { owned = BorrowRegionSet.singleton (VariableRegion rid) };
+             ended_subabs = AbsLevelSet.empty;
+             avalues = av :: (avl0 @ avl1);
+             cont;
+@@ -938,7 +941,8 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
+               kind = S.fresh_abs_kind;
+               can_end = true;
+               parents = AbsId.Set.empty;
+-              regions = { owned = RegionId.Set.singleton rid };
++              regions =
++                { owned = BorrowRegionSet.singleton (VariableRegion rid) };
+               ended_subabs = AbsLevelSet.empty;
+               avalues = av :: (avl0 @ avl1);
+               cont;
+@@ -1029,7 +1033,7 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
+           kind = S.fresh_abs_kind;
+           can_end = true;
+           parents = AbsId.Set.empty;
+-          regions = { owned = RegionId.Set.singleton rid };
++          regions = { owned = BorrowRegionSet.singleton (VariableRegion rid) };
+           ended_subabs = AbsLevelSet.empty;
+           avalues;
+           cont;
+@@ -1095,7 +1099,7 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
+            input := let x = ML bid2 in (x, x)
+          ]}
+       *)
+-      let owned = RegionId.Set.singleton rid in
++      let owned = BorrowRegionSet.singleton (VariableRegion rid) in
+       let cont : abs_cont option =
+         if S.with_abs_conts then
+           let input : tevalue =
+@@ -1195,7 +1199,7 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
+         [ borrow_av; mk_loan_av PLeft id0; mk_loan_av PRight id1 ]
+       in
+
+-      let owned = RegionId.Set.singleton rid in
++      let owned = BorrowRegionSet.singleton (VariableRegion rid) in
+       let cont : abs_cont option =
+         if S.with_abs_conts then
+           Some
+@@ -1260,7 +1264,7 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
+         [ borrow_av; mk_loan_av PLeft id0; mk_loan_av PRight id1 ]
+       in
+
+-      let owned = RegionId.Set.singleton rid in
++      let owned = BorrowRegionSet.singleton (VariableRegion rid) in
+       let cont : abs_cont option =
+         if S.with_abs_conts then
+           let input : tevalue =
+@@ -1373,7 +1377,7 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
+         let avalues = [ proj_s0; proj_s1; proj_svj ] in
+         List.iter
+           (fun rid ->
+-            let owned = RegionId.Set.singleton rid in
++            let owned = BorrowRegionSet.singleton (VariableRegion rid) in
+             (* The abstraction expression continuation *)
+             let cont : abs_cont option =
+               if S.with_abs_conts then
+@@ -1536,7 +1540,7 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
+
+     let avalues = [ borrow_av; loan_av ] in
+
+-    let owned = RegionId.Set.singleton rid in
++    let owned = BorrowRegionSet.singleton (VariableRegion rid) in
+     let cont : abs_cont option =
+       if S.with_abs_conts then
+         Some
+@@ -1618,7 +1622,7 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
+
+     let avalues = [ borrow_av; loan_av ] @ other_avl in
+
+-    let owned = RegionId.Set.singleton rid in
++    let owned = BorrowRegionSet.singleton (VariableRegion rid) in
+     let cont : abs_cont option =
+       if S.with_abs_conts then
+         let input : tevalue =
+@@ -2345,7 +2349,15 @@ let match_ctxs (span : Meta.span) ~(check_equiv : bool)
+     if check_can_end && can_end0 <> can_end1 then
+       raise_distinct "match_abstractions: can_end";
+     let _ = match_aids parents0 parents1 in
+-    let _ = match_rids regions0 regions1 in
++    if
++      BorrowRegionSet.mem StaticRegion regions0
++      <> BorrowRegionSet.mem StaticRegion regions1
++    then raise_distinct "match_abstractions: static ownership";
++    let _ =
++      match_rids
++        (BorrowRegionSet.variable_ids regions0)
++        (BorrowRegionSet.variable_ids regions1)
++    in
+
+     if not (AbsLevelSet.equal ended_subabs0 ended_subabs1) then
+       raise_distinct
+diff --git a/interp/InterpProjectors.ml b/interp/InterpProjectors.ml
+index 4618f61b..837f7ed5 100644
+--- a/interp/InterpProjectors.ml
++++ b/interp/InterpProjectors.ml
+@@ -12,13 +12,13 @@ let log = Logging.projectors_log
+
+ (** [ty] shouldn't contain erased regions *)
+ let rec apply_proj_borrows_on_shared_borrow (span : Meta.span) (ctx : eval_ctx)
+-    (regions : RegionId.Set.t) (v : tvalue) (ty : ty) : abstract_shared_borrows
+-    =
++    (regions : borrow_region_set) (v : tvalue) (ty : ty) :
++    abstract_shared_borrows =
+   [%ldebug
+     "- ty: " ^ ty_to_string ctx ty ^ "\n- v.ty: " ^ ty_to_string ctx v.ty];
+   (* Sanity check - TODO: move those elsewhere (here we perform the check at every
+    * recursive call which is a bit overkill...) *)
+-  let ety = Subst.erase_regions ty in
++  let ety = ty_erase_regions ty in
+   [%sanity_check] span (ty_is_rty ty && ety = erase_regions v.ty);
+   (* Project - if there are no regions from the abstraction in the type, return [_] *)
+   if not (ty_has_regions_in_set regions ty) then []
+@@ -89,8 +89,9 @@ let rec apply_proj_borrows_on_shared_borrow (span : Meta.span) (ctx : eval_ctx)
+         (* Check that the projection doesn't contain ended regions *)
+         [%sanity_check] span
+           (not
+-             (projections_intersect span ctx ctx.ended_regions s.sv_ty regions
+-                ty));
++             (projections_intersect span ctx
++                (BorrowRegionSet.of_ids ctx.ended_regions)
++                s.sv_ty regions ty));
+         (* Like a concrete value with borrow-free fields, a symbolic value
+            with no stored borrows has nothing to reborrow. Type-level regions
+            alone (for instance in PhantomData) do not create runtime loans. *)
+@@ -105,11 +106,11 @@ let rec apply_proj_borrows_on_shared_borrow (span : Meta.span) (ctx : eval_ctx)
+     | _ -> [%craise] span ("Unexpected value: " ^ tvalue_to_string ctx v)
+
+ let rec apply_proj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
+-    (ctx : eval_ctx) (regions : RegionId.Set.t) (v : tvalue) (ty : rty) :
++    (ctx : eval_ctx) (regions : borrow_region_set) (v : tvalue) (ty : rty) :
+     tavalue =
+   (* Sanity check - TODO: move this elsewhere (here we perform the check at every
+    * recursive call which is a bit overkill...) *)
+-  let ety = Substitute.erase_regions ty in
++  let ety = ty_erase_regions ty in
+   [%sanity_check] span (ty_is_rty ty && ety = v.ty);
+   (* Project - if there are no regions from the abstraction in the type, return [_] *)
+   if not (ty_has_regions_in_set regions ty) then
+@@ -240,10 +241,13 @@ let rec apply_proj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
+               "- ty1: " ^ ty_to_string ctx ty1 ^ "\n- rset1: "
+               ^ RegionId.Set.to_string None rset1
+               ^ "\n- ty2: " ^ ty_to_string ctx ty2 ^ "\n- rset2: "
+-              ^ RegionId.Set.to_string None rset2
++              ^ BorrowRegionSet.to_string None rset2
+               ^ "\n"];
+             [%sanity_check] span
+-              (not (projections_intersect span ctx rset1 ty1 rset2 ty2)));
++              (not
++                 (projections_intersect span ctx
++                    (BorrowRegionSet.of_ids rset1)
++                    ty1 rset2 ty2)));
+           ASymbolic
+             ( PNone,
+               AProjBorrows
+@@ -258,11 +262,11 @@ let rec apply_proj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
+     { value; ty }
+
+ let rec apply_eproj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
+-    (ctx : eval_ctx) (regions : RegionId.Set.t) (v : tvalue) (ty : rty) :
++    (ctx : eval_ctx) (regions : borrow_region_set) (v : tvalue) (ty : rty) :
+     tevalue =
+   (* Sanity check - TODO: move this elsewhere (here we perform the check at every
+    * recursive call which is a bit overkill...) *)
+-  let ety = Substitute.erase_regions ty in
++  let ety = ty_erase_regions ty in
+   [%sanity_check] span (ty_is_rty ty && ety = v.ty);
+   (* Project - if there are no regions from the abstraction in the type, return [_] *)
+   if not (ty_has_regions_in_set regions ty) then
+@@ -368,10 +372,13 @@ let rec apply_eproj_borrows (span : Meta.span) (check_symbolic_no_ended : bool)
+               "- ty1: " ^ ty_to_string ctx ty1 ^ "\n- rset1: "
+               ^ RegionId.Set.to_string None rset1
+               ^ "\n- ty2: " ^ ty_to_string ctx ty2 ^ "\n- rset2: "
+-              ^ RegionId.Set.to_string None rset2
++              ^ BorrowRegionSet.to_string None rset2
+               ^ "\n"];
+             [%sanity_check] span
+-              (not (projections_intersect span ctx rset1 ty1 rset2 ty2)));
++              (not
++                 (projections_intersect span ctx
++                    (BorrowRegionSet.of_ids rset1)
++                    ty1 rset2 ty2)));
+           (* Only introduce a projection if the value contains mutable
+              borrows which intersect the current regions *)
+           let type_infos = ctx.type_ctx.type_infos in
+@@ -422,11 +429,12 @@ let symbolic_expansion_non_shared_borrow_to_value (span : Meta.span)
+
+     TODO: detailed comments. See [apply_proj_borrows] *)
+ let apply_proj_loans_on_symbolic_expansion (span : Meta.span)
+-    (regions : RegionId.Set.t) (see : symbolic_expansion) (original_sv_ty : rty)
+-    (proj_ty : rty) (ctx : eval_ctx) : tavalue =
++    (regions : borrow_region_set) (see : symbolic_expansion)
++    (original_sv_ty : rty) (proj_ty : rty) (ctx : eval_ctx) : tavalue =
+   (* Sanity check: if we have a proj_loans over a symbolic value, it should
+    * contain regions which we will project *)
+-  [%sanity_check] span (ty_has_regions_in_set regions original_sv_ty);
++  [%sanity_check] span
++    (ty_has_projected_regions ctx.type_ctx.type_infos regions original_sv_ty);
+   (* Match *)
+   let (value, ty) : avalue * ty =
+     match (see, proj_ty) with
+@@ -440,7 +448,8 @@ let apply_proj_loans_on_symbolic_expansion (span : Meta.span)
+         in
+         let fields =
+           List.map2
+-            (mk_aproj_loans_value_from_symbolic_value regions)
++            (mk_aproj_loans_value_from_symbolic_value ctx.type_ctx.type_infos
++               regions)
+             fields field_types
+         in
+         (AAdt { borrow_proj = false; variant_id; fields }, original_sv_ty)
+@@ -449,7 +458,8 @@ let apply_proj_loans_on_symbolic_expansion (span : Meta.span)
+         [%sanity_check] span (spc.sv_ty = ref_ty);
+         (* Apply the projector to the borrowed value *)
+         let child_av =
+-          mk_aproj_loans_value_from_symbolic_value regions spc ref_ty
++          mk_aproj_loans_value_from_symbolic_value ctx.type_ctx.type_infos
++            regions spc ref_ty
+         in
+         (* Check if the region is in the set of projected regions (note that
+          * we never project over static regions) *)
+@@ -469,7 +479,8 @@ let apply_proj_loans_on_symbolic_expansion (span : Meta.span)
+         [%sanity_check] span (spc.sv_ty = ref_ty);
+         (* Apply the projector to the borrowed value *)
+         let child_av =
+-          mk_aproj_loans_value_from_symbolic_value regions spc ref_ty
++          mk_aproj_loans_value_from_symbolic_value ctx.type_ctx.type_infos
++            regions spc ref_ty
+         in
+         (* Check if the region is in the set of projected regions (note that
+          * we never project over static regions) *)
+@@ -485,11 +496,12 @@ let apply_proj_loans_on_symbolic_expansion (span : Meta.span)
+   { value; ty }
+
+ let apply_eproj_loans_on_symbolic_expansion (span : Meta.span)
+-    (regions : RegionId.Set.t) (see : symbolic_expansion) (original_sv_ty : rty)
+-    (proj_ty : rty) (ctx : eval_ctx) : tevalue =
++    (regions : borrow_region_set) (see : symbolic_expansion)
++    (original_sv_ty : rty) (proj_ty : rty) (ctx : eval_ctx) : tevalue =
+   (* Sanity check: if we have a proj_loans over a symbolic value, it should
+    * contain regions which we will project *)
+-  [%sanity_check] span (ty_has_regions_in_set regions original_sv_ty);
++  [%sanity_check] span
++    (ty_has_projected_regions ctx.type_ctx.type_infos regions original_sv_ty);
+   let type_infos = ctx.type_ctx.type_infos in
+   (* Match *)
+   let (value, ty) : evalue * ty =
+@@ -538,14 +550,14 @@ let apply_eproj_loans_on_symbolic_expansion (span : Meta.span)
+
+ (** [ty] shouldn't have erased regions *)
+ let apply_proj_borrows_on_input_value (span : Meta.span) (ctx : eval_ctx)
+-    (regions : RegionId.Set.t) (v : tvalue) (ty : rty) : tavalue =
++    (regions : borrow_region_set) (v : tvalue) (ty : rty) : tavalue =
+   [%ltrace "- v: " ^ tvalue_to_string ctx v ^ "\n- ty: " ^ ty_to_string ctx ty];
+   [%sanity_check] span (ty_is_rty ty);
+   let check_symbolic_no_ended = true in
+   apply_proj_borrows span check_symbolic_no_ended ctx regions v ty
+
+ let apply_eproj_borrows_on_input_value (span : Meta.span) (ctx : eval_ctx)
+-    (regions : RegionId.Set.t) (v : tvalue) (ty : rty) : tevalue =
++    (regions : borrow_region_set) (v : tvalue) (ty : rty) : tevalue =
+   [%ltrace "- v: " ^ tvalue_to_string ctx v ^ "\n- ty: " ^ ty_to_string ctx ty];
+   [%sanity_check] span (ty_is_rty ty);
+   let check_symbolic_no_ended = true in
+diff --git a/interp/InterpProjectors.mli b/interp/InterpProjectors.mli
+index 7d3d262f..3a3d23f2 100644
+--- a/interp/InterpProjectors.mli
++++ b/interp/InterpProjectors.mli
+@@ -16,7 +16,7 @@ open Contexts
+     - [eval_ctx] *)
+ val apply_proj_loans_on_symbolic_expansion :
+   Meta.span ->
+-  RegionId.Set.t ->
++  borrow_region_set ->
+   symbolic_expansion ->
+   rty ->
+   rty ->
+@@ -27,7 +27,7 @@ val apply_proj_loans_on_symbolic_expansion :
+     abstraction expression *)
+ val apply_eproj_loans_on_symbolic_expansion :
+   Meta.span ->
+-  RegionId.Set.t ->
++  borrow_region_set ->
+   symbolic_expansion ->
+   rty ->
+   rty ->
+@@ -85,12 +85,12 @@ val symbolic_expansion_non_shared_borrow_to_value :
+     - [ty = Ref (r, ...)] then we interpret the borrow [l] as belonging to
+       region [r] *)
+ val apply_proj_borrows :
+-  Meta.span -> bool -> eval_ctx -> RegionId.Set.t -> tvalue -> rty -> tavalue
++  Meta.span -> bool -> eval_ctx -> borrow_region_set -> tvalue -> rty -> tavalue
+
+ (** Similar to [apply_proj_borrows] but evaluates to an abstraction expression
+ *)
+ val apply_eproj_borrows :
+-  Meta.span -> bool -> eval_ctx -> RegionId.Set.t -> tvalue -> rty -> tevalue
++  Meta.span -> bool -> eval_ctx -> borrow_region_set -> tvalue -> rty -> tevalue
+
+ (** Parameters:
+     - [config]
+@@ -103,9 +103,9 @@ val apply_eproj_borrows :
+     We use this function to project input values into region abstractions when
+     evaluating function calls. *)
+ val apply_proj_borrows_on_input_value :
+-  Meta.span -> eval_ctx -> RegionId.Set.t -> tvalue -> rty -> tavalue
++  Meta.span -> eval_ctx -> borrow_region_set -> tvalue -> rty -> tavalue
+
+ (** Similar to [apply_eproj_borrows_on_input_value] but evaluates to an
+     abstraction expression *)
+ val apply_eproj_borrows_on_input_value :
+-  Meta.span -> eval_ctx -> RegionId.Set.t -> tvalue -> rty -> tevalue
++  Meta.span -> eval_ctx -> borrow_region_set -> tvalue -> rty -> tevalue
+diff --git a/interp/InterpReduceCollapse.ml b/interp/InterpReduceCollapse.ml
+index b8a4c68c..8636b7cc 100644
+--- a/interp/InterpReduceCollapse.ml
++++ b/interp/InterpReduceCollapse.ml
+@@ -81,8 +81,8 @@ let get_non_marked_shared_loans span (ctx : eval_ctx) :
+             if pm = PNone then
+               let pred (r : region) =
+                 match r with
+-                | RVar (Free rid) -> RegionId.Set.mem rid env
+-                | _ -> false
++                | RStatic | RVar (Free _) -> region_in_set r env
++                | RVar (Bound _) | RErased | RBody _ -> false
+               in
+               if
+                 not
+@@ -97,12 +97,12 @@ let get_non_marked_shared_loans span (ctx : eval_ctx) :
+       method! visit_abs _ abs = super#visit_abs abs.regions.owned abs
+     end
+   in
+-  collect_loans#visit_eval_ctx RegionId.Set.empty ctx;
++  collect_loans#visit_eval_ctx BorrowRegionSet.empty ctx;
+   (!non_marked_loans, !non_marked_projs)
+
+ type borrow_or_proj =
+   | Borrow of borrow_id
+-  | Proj of RegionId.Set.t * symbolic_proj
++  | Proj of borrow_region_set * symbolic_proj
+
+ (** Attempts to eliminate remaining markers over shared borrows.
+
+@@ -169,12 +169,12 @@ let eliminate_shared_borrow_markers (span : Meta.span)
+           method! visit_abs _ abs = super#visit_abs abs.regions.owned abs
+         end
+       in
+-      update_borrows#visit_eval_ctx RegionId.Set.empty ctx
++      update_borrows#visit_eval_ctx BorrowRegionSet.empty ctx
+   | Some shared_borrows ->
+       (* We need to register the borrows out of which we eliminate the markers.
+          For now, we can't register the addition of shared borrows at arbitrary
+          positions. TODO: generalize. *)
+-      let update_avalue (regions : RegionId.Set.t) (offset : int ref)
++      let update_avalue (regions : borrow_region_set) (offset : int ref)
+           (aid : abs_id) (i : int) (av : tavalue) : tavalue =
+         match av.value with
+         | ABorrow (ASharedBorrow (pm, bid, sid)) ->
+@@ -234,7 +234,7 @@ let eliminate_shared_borrow_markers (span : Meta.span)
+             }
+         end
+       in
+-      update_borrows#visit_eval_ctx RegionId.Set.empty ctx
++      update_borrows#visit_eval_ctx BorrowRegionSet.empty ctx
+
+ (** Eliminate the markers of ended loans/borrows
+
+@@ -1335,7 +1335,10 @@ let add_shared_borrows (span : Meta.span)
+       ((abs_id, i, pm, borrow_or_proj, ty) :
+         abs_id * int * proj_marker * borrow_or_proj * ty) : unit =
+     let abs = ctx_lookup_abs !ctx abs_id in
+-    let rid = RegionId.Set.choose abs.regions.owned in
++    let rid =
++      RegionId.Set.choose
++        (BorrowRegionSet.require_variable_ids abs.regions.owned)
++    in
+     let r : region = RVar (Free rid) in
+     let rec update_avalues (i : int) (avl : tavalue list) : tavalue list =
+       if i = 0 then
+@@ -1359,7 +1362,9 @@ let add_shared_borrows (span : Meta.span)
+               let proj_ty =
+                 Substitute.ty_subst_rids span
+                   (fun rid' ->
+-                    if RegionId.Set.mem rid' regions' then rid else rid')
++                    if BorrowRegionSet.mem (VariableRegion rid') regions' then
++                      rid
++                    else rid')
+                   proj.proj_ty
+               in
+               let proj = { proj with proj_ty } in
+diff --git a/interp/InterpReduceCollapse.mli b/interp/InterpReduceCollapse.mli
+index 23fe0c5a..a71c1b81 100644
+--- a/interp/InterpReduceCollapse.mli
++++ b/interp/InterpReduceCollapse.mli
+@@ -60,7 +60,7 @@ val reduce_ctx :
+
+ type borrow_or_proj =
+   | Borrow of borrow_id
+-  | Proj of RegionId.Set.t * symbolic_proj
++  | Proj of borrow_region_set * symbolic_proj
+
+ (** Collapse an environment, merging the duplicated borrows/loans.
+
+diff --git a/interp/InterpStatements.ml b/interp/InterpStatements.ml
+index 5971fbc2..3932a241 100644
+--- a/interp/InterpStatements.ml
++++ b/interp/InterpStatements.ml
+@@ -389,7 +389,7 @@ let create_empty_abstractions_from_abs_region_groups
+    * - the regions of the ancestors of abs_id
+    * - the regions of abs_id
+    *)
+-  let abs_to_ancestors_regions : RegionId.Set.t AbsId.Map.t ref =
++  let abs_to_ancestors_regions : borrow_region_set AbsId.Map.t ref =
+     ref AbsId.Map.empty
+   in
+   (* Auxiliary function to create one abstraction *)
+@@ -401,11 +401,11 @@ let create_empty_abstractions_from_abs_region_groups
+         AbsId.Set.empty rg.parents
+     in
+     let regions =
+-      let owned = RegionId.Set.of_list rg.regions in
++      let owned = BorrowRegionSet.of_ids (RegionId.Set.of_list rg.regions) in
+       { owned }
+     in
+     let ancestors_regions_union_current_regions =
+-      RegionId.Set.union regions.owned regions.owned
++      BorrowRegionSet.union regions.owned regions.owned
+     in
+     let can_end = region_can_end rg_id in
+     abs_to_ancestors_regions :=
+@@ -609,7 +609,6 @@ let push_value_to_dummy_shared_loan span (ctx : eval_ctx) (v : tvalue) :
+     eval_ctx * tvalue =
+   let bid = ctx.fresh_borrow_id () in
+   let sid = ctx.fresh_shared_borrow_id () in
+-  let loan : tvalue = { value = VLoan (VSharedLoan (bid, v)); ty = v.ty } in
+   let borrow : tvalue =
+     {
+       value = VBorrow (VSharedBorrow (bid, sid));
+@@ -619,9 +618,7 @@ let push_value_to_dummy_shared_loan span (ctx : eval_ctx) (v : tvalue) :
+   (* We need to push the shared loan in a dummy variable.
+      Generally speaking we should not be allowed to put loans in dummy variables,
+      but in the case of static lifetimes it is ok. TODO: generalize. *)
+-  [%cassert] span (not !Config.use_static) "Unimplemented";
+-  let dummy_id = ctx.fresh_dummy_var_id () in
+-  let ctx = ctx_push_dummy_var ctx dummy_id loan in
++  let ctx = push_shared_loan span ctx bid v in
+   (ctx, borrow)
+
+ (** Helper: introduce a fresh symbolic value for a global *)
+@@ -630,44 +627,20 @@ let eval_global_as_fresh_symbolic_value (span : Meta.span)
+     eval_ctx * tvalue * (SA.expr -> SA.expr) =
+   let generics = gref.generics in
+   let global = ctx_lookup_global_decl span ctx gref.id in
+-  (* The global might itself be a (static) reference - TODO: generalize *)
+-  match global.ty with
+-  | TRef (RStatic, _, RShared) ->
+-      (* Instantiate the type  *)
+-      let generics = Subst.generic_args_erase_regions generics in
+-      let subst =
+-        [%add_loc] Subst.make_subst_from_generics (Some span) global.generics
+-          generics Self
+-      in
+-      let ty = Subst.erase_regions_substitute_types subst global.ty in
+-      (* Decompose *)
+-      let inner_ty =
+-        match ty with
+-        | TRef (RStatic, ty, RShared) -> ty
+-        | _ -> [%internal_error] span
+-      in
+-      [%cassert] span (ty_no_regions inner_ty) "Unimplemented";
+-      (* We do like in [eval_global_ref]: we introduce a borrow whose corresponding
+-         loan is in a dummy value, allowing the borrow to live as long as needed.
+-         TODO: introduce proper support for 'static
+-      *)
+-      let sval = mk_fresh_symbolic_value span ctx inner_ty in
+-      let v = mk_tvalue_from_symbolic_value sval in
+-      let ctx, borrow = push_value_to_dummy_shared_loan span ctx v in
+-      let cc = S.synthesize_global_eval gref sval in
+-      (ctx, borrow, cc)
+-  | _ ->
+-      [%cassert] span (ty_no_regions global.ty) "Unimplemented";
+-      (* Instantiate the type  *)
+-      let generics = Subst.generic_args_erase_regions generics in
+-      let subst =
+-        [%add_loc] Subst.make_subst_from_generics (Some span) global.generics
+-          generics Self
+-      in
+-      let ty = Subst.erase_regions_substitute_types subst global.ty in
+-      let sval = mk_fresh_symbolic_value span ctx ty in
+-      let cc = S.synthesize_global_eval gref sval in
+-      (ctx, mk_tvalue_from_symbolic_value sval, cc)
++  let subst =
++    [%add_loc] Subst.make_subst_from_generics (Some span) global.generics
++      generics Self
++  in
++  let ty = Subst.ty_substitute subst global.ty in
++  let info = TypesAnalysis.analyze_ty (Some span) ctx.type_ctx.type_infos ty in
++  [%cassert] span
++    ((not (ty_has_regions_in_pred (fun r -> r <> RStatic) ty))
++    && not info.contains_mut_borrow)
++    "Global values with non-static or mutable borrows are not supported";
++  let sval = mk_fresh_symbolic_value span ctx ty in
++  let ctx = register_static_symbolic_value span ctx sval in
++  let cc = S.synthesize_global_eval gref sval in
++  (ctx, mk_tvalue_from_symbolic_value sval, cc)
+
+ (** Evaluate a statement. *)
+ let rec eval_statement (config : config) (st : statement) : stl_cm_fun =
+@@ -1425,6 +1398,7 @@ and eval_function_call_symbolic_from_inst_sig (config : config)
+   (* Generate a fresh symbolic value for the return value *)
+   let ret_sv_ty = inst_sg.output in
+   let ret_spc = mk_fresh_symbolic_value span ctx ret_sv_ty in
++  let ctx = register_static_symbolic_value span ctx ret_spc in
+   let ret_value = mk_tvalue_from_symbolic_value ret_spc in
+   let args_places =
+     List.map (fun p -> S.mk_opt_place_from_op span p ctx) args
+@@ -1484,8 +1458,8 @@ and eval_function_call_symbolic_from_inst_sig (config : config)
+     in
+     (* Introduce the output value *)
+     let ret_v =
+-      mk_aproj_loans_value_from_symbolic_value abs.regions.owned ret_spc
+-        ret_sv_ty
++      mk_aproj_loans_value_from_symbolic_value ctx.type_ctx.type_infos
++        abs.regions.owned ret_spc ret_sv_ty
+     in
+     (* Compute the continuation used in the translation *)
+     let cont : abs_cont =
+diff --git a/interp/InterpUtils.ml b/interp/InterpUtils.ml
+index 39747807..70caffea 100644
+--- a/interp/InterpUtils.ml
++++ b/interp/InterpUtils.ml
+@@ -156,6 +156,11 @@ let mk_fresh_symbolic_value_opt_span (span : Meta.span option)
+ let mk_fresh_symbolic_value span (ctx : eval_ctx) =
+   mk_fresh_symbolic_value_opt_span (Some span) ctx.fresh_symbolic_value_id
+
++let push_shared_loan span (ctx : eval_ctx) bid (v : tvalue) : eval_ctx =
++  [%cassert] span (not !Config.use_static) "Unimplemented";
++  let loan : tvalue = { value = VLoan (VSharedLoan (bid, v)); ty = v.ty } in
++  ctx_push_fresh_dummy_var ctx loan
++
+ let mk_fresh_symbolic_value_from_no_regions_ty (span : Meta.span) ctx (ty : ty)
+     : symbolic_value =
+   [%sanity_check] span (ty_no_regions ty);
+@@ -165,7 +170,7 @@ let mk_fresh_symbolic_value_from_no_regions_ty (span : Meta.span) ctx (ty : ty)
+ let mk_fresh_symbolic_tvalue_opt_span (span : Meta.span option) ctx (rty : ty) :
+     tvalue =
+   [%sanity_check_opt_span] span (ty_is_rty rty);
+-  let ty = Substitute.erase_regions rty in
++  let ty = ty_erase_regions rty in
+   (* Generate the fresh a symbolic value *)
+   let value = mk_fresh_symbolic_value_opt_span span ctx rty in
+   let value = VSymbolic value in
+@@ -194,10 +199,11 @@ let get_symbolic_tvalue (span : Meta.span) (v : tvalue) : symbolic_value =
+     Checks if the projector will actually project some regions. If not, returns
+     {!Values.AIgnored} ([_]).
+
+-    TODO: update to handle 'static *)
+-let mk_aproj_loans_value_from_symbolic_value (proj_regions : RegionId.Set.t)
+-    (svalue : symbolic_value) (proj_ty : ty) : tavalue =
+-  if ty_has_regions_in_set proj_regions proj_ty then
++    Closed ADT fields are included through the recursive type analysis. *)
++let mk_aproj_loans_value_from_symbolic_value (infos : TypesAnalysis.type_infos)
++    (proj_regions : borrow_region_set) (svalue : symbolic_value) (proj_ty : ty)
++    : tavalue =
++  if ty_has_projected_regions infos proj_regions proj_ty then
+     let av =
+       ASymbolic
+         ( PNone,
+@@ -216,8 +222,30 @@ let mk_aproj_loans_value_from_symbolic_value (proj_regions : RegionId.Set.t)
+       ty = svalue.sv_ty;
+     }
+
++let register_static_symbolic_value span (ctx : eval_ctx) (sv : symbolic_value) :
++    eval_ctx =
++  let infos = ctx.type_ctx.type_infos in
++  let info = TypesAnalysis.analyze_ty (Some span) infos sv.sv_ty in
++  match BorrowRegionMap.find_opt StaticRegion info.stored_borrows with
++  | None -> ctx
++  | Some RMut ->
++      [%craise] span "Stored static mutable borrows are not supported"
++  | Some RShared -> begin
++      let regions = BorrowRegionSet.singleton StaticRegion in
++      let loan =
++        mk_aproj_loans_value_from_symbolic_value infos regions sv sv.sv_ty
++      in
++      let rec insert = function
++        | [] -> [%craise] span "Missing static lifetime owner"
++        | EAbs abs :: rest when abs.kind = StaticLifetime ->
++            EAbs { abs with avalues = loan :: abs.avalues } :: rest
++        | elem :: rest -> elem :: insert rest
++      in
++      { ctx with env = insert ctx.env }
++    end
++
+ let mk_eproj_loans_value_from_symbolic_value env
+-    (type_infos : TypesAnalysis.type_infos) (proj_regions : RegionId.Set.t)
++    (type_infos : TypesAnalysis.type_infos) (proj_regions : borrow_region_set)
+     (svalue : symbolic_value) (proj_ty : ty) : tevalue =
+   if ty_has_mut_borrow_for_region_in_set type_infos proj_regions proj_ty then
+     let av =
+@@ -240,16 +268,16 @@ let mk_eproj_loans_value_from_symbolic_value env
+
+ (** Create a borrows projector from a symbolic value *)
+ let mk_aproj_borrows_from_symbolic_value (span : Meta.span)
+-    (proj_regions : RegionId.Set.t) (svalue : symbolic_value) (proj_ty : ty) :
+-    aproj =
++    (proj_regions : borrow_region_set) (svalue : symbolic_value) (proj_ty : ty)
++    : aproj =
+   [%sanity_check] span (ty_is_rty proj_ty);
+   if ty_has_regions_in_set proj_regions proj_ty then
+     AProjBorrows { proj = { sv_id = svalue.sv_id; proj_ty }; loans = [] }
+   else AEmpty
+
+ let mk_eproj_borrows_from_symbolic_value (span : Meta.span)
+-    (proj_regions : RegionId.Set.t) (svalue : symbolic_value) (proj_ty : ty) :
+-    eproj =
++    (proj_regions : borrow_region_set) (svalue : symbolic_value) (proj_ty : ty)
++    : eproj =
+   [%sanity_check] span (ty_is_rty proj_ty);
+   if ty_has_regions_in_set proj_regions proj_ty then
+     EProjBorrows { proj = { sv_id = svalue.sv_id; proj_ty }; loans = [] }
+@@ -376,12 +404,12 @@ let symbolic_value_id_in_ctx (sv_id : SymbolicValueId.id) (ctx : eval_ctx) :
+ let symbolic_value_has_ended_regions (ended_regions : RegionId.Set.t)
+     (s : symbolic_value) : bool =
+   let regions = ty_regions s.sv_ty in
+-  not (RegionId.Set.disjoint regions ended_regions)
++  not (BorrowRegionSet.disjoint regions (BorrowRegionSet.of_ids ended_regions))
+
+ let region_is_owned (abs : abs) (r : region) : bool =
+   match r with
+-  | RVar (Free rid) -> RegionId.Set.mem rid abs.regions.owned
+-  | _ -> false
++  | RStatic | RVar (Free _) -> region_in_set r abs.regions.owned
++  | RVar (Bound _) | RErased | RBody _ -> false
+
+ let bottom_in_value_visitor (ended_regions : RegionId.Set.t) =
+   object
+@@ -804,7 +832,21 @@ let initialize_eval_ctx (span : Meta.span option) (ctx : decls_ctx)
+     type_vars;
+     const_generic_vars;
+     const_generic_vars_map;
+-    env = [ EFrame ];
++    env =
++      [
++        EAbs
++          {
++            abs_id = fresh_abs_id ();
++            kind = StaticLifetime;
++            can_end = false;
++            parents = AbsId.Set.empty;
++            regions = { owned = BorrowRegionSet.singleton StaticRegion };
++            ended_subabs = AbsLevelSet.empty;
++            avalues = [];
++            cont = None;
++          };
++        EFrame;
++      ];
+     ended_regions = RegionId.Set.empty;
+     fresh_symbolic_value_id;
+     fresh_fun_call_id;
+diff --git a/interp/Invariants.ml b/interp/Invariants.ml
+index 14f04dd8..faa97179 100644
+--- a/interp/Invariants.ml
++++ b/interp/Invariants.ml
+@@ -408,7 +408,7 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
+   (* The types with erased regions of the symbolic values that we find *)
+   let sv_etys = ref SymbolicValueId.Map.empty in
+   let check_symbolic_value_type sv_id ty =
+-    let ty = Substitute.erase_regions ty in
++    let ty = ty_erase_regions ty in
+     match SymbolicValueId.Map.find_opt sv_id !sv_etys with
+     | None -> sv_etys := SymbolicValueId.Map.add sv_id ty !sv_etys
+     | Some ty1 -> [%sanity_check] span (ty1 = ty)
+@@ -452,8 +452,9 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
+           | _ -> [%craise] span "Erroneous typing");
+           (* Check that the field types are correct *)
+           let field_types =
+-            Substitute.type_decl_get_instantiated_field_etypes def av.variant_id
+-              generics
++            List.map ty_erase_regions
++              (Substitute.type_decl_get_instantiated_field_types def
++                 av.variant_id generics)
+           in
+           let fields_with_types = List.combine av.fields field_types in
+           List.iter
+@@ -529,11 +530,11 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
+                 | Concrete (VMutBorrow (_, bv)) ->
+                     [%sanity_check] span (bv.ty = ty)
+                 | Abstract (AMutBorrow (_, _, sv)) ->
+-                    [%sanity_check] span (Substitute.erase_regions sv.ty = ty)
++                    [%sanity_check] span (ty_erase_regions sv.ty = ty)
+                 | _ -> [%craise] span "Inconsistent context"))
+       | VSymbolic sv, ty ->
+           check_symbolic_value_type sv.sv_id sv.sv_ty;
+-          let ty' = Substitute.erase_regions sv.sv_ty in
++          let ty' = ty_erase_regions sv.sv_ty in
+           [%sanity_check] span (ty' = ty)
+       | VLiteral (VStr _), TAdt { builtin = Some TStr; _ } -> ()
+       | _ ->
+@@ -629,8 +630,7 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
+                 match glc with
+                 | Concrete (VSharedLoan (_, sv))
+                 | Abstract (ASharedLoan (_, _, sv, _)) ->
+-                    [%sanity_check] span
+-                      (sv.ty = Substitute.erase_regions ref_ty)
++                    [%sanity_check] span (sv.ty = ty_erase_regions ref_ty)
+                 | _ -> [%craise] span "Inconsistent context")
+           | AIgnoredMutBorrow (_opt_bid, av), RMut ->
+               [%sanity_check] span (av.ty = ref_ty)
+@@ -671,12 +671,10 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
+                 let glc = lookup_borrow span ek_all (UMut bid) ctx in
+                 match glc with
+                 | Concrete (VMutBorrow (_, bv)) ->
+-                    [%sanity_check] span
+-                      (bv.ty = Substitute.erase_regions borrowed_aty)
++                    [%sanity_check] span (bv.ty = ty_erase_regions borrowed_aty)
+                 | Abstract (AMutBorrow (_, _, sv)) ->
+                     [%sanity_check] span
+-                      (Substitute.erase_regions sv.ty
+-                      = Substitute.erase_regions borrowed_aty)
++                      (ty_erase_regions sv.ty = ty_erase_regions borrowed_aty)
+                 | _ -> [%craise] span "Inconsistent context")
+           | AIgnoredMutLoan (None, child_av) ->
+               let borrowed_aty = aloan_get_expected_child_type aty in
+@@ -687,8 +685,7 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
+               let region, _, _ = ty_as_ref aty in
+               [%sanity_check] span (region_is_owned abs region);
+               let borrowed_aty = aloan_get_expected_child_type aty in
+-              [%sanity_check] span
+-                (sv.ty = Substitute.erase_regions borrowed_aty);
++              [%sanity_check] span (sv.ty = ty_erase_regions borrowed_aty);
+               (* TODO: the type of aloans doesn't make sense, see above *)
+               [%sanity_check] span (child_av.ty = borrowed_aty)
+           | AEndedMutLoan { given_back; child; given_back_meta = _ }
+@@ -713,7 +710,8 @@ let check_typing_invariant_visitor span ctx (lookups : bool) =
+               check_symbolic_value_type proj.sv_id ty;
+               let abs = Option.get info in
+               [%sanity_check] span
+-                (ty_has_regions_in_set abs.regions.owned proj.proj_ty)
++                (ty_has_projected_regions ctx.type_ctx.type_infos
++                   abs.regions.owned proj.proj_ty)
+           | AProjBorrows { proj; _ } ->
+               check_symbolic_value_type proj.sv_id ty;
+               [%sanity_check] span (ty_has_free_regions proj.proj_ty)
+@@ -747,7 +745,7 @@ let check_typing_invariant (span : Meta.span) (ctx : eval_ctx) (lookups : bool)
+
+ type proj_borrows_info = {
+   abs_id : AbsId.id;
+-  regions : RegionId.Set.t;
++  regions : borrow_region_set;
+   proj_ty : rty;  (** The regions shouldn't be erased *)
+   as_shared_value : bool;  (** True if the value is below a shared borrow *)
+ }
+@@ -755,7 +753,7 @@ type proj_borrows_info = {
+
+ type proj_loans_info = {
+   abs_id : AbsId.id;
+-  regions : RegionId.Set.t;
++  regions : borrow_region_set;
+   proj_ty : rty;
+ }
+ [@@deriving show]
+@@ -771,7 +769,7 @@ let proj_borrows_info_to_string (ctx : eval_ctx) (info : proj_borrows_info) :
+     string =
+   let { abs_id; regions; proj_ty; as_shared_value } = info in
+   "{ abs_id = " ^ AbsId.to_string abs_id ^ "; regions = "
+-  ^ RegionId.Set.to_string None regions
++  ^ BorrowRegionSet.to_string None regions
+   ^ "; proj_ty = " ^ ty_to_string ctx proj_ty ^ "; as_shared_value = "
+   ^ Print.bool_to_string as_shared_value
+   ^ "}"
+@@ -780,7 +778,7 @@ let proj_loans_info_to_string (ctx : eval_ctx) (info : proj_loans_info) : string
+     =
+   let { abs_id; regions; proj_ty } = info in
+   "{ abs_id = " ^ AbsId.to_string abs_id ^ "; regions = "
+-  ^ RegionId.Set.to_string None regions
++  ^ BorrowRegionSet.to_string None regions
+   ^ "; proj_ty = " ^ ty_to_string ctx proj_ty ^ "}"
+
+ let sv_info_to_string (ctx : eval_ctx) (info : sv_info) : string =
+@@ -797,7 +795,7 @@ let sv_info_to_string (ctx : eval_ctx) (info : sv_info) : string =
+     This is a variant of {!normalize_proj_ty} that erases shared regions, so
+     that two projections sharing a shared region don't collide. *)
+ let normalize_mut_proj_ty (type_infos : TypesAnalysis.type_infos)
+-    (owned_regions : RegionId.Set.t) (proj_ty : rty) : rty =
++    (owned_regions : borrow_region_set) (proj_ty : rty) : rty =
+   let conflict_regions =
+     ty_get_mutable_regions type_infos owned_regions proj_ty
+   in
+diff --git a/llbc/PrintBase.ml b/llbc/PrintBase.ml
+index 7d37dd29..30ea8105 100644
+--- a/llbc/PrintBase.ml
++++ b/llbc/PrintBase.ml
+@@ -659,7 +659,7 @@ module Values = struct
+           tevalue_to_string ~span ~with_ended env aenv indent indent_incr next
+         in
+         "let " ^ pat ^ " ="
+-        ^ RegionId.Set.to_string None regions
++        ^ BorrowRegionSet.to_string None regions
+         ^ "\n" ^ indent1 ^ bound ^ "\n" ^ indent ^ "in\n" ^ indent ^ next
+     | EJoinMarkers (left, right) ->
+         "@join_markers("
+@@ -819,6 +819,7 @@ module Values = struct
+
+   let abs_kind_to_string (kind : abs_kind) : string =
+     match kind with
++    | StaticLifetime -> "StaticLifetime"
+     | FunCall (fid, rg_id) ->
+         "FunCall(fid:" ^ FunCallId.to_string fid ^ ", rg_id:"
+         ^ RegionGroupId.to_string rg_id
+@@ -874,7 +875,7 @@ module Values = struct
+     ^ "{" ^ kind ^ "parents="
+     ^ AbsId.Set.to_string None abs.parents
+     ^ ",regions="
+-    ^ RegionId.Set.to_string None abs.regions.owned
++    ^ BorrowRegionSet.to_string None abs.regions.owned
+     ^ "," ^ can_end ^ "} {\n" ^ avs ^ "\n" ^ indent ^ "}" ^ cont
+
+   let abs_region_group_to_string (gr : abs_region_group) : string =
+diff --git a/llbc/Types.ml b/llbc/Types.ml
+index 58d9698d..d8e1dfaa 100644
+--- a/llbc/Types.ml
++++ b/llbc/Types.ml
+@@ -2,6 +2,54 @@ include Charon.Types
+
+ type region_id_set = RegionId.Set.t [@@deriving show, eq, ord]
+
++type borrow_region = StaticRegion | VariableRegion of RegionId.id
++[@@deriving show, eq, ord]
++
++let borrow_region_to_region = function
++  | StaticRegion -> RStatic
++  | VariableRegion rid -> RVar (Free rid)
++
++module BorrowRegionOrderedType = struct
++  type t = borrow_region
++
++  let compare = compare_borrow_region
++  let to_string = show_borrow_region
++  let pp_t = pp_borrow_region
++  let show_t = show_borrow_region
++end
++
++module BorrowRegionSet = struct
++  include Collections.MakeSet (BorrowRegionOrderedType)
++
++  let of_ids ids =
++    of_list
++      (List.map (fun rid -> VariableRegion rid) (RegionId.Set.elements ids))
++
++  let variable_ids regions =
++    RegionId.Set.of_list
++      (List.filter_map
++         (function
++           | StaticRegion -> None
++           | VariableRegion rid -> Some rid)
++         (elements regions))
++
++  let require_variable_ids regions =
++    if mem StaticRegion regions then
++      [%craise_opt_span] None "This operation cannot consume static ownership"
++    else variable_ids regions
++
++  let map_ids f =
++    map (function
++      | StaticRegion -> StaticRegion
++      | VariableRegion rid -> VariableRegion (f rid))
++end
++
++type borrow_region_set = BorrowRegionSet.t [@@deriving show, eq, ord]
++
++module BorrowRegionMap = Collections.MakeMap (BorrowRegionOrderedType)
++
++type stored_borrows = ref_kind BorrowRegionMap.t [@@deriving show]
++
+ (** A normalized projection type.
+
+     A type where regions are either:
+diff --git a/llbc/TypesAnalysis.ml b/llbc/TypesAnalysis.ml
+index 35ee726a..f61ea028 100644
+--- a/llbc/TypesAnalysis.ml
++++ b/llbc/TypesAnalysis.ml
+@@ -22,6 +22,8 @@ type expl_info = {
+ [@@deriving show]
+
+ type type_borrows_info = {
++  stored_borrows : stored_borrows;
++      (** Stored reference occurrences, keyed by their own lifetime. *)
+   contains_static : bool;
+       (** Does the type (transitively) contain a static borrow? *)
+   contains_borrow : bool;  (** Does the type (transitively) contain a borrow? *)
+@@ -43,8 +45,6 @@ type 'p g_type_info = {
+       (** If true, it means the type is a record that we should extract as a
+           tuple. This field is only valid for type declarations. *)
+   has_regions : bool;
+-  mut_regions : RegionId.Set.t;
+-      (** The set of regions used in mutable borrows *)
+   is_rec : bool;  (** This field is only meaningful for type definitions *)
+ }
+ [@@deriving show]
+@@ -69,6 +69,7 @@ let expl_info_init =
+
+ let type_borrows_info_init : type_borrows_info =
+   {
++    stored_borrows = BorrowRegionMap.empty;
+     contains_static = false;
+     contains_borrow = false;
+     contains_mut_borrow = false;
+@@ -88,13 +89,12 @@ let type_decl_is_tuple_struct (x : type_decl) : bool =
+   | _ -> false
+
+ let initialize_g_type_info (is_tuple_struct : bool) ~(is_rec : bool)
+-    ~(has_regions : bool) ~(mut_regions : RegionId.Set.t) (param_infos : 'p) :
+-    'p g_type_info =
++    ~(has_regions : bool) ~(stored_borrows : stored_borrows) (param_infos : 'p)
++    : 'p g_type_info =
+   {
+-    borrows_info = type_borrows_info_init;
++    borrows_info = { type_borrows_info_init with stored_borrows };
+     is_tuple_struct;
+     param_infos;
+-    mut_regions;
+     is_rec;
+     has_regions;
+   }
+@@ -133,56 +133,37 @@ let initialize_type_decl_info (span : Meta.span option) (crate : crate)
+     Charon.Print.name_to_string env def.item_meta.name
+   in
+
+-  (* We initialize the mutable regions differently depending on whether the
+-     type is opaque or not *)
+-  let mut_regions =
++  let stored_borrows =
+     match def.kind with
+-    | Opaque -> (
+-        (* Try to lookup the builtin information, if there is *)
+-        match get_builtin_info () with
+-        | Some info ->
+-            (* *)
+-            let len = List.length def.generics.regions in
+-            if List.for_all (fun i -> i < len) info.mut_regions then
+-              RegionId.Set.of_list
+-                (List.map
+-                   (fun i ->
+-                     (Collections.List.nth def.generics.regions i).index)
+-                   info.mut_regions)
+-            else (
+-              [%warn_opt_span] span
+-                ("Found invalid builtin information for a type declaration: \
+-                  the indices used for the mutable regions are out of bounds.\n\
+-                  Type: " ^ name_to_string ());
+-              RegionId.Set.empty)
+-        | None ->
+-            (* No builtin information: use Charon's per-region [mutability] analysis *)
+-            let has_unknown_regions = ref false in
+-            let mut_regions =
+-              RegionId.Set.of_list
+-                (List.filter_map
+-                   (fun (r : region_param) ->
+-                     match r.mutability with
+-                     | LtMutable -> Some r.index
+-                     | LtUnknown ->
+-                         has_unknown_regions := true;
+-                         if Config.opaque_types_have_mut_regions_by_default then
+-                           Some r.index
+-                         else None
+-                     | LtShared -> None)
+-                   def.generics.regions)
+-            in
+-            if !has_unknown_regions then
+-              [%warn_opt_span] span
+-                ("Found an unknown type declaration with region parameters for \
+-                  which Charon could not determine mutability: we \
+-                  conservatively assume they are used in mutable borrows, but \
+-                  the extracted code may be incorrect.\n\
+-                  Type: " ^ name_to_string ());
+-            mut_regions)
+-    | _ -> RegionId.Set.empty
++    | Opaque ->
++        let kind_of_region =
++          match get_builtin_info () with
++          | Some info ->
++              let len = List.length def.generics.regions in
++              [%cassert_opt_span] span
++                (List.for_all (fun i -> 0 <= i && i < len) info.mut_regions)
++                ("Invalid builtin mutable-region position for "
++               ^ name_to_string ());
++              fun position (_ : region_param) ->
++                if List.mem position info.mut_regions then RMut else RShared
++          | None -> (
++              fun _ (r : region_param) ->
++                match r.mutability with
++                | LtMutable -> RMut
++                | LtShared -> RShared
++                | LtUnknown ->
++                    [%craise_opt_span] span
++                      ("Unknown opaque-region mutability for "
++                     ^ name_to_string ()))
++        in
++        BorrowRegionMap.of_list
++          (List.mapi
++             (fun position (r : region_param) ->
++               (VariableRegion r.index, kind_of_region position r))
++             def.generics.regions)
++    | _ -> BorrowRegionMap.empty
+   in
+-  initialize_g_type_info is_tuple_struct ~is_rec ~has_regions ~mut_regions
++  initialize_g_type_info is_tuple_struct ~is_rec ~has_regions ~stored_borrows
+     param_infos
+
+ let type_decl_info_to_partial_type_info (info : type_decl_info) :
+@@ -191,7 +172,6 @@ let type_decl_info_to_partial_type_info (info : type_decl_info) :
+     borrows_info = info.borrows_info;
+     is_tuple_struct = info.is_tuple_struct;
+     param_infos = Some info.param_infos;
+-    mut_regions = info.mut_regions;
+     is_rec = info.is_rec;
+     has_regions = info.has_regions;
+   }
+@@ -202,7 +182,6 @@ let partial_type_info_to_type_decl_info (info : partial_type_info) :
+     borrows_info = info.borrows_info;
+     is_tuple_struct = info.is_tuple_struct;
+     param_infos = Option.get info.param_infos;
+-    mut_regions = info.mut_regions;
+     is_rec = info.is_rec;
+     has_regions = info.has_regions;
+   }
+@@ -230,26 +209,44 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
+     else original
+   in
+   let r_is_static (r : region) : bool = r = RStatic in
+-  let update_mut_regions_with_rid mut_regions rid =
+-    if RegionId.Set.mem rid mut_regions then ty_info.mut_regions
+-    else (
+-      updated := true;
+-      RegionId.Set.add rid mut_regions)
++  let add_stored_borrow region kind borrows =
++    let key =
++      match region with
++      | RStatic -> Some StaticRegion
++      | RVar (Free rid) -> Some (VariableRegion rid)
++      | RVar (Bound _) | RErased -> None
++      | RBody _ -> [%craise_opt_span] span "unsupported: Body region"
++    in
++    match key with
++    | None -> borrows
++    | Some key ->
++        let kind =
++          match (BorrowRegionMap.find_opt key borrows, kind) with
++          | Some RMut, _ | _, RMut -> RMut
++          | (None | Some RShared), RShared -> RShared
++        in
++        BorrowRegionMap.add key kind borrows
+   in
+-  let update_mut_regions mut_regions mut_region =
+-    match mut_region with
+-    | RStatic | RVar (Bound _) ->
+-        mut_regions (* We can have bound vars because of arrows *)
+-    | RErased -> [%internal_error_opt_span] span
+-    | RVar (Free rid) -> update_mut_regions_with_rid mut_regions rid
+-    | RBody _ -> [%craise_opt_span] span "unsupported: Body region"
++  let merge_stored_borrows original incoming =
++    let merged =
++      BorrowRegionMap.fold
++        (fun region kind acc ->
++          add_stored_borrow (borrow_region_to_region region) kind acc)
++        incoming original
++    in
++    if not (BorrowRegionMap.equal ( = ) original merged) then updated := true;
++    merged
+   in
+
+   (* Update a partial_type_info, while registering if we actually performed an update *)
+   let update_ty_info ~(is_stored : bool) (ty_info : partial_type_info)
+-      (mut_region : region option) (ty_b_info : type_borrows_info) :
+-      partial_type_info =
++      (ty_b_info : type_borrows_info) : partial_type_info =
+     let original = ty_info.borrows_info in
++    let stored_borrows =
++      if is_stored then
++        merge_stored_borrows original.stored_borrows ty_b_info.stored_borrows
++      else original.stored_borrows
++    in
+     let contains_static =
+       check_update_bool original.contains_static ty_b_info.contains_static
+     in
+@@ -275,6 +272,7 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
+     in
+     let updated_borrows_info =
+       {
++        stored_borrows;
+         contains_static;
+         contains_borrow;
+         contains_mut_borrow;
+@@ -283,19 +281,7 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
+         contains_nested_mut;
+       }
+     in
+-    (* Add the region *)
+-    let updated_mut_regions =
+-      match mut_region with
+-      | None -> ty_info.mut_regions
+-      | Some mut_region ->
+-          if is_stored then update_mut_regions ty_info.mut_regions mut_region
+-          else ty_info.mut_regions
+-    in
+-    {
+-      ty_info with
+-      borrows_info = updated_borrows_info;
+-      mut_regions = updated_mut_regions;
+-    }
++    { ty_info with borrows_info = updated_borrows_info }
+   in
+
+   (* The recursive function which explores the type *)
+@@ -348,17 +334,15 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
+         (* Update the type info *)
+         let contains_static = r_is_static r in
+         let contains_borrow = true in
+-        let is_mut, region =
+-          match rkind with
+-          | RMut -> (true, Some r)
+-          | RShared -> (false, None)
+-        in
++        let is_mut = rkind = RMut in
++        let stored_borrows = add_stored_borrow r rkind BorrowRegionMap.empty in
+         let contains_mut_borrow = is_mut in
+         let contains_nested_borrows = expl_info.under_borrow in
+         let contains_borrow_under_mut = expl_info.under_mut_borrow in
+         let contains_nested_mut = expl_info.under_mut_borrow && is_mut in
+         let ty_b_info =
+           {
++            stored_borrows;
+             contains_static;
+             contains_borrow;
+             contains_mut_borrow;
+@@ -368,7 +352,7 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
+           }
+         in
+         let ty_info =
+-          update_ty_info ~is_stored:expl_info.is_stored ty_info region ty_b_info
++          update_ty_info ~is_stored:expl_info.is_stored ty_info ty_b_info
+         in
+         (* Update the exploration info *)
+         let expl_info =
+@@ -398,8 +382,22 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
+         in
+         (* Update the type info with the information from the adt *)
+         let ty_info =
+-          update_ty_info ~is_stored:expl_info.is_stored ty_info None
+-            adt_info.borrows_info
++          let stored_borrows =
++            BorrowRegionMap.fold
++              (fun region kind acc ->
++                let region =
++                  match region with
++                  | StaticRegion -> RStatic
++                  | VariableRegion rid ->
++                      [%unwrap_opt_span] span
++                        (List.nth_opt generics.regions (RegionId.to_int rid))
++                        "Missing stored-borrow lifetime argument"
++                in
++                add_stored_borrow region kind acc)
++              adt_info.borrows_info.stored_borrows BorrowRegionMap.empty
++          in
++          update_ty_info ~is_stored:expl_info.is_stored ty_info
++            { adt_info.borrows_info with stored_borrows }
+         in
+         (* Check if there are regions, and if 'static appears in the region parameters *)
+         let found_static = List.exists r_is_static generics.regions in
+@@ -439,6 +437,7 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
+               in
+               let ty_b_info =
+                 {
++                  stored_borrows = BorrowRegionMap.empty;
+                   contains_static;
+                   contains_borrow;
+                   contains_mut_borrow;
+@@ -447,7 +446,7 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
+                   contains_nested_mut;
+                 }
+               in
+-              let ty_info = update_ty_info ~is_stored ty_info None ty_b_info in
++              let ty_info = update_ty_info ~is_stored ty_info ty_b_info in
+               (* Update the exploration info *)
+               let expl_info =
+                 {
+@@ -462,27 +461,7 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
+               analyze span expl_info ty_info ty)
+             ty_info params_tys
+         in
+-        (* For every region parameter: do the same *)
+-        let mut_regions =
+-          List.fold_left
+-            (fun mut_regions (adt_rid, r) ->
+-              (* Check if the region is a variable and is used for mutable borrows *)
+-              match r with
+-              | RStatic | RVar (Bound _) | RErased -> mut_regions
+-              (* We can have bound vars because of arrows, and erased regions
+-                 when analyzing types appearing in function bodies *)
+-              | RVar (Free rid) ->
+-                  if
+-                    expl_info.is_stored
+-                    && RegionId.Set.mem adt_rid adt_info.mut_regions
+-                  then update_mut_regions_with_rid mut_regions rid
+-                  else mut_regions
+-              | RBody _ -> [%craise_opt_span] span "unsupported: Body region")
+-            ty_info.mut_regions
+-            (RegionId.mapi (fun adt_rid r -> (adt_rid, r)) generics.regions)
+-        in
+-        (* Return *)
+-        { ty_info with mut_regions }
++        ty_info
+     | TFnPtr fn_sig ->
+         let { Types.inputs; output; _ } = fn_sig.binder_value in
+         (* Just dive into the arrow *)
+@@ -653,10 +632,10 @@ let analyze_ty (span : Meta.span option) (infos : type_infos) (ty : ty) :
+   let ty = ty_replace_body_regions_with_free_regions ty in
+   (* We don't use [updated] but need to give it as parameter *)
+   let updated = ref false in
+-  (* We don't need to compute whether the type contains 'static or not *)
++  (* Analyze stored borrow positions as well as type-level lifetime facts. *)
+   let ty_info =
+     initialize_g_type_info false ~is_rec:false ~has_regions:false
+-      ~mut_regions:RegionId.Set.empty None
++      ~stored_borrows:BorrowRegionMap.empty None
+   in
+   let ty_info = analyze_full_ty span updated infos ty_info ty in
+   (* Convert the ty_info *)
+diff --git a/llbc/TypesUtils.ml b/llbc/TypesUtils.ml
+index f21976c0..4eb04172 100644
+--- a/llbc/TypesUtils.ml
++++ b/llbc/TypesUtils.ml
+@@ -20,21 +20,35 @@ let concat_generic_args (generics1 : generic_args) (generics2 : generic_args) :
+     trait_refs = generics1.trait_refs @ generics2.trait_refs;
+   }
+
+-(** Return the set of regions in an type - TODO: add static?
++(** Return whether a symbolic region belongs to an ownership projection. *)
++let region_in_set ?(allow_erased = false) (r : region)
++    (regions : borrow_region_set) : bool =
++  match r with
++  | RStatic -> BorrowRegionSet.mem StaticRegion regions
++  | RVar (Free rid) -> BorrowRegionSet.mem (VariableRegion rid) regions
++  | RErased | RBody _ ->
++      if allow_erased then false
++      else
++        raise
++          (Failure "region_in_set shouldn't be called on erased or body regions")
++  | RVar (Bound _) ->
++      raise (Failure "region_in_set shouldn't be called on bound regions")
++
++(** Return the set of regions in a type.
+
+     This function should be used on non-erased and non-bound regions. For
+     sanity, we raise exceptions if this is not the case. *)
+-let ty_regions (ty : ty) : RegionId.Set.t =
+-  let s = ref RegionId.Set.empty in
++let ty_regions (ty : ty) : borrow_region_set =
++  let s = ref BorrowRegionSet.empty in
+   let add_region (r : region) =
+     match r with
+-    | RStatic -> () (* TODO: static? *)
++    | RStatic -> s := BorrowRegionSet.add StaticRegion !s
+     | RErased | RBody _ ->
+         raise
+           (Failure "ty_regions shouldn't be called on erased or body regions")
+     | RVar (Bound _) ->
+         raise (Failure "region_in_set shouldn't be called on bound regions")
+-    | RVar (Free id) -> s := RegionId.Set.add id !s
++    | RVar (Free id) -> s := BorrowRegionSet.add (VariableRegion id) !s
+   in
+   let obj =
+     object
+@@ -53,9 +67,9 @@ let ty_regions (ty : ty) : RegionId.Set.t =
+   !s
+
+ (* TODO: merge with ty_has_regions_in_set *)
+-let ty_regions_intersect (ty : ty) (regions : RegionId.Set.t) : bool =
++let ty_regions_intersect (ty : ty) (regions : borrow_region_set) : bool =
+   let ty_regions = ty_regions ty in
+-  not (RegionId.Set.disjoint ty_regions regions)
++  not (BorrowRegionSet.disjoint ty_regions regions)
+
+ (** Check if a {!type:Charon.Types.ty} contains regions from a given set *)
+ let ty_has_regions_in_pred (pred : region -> bool) (ty : ty) : bool =
+@@ -76,9 +90,16 @@ let ty_has_regions_in_pred (pred : region -> bool) (ty : ty) : bool =
+   with Found -> true
+
+ (** Check if a {!type:Charon.Types.ty} contains regions from a given set *)
+-let ty_has_regions_in_set (rset : RegionId.Set.t) (ty : ty) : bool =
++let ty_has_regions_in_set (rset : borrow_region_set) (ty : ty) : bool =
+   ty_has_regions_in_pred (fun r -> region_in_set r rset) ty
+
++let ty_has_projected_regions (infos : TypesAnalysis.type_infos)
++    (regions : borrow_region_set) (ty : ty) : bool =
++  ty_has_regions_in_set (BorrowRegionSet.remove StaticRegion regions) ty
++  || BorrowRegionSet.mem StaticRegion regions
++     && BorrowRegionMap.mem StaticRegion
++          (TypesAnalysis.analyze_ty None infos ty).stored_borrows
++
+ (** Check if a type has free (i.e., non erased) regions.
+
+     This is useful in particular when using normalized projection types (types
+@@ -273,6 +294,27 @@ let ty_has_borrow_under_mut span (infos : TypesAnalysis.type_infos) (ty : ty) :
+   let info = TypesAnalysis.analyze_ty span infos ty in
+   info.TypesAnalysis.contains_borrow_under_mut
+
++let iter_adt_stored_borrows (infos : TypesAnalysis.type_infos)
++    (tref : type_decl_ref) (visit : region -> ref_kind -> unit) : unit =
++  match tref.builtin with
++  | Some (TTuple | TBox | TStr) -> ()
++  | None ->
++      let info =
++        [%silent_unwrap_opt_span] None (TypeDeclId.Map.find_opt tref.id infos)
++      in
++      BorrowRegionMap.iter
++        (fun region kind ->
++          let region =
++            match region with
++            | StaticRegion -> RStatic
++            | VariableRegion rid ->
++                [%unwrap_opt_span] None
++                  (List.nth_opt tref.generics.regions (RegionId.to_int rid))
++                  "Missing stored-borrow lifetime argument"
++          in
++          visit region kind)
++        info.borrows_info.stored_borrows
++
+ (** Check if a {!type:Charon.Types.ty} contains a mutable borrow which uses a
+     region from a given set. *)
+ let ty_has_mut_borrow_for_region_in_pred (infos : TypesAnalysis.type_infos)
+@@ -290,19 +332,8 @@ let ty_has_mut_borrow_for_region_in_pred (infos : TypesAnalysis.type_infos)
+         super#visit_TRef env r ty rkind
+
+       method! visit_TAdt env tref =
+-        (* Lookup the information for this ADT *)
+-        begin
+-          match tref.builtin with
+-          | Some (TTuple | TBox | TStr) -> ()
+-          | None ->
+-              let info = TypeDeclId.Map.find tref.id infos in
+-              RegionId.iteri
+-                (fun adt_rid r ->
+-                  if RegionId.Set.mem adt_rid info.mut_regions && pred r then
+-                    raise Found
+-                  else ())
+-                tref.generics.regions
+-        end;
++        iter_adt_stored_borrows infos tref (fun r kind ->
++            if kind = RMut && pred r then raise Found);
+         super#visit_TAdt env tref
+     end
+   in
+@@ -315,14 +346,17 @@ let ty_has_mut_borrow_for_region_in_pred (infos : TypesAnalysis.type_infos)
+     a type. Note that a mutable borrow below a shared borrow is effectively
+     shared. *)
+ let ty_get_mutable_regions (infos : TypesAnalysis.type_infos)
+-    (owned_regions : RegionId.Set.t) (ty : rty) : RegionId.Set.t =
+-  let result = ref RegionId.Set.empty in
++    (owned_regions : borrow_region_set) (ty : rty) : borrow_region_set =
++  let result = ref BorrowRegionSet.empty in
+   let add_region (r : region) =
+     match r with
++    | RStatic ->
++        if BorrowRegionSet.mem StaticRegion owned_regions then
++          result := BorrowRegionSet.add StaticRegion !result
+     | RVar (Free rid) ->
+-        if RegionId.Set.mem rid owned_regions then
+-          result := RegionId.Set.add rid !result
+-    | _ -> ()
++        if BorrowRegionSet.mem (VariableRegion rid) owned_regions then
++          result := BorrowRegionSet.add (VariableRegion rid) !result
++    | RVar (Bound _) | RErased | RBody _ -> ()
+   in
+
+   let obj =
+@@ -339,18 +373,8 @@ let ty_get_mutable_regions (infos : TypesAnalysis.type_infos)
+             ()
+
+       method! visit_TAdt env tref =
+-        (* Lookup the information for this ADT *)
+-        begin
+-          match tref.builtin with
+-          | Some (TTuple | TBox | TStr) -> ()
+-          | None ->
+-              (* Check which region parameters are mutable *)
+-              let info = TypeDeclId.Map.find tref.id infos in
+-              RegionId.iteri
+-                (fun adt_rid r ->
+-                  if RegionId.Set.mem adt_rid info.mut_regions then add_region r)
+-                tref.generics.regions
+-        end;
++        iter_adt_stored_borrows infos tref (fun r kind ->
++            if kind = RMut then add_region r);
+         super#visit_TAdt env tref
+     end
+   in
+@@ -358,11 +382,12 @@ let ty_get_mutable_regions (infos : TypesAnalysis.type_infos)
+   !result
+
+ let ty_has_mut_borrow_for_region_in_set (infos : TypesAnalysis.type_infos)
+-    (regions : RegionId.Set.t) (ty : ty) : bool =
++    (regions : borrow_region_set) (ty : ty) : bool =
+   ty_has_mut_borrow_for_region_in_pred infos
+     (function
+-      | RVar (Free rid) -> RegionId.Set.mem rid regions
+-      | _ -> false)
++      | RStatic -> BorrowRegionSet.mem StaticRegion regions
++      | RVar (Free rid) -> BorrowRegionSet.mem (VariableRegion rid) regions
++      | RVar (Bound _) | RErased | RBody _ -> false)
+     ty
+
+ let ty_has_mut_borrows (infos : TypesAnalysis.type_infos) (ty : ty) : bool =
+diff --git a/llbc/Values.ml b/llbc/Values.ml
+index 6f7e8bb7..4387211a 100644
+--- a/llbc/Values.ml
++++ b/llbc/Values.ml
+@@ -247,6 +247,9 @@ type eended_mut_borrow_meta = {
+
+ (** The kind of an abstraction, which keeps track of its origin *)
+ type abs_kind =
++  | StaticLifetime
++      (** The unique non-endable owner of static projections in an evaluation
++          context. *)
+   | FunCall of (FunCallId.id * RegionGroupId.id)
+       (** The abstraction was introduced because of a function call.
+
+@@ -346,6 +349,11 @@ class ['self] iter_env_base =
+     method visit_region_id_set : 'env -> region_id_set -> unit =
+       fun env ids -> RegionId.Set.iter (self#visit_region_id env) ids
+
++    method visit_borrow_region_set : 'env -> borrow_region_set -> unit =
++      fun env regions ->
++        RegionId.Set.iter (self#visit_region_id env)
++          (BorrowRegionSet.variable_ids regions)
++
+     method visit_abs_id : 'env -> abs_id -> unit = fun _ _ -> ()
+
+     method visit_abs_id_set : 'env -> abs_id_set -> unit =
+@@ -404,6 +412,11 @@ class ['self] map_env_base =
+     method visit_region_id_set : 'env -> region_id_set -> region_id_set =
+       fun env ids -> RegionId.Set.map (self#visit_region_id env) ids
+
++    method visit_borrow_region_set :
++        'env -> borrow_region_set -> borrow_region_set =
++      fun env regions ->
++        BorrowRegionSet.map_ids (self#visit_region_id env) regions
++
+     method visit_abs_id : 'env -> abs_id -> abs_id = fun _ x -> x
+
+     method visit_abs_id_set : 'env -> abs_id_set -> abs_id_set =
+@@ -1115,7 +1128,7 @@ and abs_fun =
+     When calling a function, we lose information about the borrow graph: part of
+     it is thus "abstracted" away. *)
+ and evalue =
+-  | ELet of region_id_set * tepat * tevalue * tevalue
++  | ELet of borrow_region_set * tepat * tevalue * tevalue
+       (** Because let-bindings are used to bind expressions refering to
+           different sets of regions, we need to precise the regions projected in
+           the bound expression.
+@@ -1520,7 +1533,7 @@ and abs = {
+ }
+
+ and abs_regions = {
+-  owned : region_id_set;  (** Regions owned by the abstraction *)
++  owned : borrow_region_set;  (** Regions owned by the abstraction *)
+ }
+
+ (** A binder used in an environment, to map a variable to a value *)
+diff --git a/llbc/ValuesUtils.ml b/llbc/ValuesUtils.ml
+index f99bf327..795e6642 100644
+--- a/llbc/ValuesUtils.ml
++++ b/llbc/ValuesUtils.ml
+@@ -79,7 +79,7 @@ let rec unbox_tvalue (span : Meta.span) (v : tvalue) : tvalue =
+ let mk_tvalue_from_symbolic_value (svalue : symbolic_value) : tvalue =
+   let av = VSymbolic svalue in
+   let av : tvalue =
+-    { value = av; ty = Substitute.erase_regions svalue.sv_ty }
++    { value = av; ty = TypesUtils.ty_erase_regions svalue.sv_ty }
+   in
+   av
+
+@@ -643,7 +643,7 @@ let tevalue_has_fvars (e : tevalue) : bool =
+
+     The pattern should be open (it should contain free variables): this helper
+     will close it by replacing the free variables with bound variables. *)
+-let mk_let (span : Meta.span) (rid_set : region_id_set) (pat : tepat)
++let mk_let (span : Meta.span) (rid_set : borrow_region_set) (pat : tepat)
+     (bound : tevalue) (e : tevalue) : tevalue =
+   (* Close the pattern *)
+   let pat, e = close_binder span pat e in
+diff --git a/symbolic/SymbolicToPureAbs.ml b/symbolic/SymbolicToPureAbs.ml
+index 71276014..3d36b96a 100644
+--- a/symbolic/SymbolicToPureAbs.ml
++++ b/symbolic/SymbolicToPureAbs.ml
+@@ -12,7 +12,7 @@ let log = Logging.symbolic_to_pure_abs_log
+ (** Explore an abstraction value and compute the type of the value consumed upon
+     ending the loans. *)
+ let rec tavalue_to_consumed_ty_aux ~(filter : bool) (ctx : bs_ctx)
+-    (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level)
+     (current_level : abs_level) (av : V.tavalue) : ty option =
+   match av.value with
+   | AAdt adt_v ->
+@@ -35,7 +35,7 @@ let rec tavalue_to_consumed_ty_aux ~(filter : bool) (ctx : bs_ctx)
+         Some (ctx_translate_fwd_ty ctx av.ty)
+
+ and adt_avalue_to_consumed_ty_aux ~(filter : bool) (ctx : bs_ctx)
+-    (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level)
+     (current_level : abs_level) (av : V.tavalue) (adt_v : V.adt_avalue) :
+     ty option =
+   let _, out =
+@@ -57,7 +57,7 @@ and adt_avalue_to_consumed_ty_aux ~(filter : bool) (ctx : bs_ctx)
+   Option.map snd out
+
+ and aloan_content_to_consumed_ty_aux ~(filter : bool) (ctx : bs_ctx)
+-    (_abs_regions : T.RegionId.Set.t) (ty : T.ty) (lc : V.aloan_content) :
++    (_abs_regions : T.borrow_region_set) (ty : T.ty) (lc : V.aloan_content) :
+     ty option =
+   let _ = filter in
+   match lc with
+@@ -79,7 +79,7 @@ and aloan_content_to_consumed_ty_aux ~(filter : bool) (ctx : bs_ctx)
+       (* This case only happens with nested borrows *)
+       [%craise] ctx.span "Unimplemented"
+
+-and aproj_to_consumed_ty_aux (ctx : bs_ctx) (_abs_regions : T.RegionId.Set.t)
++and aproj_to_consumed_ty_aux (ctx : bs_ctx) (_abs_regions : T.borrow_region_set)
+     (aproj : V.aproj) (_ty : T.ty) : ty option =
+   match aproj with
+   | V.AProjLoans { proj; consumed; borrows } ->
+@@ -89,7 +89,7 @@ and aproj_to_consumed_ty_aux (ctx : bs_ctx) (_abs_regions : T.RegionId.Set.t)
+   | V.AEndedProjLoans _ | AEndedProjBorrows _ | AEmpty | AProjBorrows _ ->
+       [%craise] ctx.span "Unreachable"
+
+-let tavalue_to_consumed_ty (ctx : bs_ctx) (abs_regions : T.RegionId.Set.t)
++let tavalue_to_consumed_ty (ctx : bs_ctx) (abs_regions : T.borrow_region_set)
+     (abs_level : abs_level) (av : V.tavalue) : ty option =
+   [%cassert] ctx.span (abs_level = 0) "Unimplemented";
+   (* Check if the value was generated from a loan projector: if yes, and if
+@@ -113,7 +113,7 @@ let tavalue_to_consumed_ty (ctx : bs_ctx) (abs_regions : T.RegionId.Set.t)
+       None
+
+ let rec tavalue_to_given_back_ty_aux ~(filter : bool) (ctx : bs_ctx)
+-    (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level)
+     (current_level : abs_level) (av : V.tavalue) : ty option =
+   match av.value with
+   | AAdt adt_v ->
+@@ -131,7 +131,7 @@ let rec tavalue_to_given_back_ty_aux ~(filter : bool) (ctx : bs_ctx)
+       else Some (translate_fwd_ty (Some ctx.span) ctx.decls_ctx av.ty)
+
+ and adt_avalue_to_given_back_ty_aux ~(filter : bool)
+-    (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level)
+     (current_level : abs_level) (av : V.tavalue) (adt_v : V.adt_avalue)
+     (ctx : bs_ctx) : ty option =
+   let _, out =
+@@ -176,7 +176,7 @@ and aproj_to_given_back_ty_aux (aproj : V.aproj) (ty : T.ty) (ctx : bs_ctx) :
+   | V.AEndedProjLoans _ | AEndedProjBorrows _ | AEmpty | AProjLoans _ ->
+       [%craise] ctx.span "Unreachable"
+
+-let tavalue_to_given_back_ty (ctx : bs_ctx) (abs_regions : T.RegionId.Set.t)
++let tavalue_to_given_back_ty (ctx : bs_ctx) (abs_regions : T.borrow_region_set)
+     (abs_level : abs_level) (v : V.tavalue) : ty option =
+   [%cassert] ctx.span (abs_level = 0) "Unimplemented";
+   (* Check if the value was generated from a borrow projector: if yes, and if
+@@ -236,7 +236,7 @@ let abs_to_ty (ctx : bs_ctx) (abs : V.abs) : ty option =
+   else Some (mk_arrows inputs (mk_simpl_tuple_ty outputs))
+
+ let compute_tevalue_proj_kind (span : Meta.span) (type_infos : type_infos)
+-    (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level)
+     (current_level : abs_level) (ev : V.tevalue) : proj_kind =
+   let has_borrows = ref false in
+   let has_mut_borrows = ref false in
+@@ -258,8 +258,8 @@ let compute_tevalue_proj_kind (span : Meta.span) (type_infos : type_infos)
+
+   let keep_region (r : T.region) =
+     match r with
+-    | T.RVar (Free rid) -> T.RegionId.Set.mem rid abs_regions
+-    | _ -> false
++    | T.RStatic | T.RVar (Free _) -> TypesUtils.region_in_set r abs_regions
++    | T.RVar (Bound _) | T.RErased | T.RBody _ -> false
+   in
+   let ty_has_mut_region =
+     TypesUtils.ty_has_mut_borrow_for_region_in_pred type_infos keep_region
+@@ -363,13 +363,13 @@ let compute_tevalue_proj_kind (span : Meta.span) (type_infos : type_infos)
+   else UnknownProj
+
+ let abs_fvar_id_to_tpat (ctx : bs_ctx)
+-    (fvar_to_texpr : texpr V.AbsFVarId.Map.t ref) (rids : T.RegionId.Set.t)
++    (fvar_to_texpr : texpr V.AbsFVarId.Map.t ref) (rids : T.borrow_region_set)
+     ~(filter : bool) (fid : V.abs_fvar_id) (ty : T.ty) : bs_ctx * tpat option =
+   let type_infos = ctx.type_ctx.type_infos in
+   let keep_region (r : T.region) =
+     match r with
+-    | T.RVar (Free rid) -> T.RegionId.Set.mem rid rids
+-    | _ -> false
++    | T.RStatic | T.RVar (Free _) -> TypesUtils.region_in_set r rids
++    | T.RVar (Bound _) | T.RErased | T.RBody _ -> false
+   in
+   if TypesUtils.ty_has_mut_borrow_for_region_in_pred type_infos keep_region ty
+   then (
+@@ -418,7 +418,7 @@ let bound_borrows_loans_to_string (ctx : bs_ctx) (bound : bound_borrows_loans) :
+     want to eliminate it) we register it in [fvar_to_none] for sanity purposes.
+ *)
+ let eoutput_to_pat (ctx : bs_ctx) (fvar_to_texpr : texpr V.AbsFVarId.Map.t ref)
+-    (rids : T.RegionId.Set.t) (abs_level : abs_level) (output : V.tevalue) :
++    (rids : T.borrow_region_set) (abs_level : abs_level) (output : V.tevalue) :
+     bs_ctx * bound_borrows_loans * tpat =
+   [%cassert] ctx.span (abs_level = 0) "Unimplemented";
+   let span = ctx.span in
+@@ -427,8 +427,8 @@ let eoutput_to_pat (ctx : bs_ctx) (fvar_to_texpr : texpr V.AbsFVarId.Map.t ref)
+   let symbolic = ref NormSymbProjMap.empty in
+   let keep_region (r : T.region) =
+     match r with
+-    | T.RVar (Free rid) -> T.RegionId.Set.mem rid rids
+-    | _ -> false
++    | T.RStatic | T.RVar (Free _) -> TypesUtils.region_in_set r rids
++    | T.RVar (Bound _) | T.RErased | T.RBody _ -> false
+   in
+   let fresh_fvar ctx (ty : T.ty) : bs_ctx * texpr * tpat =
+     let ctx, fvar = fresh_var_llbc_ty None ty ctx in
+@@ -539,13 +539,13 @@ let eoutput_to_pat (ctx : bs_ctx) (fvar_to_texpr : texpr V.AbsFVarId.Map.t ref)
+   (ctx, bound, pat)
+
+ let tepat_to_tpat (ctx : bs_ctx) (fvar_to_texpr : texpr V.AbsFVarId.Map.t ref)
+-    (rids : T.RegionId.Set.t) (pat : V.tepat) : bs_ctx * tpat =
++    (rids : T.borrow_region_set) (pat : V.tepat) : bs_ctx * tpat =
+   let span = ctx.span in
+   let type_infos = ctx.type_ctx.type_infos in
+   let keep_region (r : T.region) =
+     match r with
+-    | T.RVar (Free rid) -> T.RegionId.Set.mem rid rids
+-    | _ -> false
++    | T.RStatic | T.RVar (Free _) -> TypesUtils.region_in_set r rids
++    | T.RVar (Bound _) | T.RErased | T.RBody _ -> false
+   in
+   let rec to_pat ~(filter : bool) (ctx : bs_ctx) (pat : V.tepat) :
+       bs_ctx * tpat option =
+@@ -604,18 +604,18 @@ let tepat_to_tpat (ctx : bs_ctx) (fvar_to_texpr : texpr V.AbsFVarId.Map.t ref)
+     monad?).
+
+     [bound_inputs]: see the doc of [bound_inputs] *)
+-let einput_to_texpr (ctx : bs_ctx) (ectx : C.eval_ctx) (rids : T.RegionId.Set.t)
+-    (bound_inputs : bound_borrows_loans)
++let einput_to_texpr (ctx : bs_ctx) (ectx : C.eval_ctx)
++    (rids : T.borrow_region_set) (bound_inputs : bound_borrows_loans)
+     (fvar_to_texpr : texpr V.AbsFVarId.Map.t ref) (abs_level : abs_level)
+     (input : V.tevalue) : bs_ctx * bool * texpr =
+   [%ldebug
+     "- rids: "
+-    ^ T.RegionId.Set.to_string None rids
++    ^ T.BorrowRegionSet.to_string None rids
+     ^ "\n- input: "
+     ^ tevalue_to_string ctx input];
+   [%cassert] ctx.span (abs_level = 0) "Unimplemented";
+   let span = ctx.span in
+-  let rec to_texpr_aux ~(filter : bool) (rids : T.RegionId.Set.t)
++  let rec to_texpr_aux ~(filter : bool) (rids : T.borrow_region_set)
+       (current_level : abs_level) (ctx : bs_ctx) (input : V.tevalue) :
+       bs_ctx * bool * texpr option =
+     [%ldebug
+@@ -859,18 +859,18 @@ let einput_to_texpr (ctx : bs_ctx) (ectx : C.eval_ctx) (rids : T.RegionId.Set.t)
+         let r, _, _ = TypesUtils.ty_as_ref input.ty in
+         let keep_region (r : T.region) =
+           match r with
+-          | T.RVar (Free rid) -> T.RegionId.Set.mem rid rids
+-          | _ -> false
++          | T.RStatic | T.RVar (Free _) -> TypesUtils.region_in_set r rids
++          | T.RVar (Bound _) | T.RErased | T.RBody _ -> false
+         in
+         let filter = if keep_region r then false else filter in
+         to_texpr ~filter rids ctx inner
+-  and to_texpr ~(filter : bool) (rids : T.RegionId.Set.t) (ctx : bs_ctx)
++  and to_texpr ~(filter : bool) (rids : T.borrow_region_set) (ctx : bs_ctx)
+       (input : V.tevalue) : bs_ctx * bool * texpr option =
+     let e = to_texpr_aux ~filter rids 0 ctx input in
+     [%ldebug
+       let _, _, e = e in
+       "- rids: "
+-      ^ T.RegionId.Set.to_string None rids
++      ^ T.BorrowRegionSet.to_string None rids
+       ^ "\n- input:\n"
+       ^ tevalue_to_string ctx input
+       ^ "\n\n- resulting expr:\n"
+@@ -890,7 +890,7 @@ let einput_to_texpr (ctx : bs_ctx) (ectx : C.eval_ctx) (rids : T.RegionId.Set.t)
+     We need this to fix the order of the *inputs*: the *avalues* act as a
+     function signature, while the order of the borrows inside the *evalues* is
+     arbitrary. *)
+-let register_inputs (ctx : bs_ctx) (rids : T.RegionId.Set.t)
++let register_inputs (ctx : bs_ctx) (rids : T.borrow_region_set)
+     (avl : V.tavalue list) : bound_borrows_loans * fvar list =
+   let span = ctx.span in
+   let type_infos = ctx.type_ctx.type_infos in
+@@ -900,8 +900,8 @@ let register_inputs (ctx : bs_ctx) (rids : T.RegionId.Set.t)
+   let fvars = ref [] in
+   let keep_region (r : T.region) =
+     match r with
+-    | T.RVar (Free rid) -> T.RegionId.Set.mem rid rids
+-    | _ -> false
++    | T.RStatic | T.RVar (Free _) -> TypesUtils.region_in_set r rids
++    | T.RVar (Bound _) | T.RErased | T.RBody _ -> false
+   in
+   let fresh_fvar (ty : T.ty) : texpr =
+     let ctx', fvar = fresh_var_llbc_ty None ty !ctx in
+@@ -976,7 +976,7 @@ let register_inputs (ctx : bs_ctx) (rids : T.RegionId.Set.t)
+     function signature. The signature should be contained within the abstraction
+     continuation. *)
+ let register_outputs (ctx : bs_ctx) (bound_outputs : bound_borrows_loans)
+-    (rids : T.RegionId.Set.t) (avl : V.tavalue list) : texpr list =
++    (rids : T.borrow_region_set) (avl : V.tavalue list) : texpr list =
+   [%ltrace
+     "- bound_outputs:\n"
+     ^ bound_borrows_loans_to_string ctx bound_outputs
+@@ -987,8 +987,8 @@ let register_outputs (ctx : bs_ctx) (bound_outputs : bound_borrows_loans)
+   let outputs = ref [] in
+   let keep_region (r : T.region) =
+     match r with
+-    | T.RVar (Free rid) -> T.RegionId.Set.mem rid rids
+-    | _ -> false
++    | T.RStatic | T.RVar (Free _) -> TypesUtils.region_in_set r rids
++    | T.RVar (Bound _) | T.RErased | T.RBody _ -> false
+   in
+   let add_symbolic (sv_id : SymbolicValueId.id) (proj_ty : T.ty) : unit =
+     let norm_proj_ty = InterpBorrowsCore.normalize_proj_ty rids proj_ty in
+@@ -1109,7 +1109,7 @@ let translate_abs_to_cont (ctx : bs_ctx) (ectx : C.eval_ctx) (abs : V.abs) :
+       | _ -> [%internal_error] ctx.span)
+
+ let rec tevalue_to_given_back_aux ~(filter : bool)
+-    (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level)
+     (current_level : abs_level) (mp : mplace option) (ev : V.tevalue)
+     (ctx : bs_ctx) : bs_ctx * tpat option =
+   let (ctx, value) : _ * tpat option =
+@@ -1150,7 +1150,7 @@ let rec tevalue_to_given_back_aux ~(filter : bool)
+   (ctx, value)
+
+ and adt_evalue_to_given_back_aux ~(filter : bool)
+-    (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level)
+     (current_level : abs_level) (av : V.tevalue) (adt_v : V.adt_evalue)
+     (ctx : bs_ctx) : bs_ctx * tpat option =
+   let ctx, out =
+@@ -1231,7 +1231,7 @@ and eproj_to_given_back_aux (_abs_level : abs_level)
+       (ctx, Some pat)
+   | EEmpty | EProjLoans _ | EProjBorrows _ -> [%craise] ctx.span "Unreachable"
+
+-let tevalue_to_given_back (abs_regions : T.RegionId.Set.t)
++let tevalue_to_given_back (abs_regions : T.borrow_region_set)
+     (abs_level : abs_level) (mp : mplace option) (v : V.tevalue) (ctx : bs_ctx)
+     : bs_ctx * tpat option =
+   (* Check if the value was generated from a borrow projector: if yes, and if
+diff --git a/symbolic/SymbolicToPureExpressions.ml b/symbolic/SymbolicToPureExpressions.ml
+index bbfbfda9..e4f85edd 100644
+--- a/symbolic/SymbolicToPureExpressions.ml
++++ b/symbolic/SymbolicToPureExpressions.ml
+@@ -869,6 +869,7 @@ and translate_end_abs (ectx : C.eval_ctx) (abs : V.abs)
+     (abs_level : V.abs_level) (e : S.expr) (ctx : bs_ctx) : texpr =
+   [%ltrace "abstraction kind: " ^ V.show_abs_kind abs.kind];
+   match abs.kind with
++  | V.StaticLifetime -> [%craise] ctx.span "A static lifetime owner cannot end"
+   | V.SynthInput rg_id ->
+       translate_end_abstraction_synth_input ectx abs e ctx rg_id abs_level
+   | V.FunCall (call_id, _) ->
+diff --git a/symbolic/SymbolicToPureValues.ml b/symbolic/SymbolicToPureValues.ml
+index ac2f5766..8bc6455b 100644
+--- a/symbolic/SymbolicToPureValues.ml
++++ b/symbolic/SymbolicToPureValues.ml
+@@ -180,9 +180,9 @@ type proj_kind =
+           sure *)
+ [@@deriving show]
+
+-let compute_tavalue_proj_kind span type_infos (abs_regions : T.RegionId.Set.t)
+-    (abs_level : abs_level) (current_level : abs_level) (av : V.tavalue) :
+-    proj_kind =
++let compute_tavalue_proj_kind span type_infos
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level)
++    (current_level : abs_level) (av : V.tavalue) : proj_kind =
+   let has_borrows = ref false in
+   let has_mut_borrows = ref false in
+   let has_loans = ref false in
+@@ -203,8 +203,8 @@ let compute_tavalue_proj_kind span type_infos (abs_regions : T.RegionId.Set.t)
+
+   let keep_region (r : T.region) =
+     match r with
+-    | T.RVar (Free rid) -> T.RegionId.Set.mem rid abs_regions
+-    | _ -> false
++    | T.RStatic | T.RVar (Free _) -> TypesUtils.region_in_set r abs_regions
++    | T.RVar (Bound _) | T.RErased | T.RBody _ -> false
+   in
+   let ty_has_mut_region =
+     TypesUtils.ty_has_mut_borrow_for_region_in_pred type_infos keep_region
+@@ -412,8 +412,9 @@ let gtranslate_adt_fields ~(project_borrows : bool)
+                                   ^^
+     ]} *)
+ let rec tavalue_to_consumed_aux ~(filter : bool) (ctx : bs_ctx)
+-    (ectx : C.eval_ctx) (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
+-    (current_level : abs_level) (av : V.tavalue) : texpr option =
++    (ectx : C.eval_ctx) (abs_regions : T.borrow_region_set)
++    (abs_level : abs_level) (current_level : abs_level) (av : V.tavalue) :
++    texpr option =
+   let value =
+     match av.value with
+     | AAdt adt_v ->
+@@ -450,9 +451,9 @@ let rec tavalue_to_consumed_aux ~(filter : bool) (ctx : bs_ctx)
+   value
+
+ and adt_avalue_to_consumed_aux ~(filter : bool) (ctx : bs_ctx)
+-    (ectx : C.eval_ctx) (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
+-    (current_level : abs_level) (av : V.tavalue) (adt_v : V.adt_avalue) :
+-    texpr option =
++    (ectx : C.eval_ctx) (abs_regions : T.borrow_region_set)
++    (abs_level : abs_level) (current_level : abs_level) (av : V.tavalue)
++    (adt_v : V.adt_avalue) : texpr option =
+   let _, out =
+     gtranslate_adt_fields ~project_borrows:false (tavalue_to_string ctx)
+       (texpr_to_string ctx)
+@@ -475,8 +476,9 @@ and adt_avalue_to_consumed_aux ~(filter : bool) (ctx : bs_ctx)
+   Option.map snd out
+
+ and aloan_content_to_consumed_aux ~(filter : bool) (ctx : bs_ctx)
+-    (ectx : C.eval_ctx) (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
+-    (current_level : abs_level) (lc : V.aloan_content) : texpr option =
++    (ectx : C.eval_ctx) (abs_regions : T.borrow_region_set)
++    (abs_level : abs_level) (current_level : abs_level) (lc : V.aloan_content) :
++    texpr option =
+   match lc with
+   | AMutLoan (_, _, _) | ASharedLoan (_, _, _, _) ->
+       [%craise] ctx.span "Unreachable"
+@@ -533,8 +535,9 @@ and aloan_content_to_consumed_aux ~(filter : bool) (ctx : bs_ctx)
+       None
+
+ and aborrow_content_to_consumed_aux ~(filter : bool) (ctx : bs_ctx)
+-    (ectx : C.eval_ctx) (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
+-    (current_level : abs_level) (bc : V.aborrow_content) : texpr option =
++    (ectx : C.eval_ctx) (abs_regions : T.borrow_region_set)
++    (abs_level : abs_level) (current_level : abs_level) (bc : V.aborrow_content)
++    : texpr option =
+   match bc with
+   | V.AMutBorrow (_, _, child) | V.AIgnoredMutBorrow (_, child) ->
+       (* Can happen with nested borrows, when ending sub-abstractions *)
+@@ -562,7 +565,7 @@ and aborrow_content_to_consumed_aux ~(filter : bool) (ctx : bs_ctx)
+   | V.AEndedSharedBorrow | V.AProjSharedBorrow _ ->
+       [%craise] ctx.span "Unimplemented"
+
+-and aproj_to_consumed_aux (ctx : bs_ctx) (_abs_regions : T.RegionId.Set.t)
++and aproj_to_consumed_aux (ctx : bs_ctx) (_abs_regions : T.borrow_region_set)
+     (abs_level : abs_level) (current_level : abs_level) (aproj : V.aproj)
+     (ty : T.ty) : texpr option =
+   match aproj with
+@@ -611,15 +614,15 @@ and aproj_to_consumed_aux (ctx : bs_ctx) (_abs_regions : T.RegionId.Set.t)
+   | AEmpty | AProjLoans _ | AProjBorrows _ -> [%craise] ctx.span "Unreachable"
+
+ let tavalue_to_consumed (ctx : bs_ctx) (ectx : C.eval_ctx)
+-    (abs_regions : T.RegionId.Set.t) (abs_level : abs_level) (av : V.tavalue) :
+-    texpr option =
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level) (av : V.tavalue)
++    : texpr option =
+   (* Check if the value was generated from a loan projector: if yes, and if
+      it contains mutable loans, then we generate a consumed value (because
+      upon ending the borrow we consumed a value).
+      Otherwise we ignore it. *)
+   [%ltrace
+     "Projecting abs_regions: "
+-    ^ T.RegionId.Set.to_string None abs_regions
++    ^ T.BorrowRegionSet.to_string None abs_regions
+     ^ ":\n"
+     ^ tavalue_to_string ~with_ended:true ctx av
+     ^ "\n<: " ^ ty_to_string ctx av.ty];
+@@ -717,7 +720,7 @@ type borrow_or_symbolic_id =
+       [bs_ctx.mut_borrow_to_consumed]).
+     - the pattern *)
+ let rec tavalue_to_given_back_aux ~(filter : bool)
+-    (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level)
+     (current_level : abs_level) (mp : mplace option) (av : V.tavalue)
+     (ctx : bs_ctx) : bs_ctx * tpat option =
+   [%ldebug
+@@ -755,7 +758,7 @@ let rec tavalue_to_given_back_aux ~(filter : bool)
+   (ctx, value)
+
+ and adt_avalue_to_given_back_aux ~(filter : bool)
+-    (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level)
+     (current_level : abs_level) (av : V.tavalue) (adt_v : V.adt_avalue)
+     (ctx : bs_ctx) : bs_ctx * tpat option =
+   let ctx, out =
+@@ -779,7 +782,7 @@ and adt_avalue_to_given_back_aux ~(filter : bool)
+   (ctx, Option.map snd out)
+
+ and aloan_content_to_given_back_aux ~(filter : bool)
+-    (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level)
+     (current_level : abs_level) (mp : mplace option) (lc : V.aloan_content)
+     (ctx : bs_ctx) : bs_ctx * tpat option =
+   match lc with
+@@ -806,7 +809,7 @@ and aloan_content_to_given_back_aux ~(filter : bool)
+   | V.AIgnoredSharedLoan _ -> (ctx, None)
+
+ and aborrow_content_to_given_back_aux ~(filter : bool)
+-    (abs_regions : T.RegionId.Set.t) (abs_level : abs_level)
++    (abs_regions : T.borrow_region_set) (abs_level : abs_level)
+     (current_level : abs_level) (mp : mplace option) (bc : V.aborrow_content)
+     (ty : T.ty) (ctx : bs_ctx) : bs_ctx * tpat option =
+   match bc with
+@@ -889,7 +892,7 @@ and aproj_to_given_back_aux (_abs_level : abs_level)
+       (ctx, Some pat)
+   | AEmpty | AProjLoans _ | AProjBorrows _ -> [%craise] ctx.span "Unreachable"
+
+-let tavalue_to_given_back (abs_regions : T.RegionId.Set.t)
++let tavalue_to_given_back (abs_regions : T.borrow_region_set)
+     (abs_level : abs_level) (mp : mplace option) (v : V.tavalue) (ctx : bs_ctx)
+     : bs_ctx * tpat option =
+   (* Check if the value was generated from a borrow projector: if yes, and if
