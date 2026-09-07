@@ -4,6 +4,11 @@ Work in progress, not imported by Rumoca's translator package. This source is
 an extraction building block, **not** a completed Charon/Aeneas repair or a
 proof premise. The live translators and Rumoca's branded types are unchanged.
 
+The subsequent [early query collector](collection.md) retains these observations
+across compiler queries, with explicit invocation ownership and missing/error
+states. It is still an unadopted integration building block, not a method-contract
+or cross-crate transport implementation.
+
 ## Implemented boundary
 
 `src/lib.rs` constructs owned observations from one rustc

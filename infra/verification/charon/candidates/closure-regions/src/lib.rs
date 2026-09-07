@@ -2,8 +2,10 @@
 
 extern crate rustc_borrowck;
 extern crate rustc_hir;
+extern crate rustc_interface;
 extern crate rustc_middle;
 
+pub mod collection;
 mod positions;
 
 use positions::match_positions;

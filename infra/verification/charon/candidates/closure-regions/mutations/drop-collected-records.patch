@@ -1,0 +1,11 @@
+diff --git a/src/collection.rs b/src/collection.rs
+--- a/src/collection.rs
++++ b/src/collection.rs
+@@ -159,6 +159,7 @@ fn collect_query<'tcx>(tcx: TyCtxt<'tcx>, root: LocalDefId) -> ProvidedValue<'tcx> {
+     if let Some(error) = tcx.dcx().has_errors() {
+         return Err(error);
+     }
++    records.clear();
+     let mut collected = state
+         .records
+         .lock()
