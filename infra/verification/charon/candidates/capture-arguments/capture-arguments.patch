@@ -1,0 +1,1847 @@
+diff --git a/src/ast/type_level.rs b/src/ast/type_level.rs
+index 28c8ec3a..d042507a 100644
+--- a/src/ast/type_level.rs
++++ b/src/ast/type_level.rs
+@@ -5,6 +5,7 @@ use std::{collections::HashSet, mem};
+ 
+ use crate::ast::*;
+ 
++mod region_instantiation;
+ pub mod regions;
+ pub mod substitute;
+ pub mod trait_proofs;
+diff --git a/src/ast/type_level/region_instantiation.rs b/src/ast/type_level/region_instantiation.rs
+new file mode 100644
+index 00000000..05f2d61b
+--- /dev/null
++++ b/src/ast/type_level/region_instantiation.rs
+@@ -0,0 +1,333 @@
++use crate::ast::*;
++use crate::ids::IndexVec;
++use std::ops::ControlFlow::{Break, Continue};
++
++impl GenericParams {
++    /// Substitute all non-region arguments and an initial region-argument
++    /// prefix, binding the remaining regions in declaration order. Supplied
++    /// arguments are in the caller's scope, outside the returned binder.
++    pub fn bind_remaining_regions<T: TyVisitable>(
++        &self,
++        supplied: &GenericArgs,
++        value: T,
++    ) -> Result<RegionBinder<T>, GenericsMismatch> {
++        if supplied.regions.len() > self.regions.len() {
++            return Err(GenericsMismatch);
++        }
++        let regions: IndexVec<RegionId, RegionParam> = self
++            .regions
++            .iter()
++            .skip(supplied.regions.len())
++            .cloned()
++            .enumerate()
++            .map(|(index, mut param)| {
++                param.index = RegionId::from(index);
++                param
++            })
++            .collect();
++        let mut arguments = supplied.clone().move_under_binder();
++        arguments
++            .regions
++            .extend(regions.map_ref_indexed(|id, _| Region::Var(DeBruijnVar::new_at_zero(id))));
++        if !arguments.matches(self) {
++            return Err(GenericsMismatch);
++        }
++        Ok(RegionBinder {
++            regions,
++            skip_binder: value.try_substitute(&arguments)?,
++        })
++    }
++}
++
++/// Solves only the regions bound by one explicit binder. Ambient variables and
++/// variables under nested binders are never inference parameters here.
++struct RegionInstantiation {
++    depth: DeBruijnId,
++    arguments: IndexVec<RegionId, Option<Region>>,
++}
++
++impl Visitor for RegionInstantiation {
++    type Break = ();
++}
++
++impl ZipAst for RegionInstantiation {
++    fn visit_region(&mut self, pattern: &Region, value: &Region) -> ControlFlow<()> {
++        if let Region::Var(var) = pattern
++            && let Some(DeBruijnVar::Bound(depth, id)) = var.move_out_from_depth(self.depth)
++            && depth.is_zero()
++        {
++            let Some(argument) = (*value).move_from_under_binders(self.depth.incr()) else {
++                return Break(());
++            };
++            let Some(slot) = self.arguments.get_mut(id) else {
++                return Break(());
++            };
++            match slot {
++                Some(previous) if *previous != argument => return Break(()),
++                Some(_) => {}
++                None => *slot = Some(argument),
++            }
++            return Continue(());
++        }
++        if pattern == value {
++            Continue(())
++        } else {
++            Break(())
++        }
++    }
++
++    fn visit_region_binder<T: AstVisitable>(
++        &mut self,
++        pattern: &RegionBinder<T>,
++        value: &RegionBinder<T>,
++    ) -> ControlFlow<()> {
++        self.depth = self.depth.incr();
++        let result = self.visit_inner(pattern, value);
++        self.depth = self.depth.decr();
++        result
++    }
++
++    fn visit_binder<T: AstVisitable>(
++        &mut self,
++        pattern: &Binder<T>,
++        value: &Binder<T>,
++    ) -> ControlFlow<()> {
++        self.depth = self.depth.incr();
++        let result = self.visit_inner(pattern, value);
++        self.depth = self.depth.decr();
++        result
++    }
++}
++
++impl<T: TyVisitable + Clone + PartialEq> RegionBinder<T> {
++    /// Find a complete region instantiation yielding exactly `value`.
++    /// Structural search is followed by equality using ordinary substitution;
++    /// unassigned parameters, conflicts, and escaping bound regions refuse.
++    pub fn infer_region_arguments(&self, value: &T) -> Option<IndexVec<RegionId, Region>> {
++        let mut inference = RegionInstantiation {
++            depth: DeBruijnId::zero(),
++            arguments: self.regions.map_ref_indexed(|_, _| None),
++        };
++        if inference
++            .visit(&self.skip_binder, &value.clone().move_under_binder())
++            .is_break()
++        {
++            return None;
++        }
++        let arguments: IndexVec<RegionId, Region> =
++            inference.arguments.into_iter().collect::<Option<_>>()?;
++        (self.clone().apply(arguments.clone()) == *value).then_some(arguments)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn region(depth: usize, id: usize) -> Region {
++        Region::Var(DeBruijnVar::bound(
++            DeBruijnId::new(depth),
++            RegionId::from(id),
++        ))
++    }
++
++    fn binder<T>(count: usize, value: T) -> RegionBinder<T> {
++        RegionBinder {
++            regions: (0..count)
++                .map(|id| RegionParam::new(RegionId::from(id), None, Variance::Unknown))
++                .collect(),
++            skip_binder: value,
++        }
++    }
++
++    fn reference(lifetime: Region, value: Ty) -> Ty {
++        TyKind::Ref(lifetime, value, RefKind::Shared).into_ty()
++    }
++
++    fn byte() -> Ty {
++        TyKind::Literal(LiteralTy::UInt(UIntTy::U8)).into_ty()
++    }
++
++    #[test]
++    fn matches_root_region_and_preserves_distinct_arguments() {
++        assert_eq!(
++            binder(1, region(0, 0)).infer_region_arguments(&region(0, 3)),
++            Some(vec![region(0, 3)].into())
++        );
++        let pattern = binder(2, vec![region(0, 1), region(0, 0)]);
++        assert_eq!(
++            pattern.infer_region_arguments(&vec![region(0, 5), region(0, 2)]),
++            Some(vec![region(0, 2), region(0, 5)].into())
++        );
++    }
++
++    #[test]
++    fn rejects_incomplete_and_conflicting_arguments() {
++        assert!(
++            binder(2, vec![region(0, 0)])
++                .infer_region_arguments(&vec![Region::Static])
++                .is_none()
++        );
++        let repeated = binder(1, vec![region(0, 0), region(0, 0)]);
++        assert!(
++            repeated
++                .infer_region_arguments(&vec![region(0, 1), region(0, 2)])
++                .is_none()
++        );
++        assert_eq!(
++            repeated.infer_region_arguments(&vec![Region::Static, Region::Static]),
++            Some(vec![Region::Static].into())
++        );
++    }
++
++    #[test]
++    fn rejects_field_count_type_and_reference_kind_mismatches() {
++        let pattern = binder(1, vec![reference(region(0, 0), byte())]);
++        assert!(pattern.infer_region_arguments(&Vec::new()).is_none());
++        assert!(
++            pattern
++                .infer_region_arguments(&vec![reference(Region::Static, byte()); 2])
++                .is_none()
++        );
++        let boolean = TyKind::Literal(LiteralTy::Bool).into_ty();
++        assert!(
++            pattern
++                .infer_region_arguments(&vec![reference(Region::Static, boolean)])
++                .is_none()
++        );
++        let mutable = TyKind::Ref(Region::Static, byte(), RefKind::Mut).into_ty();
++        assert!(pattern.infer_region_arguments(&vec![mutable]).is_none());
++    }
++
++    #[test]
++    fn does_not_solve_ambient_variables_with_same_numeric_id() {
++        let pattern = binder(1, vec![region(1, 0), region(0, 0)]);
++        assert_eq!(
++            pattern.infer_region_arguments(&vec![region(0, 0), region(0, 7)]),
++            Some(vec![region(0, 7)].into())
++        );
++        assert!(
++            pattern
++                .infer_region_arguments(&vec![region(0, 1), region(0, 7)])
++                .is_none()
++        );
++    }
++
++    #[test]
++    fn matches_under_nested_binder_without_capturing_its_variables() {
++        let pattern = binder(1, binder(1, vec![region(0, 0), region(1, 0)]));
++        let value = binder(1, vec![region(0, 0), region(1, 4)]);
++        assert_eq!(
++            pattern.infer_region_arguments(&value),
++            Some(vec![region(0, 4)].into())
++        );
++        let escaping = binder(1, vec![region(0, 0), region(0, 0)]);
++        assert!(pattern.infer_region_arguments(&escaping).is_none());
++    }
++
++    #[test]
++    fn parent_type_substitution_does_not_introduce_inference_parameters() {
++        let fields = vec![reference(
++            region(0, 0),
++            TyKind::TypeVar(DeBruijnVar::new_at_zero(TypeVarId::from(0))).into_ty(),
++        )];
++        let parent_type = reference(region(0, 2), byte());
++        let mut arguments = GenericArgs::empty();
++        arguments
++            .types
++            .push(parent_type.clone().move_under_binder());
++        arguments.regions.push(region(0, 0));
++        let pattern = binder(1, fields.try_substitute(&arguments).unwrap());
++        assert_eq!(
++            pattern.infer_region_arguments(&vec![reference(region(0, 3), parent_type)]),
++            Some(vec![region(0, 3)].into())
++        );
++        let wrong_parent = reference(region(0, 9), byte());
++        assert!(
++            pattern
++                .infer_region_arguments(&vec![reference(region(0, 3), wrong_parent)])
++                .is_none()
++        );
++    }
++
++    #[test]
++    fn empty_binder_requires_exact_identity() {
++        assert_eq!(
++            binder(0, byte()).infer_region_arguments(&byte()),
++            Some(IndexVec::new())
++        );
++        assert!(
++            binder(0, region(1, 0))
++                .infer_region_arguments(&region(0, 1))
++                .is_none()
++        );
++    }
++
++    #[test]
++    fn declaration_prefix_and_capture_slots_survive_construction() {
++        let mut params = GenericParams::empty();
++        params.regions = binder(3, ()).regions;
++        let fields = vec![region(0, 0), region(0, 2), region(0, 1)];
++        let mut supplied = GenericArgs::empty();
++        supplied.regions.push(region(0, 8));
++        let pattern = params
++            .bind_remaining_regions(&supplied, fields.clone())
++            .unwrap();
++        let actual = vec![region(0, 8), region(0, 4), region(0, 6)];
++        let captures = pattern.infer_region_arguments(&actual).unwrap();
++        assert_eq!(captures, vec![region(0, 6), region(0, 4)].into());
++        supplied.regions.extend(captures);
++        assert_eq!(fields.try_substitute(&supplied).unwrap(), actual);
++    }
++
++    #[test]
++    fn partial_construction_refuses_wrong_generic_arities() {
++        let params = GenericParams::empty();
++        let mut supplied = GenericArgs::empty();
++        supplied.regions.push(Region::Static);
++        assert!(params.bind_remaining_regions(&supplied, byte()).is_err());
++        supplied.regions.clear();
++        supplied.types.push(byte());
++        assert!(params.bind_remaining_regions(&supplied, byte()).is_err());
++    }
++
++    #[test]
++    fn self_identity_reproduces_the_declaration_under_nested_binders() {
++        let mut params = GenericParams::empty();
++        params.regions = binder(2, ()).regions;
++        let fields = vec![reference(region(0, 0), reference(region(0, 1), byte()))];
++        for depth in 0..4 {
++            let depth = DeBruijnId::new(depth);
++            let arguments = params.identity_args_at_depth(depth);
++            assert_eq!(
++                fields.clone().try_substitute(&arguments).unwrap(),
++                fields.clone().move_under_binders(depth)
++            );
++        }
++    }
++
++    #[test]
++    fn generic_binders_preserve_bound_and_ambient_variables() {
++        let mut params = GenericParams::empty();
++        params.regions = binder(1, ()).regions;
++        let pattern = binder(
++            1,
++            Binder::new(
++                BinderKind::Other,
++                params.clone(),
++                vec![region(0, 0), region(1, 0)],
++            ),
++        );
++        let actual = Binder::new(
++            BinderKind::Other,
++            params.clone(),
++            vec![region(0, 0), region(1, 7)],
++        );
++        assert_eq!(
++            pattern.infer_region_arguments(&actual),
++            Some(vec![region(0, 7)].into())
++        );
++        let escaping = Binder::new(BinderKind::Other, params, vec![region(0, 0), region(0, 0)]);
++        assert!(pattern.infer_region_arguments(&escaping).is_none());
++    }
++}
+diff --git a/src/bin/charon-driver/translate/translate_crate.rs b/src/bin/charon-driver/translate/translate_crate.rs
+index b446e6da..4028c273 100644
+--- a/src/bin/charon-driver/translate/translate_crate.rs
++++ b/src/bin/charon-driver/translate/translate_crate.rs
+@@ -30,6 +30,36 @@ use charon_lib::options::{CliOpts, StartFrom, TranslateOptions};
+ use charon_lib::transform::TransformCtx;
+ use macros::VariantIndexArity;
+ 
++/// A closure reference includes its instantiated captures, not just its parent
++/// generics. Dropping those types loses the arguments of the closure ADT's extra
++/// lifetime parameters.
++#[derive(Clone, Copy)]
++pub(crate) enum ItemInstantiation<'a> {
++    Item(&'a hax::ItemRef),
++    Closure(&'a hax::ClosureArgs),
++}
++
++impl<'a> ItemInstantiation<'a> {
++    pub(crate) fn item(self) -> &'a hax::ItemRef {
++        match self {
++            Self::Item(item) => item,
++            Self::Closure(args) => &args.item,
++        }
++    }
++}
++
++impl<'a> From<&'a hax::ItemRef> for ItemInstantiation<'a> {
++    fn from(item: &'a hax::ItemRef) -> Self {
++        Self::Item(item)
++    }
++}
++
++impl<'a> From<&'a hax::ClosureArgs> for ItemInstantiation<'a> {
++    fn from(args: &'a hax::ClosureArgs) -> Self {
++        Self::Closure(args)
++    }
++}
++
+ /// The id of an untranslated item. Note that a given `DefId` may show up as multiple different
+ /// item sources, e.g. a constant will have both a `Global` version (for the constant itself) and a
+ /// `FunDecl` one (for its initializer function).
+@@ -676,13 +706,15 @@ impl<'tcx, 'ctx> ItemTransCtx<'tcx, 'ctx> {
+     }
+ 
+     /// Register this item and maybe enqueue it for translation.
+-    pub(crate) fn translate_item_maybe_enqueue<T: TryFrom<DeclRef<ItemId>>>(
++    pub(crate) fn translate_item_maybe_enqueue<'a, T: TryFrom<DeclRef<ItemId>>>(
+         &mut self,
+         span: Span,
+-        hax_item: &hax::ItemRef,
++        source: impl Into<ItemInstantiation<'a>>,
+         kind: TransItemSourceKind,
+         enqueue: bool,
+     ) -> Result<T, Error> {
++        let source = source.into();
++        let hax_item = source.item();
+         let hax_item = if kind.is_derived_item() {
+             // If the original item is an associated item we should ignore that and refer to it
+             // like a top-level item.
+@@ -721,22 +753,31 @@ impl<'tcx, 'ctx> ItemTransCtx<'tcx, 'ctx> {
+                     );
+                 }
+                 hax::FullDefKind::Closure { args, .. } => {
+-                    let upvar_regions = if self.item_src.def_id() == &args.item.def_id {
+-                        assert!(self.outermost_binder().closure_upvar_tys.is_some());
+-                        self.outermost_binder().closure_upvar_regions.len()
++                    if self.item_src.def_id() == &args.item.def_id {
++                        // A reference inside this closure uses the already-created
++                        // declaration parameters, including under nested binders.
++                        let identity = self
++                            .outermost_binder()
++                            .params
++                            .identity_args_at_depth(self.binding_levels.depth());
++                        generics.regions.extend(
++                            self.outermost_binder()
++                                .closure_upvar_regions
++                                .iter()
++                                .map(|id| identity.regions[*id]),
++                        );
+                     } else {
+-                        // If we're not translating a closure item, fetch the closure adt
+-                        // definition and add enough erased lifetimes to match its number of
+-                        // arguments.
+-                        let adt_decl_id: ItemId =
+-                            self.register_item(span, hax_item, TransItemSourceKind::Type);
+-                        let adt_decl = self.get_or_translate(adt_decl_id)?;
+-                        let adt_generics = adt_decl.generic_params();
+-                        adt_generics.regions.len() - generics.regions.len()
+-                    };
+-                    generics
+-                        .regions
+-                        .extend((0..upvar_regions).map(|_| self.translate_erased_region()));
++                        let ItemInstantiation::Closure(closure) = source else {
++                            raise_error!(
++                                self,
++                                span,
++                                "Closure reference is missing its instantiated capture types"
++                            )
++                        };
++                        let captures =
++                            self.translate_closure_capture_arguments(span, closure, &generics)?;
++                        generics.regions.extend(captures);
++                    }
+                     if let TransItemSourceKind::TraitImpl(TransImplSource::Callable(..))
+                     | TransItemSourceKind::VTableInstance(TransImplSource::Callable(..))
+                     | TransItemSourceKind::VTableInstanceInitializer(
+@@ -801,33 +842,35 @@ impl<'tcx, 'ctx> ItemTransCtx<'tcx, 'ctx> {
+     /// Note: for `FnPtr`s use `translate_fn_ptr` instead, as this handles late-bound variables
+     /// correctly. For `TypeDeclRef`s use `translate_type_decl_ref` instead, as this correctly
+     /// recognizes built-in types.
+-    pub(crate) fn translate_item<T: TryFrom<DeclRef<ItemId>>>(
++    pub(crate) fn translate_item<'a, T: TryFrom<DeclRef<ItemId>>>(
+         &mut self,
+         span: Span,
+-        item: &hax::ItemRef,
++        item: impl Into<ItemInstantiation<'a>>,
+         kind: TransItemSourceKind,
+     ) -> Result<T, Error> {
+         self.translate_item_maybe_enqueue(span, item, kind, true)
+     }
+ 
+     /// Translate a type def id
+-    pub(crate) fn translate_type_decl_ref(
++    pub(crate) fn translate_type_decl_ref<'a>(
+         &mut self,
+         span: Span,
+-        item: &hax::ItemRef,
++        item: impl Into<ItemInstantiation<'a>>,
+     ) -> Result<TypeDeclRef, Error> {
+         self.translate_type_decl_ref_maybe_enqueue(span, item, TransItemSourceKind::Type, true)
+     }
+ 
+     /// Register a type item and maybe enqueue it for translation. Use this to
+     /// obtain a `TypeDeclRef`, don't construct one manually.
+-    pub(crate) fn translate_type_decl_ref_maybe_enqueue(
++    pub(crate) fn translate_type_decl_ref_maybe_enqueue<'a>(
+         &mut self,
+         span: Span,
+-        item: &hax::ItemRef,
++        source: impl Into<ItemInstantiation<'a>>,
+         kind: TransItemSourceKind,
+         enqueue: bool,
+     ) -> Result<TypeDeclRef, Error> {
++        let source = source.into();
++        let item = source.item();
+         let builtin = match kind {
+             TransItemSourceKind::Type => self.recognize_builtin_type(item),
+             _ => None,
+@@ -843,7 +886,7 @@ impl<'tcx, 'ctx> ItemTransCtx<'tcx, 'ctx> {
+             });
+         }
+         let item_ref: DeclRef<ItemId> =
+-            self.translate_item_maybe_enqueue(span, item, kind, enqueue)?;
++            self.translate_item_maybe_enqueue(span, source, kind, enqueue)?;
+         assert!(item_ref.trait_ref.is_none());
+         Ok(TypeDeclRef {
+             id: item_ref.id.try_into().unwrap(),
+@@ -997,10 +1040,10 @@ impl<'tcx, 'ctx> ItemTransCtx<'tcx, 'ctx> {
+         self.translate_item(span, item, TransItemSourceKind::TraitDecl)
+     }
+ 
+-    pub(crate) fn translate_trait_impl_ref(
++    pub(crate) fn translate_trait_impl_ref<'a>(
+         &mut self,
+         span: Span,
+-        item: &hax::ItemRef,
++        item: impl Into<ItemInstantiation<'a>>,
+         kind: TransImplSource,
+     ) -> Result<TraitImplRef, Error> {
+         self.translate_item(span, item, TransItemSourceKind::TraitImpl(kind))
+diff --git a/src/bin/charon-driver/translate/translate_closures.rs b/src/bin/charon-driver/translate/translate_closures.rs
+index 802fa32a..7d30e135 100644
+--- a/src/bin/charon-driver/translate/translate_closures.rs
++++ b/src/bin/charon-driver/translate/translate_closures.rs
+@@ -45,7 +45,7 @@ use crate::hax;
+ use itertools::Itertools;
+ use std::mem;
+ 
+-use super::translate_crate::TransItemSourceKind;
++use super::translate_crate::{ItemInstantiation, TransItemSourceKind};
+ use super::translate_ctx::*;
+ use charon_lib::ullbc_ast::*;
+ 
+@@ -69,6 +69,13 @@ enum Callable<'a> {
+ }
+ 
+ impl<'a> Callable<'a> {
++    fn instantiation(self) -> ItemInstantiation<'a> {
++        match self {
++            Callable::Closure(args) => args.into(),
++            Callable::FnDef { item, .. } => item.into(),
++        }
++    }
++
+     fn item(self) -> &'a hax::ItemRef {
+         match self {
+             Callable::Closure(args) => &args.item,
+@@ -187,7 +194,7 @@ impl<'tcx> ItemTransCtx<'tcx, '_> {
+                 or `translate_callable_bound_ref_with_method_bound` instead"
+             )
+         }
+-        let dref: DeclRef<ItemId> = self.translate_item(span, callable.item(), kind)?;
++        let dref: DeclRef<ItemId> = self.translate_item(span, callable.instantiation(), kind)?;
+         self.translate_region_binder(span, callable.sig(), |ctx, _| {
+             let mut dref = dref.move_under_binder();
+             // The regions for these item kinds have the fn late bound regions at the end.
+@@ -211,7 +218,7 @@ impl<'tcx> ItemTransCtx<'tcx, '_> {
+     fn translate_callable_bound_ref_with_method_bound(
+         &mut self,
+         span: Span,
+-        item: &hax::ItemRef,
++        item: ItemInstantiation<'_>,
+         kind: TransItemSourceKind,
+         target_kind: ClosureKind,
+     ) -> Result<RegionBinder<DeclRef<ItemId>>, Error> {
+@@ -250,7 +257,48 @@ impl<'tcx> ItemTransCtx<'tcx, '_> {
+         span: Span,
+         closure: &hax::ClosureArgs,
+     ) -> Result<TypeDeclRef, Error> {
+-        self.translate_type_decl_ref(span, &closure.item)
++        self.translate_type_decl_ref(span, closure)
++    }
++
++    /// Instantiate precisely the regions introduced by the closure declaration
++    /// for its captures. Parent type arguments are substituted before matching,
++    /// so regions inside an instantiated `T` cannot become new upvar parameters.
++    pub(crate) fn translate_closure_capture_arguments(
++        &mut self,
++        span: Span,
++        closure: &hax::ClosureArgs,
++        parent_args: &GenericArgs,
++    ) -> Result<IndexVec<RegionId, Region>, Error> {
++        let decl_id = self.register_item(span, &closure.item, TransItemSourceKind::Type);
++        let ItemRef::Type(decl) = self.get_or_translate(decl_id)? else {
++            raise_error!(self, span, "Closure capture declaration is not a type")
++        };
++        let TypeDeclKind::Struct(fields) = &decl.kind else {
++            raise_error!(
++                self,
++                span,
++                "Closure capture declaration has no structural fields"
++            )
++        };
++        let fields: IndexVec<FieldId, Ty> = fields.iter().map(|field| field.ty.clone()).collect();
++        // translate_item_generics appends capture parameters after inherited
++        // parent parameters. Keep the prefix supplied; bind only that suffix.
++        let Ok(pattern) = decl.generics.bind_remaining_regions(parent_args, fields) else {
++            raise_error!(
++                self,
++                span,
++                "Closure capture arguments do not match declaration parameters"
++            )
++        };
++        let actual = self.translate_closure_upvar_tys(span, closure)?;
++        let Some(arguments) = pattern.infer_region_arguments(&actual) else {
++            raise_error!(
++                self,
++                span,
++                "Closure captures are not a complete region instantiation of their declaration"
++            )
++        };
++        Ok(arguments)
+     }
+ 
+     /// For stateless closures, translate a function reference to the top-level function that
+@@ -289,10 +337,10 @@ impl<'tcx> ItemTransCtx<'tcx, '_> {
+     }
+ 
+     /// Translate a reference to the chosen callable impl.
+-    pub fn translate_callable_impl_ref(
++    pub fn translate_callable_impl_ref<'a>(
+         &mut self,
+         span: Span,
+-        item: &hax::ItemRef,
++        item: impl Into<ItemInstantiation<'a>>,
+         target_kind: ClosureKind,
+     ) -> Result<TraitImplRef, Error> {
+         self.translate_item(
+@@ -344,9 +392,9 @@ impl<'tcx> ItemTransCtx<'tcx, '_> {
+         })
+     }
+ 
+-    /// Translate the types of the captured variables. Should be called only in
+-    /// `translate_item_generics`. If you need these types, fetch them in
+-    /// `outermost_binder().closure_upvar_tys`.
++    /// Translate capture types at a declaration or an instantiation site. Inside
++    /// the closure itself, use `outermost_binder().closure_upvar_tys` instead:
++    /// those types already contain the declaration's upvar parameters.
+     pub fn translate_closure_upvar_tys(
+         &mut self,
+         span: Span,
+@@ -555,7 +603,7 @@ impl<'tcx> ItemTransCtx<'tcx, '_> {
+                     def.this(),
+                     TransItemSourceKind::CallableMethod(closure_kind),
+                 );
+-                let impl_ref = self.translate_callable_impl_ref(span, &args.item, closure_kind)?;
++                let impl_ref = self.translate_callable_impl_ref(span, args, closure_kind)?;
+                 // TODO: make a trait call to avoid needing to concatenate things ourselves.
+                 // TODO: can we ask hax for the trait ref?
+                 let fn_op = FnOperand::Regular(FnPtr::new(
+@@ -676,7 +724,8 @@ impl<'tcx> ItemTransCtx<'tcx, '_> {
+         let implemented_trait = self.translate_trait_predicate(span, &vimpl.trait_pred)?;
+         let method_id = self.translate_trait_method_id(implemented_trait.id, &vimpl.methods[0])?;
+ 
+-        let impl_ref = self.translate_callable_impl_ref(span, callable.item(), target_kind)?;
++        let impl_ref =
++            self.translate_callable_impl_ref(span, callable.instantiation(), target_kind)?;
+         let src = FunSource::TraitImpl {
+             impl_ref,
+             trait_ref: implemented_trait.clone(),
+@@ -741,7 +790,7 @@ impl<'tcx> ItemTransCtx<'tcx, '_> {
+             let bound_method_ref: RegionBinder<DeclRef<ItemId>> = self
+                 .translate_callable_bound_ref_with_method_bound(
+                     span,
+-                    callable.item(),
++                    callable.instantiation(),
+                     kind,
+                     target_kind,
+                 )?;
+@@ -806,8 +855,7 @@ impl<'tcx> ItemTransCtx<'tcx, '_> {
+                 def.this(),
+                 TransItemSourceKind::CallableMethod(ClosureKind::FnOnce),
+             );
+-            let impl_ref =
+-                self.translate_callable_impl_ref(span, &closure.item, ClosureKind::FnOnce)?;
++            let impl_ref = self.translate_callable_impl_ref(span, closure, ClosureKind::FnOnce)?;
+             let fn_op = FnOperand::Regular(FnPtr::new(fun_id.into(), impl_ref.generics.clone()));
+ 
+             let mut builder = BodyBuilder::new(span, signature.inputs.len());
+diff --git a/src/bin/charon-driver/translate/translate_predicates.rs b/src/bin/charon-driver/translate/translate_predicates.rs
+index 8235facd..b33a3da5 100644
+--- a/src/bin/charon-driver/translate/translate_predicates.rs
++++ b/src/bin/charon-driver/translate/translate_predicates.rs
+@@ -1,3 +1,4 @@
++use super::translate_crate::ItemInstantiation;
+ use super::translate_ctx::*;
+ use crate::hax;
+ use charon_lib::{ast::*, ids::IndexVec};
+@@ -362,17 +363,17 @@ impl<'tcx, 'ctx> ItemTransCtx<'tcx, 'ctx> {
+                         TraitRefKind::TraitImpl(impl_ref)
+                     }
+                     hax::BuiltinTraitData::Destruct(DestructData::Glue { ty, .. }) => {
+-                        let (hax::TyKind::Adt(item)
+-                        | hax::TyKind::Closure(hax::ClosureArgs { item, .. })
+-                        | hax::TyKind::Array(item)
+-                        | hax::TyKind::Slice(item)
+-                        | hax::TyKind::Tuple(item)) = ty.kind()
+-                        else {
+-                            raise_error!(
++                        let item = match ty.kind() {
++                            hax::TyKind::Closure(closure) => ItemInstantiation::Closure(closure),
++                            hax::TyKind::Adt(item)
++                            | hax::TyKind::Array(item)
++                            | hax::TyKind::Slice(item)
++                            | hax::TyKind::Tuple(item) => item.into(),
++                            _ => raise_error!(
+                                 self,
+                                 span,
+                                 "failed to translate drop glue for type {ty:?}"
+-                            )
++                            ),
+                         };
+                         TraitRefKind::TraitImpl(self.translate_trait_impl_ref(
+                             span,
+@@ -387,8 +388,10 @@ impl<'tcx, 'ctx> ItemTransCtx<'tcx, 'ctx> {
+                     ) if let Some(hax::GenericArg::Type(callable_ty)) =
+                         impl_source.pred.hax_skip_binder_ref().generic_args.first()
+                         && let Some(item) = match callable_ty.kind() {
+-                            hax::TyKind::Closure(closure_args) => Some(&closure_args.item),
+-                            hax::TyKind::FnDef { item, .. } => Some(item),
++                            hax::TyKind::Closure(closure_args) => {
++                                Some(ItemInstantiation::Closure(closure_args))
++                            }
++                            hax::TyKind::FnDef { item, .. } => Some(item.into()),
+                             _ => None,
+                         } =>
+                     {
+diff --git a/tests/closure_capture_regions.rs b/tests/closure_capture_regions.rs
+new file mode 100644
+index 00000000..24edb994
+--- /dev/null
++++ b/tests/closure_capture_regions.rs
+@@ -0,0 +1,55 @@
++use charon_lib::ast::*;
++
++mod util;
++
++#[test]
++fn closure_capture_fields_keep_the_selected_input_lifetime() -> anyhow::Result<()> {
++    let krate = util::translate_rust_text(
++        r#"
++        pub fn first<'a, 'b>(x: &'a u8, _y: &'b u8) -> impl Fn() -> u8 + 'a {
++            move || *x
++        }
++        pub fn second<'a, 'b>(_x: &'a u8, y: &'b u8) -> impl Fn() -> u8 + 'b {
++            move || *y
++        }
++        pub fn generic<'a, 'b, T>(_x: &'a u8, y: &'b T) -> impl Fn() -> &'b T {
++            move || y
++        }
++        "#,
++        &["--mir=optimized"],
++    )?;
++    for (name, input) in [("first", 0), ("second", 1), ("generic", 1)] {
++        let function = krate
++            .fun_decls
++            .iter()
++            .find(|function| {
++                util::repr_name(&krate, &function.item_meta.name) == format!("test_crate::{name}")
++            })
++            .expect("selected source function is present");
++        let TyKind::Ref(expected, _, _) = function.signature.inputs[input].kind() else {
++            panic!("selected source input must be a reference")
++        };
++        let TyKind::Adt(reference) = function.signature.output.kind() else {
++            panic!("source output must be its closure ADT")
++        };
++        let declaration = krate
++            .type_decls
++            .get(reference.id)
++            .expect("closure declaration is present");
++        let TypeDeclKind::Struct(fields) = &declaration.kind else {
++            panic!("closure declaration must expose its capture fields")
++        };
++        assert_eq!(fields.len(), 1);
++        let capture = fields[FieldId::from(0)]
++            .ty
++            .clone()
++            .try_substitute(&reference.generics)
++            .expect("closure reference instantiates its declaration");
++        let TyKind::Ref(actual, _, _) = capture.kind() else {
++            panic!("closure must retain its borrowed capture")
++        };
++        assert_eq!(actual, expected, "wrong input lifetime in {name}");
++        assert!(!matches!(actual, Region::Erased | Region::Body(_)));
++    }
++    Ok(())
++}
+diff --git a/tests/ui/simple/issue-988-closure-outlives.out b/tests/ui/simple/issue-988-closure-outlives.out
+index a69ed58c..8ec56149 100644
+--- a/tests/ui/simple/issue-988-closure-outlives.out
++++ b/tests/ui/simple/issue-988-closure-outlives.out
+@@ -140,7 +140,7 @@ pub fn call_fn_shared<'_0>(a: &'_0 [u8], i: usize) -> u8
+     storage_live(_7)
+     _7 = copy i
+     _6 = (move _7,)
+-    _0 = call<'12, '13>(move _5, move _6)
++    _0 = call<'14, '15>(move _5, move _6)
+     ↳⚡ storage_dead(i)
+         storage_dead(a)
+         unwind_continue
+@@ -202,8 +202,8 @@ fn call_once<'_0>(_1: closure<'_0>, _2: (usize,)) -> u8
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = call_mut<'_0, '4>(move _3, move _2)
+-    ↳⚡ drop[drop_glue<'_0, '7>] _1
++    _0 = call_mut<'_0, '2>(move _3, move _2)
++    ↳⚡ drop[drop_glue<'_0, '3>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -212,7 +212,7 @@ fn call_once<'_0>(_1: closure<'_0>, _2: (usize,)) -> u8
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[drop_glue<'_0, '10>] _1
++    drop[drop_glue<'_0, '4>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+diff --git a/tests/ui/simple/nested-closure-lifetime.out b/tests/ui/simple/nested-closure-lifetime.out
+index bce40e60..e33f5bb9 100644
+--- a/tests/ui/simple/nested-closure-lifetime.out
++++ b/tests/ui/simple/nested-closure-lifetime.out
+@@ -102,12 +102,13 @@ where
+ }
+ 
+ // Full name: test_crate::foo::{impl Fn<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call
+-fn {impl Fn<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call<'_0, '_1, '_2, '_3, T>(_1: &'_3 test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1], tupled_args: ()) -> test_crate::foo::closure::closure<'_, T>[TraitClause0, TraitClause1]
++fn {impl Fn<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call<'_0, '_1, '_2, '_3, T>(_1: &'_3 test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1], tupled_args: ()) -> test_crate::foo::closure::closure<'_2, T>[TraitClause0, TraitClause1]
+ where
+     TraitClause0: (T: Sized),
+     TraitClause1: (T: Clone),
+     TypeOutlives0: T: '_0,
+     TypeOutlives1: T: '_3,
++    TypeOutlives2: T: '_2,
+     RegionOutlives0: '_0: '_3,
+ {
+     let _0: test_crate::foo::closure::closure<'1, T>[TraitClause0, TraitClause1]; // return
+@@ -122,13 +123,13 @@ where
+ }
+ 
+ // Full name: test_crate::foo
+-fn foo<'a, T>(x: &'a T) -> test_crate::foo::closure::closure<'_, T>[TraitClause0, TraitClause1]
++fn foo<'a, T>(x: &'a T) -> test_crate::foo::closure::closure<'a, T>[TraitClause0, TraitClause1]
+ where
+     TraitClause0: (T: Sized),
+     TraitClause1: (T: Clone),
+     TypeOutlives0: T: 'a,
+ {
+-    let _0: test_crate::foo::closure::closure<'1, T>[TraitClause0, TraitClause1]; // return
++    let _0: test_crate::foo::closure::closure<'2, T>[TraitClause0, TraitClause1]; // return
+     let x: &'3 T; // arg #1
+     let f: test_crate::foo::closure<'5, T>[TraitClause0, TraitClause1]; // local
+     let _3: &'8 test_crate::foo::closure<'9, T>[TraitClause0, TraitClause1]; // anonymous local
+@@ -142,7 +143,7 @@ where
+     _3 = &f
+     storage_live(_4)
+     _4 = ()
+-    _0 = {impl Fn<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call<'13, '14, '15, '16, T>[TraitClause0, TraitClause1](move _3, move _4)
++    _0 = {impl Fn<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call<'15, '16, '17, '18, T>[TraitClause0, TraitClause1](move _3, move _4)
+     ↳⚡ storage_dead(x)
+         unwind_continue
+     storage_dead(_4)
+@@ -171,23 +172,24 @@ where
+ }
+ 
+ // Full name: test_crate::foo::{impl FnMut<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call_mut
+-fn {impl FnMut<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call_mut<'_0, '_1, '_2, '_3, T>(state: &'_3 mut test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1], args: ()) -> test_crate::foo::closure::closure<'_, T>[TraitClause0, TraitClause1]
++fn {impl FnMut<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call_mut<'_0, '_1, '_2, '_3, T>(state: &'_3 mut test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1], args: ()) -> test_crate::foo::closure::closure<'_2, T>[TraitClause0, TraitClause1]
+ where
+     TraitClause0: (T: Sized),
+     TraitClause1: (T: Clone),
+     TypeOutlives0: T: '_0,
+     TypeOutlives1: T: '_3,
++    TypeOutlives2: T: '_2,
+     RegionOutlives0: '_0: '_3,
+ {
+-    let _0: test_crate::foo::closure::closure<'0, T>[TraitClause0, TraitClause1]; // return
++    let _0: test_crate::foo::closure::closure<'_2, T>[TraitClause0, TraitClause1]; // return
+     let state: &'_3 mut test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]; // arg #1
+     let args: (); // arg #2
+-    let _3: &'1 test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]; // anonymous local
++    let _3: &'0 test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]; // anonymous local
+ 
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &(*state)
+-    _0 = {impl Fn<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call<'_0, '_1, '_2, '3, T>[TraitClause0, TraitClause1](move _3, move args)
++    _0 = {impl Fn<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call<'_0, '_1, '_2, '2, T>[TraitClause0, TraitClause1](move _3, move args)
+     ↳⚡ storage_dead(_3)
+         storage_dead(args)
+         storage_dead(state)
+@@ -199,11 +201,12 @@ where
+ }
+ 
+ // Full name: test_crate::foo::{impl FnOnce<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call_once
+-fn {impl FnOnce<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call_once<'_0, '_1, '_2, T>(_1: test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1], _2: ()) -> test_crate::foo::closure::closure<'_, T>[TraitClause0, TraitClause1]
++fn {impl FnOnce<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call_once<'_0, '_1, '_2, T>(_1: test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1], _2: ()) -> test_crate::foo::closure::closure<'_2, T>[TraitClause0, TraitClause1]
+ where
+     TraitClause0: (T: Sized),
+     TraitClause1: (T: Clone),
+     TypeOutlives0: T: '_0,
++    TypeOutlives1: T: '_2,
+ {
+     let _0: test_crate::foo::closure::closure<'1, T>[TraitClause0, TraitClause1]; // return
+     let _1: test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]; // arg #1
+@@ -213,8 +216,8 @@ where
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = {impl FnMut<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call_mut<'_0, '_1, '_2, '8, T>[TraitClause0, TraitClause1](move _3, move _2)
+-    ↳⚡ drop[{impl Destruct for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::drop_glue<'_0, '11, T>[TraitClause0, TraitClause1]] _1
++    _0 = {impl FnMut<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call_mut<'_0, '_1, '_2, '6, T>[TraitClause0, TraitClause1](move _3, move _2)
++    ↳⚡ drop[{impl Destruct for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::drop_glue<'_0, '7, T>[TraitClause0, TraitClause1]] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -223,7 +226,7 @@ where
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[{impl Destruct for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::drop_glue<'_0, '14, T>[TraitClause0, TraitClause1]] _1
++    drop[{impl Destruct for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::drop_glue<'_0, '8, T>[TraitClause0, TraitClause1]] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+@@ -375,8 +378,8 @@ where
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = {impl FnMut<()> for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}::call_mut<'_0, '_1, '6, T>[TraitClause0, TraitClause1](move _3, move _2)
+-    ↳⚡ drop[{impl Destruct for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}::drop_glue<'_0, '9, T>[TraitClause0, TraitClause1]] _1
++    _0 = {impl FnMut<()> for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}::call_mut<'_0, '_1, '4, T>[TraitClause0, TraitClause1](move _3, move _2)
++    ↳⚡ drop[{impl Destruct for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}::drop_glue<'_0, '5, T>[TraitClause0, TraitClause1]] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -385,7 +388,7 @@ where
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[{impl Destruct for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}::drop_glue<'_0, '12, T>[TraitClause0, TraitClause1]] _1
++    drop[{impl Destruct for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}::drop_glue<'_0, '6, T>[TraitClause0, TraitClause1]] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+diff --git a/tests/ui/simple/closure-with-remove-adt-clauses.out b/tests/ui/simple/closure-with-remove-adt-clauses.out
+index 3208a0d2..5c7a32ab 100644
+--- a/tests/ui/simple/closure-with-remove-adt-clauses.out
++++ b/tests/ui/simple/closure-with-remove-adt-clauses.out
+@@ -206,8 +206,8 @@ where
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = {impl FnMut<(), T> for test_crate::f::closure<'_0, T>}::call_mut<'_0, '4, T>[TraitClause0, TraitClause1](move _3, move _2)
+-    ↳⚡ drop[{impl Destruct for test_crate::f::closure<'_0, T>}::drop_glue<'_0, '7, T>[TraitClause0, TraitClause1]] _1
++    _0 = {impl FnMut<(), T> for test_crate::f::closure<'_0, T>}::call_mut<'_0, '2, T>[TraitClause0, TraitClause1](move _3, move _2)
++    ↳⚡ drop[{impl Destruct for test_crate::f::closure<'_0, T>}::drop_glue<'_0, '3, T>[TraitClause0, TraitClause1]] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -216,7 +216,7 @@ where
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[{impl Destruct for test_crate::f::closure<'_0, T>}::drop_glue<'_0, '10, T>[TraitClause0, TraitClause1]] _1
++    drop[{impl Destruct for test_crate::f::closure<'_0, T>}::drop_glue<'_0, '4, T>[TraitClause0, TraitClause1]] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+@@ -298,7 +298,7 @@ where
+ {
+     let _0: (); // return
+     let x: T; // arg #1
+-    let _c: test_crate::g::closure<'1, T>; // local
++    let _c: test_crate::g::closure<'2, T>; // local
+     let _3: &'3 T; // anonymous local
+ 
+     storage_live(_0)
+@@ -396,8 +396,8 @@ where
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = {impl FnMut<(), T> for test_crate::g::closure<'_0, T>}::call_mut<'_0, '4, T>[TraitClause0, TraitClause1](move _3, move _2)
+-    ↳⚡ drop[{impl Destruct for test_crate::g::closure<'_0, T>}::drop_glue<'_0, '7, T>[TraitClause0, TraitClause1]] _1
++    _0 = {impl FnMut<(), T> for test_crate::g::closure<'_0, T>}::call_mut<'_0, '2, T>[TraitClause0, TraitClause1](move _3, move _2)
++    ↳⚡ drop[{impl Destruct for test_crate::g::closure<'_0, T>}::drop_glue<'_0, '3, T>[TraitClause0, TraitClause1]] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -406,7 +406,7 @@ where
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[{impl Destruct for test_crate::g::closure<'_0, T>}::drop_glue<'_0, '10, T>[TraitClause0, TraitClause1]] _1
++    drop[{impl Destruct for test_crate::g::closure<'_0, T>}::drop_glue<'_0, '4, T>[TraitClause0, TraitClause1]] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+diff --git a/tests/ui/closures.out b/tests/ui/closures.out
+index bcf9aee6..f135d9cf 100644
+--- a/tests/ui/closures.out
++++ b/tests/ui/closures.out
+@@ -2596,8 +2596,8 @@ pub fn test_closure_capture(x: u32, y: u32) -> u32
+     let _0: u32; // return
+     let x: u32; // arg #1
+     let y: u32; // arg #2
+-    let f: &'5 test_crate::test_closure_capture::closure<'6, '7>; // local
+-    let _4: test_crate::test_closure_capture::closure<'8, '9>; // anonymous local
++    let f: &'6 test_crate::test_closure_capture::closure<'7, '8>; // local
++    let _4: test_crate::test_closure_capture::closure<'9, '10>; // anonymous local
+     let _5: &'11 u32; // anonymous local
+     let _6: &'12 u32; // anonymous local
+     let _7: &'13 test_crate::test_closure_capture::closure<'14, '15>; // anonymous local
+@@ -2619,7 +2619,7 @@ pub fn test_closure_capture(x: u32, y: u32) -> u32
+     _7 = &(*f)
+     storage_live(_8)
+     _8 = (const 0u32,)
+-    _0 = {impl Fn<(u32,), u32> for test_crate::test_closure_capture::closure<'_0, '_1>}::call<'24, '25, '26>(move _7, move _8)
++    _0 = {impl Fn<(u32,), u32> for test_crate::test_closure_capture::closure<'_0, '_1>}::call<'26, '27, '28>(move _7, move _8)
+     ↳⚡ storage_dead(y)
+         storage_dead(x)
+         unwind_continue
+@@ -2683,8 +2683,8 @@ fn {impl FnOnce<(u32,), u32> for test_crate::test_closure_capture::closure<'_0,
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = {impl FnMut<(u32,), u32> for test_crate::test_closure_capture::closure<'_0, '_1>}::call_mut<'_0, '_1, '6>(move _3, move _2)
+-    ↳⚡ drop[{impl Destruct for test_crate::test_closure_capture::closure<'_0, '_1>}::drop_glue<'_0, '_1, '11>] _1
++    _0 = {impl FnMut<(u32,), u32> for test_crate::test_closure_capture::closure<'_0, '_1>}::call_mut<'_0, '_1, '2>(move _3, move _2)
++    ↳⚡ drop[{impl Destruct for test_crate::test_closure_capture::closure<'_0, '_1>}::drop_glue<'_0, '_1, '3>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -2693,7 +2693,7 @@ fn {impl FnOnce<(u32,), u32> for test_crate::test_closure_capture::closure<'_0,
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[{impl Destruct for test_crate::test_closure_capture::closure<'_0, '_1>}::drop_glue<'_0, '_1, '16>] _1
++    drop[{impl Destruct for test_crate::test_closure_capture::closure<'_0, '_1>}::drop_glue<'_0, '_1, '4>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+@@ -3122,7 +3122,7 @@ fn test_fnmut_with_ref()
+ {
+     let _0: (); // return
+     let sum: usize; // local
+-    let closure: test_crate::test_fnmut_with_ref::closure<'1>; // local
++    let closure: test_crate::test_fnmut_with_ref::closure<'2>; // local
+     let _3: &'3 mut usize; // anonymous local
+     let _4: (); // anonymous local
+     let _5: &'6 mut test_crate::test_fnmut_with_ref::closure<'7>; // anonymous local
+@@ -3131,7 +3131,7 @@ fn test_fnmut_with_ref()
+     let _8: &'12 usize; // anonymous local
+     let _9: &'13 usize; // anonymous local
+     let _10: &'15 usize; // anonymous local
+-    let _11: &'25 usize; // anonymous local
++    let _11: &'27 usize; // anonymous local
+     let _12: usize; // anonymous local
+ 
+     storage_live(_10)
+@@ -3162,7 +3162,7 @@ fn test_fnmut_with_ref()
+     _8 = &(*_9)
+     _7 = &(*_8)
+     _6 = (move _7,)
+-    _4 = {impl FnMut<(&'_ usize,), ()> for test_crate::test_fnmut_with_ref::closure<'_0>}::call_mut<'22, '23, '24>(move _5, move _6)
++    _4 = {impl FnMut<(&'_ usize,), ()> for test_crate::test_fnmut_with_ref::closure<'_0>}::call_mut<'24, '25, '26>(move _5, move _6)
+     ↳⚡ storage_dead(_9)
+         unwind_continue
+     storage_dead(_7)
+@@ -3206,8 +3206,8 @@ fn {impl FnOnce<(&'_ usize,), ()> for test_crate::test_fnmut_with_ref::closure<'
+     storage_live(_3)
+     _0 = ()
+     _3 = &mut _1
+-    _0 = {impl FnMut<(&'_ usize,), ()> for test_crate::test_fnmut_with_ref::closure<'_0>}::call_mut<'_0, '_1, '9>(move _3, move _2)
+-    ↳⚡ drop[{impl Destruct for test_crate::test_fnmut_with_ref::closure<'_0>}::drop_glue<'_0, '12>] _1
++    _0 = {impl FnMut<(&'_ usize,), ()> for test_crate::test_fnmut_with_ref::closure<'_0>}::call_mut<'_0, '_1, '7>(move _3, move _2)
++    ↳⚡ drop[{impl Destruct for test_crate::test_fnmut_with_ref::closure<'_0>}::drop_glue<'_0, '8>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -3216,7 +3216,7 @@ fn {impl FnOnce<(&'_ usize,), ()> for test_crate::test_fnmut_with_ref::closure<'
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[{impl Destruct for test_crate::test_fnmut_with_ref::closure<'_0>}::drop_glue<'_0, '15>] _1
++    drop[{impl Destruct for test_crate::test_fnmut_with_ref::closure<'_0>}::drop_glue<'_0, '9>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+diff --git a/tests/ui/simple/lending-iterator-gat.out b/tests/ui/simple/lending-iterator-gat.out
+index ce0d0b87..39c64127 100644
+--- a/tests/ui/simple/lending-iterator-gat.out
++++ b/tests/ui/simple/lending-iterator-gat.out
+@@ -450,8 +450,8 @@ fn call_once<'_0, '_1>(_1: closure<'_0>, _2: (&'_1 i32,))
+     storage_live(_3)
+     _0 = ()
+     _3 = &mut _1
+-    _0 = call_mut<'_0, '_1, '9>(move _3, move _2)
+-    ↳⚡ drop[impl_Destruct_for_closure::drop_glue<'_0, '12>] _1
++    _0 = call_mut<'_0, '_1, '7>(move _3, move _2)
++    ↳⚡ drop[impl_Destruct_for_closure::drop_glue<'_0, '8>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -460,7 +460,7 @@ fn call_once<'_0, '_1>(_1: closure<'_0>, _2: (&'_1 i32,))
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[impl_Destruct_for_closure::drop_glue<'_0, '15>] _1
++    drop[impl_Destruct_for_closure::drop_glue<'_0, '9>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+@@ -502,7 +502,7 @@ pub fn main()
+     let sum: i32; // local
+     let _5: (); // anonymous local
+     let _6: Option<&'12 i32>[{built_in impl Sized for &'12 i32}]; // anonymous local
+-    let _7: closure<'17>; // anonymous local
++    let _7: closure<'18>; // anonymous local
+     let _8: &'19 mut i32; // anonymous local
+     let _9: (&'27 i32, &'28 i32); // anonymous local
+     let _10: &'32 i32; // anonymous local
+@@ -522,10 +522,10 @@ pub fn main()
+     let _24: &'51 i32; // anonymous local
+     let _25: &'52 i32; // anonymous local
+     let _26: &'53 i32; // anonymous local
+-    let _27: &'122 i32; // anonymous local
+-    let _28: &'136 i32; // anonymous local
++    let _27: &'127 i32; // anonymous local
++    let _28: &'141 i32; // anonymous local
+     let _29: i32; // anonymous local
+-    let _30: &'137 i32; // anonymous local
++    let _30: &'142 i32; // anonymous local
+     let _31: i32; // anonymous local
+ 
+     storage_live(_26)
+@@ -559,7 +559,7 @@ pub fn main()
+     _8 = &mut sum
+     _7 = closure { _0: move _8 }
+     storage_dead(_8)
+-    _5 = for_each<Option<&'71 i32>[{built_in impl Sized for &'71 i32}], closure<'73>>[{built_in impl Sized for Option<&'71 i32>[{built_in impl Sized for &'71 i32}]}, {built_in impl Sized for closure<'73>}, impl_LendingIterator_for_Option<'71, i32>[{built_in impl Sized for i32}], impl_FnMut_tuple_for_closure<'73, '120>](move _6, move _7)
++    _5 = for_each<Option<&'71 i32>[{built_in impl Sized for &'71 i32}], closure<'74>>[{built_in impl Sized for Option<&'71 i32>[{built_in impl Sized for &'71 i32}]}, {built_in impl Sized for closure<'74>}, impl_LendingIterator_for_Option<'71, i32>[{built_in impl Sized for i32}], impl_FnMut_tuple_for_closure<'74, '125>](move _6, move _7)
+     ↳⚡ storage_dead(_25)
+         storage_dead(_24)
+         storage_dead(_23)
+diff --git a/tests/ui/simple/closure-fn.out b/tests/ui/simple/closure-fn.out
+index 5294e88b..f911f2b5 100644
+--- a/tests/ui/simple/closure-fn.out
++++ b/tests/ui/simple/closure-fn.out
+@@ -288,8 +288,8 @@ fn call_once<'_0, '_1>(_1: closure<'_0, '_1>, _2: (u8, u8)) -> u8
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = call_mut<'_0, '_1, '6>(move _3, move _2)
+-    ↳⚡ drop[drop_glue<'_0, '_1, '11>] _1
++    _0 = call_mut<'_0, '_1, '2>(move _3, move _2)
++    ↳⚡ drop[drop_glue<'_0, '_1, '3>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -298,7 +298,7 @@ fn call_once<'_0, '_1>(_1: closure<'_0, '_1>, _2: (u8, u8)) -> u8
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[drop_glue<'_0, '_1, '16>] _1
++    drop[drop_glue<'_0, '_1, '4>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+@@ -346,7 +346,7 @@ fn main()
+     let _0: (); // return
+     let v: u8; // local
+     let z: u8; // local
+-    let f: closure<'2, '3>; // local
++    let f: closure<'3, '4>; // local
+     let _4: &'5 u8; // anonymous local
+     let _5: &'6 u8; // anonymous local
+     let _6: u8; // anonymous local
+@@ -383,7 +383,7 @@ fn main()
+     _7 = &f
+     storage_live(_8)
+     _8 = (const 10u8, const 20u8)
+-    _6 = call<'36, '37, '38>(move _7, move _8)
++    _6 = call<'38, '39, '40>(move _7, move _8)
+     ↳⚡ unwind_continue
+     storage_dead(_8)
+     storage_dead(_7)
+@@ -393,7 +393,7 @@ fn main()
+     storage_live(_11)
+     _11 = &f
+     _10 = &(*_11)
+-    _9 = apply_to<'62, closure<'43, '44>>[{built_in impl Sized for closure<'43, '44>}, impl_Fn_tuple_for_closure<'43, '44>](move _10)
++    _9 = apply_to<'69, closure<'46, '47>>[{built_in impl Sized for closure<'46, '47>}, impl_Fn_tuple_for_closure<'46, '47>](move _10)
+     ↳⚡ unwind_continue
+     storage_dead(_10)
+     storage_dead(_11)
+@@ -403,7 +403,7 @@ fn main()
+     storage_live(_14)
+     _14 = &mut f
+     _13 = &two-phase-mut (*_14)
+-    _12 = apply_to_mut<'86, closure<'67, '68>>[{built_in impl Sized for closure<'67, '68>}, impl_FnMut_tuple_for_closure<'67, '68>](move _13)
++    _12 = apply_to_mut<'98, closure<'75, '76>>[{built_in impl Sized for closure<'75, '76>}, impl_FnMut_tuple_for_closure<'75, '76>](move _13)
+     ↳⚡ unwind_continue
+     storage_dead(_13)
+     storage_dead(_14)
+@@ -411,7 +411,7 @@ fn main()
+     storage_live(_15)
+     storage_live(_16)
+     _16 = copy f
+-    _15 = apply_to_once<closure<'89, '90>>[{built_in impl Sized for closure<'89, '90>}, impl_FnOnce_tuple_for_closure<'89, '90>](move _16)
++    _15 = apply_to_once<closure<'102, '103>>[{built_in impl Sized for closure<'102, '103>}, impl_FnOnce_tuple_for_closure<'102, '103>](move _16)
+     ↳⚡ unwind_continue
+     storage_dead(_16)
+     storage_dead(_15)
+diff --git a/tests/ui/simple/issue-1040-closure-upvar-lifetime.out b/tests/ui/simple/issue-1040-closure-upvar-lifetime.out
+index 7df60e74..c1e93042 100644
+--- a/tests/ui/simple/issue-1040-closure-upvar-lifetime.out
++++ b/tests/ui/simple/issue-1040-closure-upvar-lifetime.out
+@@ -164,8 +164,8 @@ fn call_once<'_0, '_1>(_1: closure<'_0>, _2: ()) -> &'_1 u8
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = call_mut<'_0, '_1, '6>(move _3, move _2)
+-    ↳⚡ drop[drop_glue<'_0, '9>] _1
++    _0 = call_mut<'_0, '_1, '4>(move _3, move _2)
++    ↳⚡ drop[drop_glue<'_0, '5>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -174,7 +174,7 @@ fn call_once<'_0, '_1>(_1: closure<'_0>, _2: ()) -> &'_1 u8
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[drop_glue<'_0, '12>] _1
++    drop[drop_glue<'_0, '6>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+diff --git a/tests/ui/simple/closure-with-non-upvar-lifetime.out b/tests/ui/simple/closure-with-non-upvar-lifetime.out
+index 180595bc..f985ada6 100644
+--- a/tests/ui/simple/closure-with-non-upvar-lifetime.out
++++ b/tests/ui/simple/closure-with-non-upvar-lifetime.out
+@@ -130,7 +130,7 @@ fn call_fn<'_0>(a: &'_0 [u8], i: usize) -> u8
+     let _0: u8; // return
+     let a: &'1 [u8]; // arg #1
+     let i: usize; // arg #2
+-    let read: closure<'4, '5>; // local
++    let read: closure<'6, '7>; // local
+     let _4: &'8 &'9 [u8]; // anonymous local
+     let _5: &'13 closure<'14, '15>; // anonymous local
+     let _6: (usize,); // anonymous local
+@@ -149,7 +149,7 @@ fn call_fn<'_0>(a: &'_0 [u8], i: usize) -> u8
+     storage_live(_7)
+     _7 = copy i
+     _6 = (move _7,)
+-    _0 = call<'22, '23, '24>(move _5, move _6)
++    _0 = call<'28, '29, '30>(move _5, move _6)
+     ↳⚡ storage_dead(i)
+         storage_dead(a)
+         unwind_continue
+@@ -217,8 +217,8 @@ where
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = call_mut<'_0, '_1, '6>(move _3, move _2)
+-    ↳⚡ drop[drop_glue<'_0, '_1, '11>] _1
++    _0 = call_mut<'_0, '_1, '2>(move _3, move _2)
++    ↳⚡ drop[drop_glue<'_0, '_1, '3>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -227,7 +227,7 @@ where
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[drop_glue<'_0, '_1, '16>] _1
++    drop[drop_glue<'_0, '_1, '4>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+diff --git a/tests/ui/simple/closure-capture-ref-by-move.out b/tests/ui/simple/closure-capture-ref-by-move.out
+index b159477c..9cf5e7e8 100644
+--- a/tests/ui/simple/closure-capture-ref-by-move.out
++++ b/tests/ui/simple/closure-capture-ref-by-move.out
+@@ -122,7 +122,7 @@ fn foo()
+     _5 = &mut closure
+     storage_live(_6)
+     _6 = ()
+-    _4 = call_mut<'11, '12>(move _5, move _6)
++    _4 = call_mut<'13, '14>(move _5, move _6)
+     ↳⚡ unwind_continue
+     storage_dead(_6)
+     storage_dead(_5)
+@@ -160,8 +160,8 @@ fn call_once<'_0>(_1: closure<'_0>, _2: ())
+     storage_live(_3)
+     _0 = ()
+     _3 = &mut _1
+-    _0 = call_mut<'_0, '4>(move _3, move _2)
+-    ↳⚡ drop[drop_glue<'_0, '7>] _1
++    _0 = call_mut<'_0, '2>(move _3, move _2)
++    ↳⚡ drop[drop_glue<'_0, '3>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -170,7 +170,7 @@ fn call_once<'_0>(_1: closure<'_0>, _2: ())
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[drop_glue<'_0, '10>] _1
++    drop[drop_glue<'_0, '4>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+diff --git a/tests/ui/simple/nested-closure.out b/tests/ui/simple/nested-closure.out
+index fd42c9fa..be6a8a89 100644
+--- a/tests/ui/simple/nested-closure.out
++++ b/tests/ui/simple/nested-closure.out
+@@ -148,12 +148,13 @@ where
+ }
+ 
+ // Full name: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::{impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call
+-fn {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'a, '_1, '_2, '_3, '_4, '_5, T>(_1: &'_5 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1], tupled_args: (&'_2 u32,)) -> test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_3, '_, T>[TraitClause0, TraitClause1]
++fn {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'a, '_1, '_2, '_3, '_4, '_5, T>(_1: &'_5 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1], tupled_args: (&'_2 u32,)) -> test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_3, '_4, T>[TraitClause0, TraitClause1]
+ where
+     TraitClause0: (T: Sized),
+     TraitClause1: (T: Clone),
+     TypeOutlives0: T: '_1,
+     TypeOutlives1: T: '_5,
++    TypeOutlives2: T: '_4,
+     RegionOutlives0: 'a: '_5,
+     RegionOutlives1: '_1: '_5,
+ {
+@@ -186,12 +187,13 @@ where
+ }
+ 
+ // Full name: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::{impl Fn<()> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call
+-fn impl_Fn_unit_for_closure::call<'a, '_1, '_2, '_3, '_4, '_5, '_6, T>(_1: &'_6 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1], tupled_args: ()) -> test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_2, '_, T>[TraitClause0, TraitClause1]
++fn impl_Fn_unit_for_closure::call<'a, '_1, '_2, '_3, '_4, '_5, '_6, T>(_1: &'_6 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1], tupled_args: ()) -> test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_2, '_5, T>[TraitClause0, TraitClause1]
+ where
+     TraitClause0: (T: Sized),
+     TraitClause1: (T: Clone),
+     TypeOutlives0: T: '_1,
+     TypeOutlives1: T: '_6,
++    TypeOutlives2: T: '_5,
+     RegionOutlives0: 'a: '_6,
+     RegionOutlives1: '_1: '_6,
+ {
+@@ -236,11 +238,11 @@ where
+     let _15: &'43 u32; // anonymous local
+     let _16: &'44 u32; // anonymous local
+     let _17: &'45 u32; // anonymous local
+-    let _18: &'61 u32; // anonymous local
+-    let _19: &'77 u32; // anonymous local
+-    let _20: &'90 u32; // anonymous local
++    let _18: &'63 u32; // anonymous local
++    let _19: &'81 u32; // anonymous local
++    let _20: &'96 u32; // anonymous local
+     let _21: u32; // anonymous local
+-    let _22: &'91 u32; // anonymous local
++    let _22: &'97 u32; // anonymous local
+     let _23: u32; // anonymous local
+ 
+     storage_live(_0)
+@@ -260,7 +262,7 @@ where
+     _8 = &clo
+     storage_live(_9)
+     _9 = ()
+-    _7 = impl_Fn_unit_for_closure::call<'53, '54, '55, '56, '57, '58, '59, T>[TraitClause0, TraitClause1](move _8, move _9)
++    _7 = impl_Fn_unit_for_closure::call<'54, '56, '57, '58, '59, '60, '61, T>[TraitClause0, TraitClause1](move _8, move _9)
+     ↳⚡ storage_dead(_17)
+         storage_dead(_16)
+         storage_dead(x)
+@@ -281,7 +283,7 @@ where
+     _12 = &(*_17)
+     _11 = &(*_12)
+     _10 = (move _11,)
+-    _5 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'70, '71, '72, '73, '74, '75, T>[TraitClause0, TraitClause1](move _6, move _10)
++    _5 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'73, '75, '76, '77, '78, '79, T>[TraitClause0, TraitClause1](move _6, move _10)
+     ↳⚡ storage_dead(_17)
+         storage_dead(_16)
+         storage_dead(x)
+@@ -303,7 +305,7 @@ where
+     _15 = &(*_16)
+     _14 = &(*_15)
+     _13 = (move _14,)
+-    _0 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'86, '87, '88, '89, T>[TraitClause0, TraitClause1](move _4, move _13)
++    _0 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'91, '93, '94, '95, T>[TraitClause0, TraitClause1](move _4, move _13)
+     ↳⚡ storage_dead(_17)
+         storage_dead(_16)
+         storage_dead(x)
+@@ -348,24 +350,25 @@ where
+ }
+ 
+ // Full name: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::{impl FnMut<()> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut
+-fn impl_FnMut_unit_for_closure::call_mut<'a, '_1, '_2, '_3, '_4, '_5, '_6, T>(state: &'_6 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1], args: ()) -> test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_2, '_, T>[TraitClause0, TraitClause1]
++fn impl_FnMut_unit_for_closure::call_mut<'a, '_1, '_2, '_3, '_4, '_5, '_6, T>(state: &'_6 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1], args: ()) -> test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_2, '_5, T>[TraitClause0, TraitClause1]
+ where
+     TraitClause0: (T: Sized),
+     TraitClause1: (T: Clone),
+     TypeOutlives0: T: '_1,
+     TypeOutlives1: T: '_6,
++    TypeOutlives2: T: '_5,
+     RegionOutlives0: 'a: '_6,
+     RegionOutlives1: '_1: '_6,
+ {
+-    let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_2, '0, T>[TraitClause0, TraitClause1]; // return
++    let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_2, '_5, T>[TraitClause0, TraitClause1]; // return
+     let state: &'_6 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+     let args: (); // arg #2
+-    let _3: &'1 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
++    let _3: &'0 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+ 
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &(*state)
+-    _0 = impl_Fn_unit_for_closure::call<'a, '_1, '_2, '_3, '_4, '_5, '3, T>[TraitClause0, TraitClause1](move _3, move args)
++    _0 = impl_Fn_unit_for_closure::call<'a, '_1, '_2, '_3, '_4, '_5, '2, T>[TraitClause0, TraitClause1](move _3, move args)
+     ↳⚡ storage_dead(_3)
+         storage_dead(args)
+         storage_dead(state)
+@@ -377,11 +380,12 @@ where
+ }
+ 
+ // Full name: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::{impl FnOnce<()> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_once
+-fn impl_FnOnce_unit_for_closure::call_once<'a, '_1, '_2, '_3, '_4, '_5, T>(_1: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1], _2: ()) -> test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_2, '_, T>[TraitClause0, TraitClause1]
++fn impl_FnOnce_unit_for_closure::call_once<'a, '_1, '_2, '_3, '_4, '_5, T>(_1: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1], _2: ()) -> test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_2, '_5, T>[TraitClause0, TraitClause1]
+ where
+     TraitClause0: (T: Sized),
+     TraitClause1: (T: Clone),
+     TypeOutlives0: T: '_1,
++    TypeOutlives1: T: '_5,
+ {
+     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'2, '3, T>[TraitClause0, TraitClause1]; // return
+     let _1: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+@@ -391,8 +395,8 @@ where
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = impl_FnMut_unit_for_closure::call_mut<'a, '_1, '_2, '_3, '_4, '_5, '14, T>[TraitClause0, TraitClause1](move _3, move _2)
+-    ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '19, T>[TraitClause0, TraitClause1]] _1
++    _0 = impl_FnMut_unit_for_closure::call_mut<'a, '_1, '_2, '_3, '_4, '_5, '12, T>[TraitClause0, TraitClause1](move _3, move _2)
++    ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '15, T>[TraitClause0, TraitClause1]] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -401,7 +405,7 @@ where
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '24, T>[TraitClause0, TraitClause1]] _1
++    drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '18, T>[TraitClause0, TraitClause1]] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+@@ -489,24 +493,25 @@ where
+ }
+ 
+ // Full name: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::{impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut
+-fn {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '_3, '_4, '_5, T>(state: &'_5 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1], args: (&'_2 u32,)) -> test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_3, '_, T>[TraitClause0, TraitClause1]
++fn {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '_3, '_4, '_5, T>(state: &'_5 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1], args: (&'_2 u32,)) -> test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_3, '_4, T>[TraitClause0, TraitClause1]
+ where
+     TraitClause0: (T: Sized),
+     TraitClause1: (T: Clone),
+     TypeOutlives0: T: '_1,
+     TypeOutlives1: T: '_5,
++    TypeOutlives2: T: '_4,
+     RegionOutlives0: 'a: '_5,
+     RegionOutlives1: '_1: '_5,
+ {
+-    let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_3, '0, T>[TraitClause0, TraitClause1]; // return
++    let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_3, '_4, T>[TraitClause0, TraitClause1]; // return
+     let state: &'_5 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+     let args: (&'_2 u32,); // arg #2
+-    let _3: &'1 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
++    let _3: &'0 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+ 
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &(*state)
+-    _0 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'a, '_1, '_2, '_3, '_4, '3, T>[TraitClause0, TraitClause1](move _3, move args)
++    _0 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'a, '_1, '_2, '_3, '_4, '2, T>[TraitClause0, TraitClause1](move _3, move args)
+     ↳⚡ storage_dead(_3)
+         storage_dead(args)
+         storage_dead(state)
+@@ -518,11 +523,12 @@ where
+ }
+ 
+ // Full name: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::{impl FnOnce<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_once
+-fn {impl FnOnce<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_once<'a, '_1, '_2, '_3, '_4, T>(_1: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1], _2: (&'_2 u32,)) -> test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_3, '_, T>[TraitClause0, TraitClause1]
++fn {impl FnOnce<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_once<'a, '_1, '_2, '_3, '_4, T>(_1: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1], _2: (&'_2 u32,)) -> test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_3, '_4, T>[TraitClause0, TraitClause1]
+ where
+     TraitClause0: (T: Sized),
+     TraitClause1: (T: Clone),
+     TypeOutlives0: T: '_1,
++    TypeOutlives1: T: '_4,
+ {
+     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'2, '3, T>[TraitClause0, TraitClause1]; // return
+     let _1: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+@@ -532,8 +538,8 @@ where
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '_3, '_4, '17, T>[TraitClause0, TraitClause1](move _3, move _2)
+-    ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '22, T>[TraitClause0, TraitClause1]] _1
++    _0 = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '_3, '_4, '15, T>[TraitClause0, TraitClause1](move _3, move _2)
++    ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '18, T>[TraitClause0, TraitClause1]] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -542,7 +548,7 @@ where
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '27, T>[TraitClause0, TraitClause1]] _1
++    drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '21, T>[TraitClause0, TraitClause1]] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+@@ -673,8 +679,8 @@ where
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '11, T>[TraitClause0, TraitClause1](move _3, move _2)
+-    ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '16, T>[TraitClause0, TraitClause1]] _1
++    _0 = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '9, T>[TraitClause0, TraitClause1](move _3, move _2)
++    ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '12, T>[TraitClause0, TraitClause1]] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -683,7 +689,7 @@ where
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '21, T>[TraitClause0, TraitClause1]] _1
++    drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '15, T>[TraitClause0, TraitClause1]] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+diff --git a/tests/ui/simple/closure-fnmut.out b/tests/ui/simple/closure-fnmut.out
+index 7655aaf1..9d9dda28 100644
+--- a/tests/ui/simple/closure-fnmut.out
++++ b/tests/ui/simple/closure-fnmut.out
+@@ -171,8 +171,8 @@ fn call_once<'_0>(_1: closure<'_0>, _2: (u8,)) -> u8
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = call_mut<'_0, '4>(move _3, move _2)
+-    ↳⚡ drop[drop_glue<'_0, '7>] _1
++    _0 = call_mut<'_0, '2>(move _3, move _2)
++    ↳⚡ drop[drop_glue<'_0, '3>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -181,7 +181,7 @@ fn call_once<'_0>(_1: closure<'_0>, _2: (u8,)) -> u8
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[drop_glue<'_0, '10>] _1
++    drop[drop_glue<'_0, '4>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+@@ -219,7 +219,7 @@ fn main()
+     let _0: (); // return
+     let z: u8; // local
+     let _2: u8; // anonymous local
+-    let _3: closure<'1>; // anonymous local
++    let _3: closure<'2>; // anonymous local
+     let _4: &'3 mut u8; // anonymous local
+ 
+     storage_live(_0)
+@@ -233,7 +233,7 @@ fn main()
+     _4 = &mut z
+     _3 = closure { _0: move _4 }
+     storage_dead(_4)
+-    _2 = apply_to_zero_mut<closure<'6>>[{built_in impl Sized for closure<'6>}, impl_FnMut_tuple_for_closure<'6>](move _3)
++    _2 = apply_to_zero_mut<closure<'7>>[{built_in impl Sized for closure<'7>}, impl_FnMut_tuple_for_closure<'7>](move _3)
+     ↳⚡ unwind_continue
+     storage_dead(_3)
+     storage_dead(_2)
+diff --git a/tests/ui/no-gen-tuple-structs.out b/tests/ui/no-gen-tuple-structs.out
+index dad35e95..42856872 100644
+--- a/tests/ui/no-gen-tuple-structs.out
++++ b/tests/ui/no-gen-tuple-structs.out
+@@ -312,8 +312,8 @@ fn call_once<'_0>(_1: closure<'_0>, _2: (u32, bool)) -> u32
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = call_mut<'_0, '4>(move _3, move _2)
+-    ↳⚡ drop[drop_glue<'_0, '7>] _1
++    _0 = call_mut<'_0, '2>(move _3, move _2)
++    ↳⚡ drop[drop_glue<'_0, '3>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -322,7 +322,7 @@ fn call_once<'_0>(_1: closure<'_0>, _2: (u32, bool)) -> u32
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[drop_glue<'_0, '10>] _1
++    drop[drop_glue<'_0, '4>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+@@ -369,7 +369,7 @@ fn use_closure(z: u32) -> u32
+ {
+     let _0: u32; // return
+     let z: u32; // arg #1
+-    let _2: closure<'1>; // anonymous local
++    let _2: closure<'2>; // anonymous local
+     let _3: &'3 u32; // anonymous local
+ 
+     storage_live(_0)
+@@ -378,7 +378,7 @@ fn use_closure(z: u32) -> u32
+     _3 = &z
+     _2 = closure { _0: move _3 }
+     storage_dead(_3)
+-    _0 = call_closure<closure<'6>>[{built_in impl Sized for closure<'6>}, impl_Fn_unit_for_closure<'6>](move _2)
++    _0 = call_closure<closure<'7>>[{built_in impl Sized for closure<'7>}, impl_Fn_unit_for_closure<'7>](move _2)
+     ↳⚡ storage_dead(z)
+         unwind_continue
+     storage_dead(_2)
+diff --git a/tests/ui/issue-323-closure-borrow.out b/tests/ui/issue-323-closure-borrow.out
+index 68c3a65c..d9d616bd 100644
+--- a/tests/ui/issue-323-closure-borrow.out
++++ b/tests/ui/issue-323-closure-borrow.out
+@@ -156,8 +156,8 @@ fn call_once<'_0>(_1: closure<'_0>, _2: ())
+     storage_live(_3)
+     _0 = ()
+     _3 = &mut _1
+-    _0 = call_mut<'_0, '4>(move _3, move _2)
+-    ↳⚡ drop[drop_glue<'_0, '7>] _1
++    _0 = call_mut<'_0, '2>(move _3, move _2)
++    ↳⚡ drop[drop_glue<'_0, '3>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -166,7 +166,7 @@ fn call_once<'_0>(_1: closure<'_0>, _2: ())
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[drop_glue<'_0, '10>] _1
++    drop[drop_glue<'_0, '4>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+diff --git a/tests/ui/monomorphization/closure-fn.out b/tests/ui/monomorphization/closure-fn.out
+index 91d3d3dc..e8202218 100644
+--- a/tests/ui/monomorphization/closure-fn.out
++++ b/tests/ui/monomorphization/closure-fn.out
+@@ -131,7 +131,7 @@ fn apply_to::<closure<'_, '_>><'_0>(f: &'_0 closure<'_, '_>) -> u8
+     _2 = &(*f)
+     storage_live(_3)
+     _3 = (const 10u8, const 20u8)
+-    _0 = impl_Fn_for_closure<'15, '16>::call<'17>(move _2, move _3)
++    _0 = impl_Fn_for_closure<'17, '18>::call<'19>(move _2, move _3)
+     ↳⚡ storage_dead(f)
+         unwind_continue
+     storage_dead(_3)
+@@ -153,7 +153,7 @@ fn apply_to_mut::<closure<'_, '_>><'_0>(f: &'_0 mut closure<'_, '_>) -> u8
+     _2 = &mut (*f)
+     storage_live(_3)
+     _3 = (const 10u8, const 20u8)
+-    _0 = impl_FnMut_for_closure<'15, '16>::call_mut<'17>(move _2, move _3)
++    _0 = impl_FnMut_for_closure<'17, '18>::call_mut<'19>(move _2, move _3)
+     ↳⚡ storage_dead(f)
+         unwind_continue
+     storage_dead(_3)
+@@ -190,18 +190,18 @@ fn apply_to_once::<closure<'_, '_>>(f: closure<'_, '_>) -> u8
+     _2 = move f
+     storage_live(_3)
+     _3 = (const 10u8, const 20u8)
+-    _0 = impl_FnOnce_for_closure<'8, '9>::call_once(move _2, move _3)
+-    ↳⚡ conditional_drop[drop_glue<'14, '15, '16>] _2
++    _0 = impl_FnOnce_for_closure<'10, '11>::call_once(move _2, move _3)
++    ↳⚡ conditional_drop[drop_glue<'17, '18, '19>] _2
+         ↳⚡ storage_dead(f)
+             unwind_terminate
+-        conditional_drop[drop_glue<'28, '29, '30>] f
++        conditional_drop[drop_glue<'33, '34, '35>] f
+         ↳⚡ storage_dead(f)
+             unwind_terminate
+         storage_dead(f)
+         unwind_continue
+     storage_dead(_3)
+     storage_dead(_2)
+-    conditional_drop[drop_glue<'21, '22, '23>] f
++    conditional_drop[drop_glue<'25, '26, '27>] f
+     ↳⚡ storage_dead(f)
+         unwind_continue
+     storage_dead(f)
+@@ -214,7 +214,7 @@ fn main()
+     let _0: (); // return
+     let v: u8; // local
+     let z: u8; // local
+-    let f: closure<'2, '3>; // local
++    let f: closure<'3, '4>; // local
+     let _4: &'5 u8; // anonymous local
+     let _5: &'6 u8; // anonymous local
+     let _6: u8; // anonymous local
+@@ -251,7 +251,7 @@ fn main()
+     _7 = &f
+     storage_live(_8)
+     _8 = (const 10u8, const 20u8)
+-    _6 = impl_Fn_for_closure<'36, '37>::call<'38>(move _7, move _8)
++    _6 = impl_Fn_for_closure<'38, '39>::call<'40>(move _7, move _8)
+     ↳⚡ unwind_continue
+     storage_dead(_8)
+     storage_dead(_7)
+@@ -261,7 +261,7 @@ fn main()
+     storage_live(_11)
+     _11 = &f
+     _10 = &(*_11)
+-    _9 = apply_to::<closure<'_, '_>><'42>(move _10)
++    _9 = apply_to::<closure<'_, '_>><'44>(move _10)
+     ↳⚡ unwind_continue
+     storage_dead(_10)
+     storage_dead(_11)
+@@ -271,7 +271,7 @@ fn main()
+     storage_live(_14)
+     _14 = &mut f
+     _13 = &two-phase-mut (*_14)
+-    _12 = apply_to_mut::<closure<'_, '_>><'46>(move _13)
++    _12 = apply_to_mut::<closure<'_, '_>><'48>(move _13)
+     ↳⚡ unwind_continue
+     storage_dead(_13)
+     storage_dead(_14)
+@@ -307,8 +307,8 @@ fn call_once<'_0, '_1>(_1: closure<'_0, '_1>, _2: (u8, u8)) -> u8
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = impl_FnMut_for_closure<'_0, '_1>::call_mut<'6>(move _3, move _2)
+-    ↳⚡ drop[drop_glue<'_0, '_1, '11>] _1
++    _0 = impl_FnMut_for_closure<'_0, '_1>::call_mut<'2>(move _3, move _2)
++    ↳⚡ drop[drop_glue<'_0, '_1, '3>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -317,7 +317,7 @@ fn call_once<'_0, '_1>(_1: closure<'_0, '_1>, _2: (u8, u8)) -> u8
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[drop_glue<'_0, '_1, '16>] _1
++    drop[drop_glue<'_0, '_1, '4>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+diff --git a/tests/ui/monomorphization/closures.out b/tests/ui/monomorphization/closures.out
+index 78c55122..22879b43 100644
+--- a/tests/ui/monomorphization/closures.out
++++ b/tests/ui/monomorphization/closures.out
+@@ -150,15 +150,15 @@ fn apply_to_zero::<test_crate::main::closure<'_>>(f: test_crate::main::closure<'
+     _2 = &f
+     storage_live(_3)
+     _3 = (const 0u8,)
+-    _0 = impl_Fn_for_closure<'7>::call<'8>(move _2, move _3)
+-    ↳⚡ conditional_drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'11, '12>] f
++    _0 = impl_Fn_for_closure<'9>::call<'10>(move _2, move _3)
++    ↳⚡ conditional_drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'14, '15>] f
+         ↳⚡ storage_dead(f)
+             unwind_terminate
+         storage_dead(f)
+         unwind_continue
+     storage_dead(_3)
+     storage_dead(_2)
+-    conditional_drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'15, '16>] f
++    conditional_drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'19, '20>] f
+     ↳⚡ storage_dead(f)
+         unwind_continue
+     storage_dead(f)
+@@ -213,15 +213,15 @@ fn apply_to_zero_mut::<test_crate::main::closure#1<'_>>(f: test_crate::main::clo
+     _2 = &mut f
+     storage_live(_3)
+     _3 = (const 0u8,)
+-    _0 = {impl FnMut<(u8,)> for test_crate::main::closure#1<'_0>}<'7>::call_mut<'8>(move _2, move _3)
+-    ↳⚡ conditional_drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'11, '12>] f
++    _0 = {impl FnMut<(u8,)> for test_crate::main::closure#1<'_0>}<'9>::call_mut<'10>(move _2, move _3)
++    ↳⚡ conditional_drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'14, '15>] f
+         ↳⚡ storage_dead(f)
+             unwind_terminate
+         storage_dead(f)
+         unwind_continue
+     storage_dead(_3)
+     storage_dead(_2)
+-    conditional_drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'15, '16>] f
++    conditional_drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'19, '20>] f
+     ↳⚡ storage_dead(f)
+         unwind_continue
+     storage_dead(f)
+@@ -289,11 +289,11 @@ fn main()
+     let _0: (); // return
+     let z_1: u8; // local
+     let _2: u8; // anonymous local
+-    let _3: test_crate::main::closure<'1>; // anonymous local
++    let _3: test_crate::main::closure<'2>; // anonymous local
+     let _4: &'3 u8; // anonymous local
+     let z_5: u8; // local
+     let _6: u8; // anonymous local
+-    let _7: test_crate::main::closure#1<'5>; // anonymous local
++    let _7: test_crate::main::closure#1<'6>; // anonymous local
+     let _8: &'7 mut u8; // anonymous local
+     let z_9: Thing; // local
+     let _10: u8; // anonymous local
+@@ -361,8 +361,8 @@ fn {impl FnOnce<(u8,)> for test_crate::main::closure<'_0>}::call_once<'_0>(_1: t
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = {impl FnMut<(u8,)> for test_crate::main::closure<'_0>}<'_0>::call_mut<'4>(move _3, move _2)
+-    ↳⚡ drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'_0, '7>] _1
++    _0 = {impl FnMut<(u8,)> for test_crate::main::closure<'_0>}<'_0>::call_mut<'2>(move _3, move _2)
++    ↳⚡ drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'_0, '3>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -371,7 +371,7 @@ fn {impl FnOnce<(u8,)> for test_crate::main::closure<'_0>}::call_once<'_0>(_1: t
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'_0, '10>] _1
++    drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'_0, '4>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
+@@ -455,8 +455,8 @@ fn {impl FnOnce<(u8,)> for test_crate::main::closure#1<'_0>}::call_once<'_0>(_1:
+     storage_live(_0)
+     storage_live(_3)
+     _3 = &mut _1
+-    _0 = {impl FnMut<(u8,)> for test_crate::main::closure#1<'_0>}<'_0>::call_mut<'4>(move _3, move _2)
+-    ↳⚡ drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'_0, '7>] _1
++    _0 = {impl FnMut<(u8,)> for test_crate::main::closure#1<'_0>}<'_0>::call_mut<'2>(move _3, move _2)
++    ↳⚡ drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'_0, '3>] _1
+         ↳⚡ storage_dead(_3)
+             storage_dead(_2)
+             storage_dead(_1)
+@@ -465,7 +465,7 @@ fn {impl FnOnce<(u8,)> for test_crate::main::closure#1<'_0>}::call_once<'_0>(_1:
+         storage_dead(_2)
+         storage_dead(_1)
+         unwind_continue
+-    drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'_0, '10>] _1
++    drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'_0, '4>] _1
+     ↳⚡ storage_dead(_3)
+         storage_dead(_2)
+         storage_dead(_1)
