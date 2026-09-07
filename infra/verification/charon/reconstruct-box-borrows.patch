@@ -160,8 +160,8 @@
 
 --- /dev/null
 +++ b/src/transform/resugar/reconstruct_box_copies.rs
-@@ -0,0 +1,153 @@
-+//! Recover immediately borrowed or indexed boxed pointer temporaries from optimized MIR.
+@@ -0,0 +1,165 @@
++//! Recover boxed pointer temporaries without duplicating Box ownership.
 +use std::ops::ControlFlow;
 +
 +use crate::transform::TransformCtx;
@@ -194,6 +194,7 @@
 +/// Optimized MIR separates a nested Box dereference into a no-retag pointer
 +/// copy. It is not a duplication of the Box's ownership. Reconstruct the original
 +/// shared access only when no other use or intervening effect is present.
++/// A definition-only temporary left by bounds-check reconstruction is dead.
 +fn reconstruct_box_copy_borrows(body: &mut ExprBody) {
 +    let mut uses = CopyUseCounts(body.locals.locals.map_ref(|_| 0));
 +    let _ = uses.visit(&body.body);
@@ -210,8 +211,19 @@
 +            if body.locals.is_return_or_arg(local)
 +                || !temporary.ty().is_box()
 +                || temporary.ty() != owner.ty()
-+                || !matches!(uses.0[local], 2 | 3)
 +            {
++                continue;
++            }
++            if uses.0[local] == 1 {
++                // Exactly the definition, not a read or a drop: removing this
++                // no-retag pointer copy cannot duplicate or destroy ownership.
++                // Keep the shared census exact for subsequent reconstructions.
++                owner.dyn_visit_in_body(|local: &LocalId| uses.0[*local] -= 1);
++                uses.0[local] = 0;
++                block.statements[index].kind = StatementKind::Nop;
++                continue;
++            }
++            if !matches!(uses.0[local], 2 | 3) {
 +                continue;
 +            }
 +            // Only Nops may intervene: the use census alone cannot establish
@@ -613,7 +625,7 @@
 +}
 --- /dev/null
 +++ b/tests/box_copy.rs
-@@ -0,0 +1,793 @@
+@@ -0,0 +1,896 @@
 +//! Reconstruct only an immediately borrowed boxed dereference temporary.
 +use charon_lib::errors::ErrorCtx;
 +use charon_lib::options::TranslateOptions;
@@ -887,6 +899,109 @@
 +    let before = f.body.body.clone();
 +    Transform.transform_body(&mut f.ctx, &mut f.body);
 +    assert_eq!(f.body.body, before, "{context}");
++}
++
++fn dead_fixture() -> anyhow::Result<Fixture> {
++    let mut f = fixture()?;
++    let StatementKind::Assign(
++        _,
++        Rvalue::Ref {
++            place,
++            ptr_metadata,
++            ..
++        },
++    ) = &mut f.body[f.use_loc].kind
++    else {
++        unreachable!()
++    };
++    *place = f
++        .owner
++        .clone()
++        .project(ProjectionElem::Deref, place.ty().clone());
++    let metadata_ty = ptr_metadata.ty().clone();
++    *ptr_metadata = Operand::Copy(
++        f.owner
++            .clone()
++            .project(ProjectionElem::PtrMetadata, metadata_ty),
++    );
++    Ok(f)
++}
++
++#[test]
++fn unused_box_pointer_copy_is_discarded() -> anyhow::Result<()> {
++    let mut f = dead_fixture()?;
++    let mut expected = f.body.body.clone();
++    expected[f.assign_loc.block].statements[f.assign_loc.statement].kind = StatementKind::Nop;
++    Transform.transform_body(&mut f.ctx, &mut f.body);
++    assert_eq!(f.body.body, expected);
++    Ok(())
++}
++
++#[test]
++fn unused_retagged_box_copy_is_unchanged() -> anyhow::Result<()> {
++    let mut f = dead_fixture()?;
++    let StatementKind::Assign(_, Rvalue::Use(_, retag)) = &mut f.body[f.assign_loc].kind else {
++        unreachable!()
++    };
++    *retag = WithRetag::Yes;
++    unchanged(f, "unused retagged copy");
++    Ok(())
++}
++
++#[test]
++fn unused_box_copy_into_argument_is_unchanged() -> anyhow::Result<()> {
++    let mut f = dead_fixture()?;
++    let argument = LocalId::from_usize(2);
++    assert_eq!(f.body.locals.locals[argument].ty, f.temporary.ty().clone());
++    let StatementKind::Assign(destination, _) = &mut f.body[f.assign_loc].kind else {
++        unreachable!()
++    };
++    *destination = Place::new(argument, f.temporary.ty().clone());
++    unchanged(f, "unused argument assignment");
++    Ok(())
++}
++
++#[test]
++fn extra_box_pointer_use_is_not_discarded() -> anyhow::Result<()> {
++    let mut f = dead_fixture()?;
++    let mut extra = f.body[f.assign_loc].clone();
++    let StatementKind::Assign(_, Rvalue::Use(operand, _)) = &mut extra.kind else {
++        unreachable!()
++    };
++    *operand = Operand::Copy(f.temporary.clone());
++    f.body.body[f.use_loc.block].statements.push(extra);
++    unchanged(f, "extra temporary read and assignment");
++    Ok(())
++}
++
++#[test]
++fn projected_box_assignment_is_not_discarded() -> anyhow::Result<()> {
++    let mut f = dead_fixture()?;
++    let StatementKind::Assign(destination, _) = &mut f.body[f.assign_loc].kind else {
++        unreachable!()
++    };
++    *destination = f.owner.clone();
++    unchanged(f, "projected destination");
++    Ok(())
++}
++
++#[test]
++fn dropped_box_pointer_is_not_discarded() -> anyhow::Result<()> {
++    let mut f = dead_fixture()?;
++    let mut replaced = 0;
++    for block in f.body.body.iter_mut() {
++        if let TerminatorKind::Drop { place, .. } = &mut block.terminator.kind {
++            assert_eq!(place.ty(), f.temporary.ty());
++            *place = f.temporary.clone();
++            replaced += 1;
++        }
++    }
++    assert!(
++        replaced > 0,
++        "fixture must contain an actual drop terminator"
++    );
++    unchanged(f, "explicit drop terminator");
++    Ok(())
 +}
 +
 +/// Indexed element shapes: `Ref(Index(Deref(temp), i))` and
@@ -1448,7 +1563,7 @@
 +}
 --- /dev/null
 +++ b/tests/ui/simple/box-slice-metadata.out
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,239 @@
 +# Final LLBC before serialization:
 +
 +// Full name: core::marker::MetaSized
@@ -1554,27 +1669,23 @@
 +    let arena: &'1 Arena; // arg #1
 +    let index: usize; // arg #2
 +    let _3: usize; // anonymous local
-+    let _4: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // anonymous local
-+    let _5: &'_ [u32]; // anonymous local
-+    let _6: &'_ u32; // anonymous local
++    let _4: &'_ [u32]; // anonymous local
++    let _5: &'_ u32; // anonymous local
 +
 +    storage_live(_0)
-+    storage_live(_4)
 +    storage_live(_3)
 +    _3 = copy index
-+    _4 = copy (*arena).values
++    storage_live(_4)
++    _4 = &(*(*arena).values) with_metadata(copy (*arena).values.metadata)
 +    storage_live(_5)
-+    _5 = &(*(*arena).values) with_metadata(copy (*arena).values.metadata)
-+    storage_live(_6)
-+    _6 = @SliceIndexShared<'_, u32>(move _5, copy _3)
++    _5 = @SliceIndexShared<'_, u32>(move _4, copy _3)
 +    ↳⚡ undefined_behavior
-+    _0 = copy (*_6)
++    _0 = copy (*_5)
 +    storage_dead(_3)
-+    storage_dead(_4)
 +    storage_dead(index)
 +    storage_dead(arena)
-+    storage_dead(_6)
 +    storage_dead(_5)
++    storage_dead(_4)
 +    return
 +}
 +
@@ -1801,7 +1912,7 @@
 +}
 --- /dev/null
 +++ b/tests/ui/simple/box-indexed-copy.out
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,107 @@
 +# Final LLBC before serialization:
 +
 +// Full name: core::marker::MetaSized
@@ -1851,36 +1962,32 @@
 +    let _4: &'6 u32; // anonymous local
 +    let _5: &'7 u32; // anonymous local
 +    let _6: usize; // anonymous local
-+    let _7: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // anonymous local
-+    let _8: &'_ [u32]; // anonymous local
-+    let _9: &'_ u32; // anonymous local
++    let _7: &'_ [u32]; // anonymous local
++    let _8: &'_ u32; // anonymous local
 +
 +    storage_live(_0)
-+    storage_live(_7)
 +    storage_live(_3)
 +    _3 = &(*store)
 +    storage_live(_4)
 +    storage_live(_5)
 +    storage_live(_6)
 +    _6 = copy index
-+    _7 = copy (*store).nodes
++    storage_live(_7)
++    _7 = &(*(*store).nodes) with_metadata(copy (*store).nodes.metadata)
 +    storage_live(_8)
-+    _8 = &(*(*store).nodes) with_metadata(copy (*store).nodes.metadata)
-+    storage_live(_9)
-+    _9 = @SliceIndexShared<'_, u32>(move _8, copy _6)
++    _8 = @SliceIndexShared<'_, u32>(move _7, copy _6)
 +    ↳⚡ undefined_behavior
-+    _5 = &(*_9)
++    _5 = &(*_8)
 +    _4 = &(*_5)
 +    _0 = Element { store: move _3, node: move _4 }
 +    storage_dead(_4)
 +    storage_dead(_3)
 +    storage_dead(_6)
 +    storage_dead(_5)
-+    storage_dead(_7)
 +    storage_dead(index)
 +    storage_dead(store)
-+    storage_dead(_9)
 +    storage_dead(_8)
++    storage_dead(_7)
 +    return
 +}
 +
@@ -1891,29 +1998,63 @@
 +    let store: &'1 Store; // arg #1
 +    let index: usize; // arg #2
 +    let _3: usize; // anonymous local
-+    let _4: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // anonymous local
-+    let _5: &'_ [u32]; // anonymous local
-+    let _6: &'_ u32; // anonymous local
++    let _4: &'_ [u32]; // anonymous local
++    let _5: &'_ u32; // anonymous local
 +
 +    storage_live(_0)
-+    storage_live(_4)
 +    storage_live(_3)
 +    _3 = copy index
-+    _4 = copy (*store).nodes
++    storage_live(_4)
++    _4 = &(*(*store).nodes) with_metadata(copy (*store).nodes.metadata)
 +    storage_live(_5)
-+    _5 = &(*(*store).nodes) with_metadata(copy (*store).nodes.metadata)
-+    storage_live(_6)
-+    _6 = @SliceIndexShared<'_, u32>(move _5, copy _3)
++    _5 = @SliceIndexShared<'_, u32>(move _4, copy _3)
 +    ↳⚡ undefined_behavior
-+    _0 = copy (*_6)
++    _0 = copy (*_5)
 +    storage_dead(_3)
-+    storage_dead(_4)
 +    storage_dead(index)
 +    storage_dead(store)
-+    storage_dead(_6)
 +    storage_dead(_5)
++    storage_dead(_4)
 +    return
 +}
 +
 +
 +
+--- a/tests/ui/dyn/vtable_drop.out
++++ b/tests/ui/dyn/vtable_drop.out
+@@ -154,32 +154,27 @@
+     let _4: &'4 T; // anonymous local
+     let _5: Box<i32>[{built_in impl MetaSized for i32}, {built_in impl Sized for Global}, {built_in impl Destruct for i32}, impl_Destruct_for_Global]; // anonymous local
+     let _6: Box<i32>[{built_in impl MetaSized for i32}, {built_in impl Sized for Global}, {built_in impl Destruct for i32}, impl_Destruct_for_Global]; // anonymous local
+-    let _7: Box<i32>[{built_in impl MetaSized for i32}, {built_in impl Sized for Global}, {built_in impl Destruct for i32}, impl_Destruct_for_Global]; // anonymous local
+
+     storage_live(_0)
+     storage_live(_3)
+     storage_live(_5)
+     storage_live(_6)
+-    storage_live(_7)
+     _5 = copy (*self)
+     _3 = copy (*_5) checked.+ const 1i32
+-    _6 = copy (*self)
+     assert(move _3._1 == false) (overflow) else panic
+     ↳⚡ unwind_continue
+-    _7 = copy (*self)
+-    (*_7) = move _3._0
++    _6 = copy (*self)
++    (*_6) = move _3._0
+     storage_live(_4)
+     _4 = &(*arg)
+     _0 = TraitClause1::clone<'5>(move _4)
+-    ↳⚡ storage_dead(_7)
+-        storage_dead(_6)
++    ↳⚡ storage_dead(_6)
+         storage_dead(_5)
+         storage_dead(_3)
+         storage_dead(arg)
+         storage_dead(self)
+         unwind_continue
+     storage_dead(_4)
+-    storage_dead(_7)
+     storage_dead(_6)
+     storage_dead(_5)
+     storage_dead(_3)
