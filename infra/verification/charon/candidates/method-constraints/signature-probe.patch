@@ -1,0 +1,39 @@
+--- a/src/bin/charon-driver/hax/types/ty.rs
++++ b/src/bin/charon-driver/hax/types/ty.rs
+@@ -1514,6 +1514,13 @@
+         };
+         let sig = closure.sig();
+         let sig = tcx.signature_unclosure(sig, rustc_hir::Safety::Safe);
++        tracing::trace!(
++            owner = %tcx.def_path_str(def_id),
++            raw = ?closure.sig(),
++            unclosed = ?sig,
++            captures = ?closure.upvar_tys(),
++            "closure signature before region un-erasure"
++        );
+         // Add bound variables for each erased region in the signature.
+         let sig = {
+             let mut visitor = RegionUnEraserVisitor {
+@@ -1529,13 +1536,20 @@
+             let bound_vars = tcx.mk_bound_variable_kinds(&visitor.bound_vars);
+             ty::Binder::bind_with_vars(unbound_sig, bound_vars)
+         };
+-        ClosureArgs {
++        let args = ClosureArgs {
+             item,
+             kind: closure.kind().sinto(s),
+             tupled_args_ty: tupled_args_ty(s, sig).sinto(s),
+             fn_sig: sig.sinto(s),
+             upvar_tys: closure.upvar_tys().sinto(s),
+-        }
++        };
++        tracing::trace!(
++            owner = %tcx.def_path_str(def_id),
++            reconstructed = ?sig,
++            hax = ?args.fn_sig,
++            "closure signature after region un-erasure"
++        );
++        args
+     }
+ }
+ 

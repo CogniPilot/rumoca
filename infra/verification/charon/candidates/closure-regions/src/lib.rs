@@ -37,13 +37,14 @@ impl RegionSlot {
     }
 }
 
+/// A path requirement issued from one body's graph, not a declared bound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OutlivesRelation {
+pub struct RequiredOutlives {
     longer: RegionSlot,
     shorter: RegionSlot,
 }
 
-impl OutlivesRelation {
+impl RequiredOutlives {
     pub fn longer(self) -> RegionSlot {
         self.longer
     }
@@ -53,14 +54,15 @@ impl OutlivesRelation {
     }
 }
 
-/// Owned observations of one borrow-checking body's inferred regions.
-/// These are not universal signature predicates or an authenticated cross-crate
-/// artifact. Promoting them to either requires a separate, justified mapping.
+/// Required paths in one borrow-checking body's region constraint graph.
+/// A path records a constraint, not equality of two computed region values.
+/// These are not yet callable predicates or an authenticated cross-crate artifact:
+/// both require a justified declaration/caller mapping and binder projection.
 #[derive(Debug)]
 pub struct ClosureRegionFacts {
     owner: DefPathHash,
     slots: Vec<RegionSlot>,
-    outlives: Vec<OutlivesRelation>,
+    required_outlives: Vec<RequiredOutlives>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,21 +126,11 @@ impl ClosureRegionFacts {
             &raw_args.tupled_upvars_ty(),
             &inferred_args.tupled_upvars_ty(),
         )?);
-        let outlives = positions
-            .iter()
-            .flat_map(|&(longer, longer_vid)| {
-                positions.iter().filter_map(move |&(shorter, shorter_vid)| {
-                    facts
-                        .region_inference_context
-                        .eval_outlives(longer_vid, shorter_vid)
-                        .then_some(OutlivesRelation { longer, shorter })
-                })
-            })
-            .collect();
+        let required_outlives = required_relations(facts, &positions);
         Ok(Self {
             owner: tcx.def_path_hash(owner.to_def_id()),
             slots: positions.into_iter().map(|(slot, _)| slot).collect(),
-            outlives,
+            required_outlives,
         })
     }
 
@@ -150,7 +142,30 @@ impl ClosureRegionFacts {
         &self.slots
     }
 
-    pub fn outlives(&self) -> &[OutlivesRelation] {
-        &self.outlives
+    pub fn required_outlives(&self) -> &[RequiredOutlives] {
+        &self.required_outlives
     }
+}
+
+fn required_relations(
+    facts: &BodyWithBorrowckFacts<'_>,
+    positions: &[(RegionSlot, ty::RegionVid)],
+) -> Vec<RequiredOutlives> {
+    let graph = facts.region_inference_context.constraint_sccs();
+    let mut relations = Vec::new();
+    for &(longer, longer_vid) in positions {
+        let mut pending = vec![graph.scc(longer_vid)];
+        let mut reachable = std::collections::BTreeSet::new();
+        while let Some(node) = pending.pop() {
+            if reachable.insert(node) {
+                pending.extend(graph.successors(node));
+            }
+        }
+        relations.extend(positions.iter().filter_map(|&(shorter, shorter_vid)| {
+            reachable
+                .contains(&graph.scc(shorter_vid))
+                .then_some(RequiredOutlives { longer, shorter })
+        }));
+    }
+    relations
 }

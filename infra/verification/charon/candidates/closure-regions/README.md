@@ -11,7 +11,10 @@ proof premise. The live translators and Rumoca's branded types are unchanged.
 complete region-erased, binder-anonymized closure types before matching all
 free occurrence positions in parent arguments, signature and captures.
 The private aggregate retains the owner `DefPathHash`, structural slots and
-directed solution relations; no compiler-lifetime values or `RegionVid` escape.
+directed paths in the body's constraint graph; no compiler-lifetime values or
+`RegionVid` escape. `required_outlives` is not computed from coincident solved
+region values. Each source SCC is traversed once per structural source slot;
+the result is emitted in stable source/target slot order.
 
 `src/positions.rs` uses rustc's `TypeVisitor` skeleton with explicit binder
 depth. It traverses erased and phantom type occurrences too. The convenience
@@ -37,9 +40,25 @@ The new `fixtures/region-shapes.rs` also has two native behavior/layout tests.
 The probe requests `ConsumerOptions::PoloniusInputFacts`. This supplies the
 public `universal_region` and `known_placeholder_subset` facts without running
 the Polonius solver. It prints solution equivalence between signature variables
-and those universals. Equivalence in one inferred solution is **not** source
-lifetime identity, and the candidate does not claim otherwise. An absent
-outlives edge means not observed, not a proved negation of an outlives bound.
+and those universals for comparison, but those observations no longer determine
+the retained relations. A graph path expresses a constraint; two equal solved
+values need not have such a path. Neither is nominal source-lifetime identity.
+An absent graph path is not a proved negation of an outlives bound: declared
+bounds and other implications can hold without one.
+
+`../method-constraints/declared-vs-required.rs` pins that distinction. Its
+declared parent bound holds in the solution but is absent from the body's
+required paths. Replacing graph reachability with the former `eval_outlives`
+implementation makes the unchanged source-based test fail. This is a mutation
+witness for the extractor primitive, not a proof of callable-contract recovery.
+
+The `../method-constraints/invariant-output.rs` controls have full slot-pair
+assertions: independent parent parameters, invariant phantom and borrowed
+outputs, a covariant-input/invariant-output contrast, reversed tuple order,
+and fresh phantom outputs with no invented capture relation. Deleting only
+nontrivial output/output relations triggers those tests. Together with the
+existing sources and the declared-bound discriminator, the harness checks
+23 closure bodies and their owner/receiver refusal controls.
 
 All tested signature occurrences get fresh inference variables in rustc's
 `renumber_mir`; repeated source lifetimes cannot be recovered by comparing those
@@ -66,6 +85,8 @@ explicit underscore-spelled `--crate-name`, and each of these input files:
 - `../../fixtures/closure-lifetimes/closure-lifetime.rs`
 - `../../fixtures/closure-lifetimes/two-region-iterator.rs`
 - `fixtures/region-shapes.rs`
+- `../method-constraints/declared-vs-required.rs`
+- `../method-constraints/invariant-output.rs`
 
 The above input paths are relative to this README. Run native fixtures with
 `rustc --test --edition=2021`, then execute their binaries. Use four workers and
@@ -77,9 +98,11 @@ replace `cargo xtask verify quick/full` for integration/adoption.
 
 ## Required completion, not deferred compatibility work
 
-1. Establish a faithful projection from inference facts to closure and
+1. Establish a faithful projection from required constraint paths to closure and
    enclosing-function declarations, including generic/binder identity. Do not
-   promote solution-relative observations to universal assumptions by fiat.
+   promote graph observations to universal assumptions without the scoped
+   declaration/caller mapping. Carry declared bounds separately from paths
+   inferred by the body; neither is a substitute for the other.
 2. Integrate that producer at Charon's declaration boundary; preserve facts
    across crates with exact source/configuration/tool/dependency binding.
    Missing facts must not become a fabricated empty relation set.

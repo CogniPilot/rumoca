@@ -7,6 +7,9 @@ extern crate rustc_interface;
 extern crate rustc_middle;
 extern crate rustc_session;
 
+#[path = "../../candidates/method-constraints/invariant-checks.rs"]
+mod invariant_checks;
+
 use closure_region_facts::{ClosureRegionFacts, FactError, RegionPart};
 use rustc_borrowck::consumers::{self, BodyWithBorrowckFacts, ConsumerOptions};
 use rustc_hir::def_id::LocalDefId;
@@ -156,6 +159,16 @@ fn check_fixture_relations<'tcx>(
     let root = name
         .strip_suffix("::{closure#0}")
         .expect("fixture closure ordinal");
+    if root.starts_with("Table::") || root.starts_with("CovariantTable::") {
+        invariant_checks::check(root, owned);
+        println!("  CHECKED_FIXTURE {root}");
+        return;
+    }
+    if matches!(root, "declared_bound" | "identity") {
+        check_declared_vs_required(tcx, root, facts, owned);
+        println!("  CHECKED_FIXTURE {root}");
+        return;
+    }
     if matches!(
         root,
         "one_region"
@@ -175,13 +188,23 @@ fn check_fixture_relations<'tcx>(
         println!("  CHECKED_FIXTURE {root}");
         return;
     }
+    check_reference_fixture(tcx, id, facts, owned, root);
+}
+
+fn check_reference_fixture<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    id: LocalDefId,
+    facts: &BodyWithBorrowckFacts<'tcx>,
+    owned: &ClosureRegionFacts,
+    root: &str,
+) {
     let expected: &[&[bool]] = match root {
         "named" | "higher_ranked" | "adapter" | "mapped" => &[&[true]],
         "distinct" | "captured" => &[&[false], &[true]],
         "first" | "captured_argument" => &[&[true], &[false]],
         "paired" => &[&[true, false], &[false, true]],
         "swapped" => &[&[false, true], &[true, false]],
-        _ => panic!("unknown diagnostic fixture: {name}"),
+        _ => panic!("unknown diagnostic fixture: {root}"),
     };
     let outputs = reference_regions(tcx, facts.body.return_ty());
     let mut sources: Vec<_> = facts
@@ -268,10 +291,52 @@ fn check_iterator_shape(root: &str, owned: &ClosureRegionFacts) {
     assert_eq!(signature.len(), usize::from(root == "two_regions_ref_item"));
     if let Some(&output) = signature.first() {
         assert!(owned
-            .outlives()
+            .required_outlives()
             .iter()
             .any(|edge| edge.longer() == captures[0] && edge.shorter() == output));
     }
+}
+
+fn check_declared_vs_required<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    root: &str,
+    facts: &BodyWithBorrowckFacts<'tcx>,
+    owned: &ClosureRegionFacts,
+) {
+    if root == "identity" {
+        assert!(owned.slots().is_empty());
+        return;
+    }
+    let parents: Vec<_> = owned
+        .slots()
+        .iter()
+        .copied()
+        .filter(|slot| slot.part() == RegionPart::ParentArguments)
+        .collect();
+    assert_eq!(parents.len(), 2);
+    let receiver = facts.body.local_decls[facts.body.args_iter().next().expect("receiver")].ty;
+    let ty::Ref(_, closure, _) = receiver.kind() else {
+        panic!("fixture receiver must be borrowed");
+    };
+    let ty::Closure(_, args) = closure.kind() else {
+        panic!("fixture receiver must contain a closure");
+    };
+    let mut parent_regions = Vec::new();
+    tcx.for_each_free_region(&args.as_closure().parent_args(), |region| {
+        let ty::ReVar(vid) = region.kind() else {
+            panic!("fixture parent region must be inferred");
+        };
+        parent_regions.push(vid);
+    });
+    assert_eq!(parent_regions.len(), 2);
+    assert!(facts
+        .region_inference_context
+        .eval_outlives(parent_regions[0], parent_regions[1]));
+    assert!(!owned
+        .required_outlives()
+        .iter()
+        .any(|edge| { edge.longer() == parents[0] && edge.shorter() == parents[1] }));
+    println!("  CHECKED_DECLARED_BOUND_IS_NOT_A_REQUIRED_PATH");
 }
 
 fn check_region_shape(root: &str, owned: &ClosureRegionFacts) {
@@ -295,7 +360,7 @@ fn check_region_shape(root: &str, owned: &ClosureRegionFacts) {
         .filter(|slot| slot.part() == RegionPart::Captures)
     {
         let reaches_output = owned
-            .outlives()
+            .required_outlives()
             .iter()
             .any(|edge| edge.longer() == slot && edge.shorter() == signatures[0]);
         assert_eq!(
@@ -338,7 +403,7 @@ fn assert_owned_matrix(
         for (&output, &wanted) in outputs.iter().zip(*row) {
             assert_eq!(
                 owned
-                    .outlives()
+                    .required_outlives()
                     .iter()
                     .any(|edge| edge.longer() == source && edge.shorter() == output),
                 wanted,
@@ -346,7 +411,7 @@ fn assert_owned_matrix(
             );
             assert!(
                 !owned
-                    .outlives()
+                    .required_outlives()
                     .iter()
                     .any(|edge| edge.longer() == output && edge.shorter() == source),
                 "{root}: owned reverse relation is not implied"
