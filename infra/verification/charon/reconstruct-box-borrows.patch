@@ -1,0 +1,1218 @@
+--- a/src/transform/mod.rs
++++ b/src/transform/mod.rs
+@@ -37,6 +37,7 @@
+ pub mod resugar {
+     pub mod move_asserts_to_statements;
+     pub mod reconstruct_asserts;
++    pub mod reconstruct_box_copies;
+     pub mod reconstruct_box_derefs;
+     pub mod reconstruct_fallible_operations;
+     pub mod reconstruct_intrinsics;
+@@ -170,6 +171,7 @@
+         resugar::reconstruct_vec_boxes::Transform::new(ctx),
+         // Resugar the box derefs that got desugared in elaborated MIR.
+         CowBox::Borrowed(&resugar::reconstruct_box_derefs::Transform),
++        CowBox::Borrowed(&resugar::reconstruct_box_copies::Transform),
+         // Recognize calls to the `offset_of` intrinsics and replace them with the
+         // corresponding `NullOp`.
+         CowBox::Borrowed(&resugar::reconstruct_intrinsics::Transform),
+--- a/src/transform/resugar/reconstruct_box_derefs.rs
++++ b/src/transform/resugar/reconstruct_box_derefs.rs
+@@ -15,7 +15,7 @@
+ /// transmute::<Unique<T>, *const T>(copy (*b))
+ /// transmute::<NonNull<T>, *const T>(copy (*b).0)
+ /// ```
+-/// Returns `*b`
++/// Returns `b` so both its pointee and its metadata can be projected.
+ fn box_pointee_pointer_assignment(rvalue: &Rvalue) -> Option<Place> {
+     let Rvalue::UnaryOp(
+         UnOp::Cast(CastKind::Transmute(_, raw_ptr_ty)),
+@@ -41,33 +41,49 @@
+     if &box_generics.types[0] != raw_ptr_ty.as_raw_ptr()?.0 {
+         return None;
+     }
+-    Some(box_place.clone().deref())
++    Some(box_place.clone())
+ }
+
+ #[derive(Default)]
+ struct LocalStatus {
+     /// Whether that local is the target of the special `transmute` statement we're looking for.
+-    /// Stores the `*b` where `b` is the Box.
++    /// Stores `b`, the Box whose hidden pointer was read.
+     box_pointee_assignment: Option<(StmtLoc, Place)>,
+     /// Whether that local is the target of more than one such special `transmute`.
+     ambiguous: bool,
+-    /// Whether that local is ever used outside of a deref projection (apart from the initial
++    /// Whether that local is ever used outside of a supported projection (apart from the initial
+     /// assignment).
+-    used_outside_derefs: bool,
++    used_outside_projections: bool,
++    /// Metadata is supported only in one adjacent borrow statement. This does not
++    /// establish owner stability for the pre-existing dereference-only rewrite.
++    metadata_use: bool,
++    projection_use: Option<StmtLoc>,
++    metadata_context_invalid: bool,
+ }
+
+ impl LocalStatus {
+     fn rewritable_box_pointee(&self) -> Option<&(StmtLoc, Place)> {
+-        if self.ambiguous || self.used_outside_derefs {
++        if self.ambiguous || self.used_outside_projections {
+             return None;
+         }
+-        self.box_pointee_assignment.as_ref()
++        let assignment = self.box_pointee_assignment.as_ref()?;
++        if self.metadata_use {
++            let use_loc = self.projection_use?;
++            if self.metadata_context_invalid
++                || assignment.0.block != use_loc.block
++                || assignment.0.statement.checked_add(1) != Some(use_loc.statement)
++            {
++                return None;
++            }
++        }
++        Some(assignment)
+     }
+ }
+
+ struct LocalStatusCollector {
+     local_status: IndexVec<LocalId, LocalStatus>,
+     current_statement: Option<StmtLoc>,
++    in_borrow_statement: bool,
+ }
+
+ impl Visitor for LocalStatusCollector {
+@@ -77,18 +93,36 @@
+ impl VisitBody for LocalStatusCollector {
+     fn visit_place(&mut self, place: &Place) -> ControlFlow<Self::Break> {
+         match &place.kind {
+-            // Skip uses of a local where the last projection is a deref.
+-            PlaceKind::Projection(subplace, pj) if subplace.is_local() && pj.is_deref() => {
++            // Preserve metadata as well as the pointee. The extra use tracking
++            // restricts newly supported metadata to an adjacent borrow: it must
++            // not observe a Box changed after the hidden pointer was captured.
++            PlaceKind::Projection(subplace, pj)
++                if subplace.is_local()
++                    && matches!(pj, ProjectionElem::Deref | ProjectionElem::PtrMetadata) =>
++            {
++                let local = subplace.as_local().unwrap();
++                let status = &mut self.local_status[local];
++                status.metadata_use |= matches!(pj, ProjectionElem::PtrMetadata);
++                if !self.in_borrow_statement
++                    || self.current_statement.is_none()
++                    || status
++                        .projection_use
++                        .is_some_and(|previous| Some(previous) != self.current_statement)
++                {
++                    status.metadata_context_invalid = true;
++                }
++                status.projection_use = self.current_statement;
+                 return ControlFlow::Continue(());
+             }
+             // This didn't get caught by the branch above, so it's an invalid use.
+-            PlaceKind::Local(local) => self.local_status[*local].used_outside_derefs = true,
++            PlaceKind::Local(local) => self.local_status[*local].used_outside_projections = true,
+             _ => {}
+         }
+         self.visit_inner(place)
+     }
+
+     fn visit_ullbc_statement(&mut self, st: &ullbc_ast::Statement) -> ControlFlow<Self::Break> {
++        self.in_borrow_statement = matches!(st.kind, StatementKind::Assign(_, Rvalue::Ref { .. }));
+         if let StatementKind::Assign(dst, rvalue) = &st.kind
+             && let Some(local) = dst.as_local()
+             && let Some(box_pointee) = box_pointee_pointer_assignment(rvalue)
+@@ -113,6 +147,7 @@
+     let mut collector = LocalStatusCollector {
+         local_status: body.locals.locals.map_ref(|_| Default::default()),
+         current_statement: None,
++        in_borrow_statement: false,
+     };
+     for (block, block_data) in body.body.iter_enumerated() {
+         for (statement, st) in block_data.statements.iter().enumerate() {
+@@ -120,6 +155,7 @@
+             let _ = collector.visit(st);
+         }
+         collector.current_statement = None;
++        collector.in_borrow_statement = false;
+         let _ = collector.visit(&block_data.terminator);
+     }
+     collector.local_status
+@@ -129,11 +165,15 @@
+     let Some((subplace, projection)) = place.as_projection() else {
+         return;
+     };
+-    if projection == &ProjectionElem::Deref
+-        && let Some(local) = subplace.as_local()
++    if matches!(
++        projection,
++        ProjectionElem::Deref | ProjectionElem::PtrMetadata
++    ) && let Some(local) = subplace.as_local()
+         && let Some((_, box_pointee)) = local_status[local].rewritable_box_pointee()
+     {
+-        *place = box_pointee.clone();
++        *place = box_pointee
++            .clone()
++            .project(projection.clone(), place.ty().clone());
+         return;
+     }
+
+--- /dev/null
++++ b/src/transform/resugar/reconstruct_box_copies.rs
+@@ -0,0 +1,116 @@
++//! Recover immediately borrowed boxed pointer temporaries from optimized MIR.
++use std::ops::ControlFlow;
++
++use crate::transform::TransformCtx;
++use crate::transform::ctx::UllbcPass;
++use crate::ullbc_ast::*;
++
++struct CopyUseCounts(IndexVec<LocalId, usize>);
++
++impl Visitor for CopyUseCounts {
++    type Break = std::convert::Infallible;
++}
++
++impl VisitBody for CopyUseCounts {
++    fn enter_local_id(&mut self, local: &LocalId) {
++        self.0[*local] += 1;
++    }
++
++    fn visit_ullbc_statement(&mut self, statement: &Statement) -> ControlFlow<Self::Break> {
++        // Storage markers do not read pointer values, but they do affect
++        // lifetime. The separate adjacency scan must still stop at them.
++        match statement.kind {
++            StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {
++                ControlFlow::Continue(())
++            }
++            _ => self.visit_inner(statement),
++        }
++    }
++}
++
++/// Optimized MIR separates a nested Box dereference into a no-retag pointer
++/// copy. It is not a duplication of the Box's ownership. Reconstruct the original
++/// shared slice borrow only when no other use or intervening effect is present.
++fn reconstruct_box_copy_borrows(body: &mut ExprBody) {
++    let mut uses = CopyUseCounts(body.locals.locals.map_ref(|_| 0));
++    let _ = uses.visit(&body.body);
++    for block in body.body.iter_mut() {
++        for index in 0..block.statements.len() {
++            let StatementKind::Assign(temporary, Rvalue::Use(Operand::Copy(owner), WithRetag::No)) =
++                &block.statements[index].kind
++            else {
++                continue;
++            };
++            let Some(local) = temporary.as_local() else {
++                continue;
++            };
++            if body.locals.is_return_or_arg(local)
++                || !temporary.ty().is_box()
++                || temporary.ty() != owner.ty()
++                || uses.0[local] != 3
++            {
++                continue;
++            }
++            // Only Nops may intervene: the use census alone cannot establish
++            // that the original owner has not changed since the pointer copy.
++            let Some(next) = (index + 1..block.statements.len())
++                .find(|next| !matches!(block.statements[*next].kind, StatementKind::Nop))
++            else {
++                continue;
++            };
++            let StatementKind::Assign(
++                _,
++                Rvalue::Ref {
++                    place,
++                    kind: BorrowKind::Shared,
++                    ptr_metadata: Operand::Copy(metadata),
++                },
++            ) = &block.statements[next].kind
++            else {
++                continue;
++            };
++            if place.as_projection() != Some((temporary, &ProjectionElem::Deref))
++                || metadata.as_projection() != Some((temporary, &ProjectionElem::PtrMetadata))
++                || !metadata.ty().is_usize()
++            {
++                continue;
++            }
++            let owner = owner.clone();
++            let pointee = owner
++                .clone()
++                .project(ProjectionElem::Deref, place.ty().clone());
++            let metadata = owner
++                .clone()
++                .project(ProjectionElem::PtrMetadata, metadata.ty().clone());
++            // Replacing the one owner read with its two projections adds one
++            // occurrence of each local in that place. Keep the census exact.
++            owner.dyn_visit_in_body(|local: &LocalId| uses.0[*local] += 1);
++            uses.0[local] = 0;
++            if let StatementKind::Assign(
++                _,
++                Rvalue::Ref {
++                    place,
++                    ptr_metadata,
++                    ..
++                },
++            ) = &mut block.statements[next].kind
++            {
++                *place = pointee;
++                *ptr_metadata = Operand::Copy(metadata);
++            }
++            block.statements[index].kind = StatementKind::Nop;
++        }
++    }
++}
++
++pub struct Transform;
++
++impl UllbcPass for Transform {
++    fn should_run(&self, options: &crate::options::TranslateOptions) -> bool {
++        options.treat_box_as_builtin
++    }
++
++    fn transform_body(&self, _ctx: &mut TransformCtx, body: &mut ExprBody) {
++        reconstruct_box_copy_borrows(body);
++    }
++}
+--- /dev/null
++++ b/tests/box_metadata.rs
+@@ -0,0 +1,294 @@
++//! Exercise the actual resugaring pass on use patterns ordinary rustc lowering
++//! does not produce. Types and hidden Box-pointer operands come from extraction.
++use charon_lib::errors::ErrorCtx;
++use charon_lib::options::TranslateOptions;
++use charon_lib::transform::TransformCtx;
++use charon_lib::transform::ctx::UllbcPass;
++use charon_lib::transform::resugar::reconstruct_box_derefs::Transform;
++use charon_lib::ullbc_ast::*;
++
++mod util;
++
++struct Fixture {
++    ctx: TransformCtx,
++    body: ExprBody,
++    raw_body: ExprBody,
++    assign_loc: StmtLoc,
++    use_loc: StmtLoc,
++    owner: Place,
++    ptr_metadata: Operand,
++}
++
++fn fixture() -> anyhow::Result<Fixture> {
++    let translated = util::translate_rust_text(
++        "pub fn capture(values: &Box<[u32]>, _replacement: Box<[u32]>) -> *const [u32] {
++            &raw const **values
++        }",
++        &["--mir", "elaborated", "--treat-box-as-builtin", "--ullbc"],
++    )?;
++    let mut body = translated
++        .fun_decls
++        .iter()
++        .find(|decl| util::repr_name(&translated, &decl.item_meta.name) == "test_crate::capture")
++        .unwrap()
++        .body
++        .as_unstructured()
++        .unwrap()
++        .clone();
++    let mut errors = ErrorCtx::new();
++    let ctx = TransformCtx {
++        options: TranslateOptions::new(&mut errors, &translated.options),
++        translated,
++        errors: errors.into(),
++    };
++    assert!(Transform.should_run(&ctx.options));
++
++    let capture = body
++        .body
++        .iter_enumerated()
++        .flat_map(|(block, data)| {
++            data.statements
++                .iter()
++                .enumerate()
++                .filter_map(move |(index, statement)| {
++                    matches!(
++                        statement.kind,
++                        StatementKind::Assign(_, Rvalue::RawPtr { .. })
++                    )
++                    .then_some(StmtLoc::new(block, index))
++                })
++        })
++        .collect::<Vec<_>>();
++    let [use_loc] = capture.as_slice() else {
++        panic!("expected one raw-pointer construction")
++    };
++    let use_loc = *use_loc;
++    let assign_loc = StmtLoc::new(use_loc.block, use_loc.statement - 1);
++    let StatementKind::Assign(
++        pointer,
++        Rvalue::UnaryOp(UnOp::Cast(CastKind::Transmute(_, _)), Operand::Copy(hidden)),
++    ) = &body[assign_loc].kind
++    else {
++        panic!("expected the measured adjacent hidden-pointer transmute")
++    };
++    let pointer = pointer.clone();
++    let (owner, ProjectionElem::Deref) = hidden.as_projection().unwrap() else {
++        panic!("expected Unique pointer access through Box")
++    };
++    let owner = owner.clone();
++    assert!(owner.ty().is_box());
++
++    let raw_body = body.clone();
++
++    let StatementKind::Assign(
++        destination,
++        Rvalue::RawPtr {
++            place,
++            kind: RefKind::Shared,
++            ptr_metadata,
++        },
++    ) = body[use_loc].kind.clone()
++    else {
++        panic!("expected shared raw pointer")
++    };
++    assert_eq!(destination.as_local(), Some(LocalId::ZERO));
++    assert_eq!(place.as_projection().unwrap().0, &pointer);
++    let TyKind::Ref(region, _, RefKind::Shared) =
++        body.locals.locals[LocalId::from_usize(1)].ty.kind()
++    else {
++        panic!("expected borrowed Box argument")
++    };
++    let reference_ty = TyKind::Ref(*region, place.ty().clone(), RefKind::Shared).into_ty();
++    body.locals.locals[LocalId::ZERO].ty = reference_ty.clone();
++    body[use_loc].kind = StatementKind::Assign(
++        Place::new(LocalId::ZERO, reference_ty),
++        Rvalue::Ref {
++            place,
++            kind: BorrowKind::Shared,
++            ptr_metadata: ptr_metadata.clone(),
++        },
++    );
++    Ok(Fixture {
++        ctx,
++        body,
++        raw_body,
++        assign_loc,
++        use_loc,
++        owner,
++        ptr_metadata,
++    })
++}
++
++#[test]
++fn raw_pointer_construction_is_unchanged() -> anyhow::Result<()> {
++    let Fixture {
++        mut ctx, raw_body, ..
++    } = fixture()?;
++    // Exclusion witness only: this capture precedes any owner replacement.
++    assert_unchanged(&mut ctx, raw_body, "raw-pointer construction");
++    Ok(())
++}
++
++#[test]
++fn adjacent_borrow_preserves_pointee_and_metadata() -> anyhow::Result<()> {
++    let Fixture {
++        mut ctx,
++        body: mut adjacent,
++        assign_loc,
++        use_loc,
++        owner,
++        ..
++    } = fixture()?;
++    Transform.transform_body(&mut ctx, &mut adjacent);
++    assert!(matches!(adjacent[assign_loc].kind, StatementKind::Nop));
++    let StatementKind::Assign(
++        _,
++        Rvalue::Ref {
++            place,
++            ptr_metadata: result_metadata,
++            ..
++        },
++    ) = &adjacent[use_loc].kind
++    else {
++        panic!("borrow must be preserved")
++    };
++    assert_eq!(
++        place.as_projection(),
++        Some((&owner, &ProjectionElem::Deref))
++    );
++    let Operand::Copy(metadata) = result_metadata else {
++        panic!("metadata must be copied")
++    };
++    assert_eq!(
++        metadata.as_projection(),
++        Some((&owner, &ProjectionElem::PtrMetadata))
++    );
++    assert!(metadata.ty().is_usize());
++    Ok(())
++}
++
++#[test]
++fn nonadjacent_borrow_is_unchanged() -> anyhow::Result<()> {
++    let Fixture {
++        mut ctx,
++        body: mut separated,
++        use_loc,
++        ..
++    } = fixture()?;
++    separated.body[use_loc.block].statements.insert(
++        use_loc.statement,
++        Statement::new(separated.span, StatementKind::Nop),
++    );
++    assert_unchanged(&mut ctx, separated, "nonadjacent borrow");
++    Ok(())
++}
++
++#[test]
++fn owner_replacement_before_borrow_is_unchanged() -> anyhow::Result<()> {
++    let Fixture {
++        mut ctx,
++        body: mut replaced,
++        use_loc,
++        owner,
++        ..
++    } = fixture()?;
++    // The old Box remains alive through the borrowed first argument. Changing
++    // the temporary owner before borrowing the captured pointer must not retarget
++    // that borrow to the replacement Box. This is a pass-level AST control.
++    let replacement = Place::new(
++        LocalId::from_usize(2),
++        replaced.locals.locals[LocalId::from_usize(2)].ty.clone(),
++    );
++    assert_eq!(owner.ty(), replacement.ty());
++    replaced.body[use_loc.block].statements.insert(
++        use_loc.statement,
++        Statement::new(
++            replaced.span,
++            StatementKind::Assign(
++                owner.clone(),
++                Rvalue::Use(Operand::Copy(replacement), WithRetag::No),
++            ),
++        ),
++    );
++    assert_unchanged(&mut ctx, replaced, "owner replacement before borrow");
++    Ok(())
++}
++
++#[test]
++fn multiple_statement_uses_are_unchanged() -> anyhow::Result<()> {
++    let Fixture {
++        mut ctx,
++        body: mut repeated,
++        use_loc,
++        ..
++    } = fixture()?;
++    let additional_use = repeated[use_loc].clone();
++    repeated.body[use_loc.block]
++        .statements
++        .insert(use_loc.statement + 1, additional_use);
++    assert_unchanged(&mut ctx, repeated, "uses in two statements");
++    Ok(())
++}
++
++#[test]
++fn cross_block_borrow_is_unchanged() -> anyhow::Result<()> {
++    let Fixture {
++        mut ctx,
++        body: mut crossing,
++        use_loc,
++        ..
++    } = fixture()?;
++    let statements = crossing.body[use_loc.block]
++        .statements
++        .split_off(use_loc.statement);
++    let terminator = crossing.body[use_loc.block].terminator.clone();
++    let next = crossing.body.push(BlockData {
++        statements,
++        terminator,
++    });
++    crossing.body[use_loc.block].terminator = Terminator::goto(crossing.span, next);
++    assert_unchanged(&mut ctx, crossing, "borrow in another block");
++    Ok(())
++}
++
++#[test]
++fn terminator_metadata_use_is_unchanged() -> anyhow::Result<()> {
++    let Fixture {
++        mut ctx,
++        body: mut terminated,
++        use_loc,
++        ptr_metadata,
++        ..
++    } = fixture()?;
++    let statements = terminated.body[use_loc.block]
++        .statements
++        .split_off(use_loc.statement + 1);
++    let terminator = terminated.body[use_loc.block].terminator.clone();
++    let next = terminated.body.push(BlockData {
++        statements,
++        terminator,
++    });
++    terminated.body[use_loc.block].terminator = Terminator::new(
++        terminated.span,
++        TerminatorKind::Switch {
++            data: SwitchData {
++                scrutinee: SwitchScrutinee::Value(ptr_metadata),
++                branches: vec![],
++                fallback: Some(BranchId::ZERO),
++            },
++            branches: [next].into_iter().collect(),
++        },
++    );
++    assert_unchanged(
++        &mut ctx,
++        terminated,
++        "metadata used by terminator after borrow",
++    );
++    Ok(())
++}
++
++fn assert_unchanged(ctx: &mut TransformCtx, mut body: ExprBody, case: &str) {
++    let original = body.body.clone();
++    Transform.transform_body(ctx, &mut body);
++    assert_eq!(body.body, original, "{case}");
++}
+--- /dev/null
++++ b/tests/box_copy.rs
+@@ -0,0 +1,274 @@
++//! Reconstruct only an immediately borrowed boxed dereference temporary.
++use charon_lib::errors::ErrorCtx;
++use charon_lib::options::TranslateOptions;
++use charon_lib::transform::TransformCtx;
++use charon_lib::transform::ctx::UllbcPass;
++use charon_lib::transform::resugar::reconstruct_box_copies::Transform;
++use charon_lib::ullbc_ast::*;
++
++mod util;
++
++struct Fixture {
++    ctx: TransformCtx,
++    body: ExprBody,
++    assign_loc: StmtLoc,
++    use_loc: StmtLoc,
++    owner: Place,
++    temporary: Place,
++}
++
++fn fixture() -> anyhow::Result<Fixture> {
++    // The raw-pointer form is excluded from both reconstructions, so the input
++    // remains available even when this test runs against the patched binary.
++    let translated = util::translate_rust_text(
++        "pub struct Storage { pub values: Box<[u32]> }
++         pub fn capture(storage: &Storage, _replacement: Box<[u32]>) -> *const [u32] {
++             &raw const *storage.values
++         }",
++        &["--mir", "optimized", "--treat-box-as-builtin", "--ullbc"],
++    )?;
++    let mut body = translated
++        .fun_decls
++        .iter()
++        .find(|decl| util::repr_name(&translated, &decl.item_meta.name) == "test_crate::capture")
++        .unwrap()
++        .body
++        .as_unstructured()
++        .unwrap()
++        .clone();
++    let mut errors = ErrorCtx::new();
++    let ctx = TransformCtx {
++        options: TranslateOptions::new(&mut errors, &translated.options),
++        translated,
++        errors: errors.into(),
++    };
++    let mut captures = Vec::new();
++    for (block, data) in body.body.iter_enumerated() {
++        for (index, statement) in data.statements.iter().enumerate() {
++            if matches!(
++                statement.kind,
++                StatementKind::Assign(_, Rvalue::RawPtr { .. })
++            ) {
++                captures.push(StmtLoc::new(block, index));
++            }
++        }
++    }
++    let [use_loc] = captures.as_slice() else {
++        panic!("expected one pointer capture")
++    };
++    let use_loc = *use_loc;
++    let pointer_loc = StmtLoc::new(use_loc.block, use_loc.statement - 1);
++    let assign_loc = StmtLoc::new(use_loc.block, use_loc.statement - 2);
++    let StatementKind::Assign(temporary, Rvalue::Use(Operand::Copy(owner), WithRetag::No)) =
++        &body[assign_loc].kind
++    else {
++        panic!("expected the optimized boxed copy")
++    };
++    assert!(temporary.ty().is_box());
++    let temporary = temporary.clone();
++    let owner = owner.clone();
++    let StatementKind::Assign(
++        _,
++        Rvalue::UnaryOp(UnOp::Cast(CastKind::Transmute(_, _)), Operand::Copy(hidden)),
++    ) = &body[pointer_loc].kind
++    else {
++        panic!("expected hidden-pointer transmute")
++    };
++    assert_eq!(
++        hidden.as_projection(),
++        Some((&temporary, &ProjectionElem::Deref))
++    );
++    let StatementKind::Assign(
++        _,
++        Rvalue::RawPtr {
++            place,
++            ptr_metadata,
++            ..
++        },
++    ) = &body[use_loc].kind
++    else {
++        panic!("expected raw pointer")
++    };
++    let slice_ty = place.ty().clone();
++    let metadata_ty = ptr_metadata.ty().clone();
++    let TyKind::Ref(region, _, RefKind::Shared) =
++        body.locals.locals[LocalId::from_usize(1)].ty.kind()
++    else {
++        panic!("expected borrowed Storage")
++    };
++    let reference_ty = TyKind::Ref(*region, slice_ty.clone(), RefKind::Shared).into_ty();
++    body.locals.locals[LocalId::ZERO].ty = reference_ty.clone();
++    body[pointer_loc].kind = StatementKind::Nop;
++    body[use_loc].kind = StatementKind::Assign(
++        Place::new(LocalId::ZERO, reference_ty),
++        Rvalue::Ref {
++            place: temporary.clone().project(ProjectionElem::Deref, slice_ty),
++            kind: BorrowKind::Shared,
++            ptr_metadata: Operand::Copy(
++                temporary
++                    .clone()
++                    .project(ProjectionElem::PtrMetadata, metadata_ty),
++            ),
++        },
++    );
++    Ok(Fixture {
++        ctx,
++        body,
++        assign_loc,
++        use_loc,
++        owner,
++        temporary,
++    })
++}
++
++#[test]
++fn adjacent_box_copy_projects_original_owner_and_metadata() -> anyhow::Result<()> {
++    let Fixture {
++        mut ctx,
++        mut body,
++        assign_loc,
++        use_loc,
++        owner,
++        ..
++    } = fixture()?;
++    Transform.transform_body(&mut ctx, &mut body);
++    assert!(
++        matches!(body[assign_loc].kind, StatementKind::Nop),
++        "boxed temporary must be eliminated"
++    );
++    let StatementKind::Assign(
++        _,
++        Rvalue::Ref {
++            place,
++            ptr_metadata: Operand::Copy(metadata),
++            ..
++        },
++    ) = &body[use_loc].kind
++    else {
++        panic!("original borrow must remain")
++    };
++    assert_eq!(
++        place.as_projection(),
++        Some((&owner, &ProjectionElem::Deref))
++    );
++    assert_eq!(
++        metadata.as_projection(),
++        Some((&owner, &ProjectionElem::PtrMetadata))
++    );
++    Ok(())
++}
++
++#[test]
++fn owner_replacement_between_copy_and_borrow_is_unchanged() -> anyhow::Result<()> {
++    let mut f = fixture()?;
++    let replacement = Place::new(LocalId::from_usize(2), f.owner.ty().clone());
++    f.body.body[f.use_loc.block].statements.insert(
++        f.use_loc.statement,
++        Statement::new(
++            f.body.span,
++            StatementKind::Assign(
++                f.owner.clone(),
++                Rvalue::Use(Operand::Move(replacement), WithRetag::No),
++            ),
++        ),
++    );
++    unchanged(f, "owner replacement");
++    Ok(())
++}
++
++#[test]
++fn storage_end_between_copy_and_borrow_is_unchanged() -> anyhow::Result<()> {
++    let mut f = fixture()?;
++    f.body.body[f.use_loc.block].statements.insert(
++        f.use_loc.statement,
++        Statement::new(
++            f.body.span,
++            StatementKind::StorageDead(LocalId::from_usize(1)),
++        ),
++    );
++    unchanged(f, "source storage end");
++    Ok(())
++}
++
++#[test]
++fn additional_temporary_read_is_unchanged() -> anyhow::Result<()> {
++    let mut f = fixture()?;
++    let copy = f.body[f.assign_loc].clone();
++    let mut escape = copy;
++    let StatementKind::Assign(_, Rvalue::Use(operand, _)) = &mut escape.kind else {
++        unreachable!()
++    };
++    *operand = Operand::Copy(f.temporary.clone());
++    f.body.body[f.use_loc.block].statements.push(escape);
++    unchanged(f, "additional read and assignment");
++    Ok(())
++}
++
++#[test]
++fn mutable_borrow_is_unchanged() -> anyhow::Result<()> {
++    let mut f = fixture()?;
++    let StatementKind::Assign(_, Rvalue::Ref { kind, .. }) = &mut f.body[f.use_loc].kind else {
++        unreachable!()
++    };
++    *kind = BorrowKind::Mut;
++    unchanged(f, "mutable borrow");
++    Ok(())
++}
++
++#[test]
++fn raw_pointer_is_unchanged() -> anyhow::Result<()> {
++    let mut f = fixture()?;
++    let StatementKind::Assign(
++        destination,
++        Rvalue::Ref {
++            place,
++            ptr_metadata,
++            ..
++        },
++    ) = f.body[f.use_loc].kind.clone()
++    else {
++        unreachable!()
++    };
++    f.body[f.use_loc].kind = StatementKind::Assign(
++        destination,
++        Rvalue::RawPtr {
++            place,
++            ptr_metadata,
++            kind: RefKind::Shared,
++        },
++    );
++    unchanged(f, "raw pointer");
++    Ok(())
++}
++
++#[test]
++fn foreign_metadata_is_unchanged() -> anyhow::Result<()> {
++    let mut f = fixture()?;
++    let StatementKind::Assign(_, Rvalue::Ref { ptr_metadata, .. }) = &mut f.body[f.use_loc].kind
++    else {
++        unreachable!()
++    };
++    *ptr_metadata = Operand::Copy(
++        Place::new(LocalId::from_usize(2), f.owner.ty().clone())
++            .project(ProjectionElem::PtrMetadata, ptr_metadata.ty().clone()),
++    );
++    unchanged(f, "foreign metadata");
++    Ok(())
++}
++
++#[test]
++fn retagged_copy_is_unchanged() -> anyhow::Result<()> {
++    let mut f = fixture()?;
++    let StatementKind::Assign(_, Rvalue::Use(_, retag)) = &mut f.body[f.assign_loc].kind else {
++        unreachable!()
++    };
++    *retag = WithRetag::Yes;
++    unchanged(f, "retagged copy");
++    Ok(())
++}
++
++fn unchanged(mut f: Fixture, context: &str) {
++    let before = f.body.body.clone();
++    Transform.transform_body(&mut f.ctx, &mut f.body);
++    assert_eq!(f.body.body, before, "{context}");
++}
+--- /dev/null
++++ b/tests/ui/simple/box-slice-metadata.rs
+@@ -0,0 +1,36 @@
++//@ charon-args=--mir elaborated --treat-box-as-builtin
++use std::marker::PhantomData;
++
++pub struct Arena {
++    values: Box<[u32]>,
++}
++
++pub struct ArenaView<'arena> {
++    arena: &'arena Arena,
++    brand: PhantomData<&'arena mut &'arena ()>,
++}
++
++pub fn count(arena: &Arena) -> usize {
++    arena.values.len()
++}
++
++pub fn read(arena: &Arena, index: usize) -> u32 {
++    arena.values[index]
++}
++
++pub fn branded_count(view: ArenaView<'_>) -> usize {
++    view.arena.values.len()
++}
++
++pub fn scalar_control(value: usize) -> usize {
++    value
++}
++
++pub fn lengths_across_replacement(
++    mut values: Box<[u32]>,
++    replacement: Box<[u32]>,
++) -> (usize, usize) {
++    let original = &raw const *values;
++    values = replacement;
++    (original.len(), values.len())
++}
+--- /dev/null
++++ b/tests/ui/simple/box-slice-metadata.out
+@@ -0,0 +1,247 @@
++# Final LLBC before serialization:
++
++// Full name: core::marker::MetaSized
++#[fundamental]
++#[lang_item(MetaSized)]
++pub trait MetaSized<Self>
++
++// Full name: core::marker::Sized
++#[fundamental]
++#[lang_item(Sized)]
++pub trait Sized<Self>
++{
++    proof ImpliedClause0: (Self: MetaSized)
++    non-dyn-compatible
++}
++
++// Full name: core::marker::PhantomData
++#[lang_item(PhantomData)]
++pub struct PhantomData<T> {}
++
++pub fn core::ptr::const_ptr::{*const [T]}::len<T>(_1: *const [T]) -> usize
++where
++    TraitClause0: (T: Sized),
++= <opaque>
++
++// Full name: core::ptr::unique::Unique
++pub opaque type Unique<T>
++
++#[lang_item(SliceLen)]
++pub fn core::slice::{[T]}::len<'_0, T>(_1: &'_0 [T]) -> usize
++where
++    TraitClause0: (T: Sized),
++    TypeOutlives0: T: '_0,
++= <opaque>
++
++// Full name: alloc::alloc::Global
++#[lang_item(GlobalAlloc)]
++pub struct Global {}
++
++// Full name: alloc::boxed::Box
++#[fundamental]
++#[lang_item(OwnedBox)]
++pub opaque type Box<T>
++where
++    TraitClause0: (T: MetaSized),
++    TraitClause1: (type_error("removed allocator parameter"): Sized),
++
++struct () {}
++
++// Full name: alloc::boxed::Box::{impl Destruct for Box<T>[TraitClause0, TraitClause1]}::drop_glue
++unsafe fn drop_glue<'_0, T, A>(_1: &'_0 mut Box<T>[TraitClause0, TraitClause1])
++where
++    TraitClause0: (T: MetaSized),
++    TraitClause1: (A: Sized),
++    TypeOutlives0: T: '_0,
++    TypeOutlives1: A: '_0,
++= <opaque>
++
++struct (_, _)<A, B>
++where
++    TraitClause0: (A: Sized),
++{
++  _0: A,
++  _1: B,
++}
++
++// Full name: test_crate::Arena
++pub struct Arena {
++  values: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}],
++}
++
++// Full name: test_crate::ArenaView
++pub struct ArenaView<mut 'arena>
++where
++    RegionOutlives0: 'arena: 'arena,
++{
++  arena: &'arena Arena,
++  brand: PhantomData<&'arena mut &'arena ()>,
++}
++
++// Full name: test_crate::count
++pub fn count<'_0>(arena: &'_0 Arena) -> usize
++{
++    let _0: usize; // return
++    let arena: &'1 Arena; // arg #1
++    let _2: &'3 [u32]; // anonymous local
++
++    storage_live(_0)
++    storage_live(_2)
++    _2 = &(*(*arena).values) with_metadata(copy (*arena).values.metadata)
++    _0 = core::slice::{[T]}::len<'5, u32>[{built_in impl Sized for u32}](move _2)
++    ↳⚡ storage_dead(arena)
++        unwind_continue
++    storage_dead(_2)
++    storage_dead(arena)
++    return
++}
++
++// Full name: test_crate::read
++pub fn read<'_0>(arena: &'_0 Arena, index: usize) -> u32
++{
++    let _0: u32; // return
++    let arena: &'1 Arena; // arg #1
++    let index: usize; // arg #2
++    let _3: usize; // anonymous local
++    let _4: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // anonymous local
++    let _5: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // anonymous local
++    let _6: &'_ [u32]; // anonymous local
++    let _7: &'_ u32; // anonymous local
++
++    storage_live(_0)
++    storage_live(_4)
++    storage_live(_5)
++    storage_live(_3)
++    _3 = copy index
++    _4 = copy (*arena).values
++    _5 = copy (*arena).values
++    storage_live(_6)
++    _6 = &(*_5) with_metadata(copy _5.metadata)
++    storage_live(_7)
++    _7 = @SliceIndexShared<'_, u32>(move _6, copy _3)
++    ↳⚡ undefined_behavior
++    _0 = copy (*_7)
++    storage_dead(_3)
++    storage_dead(_5)
++    storage_dead(_4)
++    storage_dead(index)
++    storage_dead(arena)
++    storage_dead(_7)
++    storage_dead(_6)
++    return
++}
++
++// Full name: test_crate::branded_count
++pub fn branded_count<'_0>(view: ArenaView<'_0>) -> usize
++{
++    let _0: usize; // return
++    let view: ArenaView<'1>; // arg #1
++    let _2: &'3 [u32]; // anonymous local
++    let _3: &'5 Arena; // anonymous local
++
++    storage_live(_0)
++    storage_live(_3)
++    storage_live(_2)
++    _3 = copy view.arena
++    _2 = &(*(*_3).values) with_metadata(copy (*_3).values.metadata)
++    _0 = core::slice::{[T]}::len<'8, u32>[{built_in impl Sized for u32}](move _2)
++    ↳⚡ storage_dead(_3)
++        storage_dead(view)
++        unwind_continue
++    storage_dead(_2)
++    storage_dead(_3)
++    storage_dead(view)
++    return
++}
++
++// Full name: test_crate::scalar_control
++pub fn scalar_control(value: usize) -> usize
++{
++    let _0: usize; // return
++    let value: usize; // arg #1
++
++    storage_live(_0)
++    _0 = copy value
++    storage_dead(value)
++    return
++}
++
++// Full name: test_crate::lengths_across_replacement
++pub fn lengths_across_replacement(values: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}], replacement: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]) -> (usize, usize)
++{
++    let _0: (usize, usize); // return
++    let values: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // arg #1
++    let replacement: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // arg #2
++    let original: *const [u32]; // local
++    let _4: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // anonymous local
++    let _5: usize; // anonymous local
++    let _6: *const [u32]; // anonymous local
++    let _7: usize; // anonymous local
++    let _8: &'1 [u32]; // anonymous local
++    let _9: *const [u32]; // anonymous local
++
++    storage_live(_0)
++    storage_live(_9)
++    storage_live(original)
++    _9 = transmute<Unique<[u32]>, *const [u32]>(copy (*values))
++    original = &raw const (*_9) with_metadata(copy _9.metadata)
++    storage_live(_4)
++    _4 = move replacement
++    drop[drop_glue<'2, [u32], Global>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]] values
++    ↳⚡ values = move _4
++        drop[drop_glue<'3, [u32], Global>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]] values
++        ↳⚡ storage_dead(_9)
++            storage_dead(replacement)
++            storage_dead(values)
++            unwind_terminate
++        storage_dead(_9)
++        storage_dead(replacement)
++        storage_dead(values)
++        unwind_continue
++    values = move _4
++    storage_dead(_4)
++    storage_live(_5)
++    storage_live(_6)
++    _6 = copy original
++    _5 = core::ptr::const_ptr::{*const [T]}::len<u32>[{built_in impl Sized for u32}](move _6)
++    ↳⚡ drop[drop_glue<'3, [u32], Global>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]] values
++        ↳⚡ storage_dead(_9)
++            storage_dead(replacement)
++            storage_dead(values)
++            unwind_terminate
++        storage_dead(_9)
++        storage_dead(replacement)
++        storage_dead(values)
++        unwind_continue
++    storage_dead(_6)
++    storage_live(_7)
++    storage_live(_8)
++    _8 = &(*values) with_metadata(copy values.metadata)
++    _7 = core::slice::{[T]}::len<'5, u32>[{built_in impl Sized for u32}](move _8)
++    ↳⚡ drop[drop_glue<'3, [u32], Global>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]] values
++        ↳⚡ storage_dead(_9)
++            storage_dead(replacement)
++            storage_dead(values)
++            unwind_terminate
++        storage_dead(_9)
++        storage_dead(replacement)
++        storage_dead(values)
++        unwind_continue
++    storage_dead(_8)
++    _0 = (move _5, move _7)
++    storage_dead(_7)
++    storage_dead(_5)
++    storage_dead(original)
++    drop[drop_glue<'6, [u32], Global>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]] values
++    ↳⚡ storage_dead(_9)
++        storage_dead(replacement)
++        storage_dead(values)
++        unwind_continue
++    storage_dead(_9)
++    storage_dead(replacement)
++    storage_dead(values)
++    return
++}
++
++
++
+--- /dev/null
++++ b/tests/ui/simple/box-deref-copy.rs
+@@ -0,0 +1,4 @@
++//@ charon-args=--mir optimized --treat-box-as-builtin
++pub fn borrow_twice(values: &Box<[u32]>) -> (&[u32], &[u32]) {
++    (&**values, &**values)
++}
+--- /dev/null
++++ b/tests/ui/simple/box-deref-copy.out
+@@ -0,0 +1,66 @@
++# Final LLBC before serialization:
++
++// Full name: core::marker::MetaSized
++#[fundamental]
++#[lang_item(MetaSized)]
++pub trait MetaSized<Self>
++
++// Full name: core::marker::Sized
++#[fundamental]
++#[lang_item(Sized)]
++pub trait Sized<Self>
++{
++    proof ImpliedClause0: (Self: MetaSized)
++    non-dyn-compatible
++}
++
++// Full name: alloc::alloc::Global
++#[lang_item(GlobalAlloc)]
++pub struct Global {}
++
++// Full name: alloc::boxed::Box
++#[fundamental]
++#[lang_item(OwnedBox)]
++pub opaque type Box<T>
++where
++    TraitClause0: (T: MetaSized),
++    TraitClause1: (type_error("removed allocator parameter"): Sized),
++
++struct (_, _)<A, B>
++where
++    TraitClause0: (A: Sized),
++{
++  _0: A,
++  _1: B,
++}
++
++// Full name: test_crate::borrow_twice
++pub fn borrow_twice<'_0>(values: &'_0 Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]) -> (&'_0 [u32], &'_0 [u32])
++{
++    let _0: (&'7 [u32], &'8 [u32]); // return
++    let values: &'13 Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // arg #1
++    let _2: &'14 [u32]; // anonymous local
++    let _3: &'15 [u32]; // anonymous local
++    let _4: &'16 [u32]; // anonymous local
++    let _5: &'17 [u32]; // anonymous local
++
++    storage_live(_0)
++    storage_live(_2)
++    storage_live(_3)
++    _3 = &(*(*values)) with_metadata(copy (*values).metadata)
++    _2 = &(*_3) with_metadata(copy _3.metadata)
++    storage_live(_4)
++    storage_live(_5)
++    _5 = &(*(*values)) with_metadata(copy (*values).metadata)
++    _4 = &(*_5) with_metadata(copy _5.metadata)
++    _0 = (move _2, move _4)
++    storage_dead(_4)
++    storage_dead(_2)
++    storage_dead(_5)
++    storage_dead(_3)
++    storage_dead(values)
++    return
++}
++
++
++

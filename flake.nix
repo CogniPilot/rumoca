@@ -443,7 +443,7 @@
         devShells.fmi = fmiShell;
         devShells.docs = docsShell;
         devShells.${if system == "x86_64-linux" then "lean-pilot" else null} = mkDevShell [
-          aeneas.packages.${system}.aeneas
+          (import ./infra/verification/aeneas/package.nix { inherit aeneas system; })
           pkgs.elan
         ];
         # Python wheel packaging must depend only on the build and smoke-test
