@@ -160,8 +160,8 @@
 
 --- /dev/null
 +++ b/src/transform/resugar/reconstruct_box_copies.rs
-@@ -0,0 +1,116 @@
-+//! Recover immediately borrowed boxed pointer temporaries from optimized MIR.
+@@ -0,0 +1,153 @@
++//! Recover immediately borrowed or indexed boxed pointer temporaries from optimized MIR.
 +use std::ops::ControlFlow;
 +
 +use crate::transform::TransformCtx;
@@ -193,7 +193,7 @@
 +
 +/// Optimized MIR separates a nested Box dereference into a no-retag pointer
 +/// copy. It is not a duplication of the Box's ownership. Reconstruct the original
-+/// shared slice borrow only when no other use or intervening effect is present.
++/// shared access only when no other use or intervening effect is present.
 +fn reconstruct_box_copy_borrows(body: &mut ExprBody) {
 +    let mut uses = CopyUseCounts(body.locals.locals.map_ref(|_| 0));
 +    let _ = uses.visit(&body.body);
@@ -210,7 +210,7 @@
 +            if body.locals.is_return_or_arg(local)
 +                || !temporary.ty().is_box()
 +                || temporary.ty() != owner.ty()
-+                || uses.0[local] != 3
++                || !matches!(uses.0[local], 2 | 3)
 +            {
 +                continue;
 +            }
@@ -221,6 +221,19 @@
 +            else {
 +                continue;
 +            };
++            if uses.0[local] == 2 {
++                let temporary = temporary.clone();
++                let owner = owner.clone();
++                if let StatementKind::Assign(_, rvalue) = &mut block.statements[next].kind
++                    && rewrite_indexed_box_use(&temporary, &owner, rvalue)
++                {
++                    // One owner read becomes one indexed projection. Every other
++                    // local's occurrence count stays unchanged, including indices.
++                    uses.0[local] = 0;
++                    block.statements[index].kind = StatementKind::Nop;
++                }
++                continue;
++            }
 +            let StatementKind::Assign(
 +                _,
 +                Rvalue::Ref {
@@ -264,6 +277,30 @@
 +            block.statements[index].kind = StatementKind::Nop;
 +        }
 +    }
++}
++
++fn rewrite_indexed_box_use(temporary: &Place, owner: &Place, rvalue: &mut Rvalue) -> bool {
++    let place = match rvalue {
++        Rvalue::Ref {
++            place,
++            kind: BorrowKind::Shared,
++            ptr_metadata,
++        } if *ptr_metadata == Operand::mk_const_unit() => place,
++        // Retag belongs to the indexed read and remains verbatim on that use.
++        Rvalue::Use(Operand::Copy(place), _) => place,
++        _ => return false,
++    };
++    let Some((base, projection @ ProjectionElem::Index { .. })) = place.as_projection() else {
++        return false;
++    };
++    if base.as_projection() != Some((temporary, &ProjectionElem::Deref)) {
++        return false;
++    }
++    *place = owner
++        .clone()
++        .project(ProjectionElem::Deref, base.ty().clone())
++        .project(projection.clone(), place.ty().clone());
++    true
 +}
 +
 +pub struct Transform;
@@ -576,7 +613,7 @@
 +}
 --- /dev/null
 +++ b/tests/box_copy.rs
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,793 @@
 +//! Reconstruct only an immediately borrowed boxed dereference temporary.
 +use charon_lib::errors::ErrorCtx;
 +use charon_lib::options::TranslateOptions;
@@ -851,6 +888,525 @@
 +    Transform.transform_body(&mut f.ctx, &mut f.body);
 +    assert_eq!(f.body.body, before, "{context}");
 +}
++
++/// Indexed element shapes: `Ref(Index(Deref(temp), i))` and
++/// `Copy(Index(Deref(temp), i))`, with unit metadata rather than the box's own.
++/// Extracted as a raw pointer: the deref pass has already rewritten this one to
++/// index the boxed temporary, and the copy pass excludes `RawPtr` uses, so the
++/// shape survives translation and is still present against a repaired binary.
++/// Only the rvalue and the return-local type are adapted; the place, offset,
++/// owner, metadata, types and region all come from the extraction.
++fn indexed_fixture(copy_element: bool) -> anyhow::Result<Fixture> {
++    let translated = util::translate_rust_text(
++        "pub struct Storage { pub values: Box<[u32]> }
++         pub fn capture_element(storage: &Storage, index: usize, _replacement: Box<[u32]>)
++             -> *const u32 {
++             &raw const storage.values[index]
++         }",
++        &["--mir", "optimized", "--treat-box-as-builtin", "--ullbc"],
++    )?;
++    let mut body = translated
++        .fun_decls
++        .iter()
++        .find(|decl| {
++            util::repr_name(&translated, &decl.item_meta.name) == "test_crate::capture_element"
++        })
++        .unwrap()
++        .body
++        .as_unstructured()
++        .unwrap()
++        .clone();
++    let mut errors = ErrorCtx::new();
++    let ctx = TransformCtx {
++        options: TranslateOptions::new(&mut errors, &translated.options),
++        translated,
++        errors: errors.into(),
++    };
++
++    let captures = indexed_captures(&body);
++    let [use_loc] = captures.as_slice() else {
++        panic!("expected one indexed element capture")
++    };
++    let use_loc = *use_loc;
++    let assign_loc = StmtLoc::new(use_loc.block, use_loc.statement - 1);
++    let StatementKind::Assign(temporary, Rvalue::Use(Operand::Copy(owner), WithRetag::No)) =
++        &body[assign_loc].kind
++    else {
++        panic!("expected the boxed copy immediately before the capture")
++    };
++    assert!(temporary.ty().is_box());
++    let temporary = temporary.clone();
++    let owner = owner.clone();
++    let StatementKind::Assign(
++        _,
++        Rvalue::RawPtr {
++            place,
++            ptr_metadata,
++            ..
++        },
++    ) = &body[use_loc].kind
++    else {
++        unreachable!()
++    };
++    assert_eq!(
++        place.as_projection().map(|(base, _)| base.as_projection()),
++        Some(Some((&temporary, &ProjectionElem::Deref))),
++        "the capture must index the boxed temporary"
++    );
++    let indexed = place.clone();
++    let element_ty = indexed.ty().clone();
++    let ptr_metadata = ptr_metadata.clone();
++
++    let TyKind::Ref(region, _, RefKind::Shared) =
++        body.locals.locals[LocalId::from_usize(1)].ty.kind()
++    else {
++        panic!("expected borrowed Storage")
++    };
++    let (return_ty, rvalue) = if copy_element {
++        (
++            element_ty,
++            Rvalue::Use(Operand::Copy(indexed), WithRetag::No),
++        )
++    } else {
++        (
++            TyKind::Ref(*region, element_ty, RefKind::Shared).into_ty(),
++            Rvalue::Ref {
++                place: indexed,
++                kind: BorrowKind::Shared,
++                ptr_metadata,
++            },
++        )
++    };
++    body.locals.locals[LocalId::ZERO].ty = return_ty.clone();
++    body[use_loc].kind = StatementKind::Assign(Place::new(LocalId::ZERO, return_ty), rvalue);
++
++    Ok(Fixture {
++        ctx,
++        body,
++        assign_loc,
++        use_loc,
++        owner,
++        temporary,
++    })
++}
++
++fn borrow_fixture() -> anyhow::Result<Fixture> {
++    indexed_fixture(false)
++}
++
++fn copy_fixture() -> anyhow::Result<Fixture> {
++    indexed_fixture(true)
++}
++
++/// Rebase `place`'s boxed base from the temporary onto the owner, leaving every
++/// other component of the place alone.
++fn rebased(place: &Place, owner: &Place) -> Place {
++    let Some((base, index)) = place.as_projection() else {
++        panic!("expected an index projection")
++    };
++    let Some((_, ProjectionElem::Deref)) = base.as_projection() else {
++        panic!("expected a dereferenced base")
++    };
++    owner
++        .clone()
++        .project(ProjectionElem::Deref, base.ty().clone())
++        .project(index.clone(), place.ty().clone())
++}
++
++/// The rewrite must change the owner and nothing else. Comparing the whole
++/// statement catches a flipped `from_end`, a `Copy` that became a `Ref`, a
++/// dropped metadata operand, an added retag and a moved destination, none of
++/// which an owner-and-offset check would see.
++fn indexed_rewrite_only_rebases_the_owner(mut f: Fixture) {
++    let StatementKind::Assign(destination, before) = f.body[f.use_loc].kind.clone() else {
++        unreachable!()
++    };
++    let expected = match &before {
++        Rvalue::Ref {
++            place,
++            kind,
++            ptr_metadata,
++        } => Rvalue::Ref {
++            place: rebased(place, &f.owner),
++            kind: *kind,
++            ptr_metadata: ptr_metadata.clone(),
++        },
++        Rvalue::Use(Operand::Copy(place), retag) => {
++            Rvalue::Use(Operand::Copy(rebased(place, &f.owner)), retag.clone())
++        }
++        _ => unreachable!(),
++    };
++    Transform.transform_body(&mut f.ctx, &mut f.body);
++    assert!(
++        matches!(f.body[f.assign_loc].kind, StatementKind::Nop),
++        "boxed temporary must be eliminated"
++    );
++    assert_eq!(
++        f.body[f.use_loc].kind,
++        StatementKind::Assign(destination, expected),
++        "only the owner may change"
++    );
++}
++
++#[test]
++fn adjacent_indexed_borrow_projects_original_owner_and_index() -> anyhow::Result<()> {
++    indexed_rewrite_only_rebases_the_owner(borrow_fixture()?);
++    Ok(())
++}
++
++#[test]
++fn adjacent_indexed_copy_projects_original_owner_and_index() -> anyhow::Result<()> {
++    indexed_rewrite_only_rebases_the_owner(copy_fixture()?);
++    Ok(())
++}
++
++#[test]
++fn indexed_owner_replacement_between_copy_and_use_is_unchanged() -> anyhow::Result<()> {
++    let mut f = borrow_fixture()?;
++    let replacement = Place::new(LocalId::from_usize(3), f.owner.ty().clone());
++    f.body.body[f.use_loc.block].statements.insert(
++        f.use_loc.statement,
++        Statement::new(
++            f.body.span,
++            StatementKind::Assign(
++                f.owner.clone(),
++                Rvalue::Use(Operand::Move(replacement), WithRetag::No),
++            ),
++        ),
++    );
++    unchanged(f, "indexed owner replacement");
++    Ok(())
++}
++
++#[test]
++fn indexed_storage_end_between_copy_and_use_is_unchanged() -> anyhow::Result<()> {
++    let mut f = borrow_fixture()?;
++    f.body.body[f.use_loc.block].statements.insert(
++        f.use_loc.statement,
++        Statement::new(
++            f.body.span,
++            StatementKind::StorageDead(LocalId::from_usize(1)),
++        ),
++    );
++    unchanged(f, "indexed source storage end");
++    Ok(())
++}
++
++#[test]
++fn indexed_additional_temporary_read_is_unchanged() -> anyhow::Result<()> {
++    let mut f = borrow_fixture()?;
++    let mut escape = f.body[f.assign_loc].clone();
++    let StatementKind::Assign(_, Rvalue::Use(operand, _)) = &mut escape.kind else {
++        unreachable!()
++    };
++    *operand = Operand::Copy(f.temporary.clone());
++    f.body.body[f.use_loc.block].statements.push(escape);
++    unchanged(f, "indexed additional read and assignment");
++    Ok(())
++}
++
++#[test]
++fn indexed_mutable_borrow_is_unchanged() -> anyhow::Result<()> {
++    let mut f = borrow_fixture()?;
++    let StatementKind::Assign(_, Rvalue::Ref { kind, .. }) = &mut f.body[f.use_loc].kind else {
++        unreachable!()
++    };
++    *kind = BorrowKind::Mut;
++    unchanged(f, "indexed mutable borrow");
++    Ok(())
++}
++
++#[test]
++fn indexed_raw_pointer_is_unchanged() -> anyhow::Result<()> {
++    let mut f = borrow_fixture()?;
++    let StatementKind::Assign(
++        destination,
++        Rvalue::Ref {
++            place,
++            ptr_metadata,
++            ..
++        },
++    ) = f.body[f.use_loc].kind.clone()
++    else {
++        unreachable!()
++    };
++    f.body[f.use_loc].kind = StatementKind::Assign(
++        destination,
++        Rvalue::RawPtr {
++            place,
++            ptr_metadata,
++            kind: RefKind::Shared,
++        },
++    );
++    unchanged(f, "indexed raw pointer");
++    Ok(())
++}
++
++#[test]
++fn indexed_non_unit_metadata_is_unchanged() -> anyhow::Result<()> {
++    // This cut supports indexed elements with unit metadata only. An indexed
++    // borrow whose metadata is read from the temporary is a different shape and
++    // must keep the temporary until that case is argued on its own.
++    let mut f = borrow_fixture()?;
++    let StatementKind::Assign(_, Rvalue::Ref { ptr_metadata, .. }) = &mut f.body[f.use_loc].kind
++    else {
++        unreachable!()
++    };
++    let metadata_ty = ptr_metadata.ty().clone();
++    *ptr_metadata = Operand::Copy(
++        f.temporary
++            .clone()
++            .project(ProjectionElem::PtrMetadata, metadata_ty),
++    );
++    unchanged(f, "indexed non-unit metadata");
++    Ok(())
++}
++
++#[test]
++fn indexed_copy_retag_is_preserved() -> anyhow::Result<()> {
++    // The indexed branch rebases the place and keeps the use operation whole.
++    // The oracle compares the entire statement, so a rewrite that normalised the
++    // retag would fail here rather than silently succeed.
++    let mut f = copy_fixture()?;
++    let StatementKind::Assign(_, Rvalue::Use(_, retag)) = &mut f.body[f.use_loc].kind else {
++        unreachable!()
++    };
++    *retag = WithRetag::Yes;
++    indexed_rewrite_only_rebases_the_owner(f);
++    Ok(())
++}
++
++/// The indexed element captures in `body`. The bounds checks capture whole-slice
++/// raw pointers of their own, so select on the shape rather than on being the
++/// only capture: an element pointer indexes a dereferenced boxed local.
++fn indexed_captures(body: &ExprBody) -> Vec<StmtLoc> {
++    let mut captures = Vec::new();
++    for (block, data) in body.body.iter_enumerated() {
++        for (index, statement) in data.statements.iter().enumerate() {
++            let StatementKind::Assign(_, Rvalue::RawPtr { place, .. }) = &statement.kind else {
++                continue;
++            };
++            let Some((base, ProjectionElem::Index { .. })) = place.as_projection() else {
++                continue;
++            };
++            let Some((boxed, ProjectionElem::Deref)) = base.as_projection() else {
++                continue;
++            };
++            if boxed.is_local() && boxed.ty().is_box() {
++                captures.push(StmtLoc::new(block, index));
++            }
++        }
++    }
++    captures
++}
++
++/// One boxed copy and the indexed use immediately after it.
++struct IndexedRewrite {
++    assign_loc: StmtLoc,
++    use_loc: StmtLoc,
++    owner: Place,
++}
++
++/// A body carrying two independent indexed captures, ready for the pass.
++struct TwoIndexed {
++    ctx: TransformCtx,
++    body: ExprBody,
++    rewrites: Vec<IndexedRewrite>,
++}
++
++/// Two independent boxed fields, each indexed. The measured extraction puts the
++/// two captures in different blocks, each immediately after its own box copy.
++///
++/// Destination identities are preserved. Only the captured thin raw-pointer type
++/// is rewritten, body-wide, so the local declarations, the tuple aggregate and
++/// the return type stay consistent with each other. The bounds checks capture
++/// fat `*const [u32]` pointers, a different type, and are therefore untouched.
++fn two_indexed_fixture() -> anyhow::Result<TwoIndexed> {
++    let translated = util::translate_rust_text(
++        "pub struct Storage { pub values: Box<[u32]>, pub other: Box<[u32]> }
++         pub fn capture_two(storage: &Storage, i: usize, j: usize, _replacement: Box<[u32]>)
++             -> (*const u32, *const u32) {
++             (&raw const storage.values[i], &raw const storage.other[j])
++         }",
++        &["--mir", "optimized", "--treat-box-as-builtin", "--ullbc"],
++    )?;
++    let mut body = translated
++        .fun_decls
++        .iter()
++        .find(|decl| {
++            util::repr_name(&translated, &decl.item_meta.name) == "test_crate::capture_two"
++        })
++        .unwrap()
++        .body
++        .as_unstructured()
++        .unwrap()
++        .clone();
++    let mut errors = ErrorCtx::new();
++    let ctx = TransformCtx {
++        options: TranslateOptions::new(&mut errors, &translated.options),
++        translated,
++        errors: errors.into(),
++    };
++
++    let captures = indexed_captures(&body);
++    assert_eq!(captures.len(), 2, "expected two indexed element captures");
++
++    let mut pending = Vec::new();
++    let mut pointer_ty = None;
++    let mut element_ty = None;
++    for use_loc in captures {
++        let assign_loc = StmtLoc::new(use_loc.block, use_loc.statement - 1);
++        let StatementKind::Assign(temporary, Rvalue::Use(Operand::Copy(owner), WithRetag::No)) =
++            &body[assign_loc].kind
++        else {
++            panic!("expected a boxed copy immediately before each capture")
++        };
++        assert!(temporary.ty().is_box());
++        let temporary = temporary.clone();
++        let owner = owner.clone();
++        let StatementKind::Assign(
++            destination,
++            Rvalue::RawPtr {
++                place,
++                ptr_metadata,
++                ..
++            },
++        ) = &body[use_loc].kind
++        else {
++            unreachable!()
++        };
++        assert_eq!(
++            place.as_projection().map(|(base, _)| base.as_projection()),
++            Some(Some((&temporary, &ProjectionElem::Deref))),
++            "each capture must index its own boxed temporary"
++        );
++        // Both captures are thin pointers to the element type, so one exact
++        // substitution retypes every mention of them.
++        let captured = destination.ty().clone();
++        assert!(
++            pointer_ty.get_or_insert(captured.clone()) == &captured,
++            "the two captures must share one pointer type"
++        );
++        element_ty.get_or_insert(place.ty().clone());
++        pending.push((
++            assign_loc,
++            use_loc,
++            owner,
++            place.clone(),
++            ptr_metadata.clone(),
++        ));
++    }
++    let pointer_ty = pointer_ty.unwrap();
++    let element_ty = element_ty.unwrap();
++
++    let TyKind::Ref(region, _, RefKind::Shared) =
++        body.locals.locals[LocalId::from_usize(1)].ty.kind()
++    else {
++        panic!("expected borrowed Storage")
++    };
++    let reference_ty = TyKind::Ref(*region, element_ty, RefKind::Shared).into_ty();
++    // The body visitor group skips `Ty` (visitor.rs:180-201, "does not recurse
++    // into types"), so it retypes the local declarations but leaves the return
++    // tuple's element types untouched. The AST group drives `Ty` and `TyKind`,
++    // so it reaches nested types.
++    body.dyn_visit_mut(|ty: &mut Ty| {
++        if *ty == pointer_ty {
++            *ty = reference_ty.clone();
++        }
++    });
++    assert_eq!(
++        body.locals.locals[LocalId::ZERO]
++            .ty
++            .as_tuple_fields(&ctx.translated),
++        vec![reference_ty.clone(), reference_ty.clone()],
++        "the returned tuple fields must be retyped"
++    );
++
++    let mut rewrites = Vec::new();
++    for (assign_loc, use_loc, owner, place, ptr_metadata) in pending {
++        let StatementKind::Assign(destination, _) = &body[use_loc].kind else {
++            unreachable!()
++        };
++        let destination = destination.clone();
++        let local = destination
++            .as_local()
++            .expect("each capture destination is a local");
++        assert_eq!(
++            &body.locals.locals[local].ty, &reference_ty,
++            "the destination declaration must be retyped"
++        );
++        assert_eq!(
++            destination.ty(),
++            &reference_ty,
++            "the destination place must be retyped"
++        );
++        body[use_loc].kind = StatementKind::Assign(
++            destination,
++            Rvalue::Ref {
++                place,
++                kind: BorrowKind::Shared,
++                ptr_metadata,
++            },
++        );
++        rewrites.push(IndexedRewrite {
++            assign_loc,
++            use_loc,
++            owner,
++        });
++    }
++    Ok(TwoIndexed {
++        ctx,
++        body,
++        rewrites,
++    })
++}
++
++#[test]
++fn two_indexed_rewrites_compose() -> anyhow::Result<()> {
++    // Composition evidence: two rewrites in one body must both fire and disturb
++    // nothing else. This does NOT detect an erroneous extra owner-counter
++    // increment in the indexed branch; that specific mutation is inert for this
++    // shape. Other wrong updates, a decrement or a substitution, are outside
++    // that argument and are not tested here.
++    let TwoIndexed {
++        mut ctx,
++        mut body,
++        rewrites,
++    } = two_indexed_fixture()?;
++    let mut expected = body.body.clone();
++    for IndexedRewrite {
++        assign_loc,
++        use_loc,
++        owner,
++    } in &rewrites
++    {
++        let StatementKind::Assign(
++            destination,
++            Rvalue::Ref {
++                place,
++                kind,
++                ptr_metadata,
++            },
++        ) = expected[use_loc.block].statements[use_loc.statement]
++            .kind
++            .clone()
++        else {
++            unreachable!()
++        };
++        expected[use_loc.block].statements[use_loc.statement].kind = StatementKind::Assign(
++            destination,
++            Rvalue::Ref {
++                place: rebased(&place, owner),
++                kind,
++                ptr_metadata,
++            },
++        );
++        expected[assign_loc.block].statements[assign_loc.statement].kind = StatementKind::Nop;
++    }
++    Transform.transform_body(&mut ctx, &mut body);
++    assert_eq!(body.body, expected, "both rewrites, and nothing else");
++    Ok(())
++}
 --- /dev/null
 +++ b/tests/ui/simple/box-slice-metadata.rs
 @@ -0,0 +1,36 @@
@@ -892,7 +1448,7 @@
 +}
 --- /dev/null
 +++ b/tests/ui/simple/box-slice-metadata.out
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,243 @@
 +# Final LLBC before serialization:
 +
 +// Full name: core::marker::MetaSized
@@ -999,30 +1555,26 @@
 +    let index: usize; // arg #2
 +    let _3: usize; // anonymous local
 +    let _4: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // anonymous local
-+    let _5: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // anonymous local
-+    let _6: &'_ [u32]; // anonymous local
-+    let _7: &'_ u32; // anonymous local
++    let _5: &'_ [u32]; // anonymous local
++    let _6: &'_ u32; // anonymous local
 +
 +    storage_live(_0)
 +    storage_live(_4)
-+    storage_live(_5)
 +    storage_live(_3)
 +    _3 = copy index
 +    _4 = copy (*arena).values
-+    _5 = copy (*arena).values
++    storage_live(_5)
++    _5 = &(*(*arena).values) with_metadata(copy (*arena).values.metadata)
 +    storage_live(_6)
-+    _6 = &(*_5) with_metadata(copy _5.metadata)
-+    storage_live(_7)
-+    _7 = @SliceIndexShared<'_, u32>(move _6, copy _3)
++    _6 = @SliceIndexShared<'_, u32>(move _5, copy _3)
 +    ↳⚡ undefined_behavior
-+    _0 = copy (*_7)
++    _0 = copy (*_6)
 +    storage_dead(_3)
-+    storage_dead(_5)
 +    storage_dead(_4)
 +    storage_dead(index)
 +    storage_dead(arena)
-+    storage_dead(_7)
 +    storage_dead(_6)
++    storage_dead(_5)
 +    return
 +}
 +
@@ -1211,6 +1763,155 @@
 +    storage_dead(_5)
 +    storage_dead(_3)
 +    storage_dead(values)
++    return
++}
++
++
++
+--- /dev/null
++++ b/tests/ui/simple/box-indexed-copy.rs
+@@ -0,0 +1,28 @@
++//@ charon-args=--mir optimized --treat-box-as-builtin
++
++pub struct Store {
++    nodes: Box<[u32]>,
++}
++
++pub struct Element<'store> {
++    store: &'store Store,
++    node: &'store u32,
++}
++
++/// Returns the parent reference alongside a reference to one element. Optimized
++/// MIR routes the boxed slice through a temporary before indexing it; the
++/// snapshot must show the element reached through `store`, with no surviving
++/// Box copy on the indexed use. The bounds check keeps its own whole-slice
++/// capture, which is a different shape and stays.
++pub fn borrow_element(store: &Store, index: usize) -> Element<'_> {
++    Element {
++        store,
++        node: &store.nodes[index],
++    }
++}
++
++/// Indexed read control: the same temporary, consumed by a copy rather than a
++/// borrow.
++pub fn copy_element(store: &Store, index: usize) -> u32 {
++    store.nodes[index]
++}
+--- /dev/null
++++ b/tests/ui/simple/box-indexed-copy.out
+@@ -0,0 +1,115 @@
++# Final LLBC before serialization:
++
++// Full name: core::marker::MetaSized
++#[fundamental]
++#[lang_item(MetaSized)]
++pub trait MetaSized<Self>
++
++// Full name: core::marker::Sized
++#[fundamental]
++#[lang_item(Sized)]
++pub trait Sized<Self>
++{
++    proof ImpliedClause0: (Self: MetaSized)
++    non-dyn-compatible
++}
++
++// Full name: alloc::alloc::Global
++#[lang_item(GlobalAlloc)]
++pub struct Global {}
++
++// Full name: alloc::boxed::Box
++#[fundamental]
++#[lang_item(OwnedBox)]
++pub opaque type Box<T>
++where
++    TraitClause0: (T: MetaSized),
++    TraitClause1: (type_error("removed allocator parameter"): Sized),
++
++// Full name: test_crate::Store
++pub struct Store {
++  nodes: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}],
++}
++
++// Full name: test_crate::Element
++pub struct Element<'store> {
++  store: &'store Store,
++  node: &'store u32,
++}
++
++// Full name: test_crate::borrow_element
++pub fn borrow_element<'_0>(store: &'_0 Store, index: usize) -> Element<'_0>
++{
++    let _0: Element<'1>; // return
++    let store: &'3 Store; // arg #1
++    let index: usize; // arg #2
++    let _3: &'4 Store; // anonymous local
++    let _4: &'6 u32; // anonymous local
++    let _5: &'7 u32; // anonymous local
++    let _6: usize; // anonymous local
++    let _7: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // anonymous local
++    let _8: &'_ [u32]; // anonymous local
++    let _9: &'_ u32; // anonymous local
++
++    storage_live(_0)
++    storage_live(_7)
++    storage_live(_3)
++    _3 = &(*store)
++    storage_live(_4)
++    storage_live(_5)
++    storage_live(_6)
++    _6 = copy index
++    _7 = copy (*store).nodes
++    storage_live(_8)
++    _8 = &(*(*store).nodes) with_metadata(copy (*store).nodes.metadata)
++    storage_live(_9)
++    _9 = @SliceIndexShared<'_, u32>(move _8, copy _6)
++    ↳⚡ undefined_behavior
++    _5 = &(*_9)
++    _4 = &(*_5)
++    _0 = Element { store: move _3, node: move _4 }
++    storage_dead(_4)
++    storage_dead(_3)
++    storage_dead(_6)
++    storage_dead(_5)
++    storage_dead(_7)
++    storage_dead(index)
++    storage_dead(store)
++    storage_dead(_9)
++    storage_dead(_8)
++    return
++}
++
++// Full name: test_crate::copy_element
++pub fn copy_element<'_0>(store: &'_0 Store, index: usize) -> u32
++{
++    let _0: u32; // return
++    let store: &'1 Store; // arg #1
++    let index: usize; // arg #2
++    let _3: usize; // anonymous local
++    let _4: Box<[u32]>[{built_in impl MetaSized for [u32]}, {built_in impl Sized for Global}]; // anonymous local
++    let _5: &'_ [u32]; // anonymous local
++    let _6: &'_ u32; // anonymous local
++
++    storage_live(_0)
++    storage_live(_4)
++    storage_live(_3)
++    _3 = copy index
++    _4 = copy (*store).nodes
++    storage_live(_5)
++    _5 = &(*(*store).nodes) with_metadata(copy (*store).nodes.metadata)
++    storage_live(_6)
++    _6 = @SliceIndexShared<'_, u32>(move _5, copy _3)
++    ↳⚡ undefined_behavior
++    _0 = copy (*_6)
++    storage_dead(_3)
++    storage_dead(_4)
++    storage_dead(index)
++    storage_dead(store)
++    storage_dead(_6)
++    storage_dead(_5)
 +    return
 +}
 +
