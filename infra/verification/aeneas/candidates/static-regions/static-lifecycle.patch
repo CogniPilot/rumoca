@@ -1,0 +1,125 @@
+diff --git a/interp/InterpBorrows.ml b/interp/InterpBorrows.ml
+index 7d3bd7a4..30411a65 100644
+--- a/interp/InterpBorrows.ml
++++ b/interp/InterpBorrows.ml
+@@ -1928,6 +1928,11 @@ let rec promote_reserved_mut_borrow (config : config) (span : Meta.span)
+ let destructure_abs (span : Meta.span) (abs_kind : abs_kind) ~(can_end : bool)
+     ~(destructure_shared_values : bool) (ctx : eval_ctx) (abs0 : abs) : abs =
+   [%ltrace "- abs:\n" ^ abs_to_string span ctx abs0];
++  (* Both branch joins and loop preparation use this constructor. A permanent
++     owner cannot acquire an ordinary kind or become endable through either. *)
++  [%cassert] span
++    (abs0.kind <> StaticLifetime || (abs_kind = StaticLifetime && not can_end))
++    "Restructuring permanent static ownership is not supported";
+   (* Accumulator to store the destructured values *)
+   let avalues = ref [] in
+   (* Utility function to store a value in the accumulator *)
+@@ -2484,9 +2489,11 @@ let rec simplify_dummy_values_useless_abs_aux (config : config)
+         (* No exception was raised: continue *)
+         EBinding (BVar vid, v) :: explore_env ctx env
+     | EAbs abs :: env
+-      when simplify_abs && abs.can_end
++      when simplify_abs
+            && AbsId.Set.is_empty abs.parents
+-           && not (AbsId.Set.mem abs.abs_id frozen_abs) -> (
++           && (abs.kind = StaticLifetime
++              || (abs.can_end && not (AbsId.Set.mem abs.abs_id frozen_abs)))
++      -> (
+         [%ldebug "Diving into abs:\n" ^ abs_to_string span ctx abs];
+         (* End the shared loans with no corresponding borrows *)
+         let visitor =
+@@ -2517,13 +2524,20 @@ let rec simplify_dummy_values_useless_abs_aux (config : config)
+           end
+         in
+         let abs = visitor#visit_abs () abs in
+-        (* Check if it is possible to end the abstraction: if yes, raise an exception *)
+-        let opt_loan = get_first_non_ignored_aloan_in_abs span abs 0 (-1) in
+-        match opt_loan with
+-        | None ->
+-            [%ldebug
+-              "No non-ignored aloans in abs:\n" ^ abs_to_string span ctx abs];
+-            (* No remaining loans: we can end the abstraction.
++        (* Static storage outlives the program, but its unreachable loan records
++           do not. Collect them through the same liveness rules without ending
++           the owner or running a backward continuation. *)
++        if abs.kind = StaticLifetime then (
++          find_first_endable_loan_proj_in_abs span ctx abs;
++          EAbs abs :: explore_env ctx env)
++        else
++          (* Check if it is possible to end the abstraction: if yes, raise an exception *)
++          let opt_loan = get_first_non_ignored_aloan_in_abs span abs 0 (-1) in
++          match opt_loan with
++          | None ->
++              [%ldebug
++                "No non-ignored aloans in abs:\n" ^ abs_to_string span ctx abs];
++              (* No remaining loans: we can end the abstraction.
+ 
+                However, we need to make sure that ending this abstraction will not
+                modify the *fixed* abstractions: we thus explore all the borrows and
+@@ -2532,19 +2546,19 @@ let rec simplify_dummy_values_useless_abs_aux (config : config)
+ 
+                TODO: this limitation is annoying. We need to generalize the join.
+             *)
+-            if not (abs_mut_borrows_loans_in_fixed span ctx frozen_abs abs) then
+-              raise (FoundAbsId abs.abs_id)
+-            else EAbs abs :: explore_env ctx env
+-        | Some _ ->
+-            [%ldebug
+-              "There are non-ignored aloans in abs:\n"
+-              ^ abs_to_string span ctx abs];
+-            (* There are remaining loans: we can't end the abstraction *)
+-            (* Check if we can end some loan projectors (because there doesn't
++              if not (abs_mut_borrows_loans_in_fixed span ctx frozen_abs abs)
++              then raise (FoundAbsId abs.abs_id)
++              else EAbs abs :: explore_env ctx env
++          | Some _ ->
++              [%ldebug
++                "There are non-ignored aloans in abs:\n"
++                ^ abs_to_string span ctx abs];
++              (* There are remaining loans: we can't end the abstraction *)
++              (* Check if we can end some loan projectors (because there doesn't
+                remain corresponding borrow projectors in the context) *)
+-            find_first_endable_loan_proj_in_abs span ctx abs;
+-            (* Continue *)
+-            EAbs abs :: explore_env ctx env)
++              find_first_endable_loan_proj_in_abs span ctx abs;
++              (* Continue *)
++              EAbs abs :: explore_env ctx env)
+     | b :: env -> b :: explore_env ctx env
+   in
+   let rec_call =
+diff --git a/interp/InterpJoin.ml b/interp/InterpJoin.ml
+index 9fe98fe7..e7b9df3d 100644
+--- a/interp/InterpJoin.ml
++++ b/interp/InterpJoin.ml
+@@ -47,7 +47,7 @@ let reborrow_ashared_loans (span : Meta.span) (loop_id : LoopId.id option)
+        *instances* of the same loans, exactly as when copying a shared value
+        (see [InterpExpressions.copy_value])
+   *)
+-  let mk_value_with_fresh_sids_no_shared_loans (rids : RegionId.Set.t)
++  let mk_value_with_fresh_sids_no_shared_loans (regions : borrow_region_set)
+       (nrid : RegionId.id) (v : tvalue) : tvalue =
+     (* Remove the shared loans *)
+     let v = value_remove_shared_loans v in
+@@ -55,7 +55,9 @@ let reborrow_ashared_loans (span : Meta.span) (loop_id : LoopId.id option)
+     Substitute.tvalue_subst_ids
+       {
+         (Substitute.no_abs_id_subst span) with
+-        r_subst = (fun r -> if RegionId.Set.mem r rids then nrid else r);
++        r_subst =
++          (fun r ->
++            if BorrowRegionSet.mem (VariableRegion r) regions then nrid else r);
+         ssubst =
+           (fun id ->
+             let nid = ctx.fresh_symbolic_value_id () in
+@@ -112,9 +114,7 @@ let reborrow_ashared_loans (span : Meta.span) (loop_id : LoopId.id option)
+ 
+     (* Prepare the shared value *)
+     let nsv =
+-      mk_value_with_fresh_sids_no_shared_loans
+-        (BorrowRegionSet.require_variable_ids abs.regions.owned)
+-        nrid sv
++      mk_value_with_fresh_sids_no_shared_loans abs.regions.owned nrid sv
+     in
+ 
+     (* Introduce the new abstraction for the shared values.

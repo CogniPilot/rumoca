@@ -3,6 +3,10 @@
 Review snapshot, **not adopted** by Rumoca's toolchain or proof driver.
 Preservation does not accept the translator's semantics.
 
+The subsequent [static-owner lifecycle checkpoint](lifecycle.md) composes the
+reviewed capture producer with a two-file interpreter correction. Its separate
+`lifecycle.nix` recipe and evidence do not change this snapshot's adoption status.
+
 ## Retained inputs
 
 - `static-regions.patch`: the 27-file implementation delta against the

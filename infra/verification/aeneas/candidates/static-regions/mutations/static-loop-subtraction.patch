@@ -1,0 +1,11 @@
+--- a/static-owner-loop.rs
++++ b/static-owner-loop.rs
+@@ -13,7 +13,7 @@
+     let mut iteration = 0;
+     while iteration < count {
+         if iteration % 2 == 0 {
+-            total = total.wrapping_add(*selected(index));
++            total = total.wrapping_sub(*selected(index));
+         }
+         iteration += 1;
+     }
