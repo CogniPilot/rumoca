@@ -1,7 +1,10 @@
+{ aeneas, system }:
 let
-  system = builtins.currentSystem;
-  aeneas = builtins.getFlake "github:AeneasVerif/aeneas/f9a8e338188447c77f31246892cb9a7a742e58ef";
   upstream = aeneas.inputs.charon;
+  pkgs = upstream.inputs.nixpkgs.legacyPackages.${system};
+  inherit (pkgs) lib;
+  rustToolchain = upstream.packages.${system}.rustToolchain;
+  miriSysroots = upstream.packages.${system}.charon-full-mir-sysroots;
   original = upstream.packages.${system}.charon-unwrapped;
   captureArguments = ./capture-arguments.patch;
   boxPatch = ../../reconstruct-box-borrows.patch;
@@ -16,7 +19,17 @@ let
     '';
   });
 in
-upstream.packages.${system}.charon.overrideAttrs (old: {
-  buildCommand = builtins.replaceStrings [ "${original}" ] [ "${patched}" ] old.buildCommand;
-  passthru = { };
-})
+pkgs.runCommand "charon" {
+  nativeBuildInputs = [ pkgs.makeWrapper ] ++ lib.optionals pkgs.stdenv.isDarwin [ pkgs.cctools ];
+  passthru.unwrapped = patched;
+} (''
+  cp -r ${patched} $out
+  chmod -R u+w $out
+  wrapProgram $out/bin/charon \
+    --set CHARON_TOOLCHAIN_IS_IN_PATH 1 \
+    --set CHARON_MIRI_SYSROOTS "${miriSysroots}" \
+    --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath [ rustToolchain ]}" \
+    --prefix PATH : "${lib.makeBinPath [ rustToolchain ]}"
+'' + lib.optionalString pkgs.stdenv.isDarwin ''
+  install_name_tool -add_rpath "${rustToolchain}/lib" "$out/bin/charon-driver"
+'')

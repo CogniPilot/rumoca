@@ -5,10 +5,9 @@ the entire `fix_closure_signature_regions` heuristic, including its registration
 The independent closure-method lifetime pass is unchanged; its removal requires
 the separate method-constraint producer fix.
 
-The package inherits the adopted Aeneas patches and bundled Charon. For paired
-tests, explicitly extract LLBC with the separate **candidate Charon**, then
-invoke this package's Aeneas on that LLBC. The bundled Charon is not the new
-producer and must not be used to claim this pair passes.
+The package inherits the adopted Aeneas patches and explicitly depends on the
+capture-arguments candidate Charon. Both executables in its `bin` directory
+belong to the candidate pair. No live tool pin is changed by this recipe.
 
 ```console
 nix build --impure --no-link --print-out-paths --cores 4 --max-jobs 1 --file infra/verification/aeneas/candidates/capture-arguments/package.nix

@@ -7,10 +7,10 @@ types. A separate region binder isolates those parameters from parent generic
 arguments; successful matching requires exact equality after substitution.
 Unsupported or inconsistent instantiations produce a translation error.
 
-Build with the pinned upstream dependencies and adopted box-borrow patch:
+Build the paired tools with one upstream pin and the adopted box-borrow patch:
 
 ```console
-nix build --impure --no-link --print-out-paths --cores 4 --max-jobs 1 --file infra/verification/charon/candidates/capture-arguments/package.nix
+nix build --impure --no-link --print-out-paths --cores 4 --max-jobs 1 --file infra/verification/aeneas/candidates/capture-arguments/package.nix
 ```
 
 Use the resulting Charon on the sibling
@@ -24,11 +24,16 @@ caller through Aeneas with its signature-guessing pass removed. Those modules
 Lean-check, but retain an external `Iterator.map.default` axiom, so this does
 not establish their end-to-end semantics or a new Rumoca Lean proof.
 
-Use the companion [Aeneas candidate](../../../aeneas/candidates/capture-arguments/README.md)
-on LLBC from this candidate Charon. Its bundled Charon is still the adopted
-one, not this producer. Claude independently reproduced the whole-iterator
-and higher-ranked fixture results and inspected the fifteen changed upstream
-snapshots. The final source, added constructor controls, full test suite and
+This Charon recipe takes the caller's explicit `aeneas` and `system` inputs.
+The wrapper directly consumes the patched derivation and pinned toolchain and
+full-MIR sysroots; it does not rewrite an upstream shell command string. Its
+`unwrapped` passthru identifies the actual tested producer. Upstream passthru
+checks tied to the unpatched source are not exported as candidate checks.
+
+Use the companion [Aeneas candidate](../../../aeneas/candidates/capture-arguments/README.md),
+which explicitly bundles this candidate Charon. Claude independently reproduced
+the whole-iterator and higher-ranked fixture results and inspected the fifteen
+changed upstream snapshots. The final source, added constructor controls, full test suite and
 strict Clippy have passed their candidate gate, and Claude accepted the source
 on 2026-09-07. The new actual Rust-to-IR test fails against adopted Charon and
 passes against the candidate. Live tool pins have not been changed.
