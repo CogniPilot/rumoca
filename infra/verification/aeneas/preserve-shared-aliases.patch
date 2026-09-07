@@ -1,0 +1,422 @@
+--- a/src/interp/InterpJoin.ml
++++ b/src/interp/InterpJoin.ml
+@@ -68,6 +68,11 @@
+   in
+ 
+   let fresh_absl = ref [] in
++  (* Reuse one whole loan/abstraction/region per original loan within this call.
++     Its aliases must share variant information, but each borrow occurrence
++     still needs a distinct SharedBorrowId. Never carry this map across joins
++     or loop iterations. *)
++  let reborrowed_loans = ref BorrowId.Map.empty in
+ 
+   (* Auxiliary function to create a new abstraction for a shared value.
+ 
+@@ -85,11 +90,13 @@
+      {[
+        abs'0 { SL l s0 }
+        abs'2 { SB l, SL {l1} s1 }
+-       abs'3 { SB l, SL {l2} s2 }
+        x0 -> SB l1
+-       x1 -> SB l2
++       x1 -> SB l1
+      ]}
+ 
++     The two occurrences of SB l1 have distinct SharedBorrowIds. They refer to
++     the same fresh shared value, so refining one alias refines both.
++
+      [rty] is the type with region of the shared value, if it comes from a region
+      abstraction.
+   *)
+@@ -217,7 +224,17 @@
+         | Some (abs, sv, rty) ->
+             (* Check if the region abstraction is frozen *)
+             if not abs.can_end then
+-              let bid, sid = push_abs_for_shared_value abs sv rty bid sid in
++              let bid, sid =
++                match BorrowId.Map.find_opt bid !reborrowed_loans with
++                | Some fresh_bid -> (fresh_bid, ctx.fresh_shared_borrow_id ())
++                | None ->
++                    let fresh_bid, fresh_sid =
++                      push_abs_for_shared_value abs sv rty bid sid
++                    in
++                    reborrowed_loans :=
++                      BorrowId.Map.add bid fresh_bid !reborrowed_loans;
++                    (fresh_bid, fresh_sid)
++              in
+               VSharedBorrow (bid, sid)
+             else super#visit_VSharedBorrow env bid sid
+     end
+--- /dev/null
++++ b/tests/src/shared-loan-alias.rs
+@@ -0,0 +1,147 @@
++//@ [!lean] skip
++//@ charon-args=--mir optimized
++#![feature(register_tool)]
++#![register_tool(verify)]
++
++pub enum Choice {
++    Left(u32),
++    Right(u32),
++}
++
++pub struct Pair<'a> {
++    pub left: &'a Choice,
++    pub right: &'a Choice,
++}
++
++pub fn single(choice: &Choice) -> u32 {
++    match choice {
++        Choice::Left(value) | Choice::Right(value) => *value,
++    }
++}
++
++pub fn distinct(pair: Pair<'_>) -> (u32, u32) {
++    let left = match pair.left {
++        Choice::Left(value) | Choice::Right(value) => *value,
++    };
++    let right = match pair.right {
++        Choice::Left(value) | Choice::Right(value) => *value,
++    };
++    (left, right)
++}
++
++pub fn local(choice: Choice, select: bool) -> u32 {
++    let first = &choice;
++    let second = first;
++    if select {
++        match first {
++            Choice::Left(value) | Choice::Right(value) => *value,
++        }
++    } else {
++        match second {
++            Choice::Left(value) | Choice::Right(value) => *value,
++        }
++    }
++}
++
++pub fn mutable(value: &mut u32, select: bool) {
++    if select {
++        *value = 1;
++    } else {
++        *value = 2;
++    }
++}
++
++pub struct Nested<'a> {
++    pub value: &'a u32,
++}
++
++pub struct NestedPair<'a> {
++    pub left: &'a Nested<'a>,
++    pub right: &'a Nested<'a>,
++}
++
++pub fn select_nested(pair: NestedPair<'_>, choose_left: bool) -> (u32, u32, u32) {
++    let alias = pair.left;
++    let selected = if choose_left { pair.left } else { pair.right };
++    (*alias.value, *selected.value, *pair.right.value)
++}
++
++#[verify::test]
++pub fn distinct_loan_regression() {
++    let left = Choice::Left(11);
++    let right = Choice::Right(29);
++    let (first, second) = distinct(Pair {
++        left: &left,
++        right: &right,
++    });
++    assert!(first == 11);
++    assert!(second == 29);
++}
++
++#[verify::test]
++pub fn nested_loan_regression() {
++    let left_value = 11;
++    let right_value = 29;
++    let left = Nested { value: &left_value };
++    let right = Nested {
++        value: &right_value,
++    };
++    let (first, selected, second) = select_nested(
++        NestedPair {
++            left: &left,
++            right: &right,
++        },
++        true,
++    );
++    assert!(first == 11);
++    assert!(selected == 11);
++    assert!(second == 29);
++    let (first, selected, second) = select_nested(
++        NestedPair {
++            left: &left,
++            right: &right,
++        },
++        false,
++    );
++    assert!(first == 11);
++    assert!(selected == 29);
++    assert!(second == 29);
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn independent_values_and_local_aliases() {
++        distinct_loan_regression();
++        nested_loan_regression();
++        let left = Choice::Left(11);
++        let right = Choice::Right(29);
++        assert_eq!(
++            distinct(Pair {
++                left: &left,
++                right: &right
++            }),
++            (11, 29)
++        );
++        assert_eq!(
++            distinct(Pair {
++                left: &right,
++                right: &left
++            }),
++            (29, 11)
++        );
++        assert_eq!(local(Choice::Left(11), true), 11);
++        assert_eq!(local(Choice::Right(29), false), 29);
++    }
++
++    #[test]
++    fn independent_mutation() {
++        let mut value = 0;
++        mutable(&mut value, true);
++        assert_eq!(value, 1);
++        mutable(&mut value, false);
++        assert_eq!(value, 2);
++    }
++}
+--- /dev/null
++++ b/tests/src/shared-loan-nested-enum.rs
+@@ -0,0 +1,19 @@
++//@ [!lean] skip
++//@ [lean] known-failure
++//@ [lean] aeneas-args=-log-error MainLogger
++//@ charon-args=--mir optimized
++
++pub enum Choice {
++    Left(u32),
++    Right(u32),
++}
++
++pub struct Nested<'a> {
++    pub value: &'a Choice,
++}
++
++pub fn read_nested(node: &Nested<'_>) -> u32 {
++    match node.value {
++        Choice::Left(value) | Choice::Right(value) => *value,
++    }
++}
+--- /dev/null
++++ b/tests/src/shared-loan-nested-enum.lean.out
+@@ -0,0 +1,4 @@
++[[91mError[39m] Not allowed to expand enumerations with several variants
++Source: 'tests/src/shared-loan-nested-enum.rs', lines 17:21-17:26
++Compiler source: interp/InterpExpansion.ml, line 293
++
+--- /dev/null
++++ b/tests/lean/SharedLoanAlias.lean
+@@ -0,0 +1,133 @@
++-- THIS FILE WAS AUTOMATICALLY GENERATED BY AENEAS
++-- [shared_loan_alias]
++import Aeneas
++open Aeneas Aeneas.Std Result ControlFlow Error
++set_option linter.dupNamespace false
++set_option linter.hashCommand false
++set_option linter.unusedVariables false
++set_option linter.style.whitespace false
++set_option linter.style.setOption false
++set_option linter.style.longLine false
++
++/- You can set the `maxHeartbeats` value with the `-max-heartbeats` CLI option -/
++set_option maxHeartbeats 1000000
++
++/- You can set the `maxRecDepth` value with the `-max-recdepth` CLI option -/
++set_option maxRecDepth 2048
++
++namespace shared_loan_alias
++
++/-- [shared_loan_alias::Choice]
++    Source: 'tests/src/shared-loan-alias.rs', lines 6:0-9:1
++    Visibility: public -/
++@[discriminant isize]
++inductive Choice where
++| Left : Std.U32 → Choice
++| Right : Std.U32 → Choice
++
++/-- [shared_loan_alias::Pair]
++    Source: 'tests/src/shared-loan-alias.rs', lines 11:0-14:1
++    Visibility: public -/
++structure Pair where
++  left : Choice
++  right : Choice
++
++/-- [shared_loan_alias::single]:
++    Source: 'tests/src/shared-loan-alias.rs', lines 16:0-20:1
++    Visibility: public -/
++def single (choice : Choice) : Result Std.U32 := do
++  match choice with
++  | Choice.Left value => ok value
++  | Choice.Right value => ok value
++
++/-- [shared_loan_alias::distinct]:
++    Source: 'tests/src/shared-loan-alias.rs', lines 22:0-30:1
++    Visibility: public -/
++def distinct (pair : Pair) : Result (Std.U32 × Std.U32) := do
++  let left ←
++    match pair.left with
++    | Choice.Left value => ok value
++    | Choice.Right value => ok value
++  match pair.right with
++  | Choice.Left value => ok (left, value)
++  | Choice.Right value => ok (left, value)
++
++/-- [shared_loan_alias::local]:
++    Source: 'tests/src/shared-loan-alias.rs', lines 32:0-44:1
++    Visibility: public -/
++def «local» (choice : Choice) (select : Bool) : Result Std.U32 := do
++  if select
++  then
++    match choice with
++    | Choice.Left value => ok value
++    | Choice.Right value => ok value
++  else
++    match choice with
++    | Choice.Left value => ok value
++    | Choice.Right value => ok value
++
++/-- [shared_loan_alias::mutable]:
++    Source: 'tests/src/shared-loan-alias.rs', lines 46:0-52:1
++    Visibility: public -/
++def mutable (value : Std.U32) (select : Bool) : Result Std.U32 := do
++  if select
++  then ok 1#u32
++  else ok 2#u32
++
++/-- [shared_loan_alias::Nested]
++    Source: 'tests/src/shared-loan-alias.rs', lines 54:0-56:1
++    Visibility: public -/
++structure Nested where
++  value : Std.U32
++
++/-- [shared_loan_alias::NestedPair]
++    Source: 'tests/src/shared-loan-alias.rs', lines 58:0-61:1
++    Visibility: public -/
++structure NestedPair where
++  left : Nested
++  right : Nested
++
++/-- [shared_loan_alias::select_nested]:
++    Source: 'tests/src/shared-loan-alias.rs', lines 63:0-67:1
++    Visibility: public -/
++def select_nested
++  (pair : NestedPair) (choose_left : Bool) :
++  Result (Std.U32 × Std.U32 × Std.U32)
++  := do
++  if choose_left
++  then ok (pair.left.value, pair.left.value, pair.right.value)
++  else ok (pair.left.value, pair.right.value, pair.right.value)
++
++/-- [shared_loan_alias::distinct_loan_regression]:
++    Source: 'tests/src/shared-loan-alias.rs', lines 70:0-79:1
++    Visibility: public -/
++def distinct_loan_regression : Result Unit := do
++  let (first, second) ←
++    distinct { left := (Choice.Left 11#u32), right := (Choice.Right 29#u32) }
++  massert (first = 11#u32)
++  massert (second = 29#u32)
++
++/- Unit test for [shared_loan_alias::distinct_loan_regression] -/
++#assert (distinct_loan_regression == ok ())
++
++/-- [shared_loan_alias::nested_loan_regression]:
++    Source: 'tests/src/shared-loan-alias.rs', lines 82:0-109:1
++    Visibility: public -/
++def nested_loan_regression : Result Unit := do
++  let (first, selected, second) ←
++    select_nested { left := { value := 11#u32 }, right := { value := 29#u32 } }
++      true
++  massert (first = 11#u32)
++  massert (selected = 11#u32)
++  massert (second = 29#u32)
++  let (first1, selected1, second1) ←
++    select_nested { left := { value := 11#u32 }, right := { value := 29#u32 } }
++      false
++  massert (first1 = 11#u32)
++  massert (selected1 = 29#u32)
++  massert (second1 = 29#u32)
++
++/- Unit test for [shared_loan_alias::nested_loan_regression] -/
++#assert (nested_loan_regression == ok ())
++
++end shared_loan_alias
+--- /dev/null
++++ b/tests/lean/SharedLoanAliasProperties.lean
+@@ -0,0 +1,44 @@
++import SharedLoanAlias
++
++open Aeneas Aeneas.Std shared_loan_alias
++
++def aliasChoicePayload : Choice → U32
++  | .Left value => value
++  | .Right value => value
++
++theorem distinct_loans_preserve_independent_payloads (pair : Pair) :
++    distinct pair = Result.ok (aliasChoicePayload pair.left, aliasChoicePayload pair.right) := by
++  rcases pair with ⟨left, right⟩
++  cases left <;> cases right <;> rfl
++
++theorem local_aliases_preserve_payload (choice : Choice) (select : Bool) :
++    «local» choice select = Result.ok (aliasChoicePayload choice) := by
++  cases select <;> cases choice <;> rfl
++
++theorem mutable_branch_preserves_update (value : U32) (select : Bool) :
++    mutable value select = Result.ok (if select then 1#u32 else 2#u32) := by
++  cases select <;> rfl
++
++theorem nested_selection_projects_expected_fields
++    (pair : NestedPair) (chooseLeft : Bool) :
++    select_nested pair chooseLeft =
++      Result.ok (pair.left.value,
++        if chooseLeft then pair.left.value else pair.right.value,
++        pair.right.value) := by
++  cases chooseLeft <;> rfl
++
++/-- info: 'distinct_loans_preserve_independent_payloads' does not depend on any axioms -/
++#guard_msgs in
++#print axioms distinct_loans_preserve_independent_payloads
++
++/-- info: 'local_aliases_preserve_payload' does not depend on any axioms -/
++#guard_msgs in
++#print axioms local_aliases_preserve_payload
++
++/-- info: 'mutable_branch_preserves_update' depends on axioms: [propext, Classical.choice, Quot.sound] -/
++#guard_msgs in
++#print axioms mutable_branch_preserves_update
++
++/-- info: 'nested_selection_projects_expected_fields' does not depend on any axioms -/
++#guard_msgs in
++#print axioms nested_selection_projects_expected_fields
+--- a/tests/lean/lakefile.lean
++++ b/tests/lean/lakefile.lean
+@@ -101,6 +101,8 @@
+ @[default_target] lean_lib RenameAttribute
+ @[default_target] lean_lib RustBorrowCheckIssues
+ @[default_target] lean_lib Scalars
++@[default_target] lean_lib SharedLoanAlias
++@[default_target] lean_lib SharedLoanAliasProperties
+ @[default_target] lean_lib Slices
+ @[default_target] lean_lib Static
+ @[default_target] lean_lib StepBy
