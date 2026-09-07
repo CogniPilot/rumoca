@@ -1,0 +1,936 @@
+--- a/src/llbc/TypesAnalysis.ml
++++ b/src/llbc/TypesAnalysis.ml
+@@ -6,16 +6,20 @@
+
+ let log = Logging.types_analysis_log
+
+-type subtype_info = {
++type type_param_info = {
+   under_borrow : bool;  (** Are we inside a borrow? *)
+   under_mut_borrow : bool;  (** Are we inside a mut borrow? *)
++  is_used : bool;  (** Can this parameter occur in stored fields? *)
+ }
+ [@@deriving show]
+
+-(** See {!type_decl_info} *)
+-type type_param_info = subtype_info [@@deriving show]
+-
+-type expl_info = subtype_info [@@deriving show]
++type expl_info = {
++  under_borrow : bool;
++  under_mut_borrow : bool;
++  is_stored : bool;
++      (** False below phantom parameters, but region traversal continues. *)
++}
++[@@deriving show]
+
+ type type_borrows_info = {
+   contains_static : bool;
+@@ -60,7 +64,8 @@
+
+ type type_infos = type_decl_info TypeDeclId.Map.t [@@deriving show]
+
+-let expl_info_init = { under_borrow = false; under_mut_borrow = false }
++let expl_info_init =
++  { under_borrow = false; under_mut_borrow = false; is_stored = true }
+
+ let type_borrows_info_init : type_borrows_info =
+   {
+@@ -96,7 +101,16 @@
+
+ let initialize_type_decl_info (span : Meta.span option) (crate : crate)
+     ~(is_rec : bool) (def : type_decl) : type_decl_info =
+-  let param_info = { under_borrow = false; under_mut_borrow = false } in
++  let is_used =
++    match def.kind with
++    | Struct _ | Enum _ -> false
++    | Opaque -> true
++    | Alias _ | Union _ | TDeclError _ ->
++        [%craise_opt_span] span "Cannot analyze an unresolved type declaration"
++  in
++  let param_info =
++    { under_borrow = false; under_mut_borrow = false; is_used }
++  in
+   let param_infos = List.map (fun _ -> param_info) def.generics.types in
+   let is_tuple_struct =
+     !Config.use_tuple_structs && (not is_rec) && type_decl_is_tuple_struct def
+@@ -232,30 +246,32 @@
+   in
+
+   (* Update a partial_type_info, while registering if we actually performed an update *)
+-  let update_ty_info (ty_info : partial_type_info) (mut_region : region option)
+-      (ty_b_info : type_borrows_info) : partial_type_info =
++  let update_ty_info ~(is_stored : bool) (ty_info : partial_type_info)
++      (mut_region : region option) (ty_b_info : type_borrows_info) :
++      partial_type_info =
+     let original = ty_info.borrows_info in
+     let contains_static =
+       check_update_bool original.contains_static ty_b_info.contains_static
+     in
+     let contains_borrow =
+-      check_update_bool original.contains_borrow ty_b_info.contains_borrow
++      check_update_bool original.contains_borrow
++        (is_stored && ty_b_info.contains_borrow)
+     in
+     let contains_mut_borrow =
+       check_update_bool original.contains_mut_borrow
+-        ty_b_info.contains_mut_borrow
++        (is_stored && ty_b_info.contains_mut_borrow)
+     in
+     let contains_nested_borrows =
+       check_update_bool original.contains_nested_borrows
+-        ty_b_info.contains_nested_borrows
++        (is_stored && ty_b_info.contains_nested_borrows)
+     in
+     let contains_borrow_under_mut =
+       check_update_bool original.contains_borrow_under_mut
+-        ty_b_info.contains_borrow_under_mut
++        (is_stored && ty_b_info.contains_borrow_under_mut)
+     in
+     let contains_nested_mut =
+       check_update_bool original.contains_nested_mut
+-        ty_b_info.contains_nested_mut
++        (is_stored && ty_b_info.contains_nested_mut)
+     in
+     let updated_borrows_info =
+       {
+@@ -271,7 +287,9 @@
+     let updated_mut_regions =
+       match mut_region with
+       | None -> ty_info.mut_regions
+-      | Some mut_region -> update_mut_regions ty_info.mut_regions mut_region
++      | Some mut_region ->
++          if is_stored then update_mut_regions ty_info.mut_regions mut_region
++          else ty_info.mut_regions
+     in
+     {
+       ty_info with
+@@ -306,15 +324,19 @@
+             in
+             (* Set [under_borrow] *)
+             let under_borrow =
+-              check_update_bool param_info.under_borrow expl_info.under_borrow
++              check_update_bool param_info.under_borrow
++                (expl_info.is_stored && expl_info.under_borrow)
+             in
+             (* Set [under_nested_borrows] *)
+             let under_mut_borrow =
+               check_update_bool param_info.under_mut_borrow
+-                expl_info.under_mut_borrow
++                (expl_info.is_stored && expl_info.under_mut_borrow)
+             in
+             (* Update param_info *)
+-            let param_info = { under_borrow; under_mut_borrow } in
++            let is_used =
++              check_update_bool param_info.is_used expl_info.is_stored
++            in
++            let param_info = { under_borrow; under_mut_borrow; is_used } in
+             let param_infos =
+               TypeVarId.update_nth param_infos
+                 (expect_free_var span var_id)
+@@ -345,12 +367,15 @@
+             contains_nested_mut;
+           }
+         in
+-        let ty_info = update_ty_info ty_info region ty_b_info in
++        let ty_info =
++          update_ty_info ~is_stored:expl_info.is_stored ty_info region ty_b_info
++        in
+         (* Update the exploration info *)
+         let expl_info =
+           {
+             under_borrow = true;
+             under_mut_borrow = expl_info.under_mut_borrow || rkind = RMut;
++            is_stored = expl_info.is_stored;
+           }
+         in
+         (* Continue exploring *)
+@@ -372,7 +397,10 @@
+           [%silent_unwrap_opt_span] span (TypeDeclId.Map.find_opt adt_id infos)
+         in
+         (* Update the type info with the information from the adt *)
+-        let ty_info = update_ty_info ty_info None adt_info.borrows_info in
++        let ty_info =
++          update_ty_info ~is_stored:expl_info.is_stored ty_info None
++            adt_info.borrows_info
++        in
+         (* Check if there are regions, and if 'static appears in the region parameters *)
+         let found_static = List.exists r_is_static generics.regions in
+         let borrows_info = ty_info.borrows_info in
+@@ -380,7 +408,8 @@
+           {
+             borrows_info with
+             contains_borrow =
+-              borrows_info.contains_borrow || adt_info.has_regions;
++              check_update_bool borrows_info.contains_borrow
++                (expl_info.is_stored && adt_info.has_regions);
+             contains_static =
+               check_update_bool borrows_info.contains_static found_static;
+           }
+@@ -392,6 +421,7 @@
+         let ty_info =
+           List.fold_left
+             (fun ty_info (param_info, ty) ->
++              let is_stored = expl_info.is_stored && param_info.is_used in
+               (* Update the type info *)
+               (* Below: we use only the information which we learn only
+                * by taking the type parameter into account. *)
+@@ -417,7 +447,7 @@
+                   contains_nested_mut;
+                 }
+               in
+-              let ty_info = update_ty_info ty_info None ty_b_info in
++              let ty_info = update_ty_info ~is_stored ty_info None ty_b_info in
+               (* Update the exploration info *)
+               let expl_info =
+                 {
+@@ -425,6 +455,7 @@
+                     expl_info.under_borrow || param_info.under_borrow;
+                   under_mut_borrow =
+                     expl_info.under_mut_borrow || param_info.under_mut_borrow;
++                  is_stored;
+                 }
+               in
+               (* Continue exploring *)
+@@ -441,8 +472,10 @@
+               (* We can have bound vars because of arrows, and erased regions
+                  when analyzing types appearing in function bodies *)
+               | RVar (Free rid) ->
+-                  if RegionId.Set.mem adt_rid adt_info.mut_regions then
+-                    update_mut_regions_with_rid mut_regions rid
++                  if
++                    expl_info.is_stored
++                    && RegionId.Set.mem adt_rid adt_info.mut_regions
++                  then update_mut_regions_with_rid mut_regions rid
+                   else mut_regions
+               | RBody _ -> [%craise_opt_span] span "unsupported: Body region")
+             ty_info.mut_regions
+--- a/src/llbc/TypesUtils.ml
++++ b/src/llbc/TypesUtils.ml
+@@ -155,6 +155,33 @@
+     (_infos : TypesAnalysis.type_infos) (_ty : ty) : bool =
+   true
+
++(** Visit stored type arguments without treating phantom parameters as values.
++    This is a traversal of runtime type/region constituents, not declaration-ID
++    metadata. Full lifetime/outlives visitors deliberately use [iter_ty]. *)
++class ['env] iter_stored_ty (infos : TypesAnalysis.type_infos) =
++  object (self)
++    inherit ['env] iter_ty as super
++
++    method! visit_TAdt env tref =
++      match tref.builtin with
++      | Some (TTuple | TBox | TStr) -> super#visit_TAdt env tref
++      | None ->
++          let info =
++            [%silent_unwrap_opt_span] None
++              (TypeDeclId.Map.find_opt tref.id infos)
++          in
++          let { regions; types; const_generics; trait_refs } = tref.generics in
++          [%sanity_check_opt_span] None
++            (List.length info.param_infos = List.length types);
++          List.iter (self#visit_region env) regions;
++          List.iter2
++            (fun (param : TypesAnalysis.type_param_info) ty ->
++              if param.is_used then self#visit_ty env ty)
++            info.param_infos types;
++          List.iter (self#visit_constant_expr env) const_generics;
++          List.iter (self#visit_trait_ref env) trait_refs
++  end
++
+ (* Refresh the regions appearing inside a type, and introduce
+    fresh regions for its erased regions.
+
+@@ -252,7 +279,7 @@
+     (pred : region -> bool) (ty : ty) : bool =
+   let obj =
+     object
+-      inherit [_] iter_ty as super
++      inherit [_] iter_stored_ty infos as super
+
+       method! visit_TRef env r ty rkind =
+         begin
+@@ -300,7 +327,7 @@
+
+   let obj =
+     object
+-      inherit [_] iter_ty as super
++      inherit [_] iter_stored_ty infos as super
+
+       method! visit_TRef env r ty rkind =
+         match rkind with
+--- a/src/interp/InterpProjectors.ml
++++ b/src/interp/InterpProjectors.ml
+@@ -91,7 +91,11 @@
+           (not
+              (projections_intersect span ctx ctx.ended_regions s.sv_ty regions
+                 ty));
+-        [ AsbProjReborrows { sv_id = s.sv_id; proj_ty = ty } ]
++        (* Like a concrete value with borrow-free fields, a symbolic value
++           with no stored borrows has nothing to reborrow. Type-level regions
++           alone (for instance in PhantomData) do not create runtime loans. *)
++        if not (ty_has_borrows (Some span) ctx.type_ctx.type_infos ty) then []
++        else [ AsbProjReborrows { sv_id = s.sv_id; proj_ty = ty } ]
+     | VAdt adt, TArray (ty, _) ->
+         List.flatten
+           (List.map
+--- a/tests/src/stored-borrow-shape.rs
++++ b/tests/src/stored-borrow-shape.rs
+@@ -0,0 +1,172 @@
++//@ [!lean] skip
++//@ charon-args=--include=core::marker
++#![feature(register_tool)]
++#![register_tool(verify)]
++
++use std::marker::PhantomData;
++
++#[derive(PartialEq)]
++pub struct Branded<'a> {
++    pub raw: u32,
++    pub marker: PhantomData<&'a mut &'a ()>,
++}
++
++pub struct Marker<'a, T> {
++    pub marker: PhantomData<&'a mut T>,
++}
++
++pub struct Wrapped<'a> {
++    pub raw: u32,
++    pub marker: Marker<'a, &'a ()>,
++}
++
++pub fn unwrap_branded(value: Option<Branded<'_>>, message: &str) -> u32 {
++    value.expect(message).raw
++}
++
++pub fn unwrap_wrapped(value: Option<Wrapped<'_>>, message: &str) -> u32 {
++    value.expect(message).raw
++}
++
++pub fn same<'a>(left: &Branded<'a>, right: &Branded<'a>) -> bool {
++    left == right
++}
++
++#[derive(PartialEq)]
++pub struct Empty;
++
++#[derive(PartialEq)]
++pub struct Marked<'a>(pub PhantomData<&'a ()>);
++
++pub fn same_empty(left: &Empty, right: &Empty) -> bool {
++    left == right
++}
++
++pub fn same_marked<'a>(left: &Marked<'a>, right: &Marked<'a>) -> bool {
++    left == right
++}
++
++#[derive(PartialEq)]
++pub struct Mixed<'a> {
++    pub inner: &'a u32,
++    pub marker: PhantomData<&'a mut &'a ()>,
++}
++
++pub fn same_mixed<'a>(left: &Mixed<'a>, right: &Mixed<'a>) -> bool {
++    left == right
++}
++
++pub fn compare_then_read<'a>(left: &Mixed<'a>, right: &Mixed<'a>) -> (bool, u32, u32) {
++    let equal = same_mixed(left, right);
++    (equal, *left.inner, *right.inner)
++}
++
++pub struct Holder<T> {
++    pub value: T,
++    pub marker: PhantomData<T>,
++}
++
++pub fn read_shared(holder: Holder<&u32>) -> u32 {
++    *holder.value
++}
++
++pub fn write(holder: Holder<&mut u32>, replacement: u32) {
++    *holder.value = replacement;
++}
++
++pub fn write_then_observe(initial: u32, replacement: u32) -> u32 {
++    let mut value = initial;
++    write(
++        Holder {
++            value: &mut value,
++            marker: PhantomData,
++        },
++        replacement,
++    );
++    value
++}
++
++#[verify::test]
++pub fn equality_regression() {
++    let left = Branded {
++        raw: 11,
++        marker: PhantomData,
++    };
++    let right = Branded {
++        raw: 29,
++        marker: PhantomData,
++    };
++    assert!(same(&left, &left));
++    assert!(!same(&left, &right));
++    assert!(same_empty(&Empty, &Empty));
++    assert!(same_marked(&Marked(PhantomData), &Marked(PhantomData)));
++}
++
++#[verify::test]
++pub fn stored_reference_regression() {
++    let left = 11;
++    let right = 29;
++    let first = Mixed {
++        inner: &left,
++        marker: PhantomData,
++    };
++    let second = Mixed {
++        inner: &right,
++        marker: PhantomData,
++    };
++    let (equal, left_read, right_read) = compare_then_read(&first, &second);
++    assert!(!equal);
++    assert!(left_read == 11);
++    assert!(right_read == 29);
++    assert!(
++        read_shared(Holder {
++            value: &right,
++            marker: PhantomData
++        }) == 29
++    );
++    assert!(write_then_observe(11, 29) == 29);
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn generated_regressions_also_execute_natively() {
++        equality_regression();
++        stored_reference_regression();
++    }
++
++    #[test]
++    fn arbitrary_payloads_and_messages_survive() {
++        for raw in [0, 11, 29, u32::MAX] {
++            for message in ["", "brand", "nested marker"] {
++                let direct = Branded {
++                    raw,
++                    marker: PhantomData,
++                };
++                let nested = Wrapped {
++                    raw,
++                    marker: Marker {
++                        marker: PhantomData,
++                    },
++                };
++                assert_eq!(unwrap_branded(Some(direct), message), raw);
++                assert_eq!(unwrap_wrapped(Some(nested), message), raw);
++            }
++            assert_eq!(write_then_observe(raw, !raw), !raw);
++        }
++    }
++
++    #[test]
++    #[should_panic(expected = "absence")]
++    fn absent_brand_panics() {
++        unwrap_branded(None, "absence");
++    }
++
++    #[test]
++    #[should_panic(expected = "absence")]
++    fn absent_wrapped_brand_panics() {
++        unwrap_wrapped(None, "absence");
++    }
++}
+--- a/tests/src/stored-borrow-nested.rs
++++ b/tests/src/stored-borrow-nested.rs
+@@ -0,0 +1,15 @@
++//@ [!lean] skip
++//@ [lean] known-failure
++//@ [lean] aeneas-args=-log-error MainLogger
++//@ charon-args=--mir=optimized
++
++use std::marker::PhantomData;
++
++pub struct Stored<T> {
++    pub value: T,
++    pub marker: PhantomData<T>,
++}
++
++pub fn unwrap_stored<'a, 'b>(value: Option<Stored<&'a mut &'b u32>>, message: &str) -> u32 {
++    **value.expect(message).value
++}
+--- a/tests/src/stored-borrow-nested.lean.out
++++ b/tests/src/stored-borrow-nested.lean.out
+@@ -0,0 +1,4 @@
++[[91mError[39m] Internal error, please file an issue
++Source: '/rustc/library/core/src/option.rs', lines 966:4-966:45
++Compiler source: interp/InterpStatements.ml, line 1463
++
+--- a/tests/src/stored-borrow-recursive.rs
++++ b/tests/src/stored-borrow-recursive.rs
+@@ -0,0 +1,17 @@
++//@ [!lean] skip
++//@ [lean] known-failure
++//@ [lean] aeneas-args=-log-error MainLogger
++//@ charon-args=--mir=optimized
++
++pub enum RecursiveA<T> {
++    Link(Box<RecursiveB<T>>),
++}
++
++pub enum RecursiveB<T> {
++    Value(T),
++    Link(Box<RecursiveA<T>>),
++}
++
++pub fn unwrap_recursive<'a, 'b>(value: Option<RecursiveA<&'a mut &'b u32>>, message: &str) -> bool {
++    matches!(value.expect(message), RecursiveA::Link(_))
++}
+--- a/tests/src/stored-borrow-recursive.lean.out
++++ b/tests/src/stored-borrow-recursive.lean.out
+@@ -0,0 +1,4 @@
++[[91mError[39m] Internal error, please file an issue
++Source: '/rustc/library/core/src/option.rs', lines 966:4-966:45
++Compiler source: interp/InterpStatements.ml, line 1463
++
+--- a/tests/src/stored-borrow-optimized-holder.rs
++++ b/tests/src/stored-borrow-optimized-holder.rs
+@@ -0,0 +1,15 @@
++//@ [!lean] skip
++//@ [lean] known-failure
++//@ [lean] aeneas-args=-log-error MainLogger
++//@ charon-args=--mir=optimized
++
++use std::marker::PhantomData;
++
++pub struct Holder<T> {
++    pub value: T,
++    pub marker: PhantomData<T>,
++}
++
++pub fn write(holder: Holder<&mut u32>, replacement: u32) {
++    *holder.value = replacement;
++}
+--- a/tests/src/stored-borrow-optimized-holder.lean.out
++++ b/tests/src/stored-borrow-optimized-holder.lean.out
+@@ -0,0 +1,4 @@
++[[91mError[39m] Can't copy a mutable borrow
++Source: 'tests/src/stored-borrow-optimized-holder.rs', lines 14:4-14:31
++Compiler source: interp/InterpExpressions.ml, line 197
++
+--- a/tests/lean/StoredBorrowShape.lean
++++ b/tests/lean/StoredBorrowShape.lean
+@@ -0,0 +1,287 @@
++-- THIS FILE WAS AUTOMATICALLY GENERATED BY AENEAS
++-- [stored_borrow_shape]
++import Aeneas
++open Aeneas Aeneas.Std Result ControlFlow Error
++set_option linter.dupNamespace false
++set_option linter.hashCommand false
++set_option linter.unusedVariables false
++set_option linter.style.whitespace false
++set_option linter.style.setOption false
++set_option linter.style.longLine false
++
++/- You can set the `maxHeartbeats` value with the `-max-heartbeats` CLI option -/
++set_option maxHeartbeats 1000000
++
++/- You can set the `maxRecDepth` value with the `-max-recdepth` CLI option -/
++set_option maxRecDepth 2048
++
++namespace stored_borrow_shape
++
++/-- [core::marker::PhantomData]
++    Source: '/rustc/library/core/src/marker.rs', lines 811:0-811:39
++    Name pattern: [core::marker::PhantomData]
++    Visibility: public -/
++@[reducible, rust_type "core::marker::PhantomData"]
++def core.marker.PhantomData (T : Type) := Unit
++
++/-- [core::marker::{impl core::cmp::PartialEq<core::marker::PhantomData<T>> for core::marker::PhantomData<T>}::eq]:
++    Source: '/rustc/library/core/src/marker.rs', lines 821:4-821:49
++    Name pattern: [core::marker::{core::cmp::PartialEq<core::marker::PhantomData<@T>, core::marker::PhantomData<@T>>}::eq]
++    Visibility: public -/
++@[rust_fun
++  "core::marker::{core::cmp::PartialEq<core::marker::PhantomData<@T>, core::marker::PhantomData<@T>>}::eq"]
++def core.marker.PhantomData.Insts.CoreCmpPartialEqPhantomData.eq
++  {T : Type} (self : core.marker.PhantomData T)
++  (_other : core.marker.PhantomData T) :
++  Result Bool
++  := do
++  ok true
++
++/-- [stored_borrow_shape::Branded]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 9:0-12:1
++    Visibility: public -/
++structure Branded where
++  raw : Std.U32
++  marker : core.marker.PhantomData Unit
++
++/-- Trait implementation: [stored_borrow_shape::{impl core::marker::StructuralPartialEq for stored_borrow_shape::Branded<'a>}]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 8:9-8:18 -/
++@[reducible]
++def Branded.Insts.CoreMarkerStructuralPartialEq :
++  core.marker.StructuralPartialEq Branded := {
++}
++
++/-- [stored_borrow_shape::{impl core::cmp::PartialEq<stored_borrow_shape::Branded<'a>> for stored_borrow_shape::Branded<'a>}::eq]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 8:9-8:18
++    Visibility: public -/
++def Branded.Insts.CoreCmpPartialEqBranded.eq
++  (self : Branded) (other : Branded) : Result Bool := do
++  if self.raw = other.raw
++  then
++    core.marker.PhantomData.Insts.CoreCmpPartialEqPhantomData.eq self.marker
++      other.marker
++  else ok false
++
++/-- Trait implementation: [stored_borrow_shape::{impl core::cmp::PartialEq<stored_borrow_shape::Branded<'a>> for stored_borrow_shape::Branded<'a>}]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 8:9-8:18 -/
++@[reducible]
++def Branded.Insts.CoreCmpPartialEqBranded : core.cmp.PartialEq Branded Branded
++  := {
++  eq := Branded.Insts.CoreCmpPartialEqBranded.eq
++}
++
++/-- [stored_borrow_shape::Marker]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 14:0-16:1
++    Visibility: public -/
++structure Marker (T : Type) where
++  marker : core.marker.PhantomData T
++
++/-- [stored_borrow_shape::Wrapped]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 18:0-21:1
++    Visibility: public -/
++structure Wrapped where
++  raw : Std.U32
++  marker : Marker Unit
++
++/-- [stored_borrow_shape::unwrap_branded]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 23:0-25:1
++    Visibility: public -/
++def unwrap_branded
++  (value : Option Branded) (message : Str) : Result Std.U32 := do
++  let b ← core.option.Option.expect value message
++  ok b.raw
++
++/-- [stored_borrow_shape::unwrap_wrapped]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 27:0-29:1
++    Visibility: public -/
++def unwrap_wrapped
++  (value : Option Wrapped) (message : Str) : Result Std.U32 := do
++  let w ← core.option.Option.expect value message
++  ok w.raw
++
++/-- [stored_borrow_shape::same]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 31:0-33:1
++    Visibility: public -/
++def same (left : Branded) (right : Branded) : Result Bool := do
++  Branded.Insts.CoreCmpPartialEqBranded.eq left right
++
++/-- [stored_borrow_shape::Empty]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 36:0-36:17
++    Visibility: public -/
++@[reducible]
++def Empty := Unit
++
++/-- Trait implementation: [stored_borrow_shape::{impl core::marker::StructuralPartialEq for stored_borrow_shape::Empty}]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 35:9-35:18 -/
++@[reducible]
++def Empty.Insts.CoreMarkerStructuralPartialEq : core.marker.StructuralPartialEq
++  Empty := {
++}
++
++/-- [stored_borrow_shape::{impl core::cmp::PartialEq<stored_borrow_shape::Empty> for stored_borrow_shape::Empty}::eq]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 35:9-35:18
++    Visibility: public -/
++def Empty.Insts.CoreCmpPartialEqEmpty.eq
++  (self : Empty) (other : Empty) : Result Bool := do
++  ok true
++
++/-- Trait implementation: [stored_borrow_shape::{impl core::cmp::PartialEq<stored_borrow_shape::Empty> for stored_borrow_shape::Empty}]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 35:9-35:18 -/
++@[reducible]
++def Empty.Insts.CoreCmpPartialEqEmpty : core.cmp.PartialEq Empty Empty := {
++  eq := Empty.Insts.CoreCmpPartialEqEmpty.eq
++}
++
++/-- [stored_borrow_shape::Marked]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 39:0-39:47
++    Visibility: public -/
++@[reducible]
++def Marked := core.marker.PhantomData Unit
++
++/-- Trait implementation: [stored_borrow_shape::{impl core::marker::StructuralPartialEq for stored_borrow_shape::Marked<'a>}]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 38:9-38:18 -/
++@[reducible]
++def Marked.Insts.CoreMarkerStructuralPartialEq :
++  core.marker.StructuralPartialEq Marked := {
++}
++
++/-- [stored_borrow_shape::{impl core::cmp::PartialEq<stored_borrow_shape::Marked<'a>> for stored_borrow_shape::Marked<'a>}::eq]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 38:9-38:18
++    Visibility: public -/
++def Marked.Insts.CoreCmpPartialEqMarked.eq
++  (self : Marked) (other : Marked) : Result Bool := do
++  core.marker.PhantomData.Insts.CoreCmpPartialEqPhantomData.eq self other
++
++/-- Trait implementation: [stored_borrow_shape::{impl core::cmp::PartialEq<stored_borrow_shape::Marked<'a>> for stored_borrow_shape::Marked<'a>}]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 38:9-38:18 -/
++@[reducible]
++def Marked.Insts.CoreCmpPartialEqMarked : core.cmp.PartialEq Marked Marked := {
++  eq := Marked.Insts.CoreCmpPartialEqMarked.eq
++}
++
++/-- [stored_borrow_shape::same_empty]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 41:0-43:1
++    Visibility: public -/
++def same_empty (left : Empty) (right : Empty) : Result Bool := do
++  Empty.Insts.CoreCmpPartialEqEmpty.eq left right
++
++/-- [stored_borrow_shape::same_marked]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 45:0-47:1
++    Visibility: public -/
++def same_marked (left : Marked) (right : Marked) : Result Bool := do
++  Marked.Insts.CoreCmpPartialEqMarked.eq left right
++
++/-- [stored_borrow_shape::Mixed]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 50:0-53:1
++    Visibility: public -/
++structure Mixed where
++  inner : Std.U32
++  marker : core.marker.PhantomData Unit
++
++/-- Trait implementation: [stored_borrow_shape::{impl core::marker::StructuralPartialEq for stored_borrow_shape::Mixed<'a>}]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 49:9-49:18 -/
++@[reducible]
++def Mixed.Insts.CoreMarkerStructuralPartialEq : core.marker.StructuralPartialEq
++  Mixed := {
++}
++
++/-- [stored_borrow_shape::{impl core::cmp::PartialEq<stored_borrow_shape::Mixed<'a>> for stored_borrow_shape::Mixed<'a>}::eq]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 49:9-49:18
++    Visibility: public -/
++def Mixed.Insts.CoreCmpPartialEqMixed.eq
++  (self : Mixed) (other : Mixed) : Result Bool := do
++  let b ← lift (core.cmp.impls.PartialEqU32.eq self.inner other.inner)
++  if b
++  then
++    core.marker.PhantomData.Insts.CoreCmpPartialEqPhantomData.eq self.marker
++      other.marker
++  else ok false
++
++/-- Trait implementation: [stored_borrow_shape::{impl core::cmp::PartialEq<stored_borrow_shape::Mixed<'a>> for stored_borrow_shape::Mixed<'a>}]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 49:9-49:18 -/
++@[reducible]
++def Mixed.Insts.CoreCmpPartialEqMixed : core.cmp.PartialEq Mixed Mixed := {
++  eq := Mixed.Insts.CoreCmpPartialEqMixed.eq
++}
++
++/-- [stored_borrow_shape::same_mixed]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 55:0-57:1
++    Visibility: public -/
++def same_mixed (left : Mixed) (right : Mixed) : Result Bool := do
++  Mixed.Insts.CoreCmpPartialEqMixed.eq left right
++
++/-- [stored_borrow_shape::compare_then_read]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 59:0-62:1
++    Visibility: public -/
++def compare_then_read
++  (left : Mixed) (right : Mixed) : Result (Bool × Std.U32 × Std.U32) := do
++  let equal ← same_mixed left right
++  ok (equal, left.inner, right.inner)
++
++/-- [stored_borrow_shape::Holder]
++    Source: 'tests/src/stored-borrow-shape.rs', lines 64:0-67:1
++    Visibility: public -/
++structure Holder (T : Type) where
++  value : T
++  marker : core.marker.PhantomData T
++
++/-- [stored_borrow_shape::read_shared]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 69:0-71:1
++    Visibility: public -/
++def read_shared (holder : Holder Std.U32) : Result Std.U32 := do
++  ok holder.value
++
++/-- [stored_borrow_shape::write]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 73:0-75:1
++    Visibility: public -/
++def write
++  (holder : Holder Std.U32) (replacement : Std.U32) :
++  Result (Holder Std.U32)
++  := do
++  ok { holder with value := replacement }
++
++/-- [stored_borrow_shape::write_then_observe]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 77:0-87:1
++    Visibility: public -/
++def write_then_observe
++  (initial : Std.U32) (replacement : Std.U32) : Result Std.U32 := do
++  let h ← write { value := initial, marker := () } replacement
++  ok h.value
++
++/-- [stored_borrow_shape::equality_regression]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 90:0-103:1
++    Visibility: public -/
++def equality_regression : Result Unit := do
++  let b ←
++    same { raw := 11#u32, marker := () } { raw := 11#u32, marker := () }
++  massert b
++  let b1 ←
++    same { raw := 11#u32, marker := () } { raw := 29#u32, marker := () }
++  massert (¬ b1)
++  let b2 ← same_empty () ()
++  massert b2
++  let b3 ← same_marked () ()
++  massert b3
++
++/- Unit test for [stored_borrow_shape::equality_regression] -/
++#assert (equality_regression == ok ())
++
++/-- [stored_borrow_shape::stored_reference_regression]:
++    Source: 'tests/src/stored-borrow-shape.rs', lines 106:0-128:1
++    Visibility: public -/
++def stored_reference_regression : Result Unit := do
++  let (equal, left_read, right_read) ←
++    compare_then_read { inner := 11#u32, marker := () }
++      { inner := 29#u32, marker := () }
++  massert (¬ equal)
++  massert (left_read = 11#u32)
++  massert (right_read = 29#u32)
++  let i ← read_shared { value := 29#u32, marker := () }
++  massert (i = 29#u32)
++  let i1 ← write_then_observe 11#u32 29#u32
++  massert (i1 = 29#u32)
++
++/- Unit test for [stored_borrow_shape::stored_reference_regression] -/
++#assert (stored_reference_regression == ok ())
++
++end stored_borrow_shape
+--- a/tests/lean/StoredBorrowShapeProperties.lean
++++ b/tests/lean/StoredBorrowShapeProperties.lean
+@@ -0,0 +1,78 @@
++import StoredBorrowShape
++
++open Aeneas Aeneas.Std stored_borrow_shape
++
++theorem branded_payload (value : Branded) (message : Str) :
++    unwrap_branded (some value) message = Result.ok value.raw := by rfl
++
++theorem branded_absence (message : Str) :
++    unwrap_branded none message = Result.fail Error.panic := by rfl
++
++theorem wrapped_payload (value : Wrapped) (message : Str) :
++    unwrap_wrapped (some value) message = Result.ok value.raw := by rfl
++
++theorem wrapped_absence (message : Str) :
++    unwrap_wrapped none message = Result.fail Error.panic := by rfl
++
++theorem branded_equality_observes_payload (left right : Branded) :
++    same left right = Result.ok (decide (left.raw = right.raw)) := by
++  by_cases h : left.raw = right.raw <;>
++    simp [same, Branded.Insts.CoreCmpPartialEqBranded.eq,
++      core.marker.PhantomData.Insts.CoreCmpPartialEqPhantomData.eq, h]
++
++theorem empty_equality (left right : stored_borrow_shape.Empty) :
++    same_empty left right = Result.ok true := by rfl
++
++theorem shared_marker_equality (left right : Marked) :
++    same_marked left right = Result.ok true := by rfl
++
++theorem mixed_equality_observes_referents (left right : Mixed) :
++    same_mixed left right = Result.ok (decide (left.inner = right.inner)) := by
++  by_cases h : left.inner = right.inner <;>
++    simp [same_mixed, Mixed.Insts.CoreCmpPartialEqMixed.eq,
++      core.marker.PhantomData.Insts.CoreCmpPartialEqPhantomData.eq, h] <;> rfl
++
++theorem mixed_reads_preserved_after_comparison (left right : Mixed) :
++    compare_then_read left right =
++      Result.ok (decide (left.inner = right.inner), left.inner, right.inner) := by
++  simp [compare_then_read, mixed_equality_observes_referents]
++
++theorem generic_shared_reference_reads_payload (holder : Holder U32) :
++    read_shared holder = Result.ok holder.value := by rfl
++
++theorem generic_mutable_reference_write_survives_call (initial replacement : U32) :
++    write_then_observe initial replacement = Result.ok replacement := by rfl
++
++/-- info: 'branded_payload' depends on axioms: [propext] -/
++#guard_msgs in
++#print axioms branded_payload
++/-- info: 'branded_absence' depends on axioms: [propext] -/
++#guard_msgs in
++#print axioms branded_absence
++/-- info: 'wrapped_payload' depends on axioms: [propext] -/
++#guard_msgs in
++#print axioms wrapped_payload
++/-- info: 'wrapped_absence' depends on axioms: [propext] -/
++#guard_msgs in
++#print axioms wrapped_absence
++/-- info: 'branded_equality_observes_payload' depends on axioms: [propext] -/
++#guard_msgs in
++#print axioms branded_equality_observes_payload
++/-- info: 'empty_equality' does not depend on any axioms -/
++#guard_msgs in
++#print axioms empty_equality
++/-- info: 'shared_marker_equality' does not depend on any axioms -/
++#guard_msgs in
++#print axioms shared_marker_equality
++/-- info: 'mixed_equality_observes_referents' depends on axioms: [propext, Quot.sound] -/
++#guard_msgs in
++#print axioms mixed_equality_observes_referents
++/-- info: 'mixed_reads_preserved_after_comparison' depends on axioms: [propext, Quot.sound] -/
++#guard_msgs in
++#print axioms mixed_reads_preserved_after_comparison
++/-- info: 'generic_shared_reference_reads_payload' does not depend on any axioms -/
++#guard_msgs in
++#print axioms generic_shared_reference_reads_payload
++/-- info: 'generic_mutable_reference_write_survives_call' does not depend on any axioms -/
++#guard_msgs in
++#print axioms generic_mutable_reference_write_survives_call
+--- a/tests/lean/lakefile.lean
++++ b/tests/lean/lakefile.lean
+@@ -107,6 +107,8 @@
+ @[default_target] lean_lib Static
+ @[default_target] lean_lib StepBy
+ @[default_target] lean_lib StepOverflowing
++@[default_target] lean_lib StoredBorrowShape
++@[default_target] lean_lib StoredBorrowShapeProperties
+ @[default_target] lean_lib StringChars
+ @[default_target] lean_lib SwitchTest
+ @[default_target] lean_lib TargetFeatures
+--- a/tests/src/higher_ranked_implied_bounds_borrow.lean.out
++++ b/tests/src/higher_ranked_implied_bounds_borrow.lean.out
+@@ -2,5 +2,5 @@
+ [[91mError[39m] Unimplemented: found an occurrence of a lifetime constraint relating
+          a higher-ranked lifetime to a free lifetime.
+ Source: 'tests/src/higher_ranked_implied_bounds_borrow.rs', lines 16:0-20:1
+-Compiler source: llbc/TypesAnalysis.ml, line 968
++Compiler source: llbc/TypesAnalysis.ml, line 1001
+
+--- a/tests/src/higher_ranked_implied_bounds_regions.lean.out
++++ b/tests/src/higher_ranked_implied_bounds_regions.lean.out
+@@ -2,5 +2,5 @@
+ [[91mError[39m] Unimplemented: found an occurrence of a lifetime constraint relating
+          a higher-ranked lifetime to a free lifetime.
+ Source: 'tests/src/higher_ranked_implied_bounds_regions.rs', lines 19:0-23:1
+-Compiler source: llbc/TypesAnalysis.ml, line 968
++Compiler source: llbc/TypesAnalysis.ml, line 1001
+
+--- a/tests/src/higher_ranked_implied_bounds_types.lean.out
++++ b/tests/src/higher_ranked_implied_bounds_types.lean.out
+@@ -2,5 +2,5 @@
+ [[91mError[39m] Unimplemented: found an occurrence of a lifetime constraint relating
+          a higher-ranked lifetime to a free lifetime.
+ Source: 'tests/src/higher_ranked_implied_bounds_types.rs', lines 19:0-23:1
+-Compiler source: llbc/TypesAnalysis.ml, line 968
++Compiler source: llbc/TypesAnalysis.ml, line 1001
