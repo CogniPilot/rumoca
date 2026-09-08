@@ -77,8 +77,8 @@ Use the pinned rustc-dev toolchain, nightly 2026-08-18
 libraries. From the repository root, where `OUTPUT` is a fresh build directory:
 
 ```console
-rustc --edition=2021 --crate-type=rlib --crate-name=closure_region_facts infra/verification/charon/candidates/closure-regions/src/lib.rs --out-dir "$OUTPUT" -Dwarnings
-rustc --edition=2021 --extern closure_region_facts="$OUTPUT/libclosure_region_facts.rlib" infra/verification/charon/fixtures/closure-lifetimes/consumer-probe.rs -o "$OUTPUT/consumer-probe" -Dwarnings
+rustc --edition=2024 --crate-type=rlib --crate-name=closure_region_facts infra/verification/charon/candidates/closure-regions/src/lib.rs --out-dir "$OUTPUT" -Dwarnings
+rustc --edition=2024 --extern closure_region_facts="$OUTPUT/libclosure_region_facts.rlib" infra/verification/charon/fixtures/closure-lifetimes/consumer-probe.rs -o "$OUTPUT/consumer-probe" -Dwarnings
 ```
 
 Run the probe as a rustc driver with `--sysroot` naming that same toolchain,

@@ -5,9 +5,11 @@ extern crate rustc_hir;
 extern crate rustc_interface;
 extern crate rustc_middle;
 
+pub mod binding;
 pub mod collection;
 mod positions;
 
+pub use positions::free_regions;
 use positions::match_positions;
 use rustc_borrowck::consumers::BodyWithBorrowckFacts;
 use rustc_hir::def_id::{DefPathHash, LocalDefId};

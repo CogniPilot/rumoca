@@ -1,0 +1,10 @@
+--- a/src/bin/charon-driver/translate/closure_constraints.rs
++++ b/src/bin/charon-driver/translate/closure_constraints.rs
+@@ -98,6 +98,7 @@
+         let predicates = facts
+             .required_outlives()
+             .iter()
++            .take(0)
+             .filter_map(|required| {
+                 let longer = regions.get(required.longer());
+                 let shorter = regions.get(required.shorter());

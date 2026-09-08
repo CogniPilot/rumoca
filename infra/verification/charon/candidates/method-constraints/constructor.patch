@@ -1,0 +1,737 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 9a5b9834..98d3355d 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -63,6 +63,7 @@ path = "tests/cargo.rs"
+ harness = false
+ 
+ [dependencies]
++closure-region-facts = { path = "./closure-region-facts", optional = true }
+ hax-adt-into = { path = "./adt-into" }
+ macros = { path = "./macros" }
+ rustc_trait_elaboration = { path = "./rustc_trait_elaboration", optional = true }
+@@ -120,7 +121,7 @@ default = ["rustc"]
+ # Hook into rustc-internal APIs. Needed for the `charon-driver` binary but not
+ # the main crate. Pass `--no-default-features` to compile `charon-lib` on a
+ # stable toolchain.
+-rustc = ["dep:rustc_trait_elaboration"]
++rustc = ["dep:rustc_trait_elaboration", "dep:closure-region-facts"]
+ # Enable the `charon` tool attribute when translating charon with itself.
+ charon_on_charon = []
+ # This feature enables the `popular-crates` test which runs Charon on the most downloaded crates from crates.io.
+diff --git a/Cargo.lock b/Cargo.lock
+index b2dee902..abfca7c2 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -255,6 +255,7 @@ dependencies = [
+  "anyhow",
+  "assert_cmd",
+  "clap",
++ "closure-region-facts",
+  "convert_case",
+  "crates_io_api",
+  "derive_generic_visitor",
+@@ -356,6 +357,10 @@ version = "0.7.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
+ 
++[[package]]
++name = "closure-region-facts"
++version = "0.1.0"
++
+ [[package]]
+ name = "cobs"
+ version = "0.3.0"
+diff --git a/src/bin/charon-driver/driver.rs b/src/bin/charon-driver/driver.rs
+index 4c48ba69..7812a538 100644
+--- a/src/bin/charon-driver/driver.rs
++++ b/src/bin/charon-driver/driver.rs
+@@ -2,22 +2,23 @@
+ use crate::CharonFailure;
+ use crate::toolchain::toolchain_version;
+ use crate::translate::translate_crate;
++use crate::translate::translate_ctx::ClosureFactSource;
+ use charon_lib::errors::ErrorCtx;
+ use charon_lib::options::{self, CliOpts};
+ use charon_lib::transform::TransformCtx;
+ use charon_lib::utils::arg_value;
++use closure_region_facts::collection::Collection;
+ use itertools::Itertools;
+ use rustc_driver::{Callbacks, Compilation};
+ use rustc_interface::Config;
+ use rustc_interface::interface::Compiler;
+ use rustc_middle::ty::{InstanceKind, TyCtxt};
+-use rustc_middle::util::Providers;
+ use rustc_session::config::{OutputType, OutputTypes};
+ use rustc_span::ErrorGuaranteed;
+ use std::num::NonZero;
+ use std::path::PathBuf;
+ use std::process::Command;
+-use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::Arc;
+ use std::{env, fmt};
+ 
+ /// Helper that runs the compiler and catches its fatal errors.
+@@ -56,20 +57,6 @@ fn set_parallel_frontend(config: &mut Config) {
+     }
+ }
+ 
+-// We use a static to be able to pass data to `override_queries`.
+-static SKIP_BORROWCK: AtomicBool = AtomicBool::new(false);
+-fn set_skip_borrowck() {
+-    SKIP_BORROWCK.store(true, Ordering::SeqCst);
+-}
+-fn skip_borrowck_if_set(providers: &mut Providers) {
+-    if SKIP_BORROWCK.load(Ordering::SeqCst) {
+-        providers.queries.mir_borrowck = |tcx, _def_id| {
+-            // Empty result, which is what is used for custom_mir bodies.
+-            Ok(tcx.arena.alloc(Default::default()))
+-        }
+-    }
+-}
+-
+ fn setup_compiler(
+     config: &mut Config,
+     options: &CliOpts,
+@@ -79,22 +66,16 @@ fn setup_compiler(
+ ) {
+     if do_translate {
+         if options.skip_borrowck {
+-            // We use a static to be able to pass data to `override_queries`.
+-            set_skip_borrowck();
++            config.override_queries = Some(|_, providers| {
++                providers.queries.mir_borrowck = |tcx, _| {
++                    // Explicit unchecked extraction, as for custom_mir bodies.
++                    Ok(tcx.arena.alloc(Default::default()))
++                };
++            });
++        } else {
++            config.override_queries = Some(|_, providers| Collection::install_query(providers));
+         }
+ 
+-        config.override_queries = Some(|_sess, providers| {
+-            skip_borrowck_if_set(providers);
+-
+-            // TODO: catch the MIR in-flight to avoid stealing issues?
+-            // providers.mir_built = |tcx, def_id| {
+-            //     let mir = (rustc_interface::DEFAULT_QUERY_PROVIDERS.mir_built)(tcx, def_id);
+-            //     let mut mir = mir.steal();
+-            //     // use the mir
+-            //     tcx.alloc_steal_mir(mir)
+-            // };
+-        });
+-
+         config.opts.unstable_opts.no_codegen = !codegen;
+         if !emit_artifacts {
+             config.opts.output_types = OutputTypes::new(&[(OutputType::Object, None)]);
+@@ -324,6 +305,19 @@ pub fn run_rustc_driver() -> Result<Option<(TransformCtx, CliOpts)>, CharonFailu
+     } else {
+         options.apply_preset();
+ 
++        let closure_regions = if options.skip_borrowck {
++            ClosureFactSource::BorrowCheckingDisabled
++        } else {
++            ClosureFactSource::Checked(Arc::new(Collection::begin().map_err(|error| {
++                register_error!(
++                    error_ctx,
++                    no_crate,
++                    "Could not start closure fact collection: {error:?}"
++                );
++                CharonFailure::CharonError(1)
++            })?))
++        };
++
+         error_ctx.continue_on_failure = !options.abort_on_error;
+         error_ctx.error_on_warnings = options.error_on_warnings;
+ 
+@@ -333,6 +327,7 @@ pub fn run_rustc_driver() -> Result<Option<(TransformCtx, CliOpts)>, CharonFailu
+ 
+         // Call the Rust compiler with our custom callback.
+         let mut callback = CharonCallbacks {
++            closure_regions,
+             options: &options,
+             emit_artifacts,
+             codegen,
+@@ -351,6 +346,7 @@ pub fn run_rustc_driver() -> Result<Option<(TransformCtx, CliOpts)>, CharonFailu
+ 
+ /// The callbacks for Charon
+ pub struct CharonCallbacks<'a> {
++    closure_regions: ClosureFactSource,
+     options: &'a CliOpts,
+     /// Whether rustc should emit the artifacts (metadata, binaries) it normally would. This is
+     /// needed under cargo so later crate invocations can consume earlier selected crates.
+@@ -393,6 +389,7 @@ impl<'a> Callbacks for CharonCallbacks<'a> {
+                 self.options,
+                 self.error_ctx.take().unwrap(),
+                 compiler.sess.opts.sysroot.path().to_owned(),
++                self.closure_regions.clone(),
+             )
+         })
+         .ok();
+diff --git a/src/bin/charon-driver/hax/sinto.rs b/src/bin/charon-driver/hax/sinto.rs
+index 4f48475f..1d9837a8 100644
+--- a/src/bin/charon-driver/hax/sinto.rs
++++ b/src/bin/charon-driver/hax/sinto.rs
+@@ -71,7 +71,7 @@ impl<S, D, T: SInto<S, D>> SInto<S, D> for Box<T> {
+         (**self).sinto(s)
+     }
+ }
+-impl<S, D, T: SInto<S, D>> SInto<S, D> for &T {
++impl<S, D, T: SInto<S, D> + ?Sized> SInto<S, D> for &T {
+     fn sinto(&self, s: &S) -> D {
+         (**self).sinto(s)
+     }
+diff --git a/src/bin/charon-driver/hax/types/new/full_def.rs b/src/bin/charon-driver/hax/types/new/full_def.rs
+index b0fc9d27..19cf0bea 100644
+--- a/src/bin/charon-driver/hax/types/new/full_def.rs
++++ b/src/bin/charon-driver/hax/types/new/full_def.rs
+@@ -912,6 +912,19 @@ where
+                 unreachable!()
+             };
+             let closure = closure_args.as_closure();
++            // `type_of` reads the typechecked expression, whose parent regions
++            // have been erased. A declaration already owns its exact generic
++            // substitution; retain it here, without replacing caller arguments.
++            let closure = ty::ClosureArgs::new(
++                tcx,
++                ty::ClosureArgsParts {
++                    parent_args: args_or_default().as_slice(),
++                    closure_kind_ty: closure.kind_ty(),
++                    closure_sig_as_fn_ptr_ty: closure.sig_as_fn_ptr_ty(),
++                    tupled_upvars_ty: closure.tupled_upvars_ty(),
++                },
++            );
++            let closure_ty = ty::Ty::new_closure(tcx, def_id, closure.args);
+             // We lose lifetime information here. Eventually would be nice not to.
+             let input_ty = erase_free_regions(tcx, closure.sig().input(0).skip_binder());
+             let trait_args = [closure_ty, input_ty];
+@@ -930,10 +943,10 @@ where
+                 param_env: get_param_env(s, args),
+                 is_const: matches!(tcx.constness(def_id), rustc_hir::Constness::Const { .. }),
+                 inline: tcx.codegen_fn_attrs(def_id).inline.sinto(s),
+-                args: ClosureArgs::sfrom(s, def_id, closure_args),
++                args: ClosureArgs::sfrom(s, def_id, closure.args),
+                 destruct_impl: virtual_impl_for(
+                     s,
+-                    ty::TraitRef::new(tcx, destruct_trait, [type_of_self()]),
++                    ty::TraitRef::new(tcx, destruct_trait, [closure_ty]),
+                 ),
+                 fn_once_impl: virtual_impl_for(s, fn_once_tref),
+                 fn_mut_impl: fn_mut_tref.map(|tref| virtual_impl_for(s, tref)),
+diff --git a/src/bin/charon-driver/hax/types/ty.rs b/src/bin/charon-driver/hax/types/ty.rs
+index b785f5dc..38bc5faf 100644
+--- a/src/bin/charon-driver/hax/types/ty.rs
++++ b/src/bin/charon-driver/hax/types/ty.rs
+@@ -1360,6 +1360,7 @@ impl<'tcx> BinderVariances<'tcx> for ty::FnSig<'tcx> {
+ }
+ 
+ impl<'tcx> BinderVariances<'tcx> for ty::Ty<'tcx> {}
++impl<'tcx> BinderVariances<'tcx> for &'tcx [ty::Ty<'tcx>] {}
+ impl<'tcx> BinderVariances<'tcx> for ty::ClauseKind<'tcx> {}
+ impl<'tcx> BinderVariances<'tcx> for ty::PredicateKind<'tcx> {}
+ impl<'tcx> BinderVariances<'tcx> for ty::TraitRef<'tcx> {}
+@@ -1432,25 +1433,18 @@ pub struct ClosureArgs {
+     /// Binds the same variables as `fn_sig`.
+     pub tupled_args_ty: Binder<Ty>,
+     /// The set of captured variables. Together they form the state of the closure.
+-    pub upvar_tys: Vec<Ty>,
++    pub upvar_tys: Binder<Vec<Ty>>,
++    /// Free source occurrences, before Hax introduces any extra type structure.
++    pub region_occurrences: ClosureRegionOccurrences,
+ }
+ 
+-impl ClosureArgs {
+-    /// Iterate over the upvars that are borrows with erased regions. These may require allocating
+-    /// fresh regions.
+-    pub fn iter_upvar_borrows(&self) -> impl Iterator<Item = &Ty> {
+-        self.upvar_tys.iter().filter(|ty| {
+-            matches!(
+-                ty.kind(),
+-                TyKind::Ref(
+-                    Region {
+-                        kind: RegionKind::ReErased
+-                    },
+-                    ..
+-                )
+-            )
+-        })
+-    }
++#[derive(Clone, Debug, Hash, PartialEq, Eq)]
++pub struct ClosureRegionOccurrences {
++    pub parent_arguments: Vec<Region>,
++    /// Uses the signature's binder, not a new independently allocated binder.
++    pub signature: Vec<Region>,
++    /// Uses the capture type binder.
++    pub captures: Vec<Region>,
+ }
+ 
+ impl ClosureArgs {
+@@ -1459,54 +1453,7 @@ impl ClosureArgs {
+     where
+         S: UnderOwnerState<'tcx>,
+     {
+-        use rustc_middle::ty;
+-        use rustc_type_ir::TypeFoldable;
+-        use rustc_type_ir::TypeSuperFoldable;
+-
+-        struct RegionUnEraserVisitor<'tcx> {
+-            tcx: ty::TyCtxt<'tcx>,
+-            depth: u32,
+-            bound_vars: Vec<ty::BoundVariableKind<'tcx>>,
+-        }
+-
+-        impl<'tcx> ty::TypeFolder<ty::TyCtxt<'tcx>> for RegionUnEraserVisitor<'tcx> {
+-            fn cx(&self) -> ty::TyCtxt<'tcx> {
+-                self.tcx
+-            }
+-
+-            fn fold_ty(&mut self, ty: ty::Ty<'tcx>) -> ty::Ty<'tcx> {
+-                ty.super_fold_with(self)
+-            }
+-
+-            fn fold_binder<T>(&mut self, t: ty::Binder<'tcx, T>) -> ty::Binder<'tcx, T>
+-            where
+-                T: ty::TypeFoldable<ty::TyCtxt<'tcx>>,
+-            {
+-                self.depth += 1;
+-                let t = t.super_fold_with(self);
+-                self.depth -= 1;
+-                t
+-            }
+-
+-            fn fold_region(&mut self, r: ty::Region<'tcx>) -> ty::Region<'tcx> {
+-                // Replace erased regions with fresh bound regions.
+-                if r.is_erased() {
+-                    let bound_region = ty::BoundRegion {
+-                        var: ty::BoundVar::from_usize(self.bound_vars.len()),
+-                        kind: ty::BoundRegionKind::Anon,
+-                    };
+-                    self.bound_vars
+-                        .push(ty::BoundVariableKind::Region(bound_region.kind));
+-                    ty::Region::new_bound(
+-                        self.tcx,
+-                        ty::DebruijnIndex::from(self.depth),
+-                        bound_region,
+-                    )
+-                } else {
+-                    r
+-                }
+-            }
+-        }
++        use closure_region_facts::binding::{bind_erased, under_binder};
+ 
+         let tcx = s.base().tcx;
+         let closure = from.as_closure();
+@@ -1518,23 +1465,21 @@ impl ClosureArgs {
+         };
+         let sig = closure.sig();
+         let sig = tcx.signature_unclosure(sig, rustc_hir::Safety::Safe);
+-        // Add bound variables for each erased region in the signature.
+-        let sig = {
+-            let mut visitor = RegionUnEraserVisitor {
+-                tcx,
+-                depth: 0,
+-                bound_vars: sig.bound_vars().iter().collect(),
+-            };
+-            let unbound_sig = sig.skip_binder().fold_with(&mut visitor);
+-            let bound_vars = tcx.mk_bound_variable_kinds(&visitor.bound_vars);
+-            ty::Binder::bind_with_vars(unbound_sig, bound_vars)
+-        };
++        let (sig, signature_regions) = bind_erased(tcx, sig).into_parts();
++        let (captures, capture_regions) =
++            bind_erased(tcx, under_binder(tcx, closure.upvar_tys())).into_parts();
+         ClosureArgs {
+             item,
+             kind: closure.kind().sinto(s),
+             tupled_args_ty: tupled_args_ty(s, sig).sinto(s),
+             fn_sig: sig.sinto(s),
+-            upvar_tys: closure.upvar_tys().sinto(s),
++            upvar_tys: captures.map_bound(|types| types.as_slice()).sinto(s),
++            region_occurrences: ClosureRegionOccurrences {
++                parent_arguments: closure_region_facts::free_regions(&closure.parent_args())
++                    .sinto(s),
++                signature: signature_regions.skip_binder().sinto(s),
++                captures: capture_regions.skip_binder().sinto(s),
++            },
+         }
+     }
+ }
+diff --git a/src/bin/charon-driver/translate/closure_constraints.rs b/src/bin/charon-driver/translate/closure_constraints.rs
+new file mode 100644
+index 00000000..c949ea20
+--- /dev/null
++++ b/src/bin/charon-driver/translate/closure_constraints.rs
+@@ -0,0 +1,113 @@
++//! Construct callable predicates from declaration-owned source occurrences.
++
++use closure_region_facts::{RegionPart, RegionSlot};
++
++use super::translate_ctx::*;
++use crate::hax;
++use charon_lib::ast::*;
++
++struct DeclarationRegions {
++    parent_arguments: Vec<Region>,
++    signature: Vec<Region>,
++    captures: Vec<Region>,
++}
++
++impl DeclarationRegions {
++    fn part(&self, part: RegionPart) -> &[Region] {
++        match part {
++            RegionPart::ParentArguments => &self.parent_arguments,
++            RegionPart::Signature => &self.signature,
++            RegionPart::Captures => &self.captures,
++        }
++    }
++
++    fn get(&self, slot: RegionSlot) -> Region {
++        self.part(slot.part())[slot.occurrence()]
++    }
++}
++
++impl ItemTransCtx<'_, '_> {
++    pub(crate) fn translate_closure_constraints(
++        &mut self,
++        span: Span,
++        args: &hax::ClosureArgs,
++    ) -> Result<(), Error> {
++        let hax::DefIdBase::Real(owner) = args.item.def_id.base else {
++            raise_error!(self, span, "Closure contract has no Rust declaration owner")
++        };
++        let Some(local) = owner.as_local() else {
++            raise_error!(
++                self,
++                span,
++                "Cross-crate closure region facts are not available for this artifact"
++            )
++        };
++        let ClosureFactSource::Checked(collection) = &self.t_ctx.closure_regions else {
++            raise_error!(
++                self,
++                span,
++                "Closure contract extraction requires Rust borrow checking"
++            )
++        };
++        let facts = match collection.local(self.t_ctx.tcx, local) {
++            Ok(facts) => facts,
++            Err(error) => raise_error!(self, span, "Closure region facts unavailable: {error:?}"),
++        };
++        let regions = DeclarationRegions {
++            parent_arguments: args
++                .region_occurrences
++                .parent_arguments
++                .iter()
++                .map(|region| self.translate_region(span, region))
++                .collect::<Result<_, _>>()?,
++            signature: args
++                .region_occurrences
++                .signature
++                .iter()
++                .map(|region| self.translate_region(span, region))
++                .collect::<Result<_, _>>()?,
++            captures: self.the_only_binder().closure_upvar_occurrences.clone(),
++        };
++        for part in [
++            RegionPart::ParentArguments,
++            RegionPart::Signature,
++            RegionPart::Captures,
++        ] {
++            let source_count = facts
++                .slots()
++                .iter()
++                .filter(|slot| slot.part() == part)
++                .count();
++            if regions.part(part).len() != source_count {
++                raise_error!(
++                    self,
++                    span,
++                    "Closure contract occurrence mismatch in {part:?}"
++                )
++            }
++            for (occurrence, region) in regions.part(part).iter().enumerate() {
++                if !matches!(region, Region::Static | Region::Var(_)) {
++                    raise_error!(
++                        self,
++                        span,
++                        "Unresolved closure contract {part:?}[{occurrence}]: {region:?}"
++                    )
++                }
++            }
++        }
++        let predicates = facts
++            .required_outlives()
++            .iter()
++            .filter_map(|required| {
++                let longer = regions.get(required.longer());
++                let shorter = regions.get(required.shorter());
++                (longer != shorter).then(|| RegionBinder::empty(OutlivesPred(longer, shorter)))
++            })
++            .collect::<Vec<_>>();
++        self.the_only_binder_mut()
++            .params
++            .regions_outlive
++            .extend(predicates);
++        Ok(())
++    }
++}
+diff --git a/src/bin/charon-driver/translate/mod.rs b/src/bin/charon-driver/translate/mod.rs
+index 511c9a8d..ad087eb5 100644
+--- a/src/bin/charon-driver/translate/mod.rs
++++ b/src/bin/charon-driver/translate/mod.rs
+@@ -1,3 +1,4 @@
++pub mod closure_constraints;
+ pub mod get_mir;
+ pub mod resolve_path;
+ pub mod translate_bodies;
+diff --git a/src/bin/charon-driver/translate/translate_closures.rs b/src/bin/charon-driver/translate/translate_closures.rs
+index 7d30e135..b3913c87 100644
+--- a/src/bin/charon-driver/translate/translate_closures.rs
++++ b/src/bin/charon-driver/translate/translate_closures.rs
+@@ -49,6 +49,9 @@ use super::translate_crate::{ItemInstantiation, TransItemSourceKind};
+ use super::translate_ctx::*;
+ use charon_lib::ullbc_ast::*;
+ 
++/// Capture fields and their source occurrences must use the same substitution.
++pub(crate) type ClosureCaptureBinder = RegionBinder<(IndexVec<FieldId, Ty>, Vec<Region>)>;
++
+ pub fn translate_closure_kind(kind: &hax::ClosureKind) -> ClosureKind {
+     match kind {
+         hax::ClosureKind::Fn => ClosureKind::Fn,
+@@ -400,10 +403,29 @@ impl<'tcx> ItemTransCtx<'tcx, '_> {
+         span: Span,
+         args: &hax::ClosureArgs,
+     ) -> Result<IndexVec<FieldId, Ty>, Error> {
+-        args.upvar_tys
+-            .iter()
+-            .map(|ty| self.translate_ty(span, ty))
+-            .try_collect()
++        let bound = self.translate_closure_capture_binder(span, args)?;
++        Ok(self.erase_region_binder(bound).0)
++    }
++
++    /// Types and source-occurrence provenance share one binder and substitution.
++    pub(crate) fn translate_closure_capture_binder(
++        &mut self,
++        span: Span,
++        args: &hax::ClosureArgs,
++    ) -> Result<ClosureCaptureBinder, Error> {
++        self.translate_region_binder(span, &args.upvar_tys, |ctx, types| {
++            let fields = types
++                .iter()
++                .map(|ty| ctx.translate_ty(span, ty))
++                .try_collect()?;
++            let occurrences = args
++                .region_occurrences
++                .captures
++                .iter()
++                .map(|region| ctx.translate_region(span, region))
++                .try_collect()?;
++            Ok((fields, occurrences))
++        })
+     }
+ 
+     pub fn translate_closure_adt(
+@@ -832,7 +854,7 @@ impl<'tcx> ItemTransCtx<'tcx, '_> {
+         trace!("About to translate closure as fn:\n{:?}", def.def_id());
+ 
+         assert!(
+-            closure.upvar_tys.is_empty(),
++            closure.upvar_tys.value.is_empty(),
+             "Only stateless closures can be translated as functions"
+         );
+ 
+diff --git a/src/bin/charon-driver/translate/translate_crate.rs b/src/bin/charon-driver/translate/translate_crate.rs
+index 4028c273..67d89409 100644
+--- a/src/bin/charon-driver/translate/translate_crate.rs
++++ b/src/bin/charon-driver/translate/translate_crate.rs
+@@ -1050,12 +1050,13 @@ impl<'tcx, 'ctx> ItemTransCtx<'tcx, 'ctx> {
+     }
+ }
+ 
+-#[tracing::instrument(skip(tcx, error_ctx))]
++#[tracing::instrument(skip(tcx, error_ctx, closure_regions))]
+ pub fn translate<'tcx>(
+     tcx: TyCtxt<'tcx>,
+     cli_options: &CliOpts,
+     mut error_ctx: ErrorCtx,
+     sysroot: PathBuf,
++    closure_regions: ClosureFactSource,
+ ) -> Result<TransformCtx, Error> {
+     let translate_options = TranslateOptions::new(&mut error_ctx, cli_options);
+ 
+@@ -1090,6 +1091,7 @@ pub fn translate<'tcx>(
+ 
+     let mut ctx = TranslateCtx {
+         tcx,
++        closure_regions,
+         sysroot,
+         hax_state,
+         options: translate_options,
+diff --git a/src/bin/charon-driver/translate/translate_ctx.rs b/src/bin/charon-driver/translate/translate_ctx.rs
+index dc575885..66575d9c 100644
+--- a/src/bin/charon-driver/translate/translate_ctx.rs
++++ b/src/bin/charon-driver/translate/translate_ctx.rs
+@@ -28,6 +28,7 @@ pub(crate) use charon_lib::errors::{
+ pub struct TranslateCtx<'tcx> {
+     /// The Rust compiler type context
+     pub tcx: TyCtxt<'tcx>,
++    pub closure_regions: ClosureFactSource,
+     /// Path to the toolchain root.
+     pub sysroot: PathBuf,
+     /// The Hax context
+@@ -75,6 +76,13 @@ pub struct TranslateCtx<'tcx> {
+     pub lt_mutability_computer: LifetimeMutabilityComputer,
+ }
+ 
++/// Unchecked extraction has no authority to issue closure lifetime contracts.
++#[derive(Clone)]
++pub enum ClosureFactSource {
++    Checked(Arc<closure_region_facts::collection::Collection>),
++    BorrowCheckingDisabled,
++}
++
+ /// Tracks whether a method is used (i.e. called or (non-opaquely) implemented).
+ #[derive(Debug)]
+ pub enum MethodStatus {
+diff --git a/src/bin/charon-driver/translate/translate_generics.rs b/src/bin/charon-driver/translate/translate_generics.rs
+index 2c83b7c3..4998493f 100644
+--- a/src/bin/charon-driver/translate/translate_generics.rs
++++ b/src/bin/charon-driver/translate/translate_generics.rs
+@@ -51,6 +51,8 @@ pub(crate) struct BindingLevel {
+     /// translated early because this translation requires adding new lifetime generics to the
+     /// current binder.
+     pub closure_upvar_tys: Option<IndexVec<FieldId, Ty>>,
++    /// Free capture occurrences expressed using the declaration's parameters.
++    pub closure_upvar_occurrences: Vec<Region>,
+     /// The regions we added for the upvars.
+     pub closure_upvar_regions: Vec<RegionId>,
+     /// RPITIT can cause region names to be reused. To avoid clashes in our output, we rename
+@@ -512,15 +514,14 @@ impl<'tcx, 'ctx> ItemTransCtx<'tcx, 'ctx> {
+         self.push_late_bound_generics_for_def(span, def)?;
+ 
+         if let hax::FullDefKind::Closure { args, .. } = def.kind() {
+-            // Add the lifetime generics coming from the upvars. We translate the upvar types early
+-            // to know what lifetimes are needed.
+-            let upvar_tys = self.translate_closure_upvar_tys(span, args)?;
+-            // Add new lifetimes params to replace the erased ones.
+-            let upvar_tys = upvar_tys.replace_erased_regions(|| {
++            let captures = self.translate_closure_capture_binder(span, args)?;
++            let regions = captures.regions.map_ref_indexed(|_, _| {
+                 let region_id = self.the_only_binder_mut().push_upvar_region();
+                 Region::Var(DeBruijnVar::new_at_zero(region_id))
+             });
++            let (upvar_tys, occurrences) = captures.apply(regions);
+             self.the_only_binder_mut().closure_upvar_tys = Some(upvar_tys);
++            self.the_only_binder_mut().closure_upvar_occurrences = occurrences;
+ 
+             // Add the lifetime generics coming from the higher-kindedness of the signature.
+             if let TransItemSourceKind::TraitImpl(TransImplSource::Callable(..))
+@@ -532,6 +533,7 @@ impl<'tcx, 'ctx> ItemTransCtx<'tcx, 'ctx> {
+             {
+                 self.the_only_binder_mut()
+                     .push_params_from_binder(args.fn_sig.rebind(()))?;
++                self.translate_closure_constraints(span, args)?;
+             }
+         }
+ 
+diff --git a/tests/closure_required_regions.rs b/tests/closure_required_regions.rs
+new file mode 100644
+index 00000000..67a82e34
+--- /dev/null
++++ b/tests/closure_required_regions.rs
+@@ -0,0 +1,94 @@
++use charon_lib::ast::*;
++
++mod util;
++
++#[test]
++fn callable_contracts_keep_direction_and_genuine_binders() -> anyhow::Result<()> {
++    let krate = util::translate_rust_text(
++        r#"
++        pub fn named<'a>() -> impl Fn(&'a u32) -> &'a u32 {
++            |value| value
++        }
++        pub fn higher_ranked() -> impl for<'a> Fn(&'a u32) -> &'a u32 {
++            |value| value
++        }
++        pub fn named_call(value: &u32) -> &u32 { named()(value) }
++        pub fn higher_ranked_call(value: &u32) -> &u32 { higher_ranked()(value) }
++        "#,
++        &[
++            "--mir=optimized",
++            "--error-on-warnings",
++            "--translate-all-methods",
++            "--lift-associated-types=*",
++            "--hide-marker-traits",
++            "--hide-allocator",
++            "--remove-unused-self-clauses",
++            "--remove-adt-clauses",
++            "--no-gen-tuple-structs",
++        ],
++    )?;
++    for (source, expected_predicates) in [("named", 1), ("higher_ranked", 0)] {
++        let mut checked = 0;
++        for function in &krate.fun_decls {
++            let name = util::repr_name(&krate, &function.item_meta.name);
++            if !name.starts_with(&format!("test_crate::{source}::"))
++                || !["::call", "::call_once", "::call_mut"]
++                    .iter()
++                    .any(|suffix| name.ends_with(suffix))
++            {
++                continue;
++            }
++            let TyKind::Adt(arguments) = function.signature.inputs[1].kind() else {
++                panic!("callable input must be a tuple in {name}");
++            };
++            let TyKind::Ref(input, _, _) = arguments.generics.types[0].kind() else {
++                panic!("tuple's source argument must be a reference in {name}");
++            };
++            let TyKind::Ref(output, _, _) = function.signature.output.kind() else {
++                panic!("source output must be a reference in {name}");
++            };
++            let predicates = &function.generics.regions_outlive;
++            if expected_predicates == 0 {
++                assert!(
++                    predicates.is_empty(),
++                    "genuine binders need no invented constraints: {name}"
++                );
++                assert_eq!(input, output, "genuine HRTB identity in {name}");
++            } else {
++                assert_ne!(input, output, "free occurrences remain separate in {name}");
++                let forward = RegionBinder::empty(OutlivesPred(*input, *output));
++                let reverse = RegionBinder::empty(OutlivesPred(*output, *input));
++                assert_eq!(
++                    predicates.iter().filter(|p| **p == forward).count(),
++                    1,
++                    "required path in {name}"
++                );
++                assert!(
++                    !predicates.contains(&reverse),
++                    "invented converse in {name}"
++                );
++                let borrowed_receiver =
++                    matches!(function.signature.inputs[0].kind(), TyKind::Ref(..));
++                assert_eq!(
++                    predicates.len(),
++                    1 + usize::from(borrowed_receiver),
++                    "only the required path and receiver well-formedness in {name}"
++                );
++            }
++            assert!(matches!(input, Region::Var(_)));
++            assert!(matches!(output, Region::Var(_)));
++            checked += 1;
++        }
++        assert_eq!(
++            checked,
++            3,
++            "all three callable methods in {source}; emitted names: {:?}",
++            krate
++                .fun_decls
++                .iter()
++                .map(|f| util::repr_name(&krate, &f.item_meta.name))
++                .collect::<Vec<_>>()
++        );
++    }
++    Ok(())
++}

@@ -27,7 +27,7 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for RegionOccurrences<'tcx> {
     }
 }
 
-fn occurrences<'tcx>(value: &impl TypeVisitable<TyCtxt<'tcx>>) -> Vec<ty::Region<'tcx>> {
+pub fn free_regions<'tcx>(value: &impl TypeVisitable<TyCtxt<'tcx>>) -> Vec<ty::Region<'tcx>> {
     let mut visitor = RegionOccurrences {
         outer: ty::INNERMOST,
         regions: Vec::new(),
@@ -41,8 +41,8 @@ pub(crate) fn match_positions<'tcx>(
     raw: &impl TypeVisitable<TyCtxt<'tcx>>,
     inferred: &impl TypeVisitable<TyCtxt<'tcx>>,
 ) -> Result<Vec<(RegionSlot, ty::RegionVid)>, FactError> {
-    let raw_regions = occurrences(raw);
-    let inferred_regions = occurrences(inferred);
+    let raw_regions = free_regions(raw);
+    let inferred_regions = free_regions(inferred);
     if raw_regions.len() != inferred_regions.len() {
         return Err(FactError::OccurrenceMismatch(part));
     }

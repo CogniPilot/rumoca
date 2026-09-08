@@ -5,12 +5,14 @@ extern crate rustc_hir;
 extern crate rustc_interface;
 extern crate rustc_middle;
 
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+mod binding_checks;
 
-use closure_region_facts::collection::{Collection, CollectionError};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use closure_region_facts::ClosureRegionFacts;
+use closure_region_facts::collection::{Collection, CollectionError};
 use rustc_driver::{Callbacks, Compilation};
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{DefPathHash, LocalDefId};
@@ -50,6 +52,7 @@ impl Callbacks for CheckCollection {
     }
 
     fn after_expansion<'tcx>(&mut self, _: &Compiler, tcx: TyCtxt<'tcx>) -> Compilation {
+        binding_checks::check_binder_scope(tcx);
         for owner in tcx.hir_body_owners() {
             if tcx.def_kind(owner) != DefKind::Closure {
                 assert_eq!(
@@ -67,6 +70,7 @@ impl Callbacks for CheckCollection {
                 }
                 Err(error) => panic!("early facts: {error:?}"),
             };
+            binding_checks::check_source_occurrences(tcx, owner);
             assert_eq!(facts.owner(), tcx.def_path_hash(owner.to_def_id()));
             assert!(self.early.insert(facts.owner(), facts).is_none());
         }

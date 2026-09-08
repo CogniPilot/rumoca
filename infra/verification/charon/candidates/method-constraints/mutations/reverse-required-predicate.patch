@@ -1,0 +1,11 @@
+--- a/src/bin/charon-driver/translate/closure_constraints.rs
++++ b/src/bin/charon-driver/translate/closure_constraints.rs
+@@ -101,7 +101,7 @@
+             .filter_map(|required| {
+                 let longer = regions.get(required.longer());
+                 let shorter = regions.get(required.shorter());
+-                (longer != shorter).then(|| RegionBinder::empty(OutlivesPred(longer, shorter)))
++                (longer != shorter).then(|| RegionBinder::empty(OutlivesPred(shorter, longer)))
+             })
+             .collect::<Vec<_>>();
+         self.the_only_binder_mut()
