@@ -1,0 +1,8 @@
+diff --git a/infra/verification/charon/fixtures/dae-library-boundary.rs b/infra/verification/charon/fixtures/dae-library-boundary.rs
+--- a/infra/verification/charon/fixtures/dae-library-boundary.rs
++++ b/infra/verification/charon/fixtures/dae-library-boundary.rs
+@@ -4,3 +4,3 @@
+ pub fn conditional_reference(enabled: bool, values: &[u32]) -> Option<&u32> {
+-    enabled.then(|| &values[0])
++    (!enabled).then(|| &values[0])
+ }
